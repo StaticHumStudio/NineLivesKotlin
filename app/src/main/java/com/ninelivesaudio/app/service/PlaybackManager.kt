@@ -1,0 +1,606 @@
+package com.ninelivesaudio.app.service
+
+import android.content.Context
+import android.net.Uri
+import androidx.annotation.OptIn
+import androidx.media3.common.*
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.FileDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
+import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.AudioFile
+import com.ninelivesaudio.app.domain.model.Chapter
+import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
+import dagger.Lazy
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+
+enum class PlaybackState {
+    STOPPED, LOADING, PLAYING, PAUSED, BUFFERING
+}
+
+/**
+ * Core playback engine wrapping Media3 ExoPlayer.
+ * Ports AndroidAudioPlaybackService logic: multi-track, streaming with auth,
+ * chapter tracking, session sync, speed/volume control.
+ *
+ * Key advantage over C# MediaPlayer: ExoPlayer handles multi-track playlists
+ * natively via ConcatenatingMediaSource — greatly simplifying track management.
+ */
+@Singleton
+class PlaybackManager @Inject constructor(
+    @param:ApplicationContext private val context: Context,
+    private val apiService: ApiService,
+    private val settingsManager: SettingsManager,
+    private val progressRepository: ProgressRepository,
+    private val syncManagerLazy: Lazy<SyncManager>,
+) {
+    private val syncManager: SyncManager get() = syncManagerLazy.get()
+    private var exoPlayer: ExoPlayer? = null
+
+    /** Expose the current ExoPlayer instance for MediaSession binding. */
+    fun getPlayer(): ExoPlayer? = exoPlayer
+
+    // ─── Coroutine Scope ──────────────────────────────────────────────────
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var positionPollingJob: Job? = null
+    private var sessionSyncJob: Job? = null
+
+    // ─── State ────────────────────────────────────────────────────────────
+
+    private val _playbackState = MutableStateFlow(PlaybackState.STOPPED)
+    val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
+
+    private val _currentBook = MutableStateFlow<AudioBook?>(null)
+    val currentBook: StateFlow<AudioBook?> = _currentBook.asStateFlow()
+
+    private val _position = MutableStateFlow(Duration.ZERO)
+    val position: StateFlow<Duration> = _position.asStateFlow()
+
+    private val _duration = MutableStateFlow(Duration.ZERO)
+    val duration: StateFlow<Duration> = _duration.asStateFlow()
+
+    private val _currentChapter = MutableStateFlow<Chapter?>(null)
+    val currentChapter: StateFlow<Chapter?> = _currentChapter.asStateFlow()
+
+    private val _currentChapterIndex = MutableStateFlow(-1)
+    val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
+
+    private val _speed = MutableStateFlow(1.0f)
+    val speed: StateFlow<Float> = _speed.asStateFlow()
+
+    private val _volume = MutableStateFlow(0.8f)
+    val volume: StateFlow<Float> = _volume.asStateFlow()
+
+    private val _isLocalFile = MutableStateFlow(false)
+    val isLocalFile: StateFlow<Boolean> = _isLocalFile.asStateFlow()
+
+    // Events
+    private val _events = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 16)
+    val events: SharedFlow<PlaybackEvent> = _events.asSharedFlow()
+
+    // ─── Internal State ───────────────────────────────────────────────────
+
+    private var chapters: List<Chapter> = emptyList()
+    private var currentSession: PlaybackSessionInfo? = null
+    private var accumulatedListenTime: Double = 0.0
+
+    // Track durations for position calculation
+    private var trackDurations: List<Double> = emptyList() // cumulative seconds
+
+    // ─── Load ─────────────────────────────────────────────────────────────
+
+    @OptIn(UnstableApi::class)
+    suspend fun loadAudioBook(book: AudioBook): Boolean {
+        try {
+            _playbackState.value = PlaybackState.LOADING
+            _currentBook.value = book
+            chapters = book.chapters.sortedBy { it.start }
+            _currentChapter.value = null
+            _currentChapterIndex.value = -1
+            accumulatedListenTime = 0.0
+
+            // Release previous player
+            releasePlayer()
+
+            // Start server session (fire-and-forget for local files)
+            currentSession = null
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val session = apiService.startPlaybackSession(book.id)
+                    if (session != null) {
+                        currentSession = session
+                        if (chapters.isEmpty() && session.chapters.isNotEmpty()) {
+                            chapters = session.chapters.sortedBy { it.start }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // Save initial progress
+            withContext(Dispatchers.IO) {
+                try {
+                    progressRepository.savePlaybackProgress(
+                        audioBookId = book.id,
+                        position = book.currentTime,
+                        isFinished = false,
+                    )
+                } catch (_: Exception) {}
+            }
+
+            // Determine source and load
+            val isLocal = book.isDownloaded && !book.localPath.isNullOrEmpty()
+            _isLocalFile.value = isLocal
+
+            // Create ExoPlayer
+            val player = ExoPlayer.Builder(context).build()
+            exoPlayer = player
+
+            // Build media items
+            if (isLocal) {
+                loadLocalTracks(player, book)
+            } else {
+                loadStreamTracks(player, book)
+            }
+
+            // Set playback parameters
+            player.playbackParameters = PlaybackParameters(_speed.value)
+            player.volume = _volume.value
+
+            // Listen for player events
+            player.addListener(createPlayerListener())
+
+            // Prepare and seek to saved position
+            player.prepare()
+
+            val startPosition = book.currentTime
+            if (startPosition > Duration.ZERO) {
+                seekToPosition(startPosition)
+            }
+
+            // Update duration
+            _duration.value = calculateTotalDuration(book)
+
+            _playbackState.value = PlaybackState.PAUSED
+            _events.tryEmit(PlaybackEvent.BookLoaded(book))
+
+            // Notify SyncManager of active playback item (prevents sync overwriting position)
+            syncManager.setActivePlaybackItem(book.id)
+
+            return true
+        } catch (e: Exception) {
+            _playbackState.value = PlaybackState.STOPPED
+            _events.tryEmit(PlaybackEvent.Error("Failed to load: ${e.message}"))
+            return false
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun loadLocalTracks(player: ExoPlayer, book: AudioBook) {
+        val localDir = book.localPath?.let { File(it).parentFile }
+
+        val mediaItems = mutableListOf<MediaItem>()
+        val durations = mutableListOf<Double>()
+        var cumulative = 0.0
+
+        if (book.audioFiles.size <= 1) {
+            // Single file
+            val path = book.localPath ?: return
+            mediaItems.add(
+                MediaItem.Builder()
+                    .setUri(Uri.fromFile(File(path)))
+                    .build()
+            )
+        } else {
+            // Multi-track
+            for (af in book.audioFiles.sortedBy { it.index }) {
+                val path = af.localPath
+                    ?: localDir?.let { File(it, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath }
+                    ?: continue
+
+                mediaItems.add(
+                    MediaItem.Builder()
+                        .setUri(Uri.fromFile(File(path)))
+                        .build()
+                )
+                cumulative += af.duration.inWholeMilliseconds / 1000.0
+                durations.add(cumulative)
+            }
+        }
+
+        trackDurations = durations
+        player.setMediaItems(mediaItems)
+    }
+
+    @OptIn(UnstableApi::class)
+    private suspend fun loadStreamTracks(player: ExoPlayer, book: AudioBook) {
+        val session = currentSession
+        val serverUrl = settingsManager.currentSettings.serverUrl.trimEnd('/')
+        val token = settingsManager.getAuthToken() ?: ""
+
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(
+                if (token.isNotEmpty()) mapOf("Authorization" to "Bearer $token")
+                else emptyMap()
+            )
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(30_000)
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
+
+        val mediaItems = mutableListOf<MediaItem>()
+        val durations = mutableListOf<Double>()
+        var cumulative = 0.0
+
+        if (session != null && session.audioTracks.isNotEmpty()) {
+            for (track in session.audioTracks.sortedBy { it.index }) {
+                val url = if (track.contentUrl.startsWith("http")) track.contentUrl
+                else "$serverUrl${track.contentUrl}"
+
+                mediaItems.add(MediaItem.fromUri(url))
+                cumulative += track.duration
+                durations.add(cumulative)
+            }
+        } else {
+            // Fallback: stream individual audio files
+            for (af in book.audioFiles.sortedBy { it.index }) {
+                val url = "$serverUrl/api/items/${book.id}/file/${af.ino}"
+                mediaItems.add(MediaItem.fromUri(url))
+                cumulative += af.duration.inWholeMilliseconds / 1000.0
+                durations.add(cumulative)
+            }
+        }
+
+        trackDurations = durations
+
+        val mediaSources: List<MediaSource> = mediaItems.map { item ->
+            mediaSourceFactory.createMediaSource(item)
+        }
+
+        player.setMediaSources(mediaSources)
+    }
+
+    // ─── Playback Controls ────────────────────────────────────────────────
+
+    fun play() {
+        exoPlayer?.let { player ->
+            player.play()
+            _playbackState.value = PlaybackState.PLAYING
+            startPositionPolling()
+            startSessionSync()
+        }
+    }
+
+    fun pause() {
+        exoPlayer?.let { player ->
+            player.pause()
+            _playbackState.value = PlaybackState.PAUSED
+            stopPositionPolling()
+            stopSessionSync()
+            scope.launch(Dispatchers.IO) { syncProgressNow() }
+        }
+    }
+
+    fun stop() {
+        stopPositionPolling()
+        stopSessionSync()
+
+        val book = _currentBook.value
+        val pos = _position.value
+        val dur = _duration.value
+        if (book != null) {
+            val isFinished = dur > Duration.ZERO && pos >= dur - 1.seconds
+            scope.launch(Dispatchers.IO) {
+                syncProgressNow()
+                // Flush progress through SyncManager (handles offline queue)
+                syncManager.flushPlaybackProgress(
+                    itemId = book.id,
+                    currentTime = pos.inWholeMilliseconds / 1000.0,
+                    isFinished = isFinished,
+                )
+                closeSession()
+            }
+        }
+
+        releasePlayer()
+        _playbackState.value = PlaybackState.STOPPED
+    }
+
+    fun seekTo(position: Duration) {
+        seekToPosition(position)
+        _position.value = position
+        updateCurrentChapter(position)
+    }
+
+    fun skipForward(seconds: Int = 30) {
+        val current = _position.value
+        val total = _duration.value
+        val target = (current + seconds.seconds).coerceAtMost(total)
+        seekTo(target)
+    }
+
+    fun skipBackward(seconds: Int = 10) {
+        val current = _position.value
+        val target = (current - seconds.seconds).coerceAtLeast(Duration.ZERO)
+        seekTo(target)
+    }
+
+    fun setSpeed(speed: Float) {
+        _speed.value = speed.coerceIn(0.5f, 3.0f)
+        exoPlayer?.playbackParameters = PlaybackParameters(_speed.value)
+    }
+
+    fun setVolume(vol: Float) {
+        _volume.value = vol.coerceIn(0f, 1f)
+        exoPlayer?.volume = _volume.value
+    }
+
+    fun seekToChapter(chapterIndex: Int) {
+        if (chapterIndex < 0 || chapterIndex >= chapters.size) return
+        val chapter = chapters[chapterIndex]
+        seekTo(chapter.startTime)
+        _currentChapter.value = chapter
+        _currentChapterIndex.value = chapterIndex
+    }
+
+    // ─── Position Calculation (multi-track aware) ─────────────────────────
+
+    private fun seekToPosition(position: Duration) {
+        val player = exoPlayer ?: return
+        val posSeconds = position.inWholeMilliseconds / 1000.0
+
+        if (trackDurations.size <= 1) {
+            // Single track
+            player.seekTo(position.inWholeMilliseconds)
+            return
+        }
+
+        // Find target track
+        var targetTrack = 0
+        for (i in trackDurations.indices) {
+            if (posSeconds < trackDurations[i]) {
+                targetTrack = i
+                break
+            }
+            if (i == trackDurations.lastIndex) {
+                targetTrack = i
+            }
+        }
+
+        val previousCumulative = if (targetTrack > 0) trackDurations[targetTrack - 1] else 0.0
+        val withinTrackMs = ((posSeconds - previousCumulative) * 1000).toLong().coerceAtLeast(0)
+
+        player.seekTo(targetTrack, withinTrackMs)
+    }
+
+    private fun getCurrentPosition(): Duration {
+        val player = exoPlayer ?: return Duration.ZERO
+        val trackPosition = player.currentPosition.milliseconds
+
+        val windowIndex = player.currentMediaItemIndex
+        if (windowIndex > 0 && windowIndex <= trackDurations.size) {
+            val previousCumulative = trackDurations[windowIndex - 1]
+            return trackPosition + previousCumulative.seconds
+        }
+        return trackPosition
+    }
+
+    private fun calculateTotalDuration(book: AudioBook): Duration {
+        if (trackDurations.isNotEmpty()) {
+            return trackDurations.last().seconds
+        }
+        return book.duration
+    }
+
+    // ─── Player Listener ──────────────────────────────────────────────────
+
+    private fun createPlayerListener() = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            when (playbackState) {
+                Player.STATE_BUFFERING -> {
+                    if (_playbackState.value == PlaybackState.PLAYING) {
+                        _playbackState.value = PlaybackState.BUFFERING
+                    }
+                }
+                Player.STATE_READY -> {
+                    if (_playbackState.value == PlaybackState.BUFFERING) {
+                        _playbackState.value = PlaybackState.PLAYING
+                    }
+                }
+                Player.STATE_ENDED -> {
+                    // End of all tracks
+                    stopPositionPolling()
+                    stopSessionSync()
+                    _playbackState.value = PlaybackState.STOPPED
+
+                    val book = _currentBook.value
+                    if (book != null) {
+                        val durSecs = _duration.value.inWholeMilliseconds / 1000.0
+                        scope.launch(Dispatchers.IO) {
+                            // Flush through SyncManager (handles both local save + server/offline queue)
+                            syncManager.flushPlaybackProgress(
+                                itemId = book.id,
+                                currentTime = durSecs,
+                                isFinished = true,
+                            )
+                            closeSession()
+                        }
+                    }
+                    _events.tryEmit(PlaybackEvent.BookFinished)
+                }
+            }
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // Track changed (multi-track auto-advance)
+            val idx = exoPlayer?.currentMediaItemIndex ?: 0
+            _events.tryEmit(PlaybackEvent.TrackChanged(idx))
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            _playbackState.value = PlaybackState.STOPPED
+            _events.tryEmit(PlaybackEvent.Error("Playback error: ${error.message}"))
+        }
+    }
+
+    // ─── Position Polling ─────────────────────────────────────────────────
+
+    private fun startPositionPolling() {
+        positionPollingJob?.cancel()
+        positionPollingJob = scope.launch {
+            while (isActive) {
+                delay(500)
+                val pos = getCurrentPosition()
+                _position.value = pos
+                updateCurrentChapter(pos)
+
+                // Report position to SyncManager for throttled server pushes
+                val book = _currentBook.value
+                val dur = _duration.value
+                if (book != null && dur > Duration.ZERO) {
+                    launch(Dispatchers.IO) {
+                        try {
+                            syncManager.reportPlaybackPosition(
+                                itemId = book.id,
+                                currentTime = pos.inWholeMilliseconds / 1000.0,
+                                duration = dur.inWholeMilliseconds / 1000.0,
+                                isFinished = false,
+                            )
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopPositionPolling() {
+        positionPollingJob?.cancel()
+        positionPollingJob = null
+    }
+
+    // ─── Chapter Tracking ─────────────────────────────────────────────────
+
+    private fun updateCurrentChapter(position: Duration) {
+        if (chapters.isEmpty()) return
+
+        val posSeconds = position.inWholeMilliseconds / 1000.0
+        var newIndex = -1
+        for (i in chapters.indices) {
+            if (posSeconds >= chapters[i].start && posSeconds < chapters[i].end) {
+                newIndex = i
+                break
+            }
+        }
+
+        if (newIndex != _currentChapterIndex.value) {
+            _currentChapterIndex.value = newIndex
+            _currentChapter.value = if (newIndex >= 0) chapters[newIndex] else null
+        }
+    }
+
+    // ─── Session Sync (12s interval) ──────────────────────────────────────
+
+    private fun startSessionSync() {
+        stopSessionSync()
+        sessionSyncJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(12_000)
+                syncProgressNow()
+            }
+        }
+    }
+
+    private fun stopSessionSync() {
+        sessionSyncJob?.cancel()
+        sessionSyncJob = null
+    }
+
+    private suspend fun syncProgressNow() {
+        val book = _currentBook.value ?: return
+        val pos = _position.value
+        val dur = _duration.value
+
+        // Save locally
+        try {
+            progressRepository.savePlaybackProgress(
+                audioBookId = book.id,
+                position = pos,
+                isFinished = false,
+            )
+        } catch (_: Exception) {}
+
+        // Sync to server session
+        val session = currentSession
+        if (session != null) {
+            try {
+                accumulatedListenTime += 12
+                apiService.syncSessionProgress(
+                    sessionId = session.id,
+                    currentTime = pos.inWholeMilliseconds / 1000.0,
+                    duration = dur.inWholeMilliseconds / 1000.0,
+                    timeListened = accumulatedListenTime,
+                )
+            } catch (_: Exception) {}
+        } else {
+            // Enqueue for later sync
+            try {
+                progressRepository.enqueuePendingProgress(
+                    book.id,
+                    pos.inWholeMilliseconds / 1000.0,
+                    isFinished = false,
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun closeSession() {
+        val session = currentSession ?: return
+        try {
+            apiService.closeSession(session.id)
+        } catch (_: Exception) {}
+        currentSession = null
+    }
+
+    // ─── Cleanup ──────────────────────────────────────────────────────────
+
+    private fun releasePlayer() {
+        exoPlayer?.let { player ->
+            player.stop()
+            player.release()
+        }
+        exoPlayer = null
+    }
+
+    fun release() {
+        stopPositionPolling()
+        stopSessionSync()
+        releasePlayer()
+        scope.cancel()
+    }
+}
+
+// ─── Events ───────────────────────────────────────────────────────────────
+
+sealed class PlaybackEvent {
+    data class BookLoaded(val book: AudioBook) : PlaybackEvent()
+    data class TrackChanged(val index: Int) : PlaybackEvent()
+    data class Error(val message: String) : PlaybackEvent()
+    data object BookFinished : PlaybackEvent()
+}

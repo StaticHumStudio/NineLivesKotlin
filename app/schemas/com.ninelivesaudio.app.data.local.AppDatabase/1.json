@@ -1,0 +1,372 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "edf073796bad64134e43c19fc3b6623c",
+    "entities": [
+      {
+        "tableName": "Libraries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` TEXT NOT NULL, `Name` TEXT NOT NULL, `DisplayOrder` INTEGER NOT NULL DEFAULT 0, `Icon` TEXT NOT NULL DEFAULT 'audiobook', `MediaType` TEXT NOT NULL DEFAULT 'book', `FoldersJson` TEXT, PRIMARY KEY(`Id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "Id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "Name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayOrder",
+            "columnName": "DisplayOrder",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "icon",
+            "columnName": "Icon",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'audiobook'"
+          },
+          {
+            "fieldPath": "mediaType",
+            "columnName": "MediaType",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'book'"
+          },
+          {
+            "fieldPath": "foldersJson",
+            "columnName": "FoldersJson",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "Id"
+          ]
+        }
+      },
+      {
+        "tableName": "AudioBooks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` TEXT NOT NULL, `LibraryId` TEXT, `Title` TEXT NOT NULL, `Author` TEXT, `Narrator` TEXT, `Description` TEXT, `CoverPath` TEXT, `DurationSeconds` REAL NOT NULL DEFAULT 0, `AddedAt` TEXT, `AudioFilesJson` TEXT, `CurrentTimeSeconds` REAL NOT NULL DEFAULT 0, `Progress` REAL NOT NULL DEFAULT 0, `IsFinished` INTEGER NOT NULL DEFAULT 0, `IsDownloaded` INTEGER NOT NULL DEFAULT 0, `LocalPath` TEXT, `SeriesName` TEXT, `SeriesSequence` TEXT, `GenresJson` TEXT, `TagsJson` TEXT, `ChaptersJson` TEXT, PRIMARY KEY(`Id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "Id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "libraryId",
+            "columnName": "LibraryId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "Title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "author",
+            "columnName": "Author",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "narrator",
+            "columnName": "Narrator",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "Description",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "coverPath",
+            "columnName": "CoverPath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "durationSeconds",
+            "columnName": "DurationSeconds",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "addedAt",
+            "columnName": "AddedAt",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "audioFilesJson",
+            "columnName": "AudioFilesJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentTimeSeconds",
+            "columnName": "CurrentTimeSeconds",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "progress",
+            "columnName": "Progress",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "isFinished",
+            "columnName": "IsFinished",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "isDownloaded",
+            "columnName": "IsDownloaded",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "localPath",
+            "columnName": "LocalPath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "seriesName",
+            "columnName": "SeriesName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "seriesSequence",
+            "columnName": "SeriesSequence",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "genresJson",
+            "columnName": "GenresJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "tagsJson",
+            "columnName": "TagsJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "chaptersJson",
+            "columnName": "ChaptersJson",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "Id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "idx_audiobooks_library",
+            "unique": false,
+            "columnNames": [
+              "LibraryId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `idx_audiobooks_library` ON `${TABLE_NAME}` (`LibraryId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "DownloadItems",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` TEXT NOT NULL, `AudioBookId` TEXT NOT NULL, `Title` TEXT NOT NULL, `Status` INTEGER NOT NULL DEFAULT 0, `TotalBytes` INTEGER NOT NULL DEFAULT 0, `DownloadedBytes` INTEGER NOT NULL DEFAULT 0, `StartedAt` TEXT, `CompletedAt` TEXT, `ErrorMessage` TEXT, `FilesToDownloadJson` TEXT, PRIMARY KEY(`Id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "Id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "audioBookId",
+            "columnName": "AudioBookId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "Title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "Status",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "totalBytes",
+            "columnName": "TotalBytes",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "downloadedBytes",
+            "columnName": "DownloadedBytes",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "StartedAt",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "CompletedAt",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "errorMessage",
+            "columnName": "ErrorMessage",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "filesToDownloadJson",
+            "columnName": "FilesToDownloadJson",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "Id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "idx_downloads_audiobook",
+            "unique": false,
+            "columnNames": [
+              "AudioBookId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `idx_downloads_audiobook` ON `${TABLE_NAME}` (`AudioBookId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "PlaybackProgress",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`AudioBookId` TEXT NOT NULL, `PositionSeconds` REAL NOT NULL DEFAULT 0, `IsFinished` INTEGER NOT NULL DEFAULT 0, `UpdatedAt` TEXT, PRIMARY KEY(`AudioBookId`))",
+        "fields": [
+          {
+            "fieldPath": "audioBookId",
+            "columnName": "AudioBookId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "positionSeconds",
+            "columnName": "PositionSeconds",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "isFinished",
+            "columnName": "IsFinished",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "UpdatedAt",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "AudioBookId"
+          ]
+        }
+      },
+      {
+        "tableName": "PendingProgressUpdates",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `ItemId` TEXT NOT NULL, `CurrentTime` REAL NOT NULL DEFAULT 0, `IsFinished` INTEGER NOT NULL DEFAULT 0, `Timestamp` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "Id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "itemId",
+            "columnName": "ItemId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentTime",
+            "columnName": "CurrentTime",
+            "affinity": "REAL",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "isFinished",
+            "columnName": "IsFinished",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "Timestamp",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "Id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "idx_pending_item",
+            "unique": false,
+            "columnNames": [
+              "ItemId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `idx_pending_item` ON `${TABLE_NAME}` (`ItemId`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'edf073796bad64134e43c19fc3b6623c')"
+    ]
+  }
+}

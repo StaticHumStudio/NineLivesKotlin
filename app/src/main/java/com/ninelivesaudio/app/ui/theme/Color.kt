@@ -8,10 +8,11 @@ import androidx.compose.ui.graphics.Color
 // ═══════════════════════════════════════════════════════════════
 
 // Void Palette — Backgrounds & Surfaces
-val VoidDeep = Color(0xFF050810)
+val VoidDeep = Color(0xFF070A10) // Updated to match UI brief
 val VoidBase = Color(0xFF0A0E1A)
 val VoidSurface = Color(0xFF111827)
 val VoidElevated = Color(0xFF1A2236)
+val NavRailBackground = Color(0xFF05070C) // Left nav rail specific
 
 // Sigil Gold — Accent & Interactive
 val SigilGold = Color(0xFFC5A55A)
@@ -48,8 +49,9 @@ val CosmicError = Color(0xFFF87171)
 val CosmicInfo = Color(0xFF60A5FA)
 
 // Cosmic Energy Gradient Stops (for Nine Lives)
-val CosmicEnergy1 = Color(0xFF6366F1) // Indigo
+val CosmicEnergy1 = Color(0xFF6366F1) // Indigo (used for radial gradient)
 val CosmicEnergy2 = Color(0xFF8B5CF6) // Violet
+val GradientBlue = Color(0xFF3B82F6) // Blue for radial background gradient
 val CosmicEnergy3 = Color(0xFFA78BFA) // Light Violet
 val CosmicEnergy4 = Color(0xFFC084FC) // Purple
 val CosmicEnergy5 = Color(0xFFD946EF) // Fuchsia
@@ -67,3 +69,19 @@ val CosmicEnergyColors = listOf(
 // Progress Bar Colors
 val ProgressTrack = VoidElevated
 val ProgressFill = SigilGold
+
+// ═══════════════════════════════════════════════════════════════
+//  UI Brief Design Tokens (Exact Spec Compliance)
+// ═══════════════════════════════════════════════════════════════
+
+// Design tokens from UI specification document
+val AppBg = VoidDeep                      // #070A10
+val RailBg = NavRailBackground            // #05070C
+val CardBg = Color(0xFF111A2A)            // #111A2A (spec-exact card background)
+val StrokeMuted = Color(0xFF263248)       // #263248 (card borders)
+val TextPrimary = Color(0xFFE8ECF6)       // #E8ECF6 (primary text)
+val TextMuted = Color(0xFF9AA6BA)         // #9AA6BA (secondary text)
+val AccentGold = Color(0xFFC9A24A)        // #C9A24A (spec-exact gold)
+val NebulaBlue = Color(0xFF2B5AA8)        // #2B5AA8 (gradient color)
+val NebulaViolet = Color(0xFF6B3FA6)      // #6B3FA6 (gradient color)
+val SuccessGreen = Color(0xFF2DD36F)      // #2DD36F (connected status)

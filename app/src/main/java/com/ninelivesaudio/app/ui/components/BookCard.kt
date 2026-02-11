@@ -34,9 +34,10 @@ fun BookCard(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = VoidSurface),
-        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CardBg),
+        shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, StrokeMuted),
     ) {
         Column {
             // Cover art
@@ -44,7 +45,7 @@ fun BookCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f)
-                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                     .background(VoidElevated),
             ) {
                 if (!book.coverPath.isNullOrEmpty()) {
@@ -85,7 +86,7 @@ fun BookCard(
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Starlight,
+                    color = TextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -95,7 +96,7 @@ fun BookCard(
                 Text(
                     text = book.author,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Mist,
+                    color = TextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontSize = 11.sp,
@@ -109,10 +110,10 @@ fun BookCard(
                         progress = { (book.progress.coerceIn(0.0, 1.0)).toFloat() },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(3.dp)
-                            .clip(RoundedCornerShape(2.dp)),
-                        color = SigilGold,
-                        trackColor = ProgressTrack,
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp)),
+                        color = AccentGold,
+                        trackColor = StrokeMuted,
                     )
 
                     Text(

@@ -9,9 +9,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +33,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.ninelivesaudio.app.R
+import com.ninelivesaudio.app.ui.components.CosmicProgressRing
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.theme.*
 
@@ -105,15 +108,14 @@ private fun NineLivesHeader(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Cat-eye logo icon
-        Icon(
-            imageVector = Icons.Outlined.AutoStories,
-            contentDescription = null,
-            modifier = Modifier.size(40.dp),
-            tint = SigilGold,
+        // Cosmic cat-eye logo
+        Image(
+            painter = painterResource(R.drawable.nine_lives_logo),
+            contentDescription = "Nine Lives Audio",
+            modifier = Modifier.size(72.dp),
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // "NINE LIVES" heading
         Text(
@@ -163,9 +165,10 @@ private fun NineLivesCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = if (item.isMostRecent) VoidElevated else VoidSurface,
+        shape = RoundedCornerShape(16.dp),
+        color = if (item.isMostRecent) CardBg.copy(alpha = 1.15f) else CardBg,
         tonalElevation = if (item.isMostRecent) 2.dp else 0.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, StrokeMuted),
     ) {
         Row(
             modifier = Modifier
@@ -309,9 +312,13 @@ private fun NineLivesCard(
             ) {
                 CosmicProgressRing(
                     progress = animatedProgress,
-                    color = lifeColor,
+                    progressColor = lifeColor,
                     trackColor = VoidElevated,
                     modifier = Modifier.size(44.dp),
+                    strokeWidth = 4.dp,
+                    glowStrength = 0.55f,
+                    innerShadowStrength = 0.6f,
+                    showEndCapDot = true,
                 )
 
                 // Time given text inside ring
@@ -325,61 +332,6 @@ private fun NineLivesCard(
                     maxLines = 1,
                 )
             }
-        }
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-//  Cosmic Progress Ring — Circular progress with gradient
-// ═════════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun CosmicProgressRing(
-    progress: Float,
-    color: Color,
-    trackColor: Color,
-    modifier: Modifier = Modifier,
-    strokeWidth: Float = 4f,
-) {
-    Canvas(modifier = modifier) {
-        val diameter = size.minDimension
-        val radius = diameter / 2f
-        val arcStroke = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-
-        // Track (background arc)
-        drawArc(
-            color = trackColor,
-            startAngle = -90f,
-            sweepAngle = 360f,
-            useCenter = false,
-            style = arcStroke,
-            topLeft = Offset(
-                (size.width - diameter) / 2f + strokeWidth / 2f,
-                (size.height - diameter) / 2f + strokeWidth / 2f,
-            ),
-            size = Size(diameter - strokeWidth, diameter - strokeWidth),
-        )
-
-        // Progress arc
-        if (progress > 0f) {
-            drawArc(
-                brush = Brush.sweepGradient(
-                    colors = listOf(
-                        color.copy(alpha = 0.4f),
-                        color,
-                        color.copy(alpha = 0.8f),
-                    ),
-                ),
-                startAngle = -90f,
-                sweepAngle = 360f * progress.coerceIn(0f, 1f),
-                useCenter = false,
-                style = arcStroke,
-                topLeft = Offset(
-                    (size.width - diameter) / 2f + strokeWidth / 2f,
-                    (size.height - diameter) / 2f + strokeWidth / 2f,
-                ),
-                size = Size(diameter - strokeWidth, diameter - strokeWidth),
-            )
         }
     }
 }
@@ -399,11 +351,10 @@ private fun EmptyHomeState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            imageVector = Icons.Outlined.AutoStories,
+        Image(
+            painter = painterResource(R.drawable.nine_lives_logo),
             contentDescription = null,
-            modifier = Modifier.size(72.dp),
-            tint = SigilGold,
+            modifier = Modifier.size(96.dp),
         )
 
         Spacer(modifier = Modifier.height(24.dp))

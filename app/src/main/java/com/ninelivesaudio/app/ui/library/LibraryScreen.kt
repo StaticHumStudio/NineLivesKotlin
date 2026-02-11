@@ -4,9 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.ninelivesaudio.app.ui.components.BookCard
+import com.ninelivesaudio.app.ui.components.BookListItem
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.theme.*
 
@@ -81,23 +80,21 @@ fun LibraryScreen(
                     EmptyState(uiState)
                 }
                 else -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
+                    LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
                             start = 12.dp,
                             end = 12.dp,
                             top = 8.dp,
-                            bottom = 100.dp, // Space for mini player
+                            bottom = 100.dp, // Space for mini player / nav bar
                         ),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         items(
                             items = uiState.filteredBooks,
                             key = { it.id },
                         ) { book ->
-                            BookCard(
+                            BookListItem(
                                 book = book,
                                 onClick = { onNavigateToBookDetail(book.id) },
                             )

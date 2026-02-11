@@ -69,4 +69,8 @@ interface AudioBookDao {
         ORDER BY Title
     """)
     suspend fun search(query: String): List<AudioBookEntity>
+
+    /** Update just the progress fields on an audiobook. */
+    @Query("UPDATE AudioBooks SET CurrentTimeSeconds = :currentTimeSeconds, Progress = :progress, IsFinished = :isFinished WHERE Id = :id")
+    suspend fun updateProgress(id: String, currentTimeSeconds: Double, progress: Double, isFinished: Int)
 }

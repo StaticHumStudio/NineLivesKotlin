@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.bookdetail
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,6 +23,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Chapter
+import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -84,6 +86,8 @@ fun BookDetailScreen(
                 BookDetailContent(
                     uiState = uiState,
                     onPlayBook = { viewModel.playBook(onReady = onNavigateToPlayer) },
+                    onDownload = { viewModel.downloadBook() },
+                    onDeleteDownload = { viewModel.deleteDownload() },
                     modifier = Modifier.padding(innerPadding),
                 )
             }
@@ -95,6 +99,8 @@ fun BookDetailScreen(
 private fun BookDetailContent(
     uiState: BookDetailViewModel.UiState,
     onPlayBook: () -> Unit,
+    onDownload: () -> Unit,
+    onDeleteDownload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -294,6 +300,14 @@ private fun BookDetailContent(
                         fontSize = 16.sp,
                     )
                 }
+
+                // Download button
+                DownloadButton(
+                    downloadState = uiState.downloadState,
+                    downloadProgress = uiState.downloadProgress,
+                    onDownload = onDownload,
+                    onDeleteDownload = onDeleteDownload,
+                )
             }
         }
 
@@ -345,6 +359,159 @@ private fun BookDetailContent(
                 ChapterRow(
                     index = index + 1,
                     chapter = chapter,
+                )
+            }
+        }
+    }
+}
+
+// ─── Download Button ──────────────────────────────────────────────────────
+
+@Composable
+private fun DownloadButton(
+    downloadState: DownloadButtonState,
+    downloadProgress: Int,
+    onDownload: () -> Unit,
+    onDeleteDownload: () -> Unit,
+) {
+    when (downloadState) {
+        DownloadButtonState.NONE -> {
+            OutlinedButton(
+                onClick = onDownload,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = CosmicInfo),
+                border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(CosmicInfo.copy(alpha = 0.5f)),
+                ),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.CloudDownload,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Download",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                )
+            }
+        }
+
+        DownloadButtonState.QUEUED -> {
+            OutlinedButton(
+                onClick = {},
+                enabled = false,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    disabledContentColor = Mist,
+                ),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = Mist,
+                    strokeWidth = 2.dp,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Queued…",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                )
+            }
+        }
+
+        DownloadButtonState.DOWNLOADING -> {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        disabledContentColor = CosmicInfo,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(vertical = 14.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = CosmicInfo,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Downloading $downloadProgress%",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                    )
+                }
+                val animatedProgress by animateFloatAsState(
+                    targetValue = downloadProgress / 100f,
+                    label = "downloadProgress",
+                )
+                LinearProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = CosmicInfo,
+                    trackColor = VoidElevated,
+                )
+            }
+        }
+
+        DownloadButtonState.PAUSED -> {
+            OutlinedButton(
+                onClick = onDownload,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = SigilGold),
+                border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(SigilGold.copy(alpha = 0.5f)),
+                ),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Pause,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Paused — Tap to Retry",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                )
+            }
+        }
+
+        DownloadButtonState.COMPLETED -> {
+            OutlinedButton(
+                onClick = onDeleteDownload,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = CosmicSuccess),
+                border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(CosmicSuccess.copy(alpha = 0.3f)),
+                ),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.CloudDone,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Downloaded",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
                 )
             }
         }

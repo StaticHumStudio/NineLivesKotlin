@@ -2,18 +2,18 @@ package com.ninelivesaudio.app.service
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.*
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.FileDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
+import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
-import com.ninelivesaudio.app.domain.model.AudioFile
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
 import dagger.Lazy
@@ -50,8 +50,13 @@ class PlaybackManager @Inject constructor(
     private val apiService: ApiService,
     private val settingsManager: SettingsManager,
     private val progressRepository: ProgressRepository,
+    private val audioBookDao: AudioBookDao,
     private val syncManagerLazy: Lazy<SyncManager>,
 ) {
+    companion object {
+        private const val TAG = "PlaybackManager"
+    }
+
     private val syncManager: SyncManager get() = syncManagerLazy.get()
     private var exoPlayer: ExoPlayer? = null
 
@@ -109,7 +114,9 @@ class PlaybackManager @Inject constructor(
 
     @OptIn(UnstableApi::class)
     suspend fun loadAudioBook(book: AudioBook): Boolean {
+        var effectiveBook = book
         try {
+            Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
             _currentBook.value = book
             chapters = book.chapters.sortedBy { it.start }
@@ -120,9 +127,9 @@ class PlaybackManager @Inject constructor(
             // Release previous player
             releasePlayer()
 
-            // Start server session (fire-and-forget for local files)
+            // Start server session (must complete before building stream URLs)
             currentSession = null
-            scope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 try {
                     val session = apiService.startPlaybackSession(book.id)
                     if (session != null) {
@@ -131,22 +138,62 @@ class PlaybackManager @Inject constructor(
                             chapters = session.chapters.sortedBy { it.start }
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.e(TAG, "loadAudioBook: session error: ${e.message}", e)
+                }
             }
 
-            // Save initial progress
+            // If no session audio tracks AND no local audio files, fetch full book details
+            val sessionHasTracks = currentSession?.audioTracks?.isNotEmpty() == true
+            if (!sessionHasTracks && effectiveBook.audioFiles.isEmpty() && !(effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty())) {
+                withContext(Dispatchers.IO) {
+                    try {
+                        val fullBook = apiService.getAudioBook(book.id)
+                        if (fullBook != null && fullBook.audioFiles.isNotEmpty()) {
+                            effectiveBook = fullBook.copy(currentTime = book.currentTime, progress = book.progress)
+                            _currentBook.value = effectiveBook
+                            if (chapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
+                                chapters = fullBook.chapters.sortedBy { it.start }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "loadAudioBook: failed to fetch full book: ${e.message}", e)
+                    }
+                }
+            }
+
+            // Resolve the best known position from all sources
+            var startPosition = effectiveBook.currentTime
             withContext(Dispatchers.IO) {
+                // Check server session for a more recent position
+                val sessionTime = (currentSession?.currentTime ?: 0.0).seconds
+                if (sessionTime > startPosition) {
+                    startPosition = sessionTime
+                }
+
+                // Check local PlaybackProgress table for an even newer position
+                try {
+                    val localProgress = progressRepository.getPlaybackProgress(effectiveBook.id)
+                    if (localProgress != null) {
+                        val (localPos, _) = localProgress
+                        if (localPos > startPosition) {
+                            startPosition = localPos
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                // Save the resolved position
                 try {
                     progressRepository.savePlaybackProgress(
-                        audioBookId = book.id,
-                        position = book.currentTime,
+                        audioBookId = effectiveBook.id,
+                        position = startPosition,
                         isFinished = false,
                     )
                 } catch (_: Exception) {}
             }
 
             // Determine source and load
-            val isLocal = book.isDownloaded && !book.localPath.isNullOrEmpty()
+            val isLocal = effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty()
             _isLocalFile.value = isLocal
 
             // Create ExoPlayer
@@ -155,9 +202,9 @@ class PlaybackManager @Inject constructor(
 
             // Build media items
             if (isLocal) {
-                loadLocalTracks(player, book)
+                loadLocalTracks(player, effectiveBook)
             } else {
-                loadStreamTracks(player, book)
+                loadStreamTracks(player, effectiveBook)
             }
 
             // Set playback parameters
@@ -167,25 +214,27 @@ class PlaybackManager @Inject constructor(
             // Listen for player events
             player.addListener(createPlayerListener())
 
-            // Prepare and seek to saved position
-            player.prepare()
-
-            val startPosition = book.currentTime
+            // Seek to saved position before prepare
             if (startPosition > Duration.ZERO) {
                 seekToPosition(startPosition)
             }
 
-            // Update duration
-            _duration.value = calculateTotalDuration(book)
+            // Set playWhenReady so ExoPlayer auto-starts when preparation completes
+            player.playWhenReady = true
+            player.prepare()
 
-            _playbackState.value = PlaybackState.PAUSED
-            _events.tryEmit(PlaybackEvent.BookLoaded(book))
+            // Update duration
+            _duration.value = calculateTotalDuration(effectiveBook)
+
+            _events.tryEmit(PlaybackEvent.BookLoaded(effectiveBook))
 
             // Notify SyncManager of active playback item (prevents sync overwriting position)
-            syncManager.setActivePlaybackItem(book.id)
+            syncManager.setActivePlaybackItem(effectiveBook.id)
 
+            Log.d(TAG, "loadAudioBook: OK local=$isLocal pos=$startPosition dur=${_duration.value} tracks=${player.mediaItemCount}")
             return true
         } catch (e: Exception) {
+            Log.e(TAG, "loadAudioBook: FAILED: ${e.message}", e)
             _playbackState.value = PlaybackState.STOPPED
             _events.tryEmit(PlaybackEvent.Error("Failed to load: ${e.message}"))
             return false
@@ -194,35 +243,63 @@ class PlaybackManager @Inject constructor(
 
     @OptIn(UnstableApi::class)
     private fun loadLocalTracks(player: ExoPlayer, book: AudioBook) {
-        val localDir = book.localPath?.let { File(it).parentFile }
+        val localPath = book.localPath ?: return
+        val localFile = File(localPath)
 
         val mediaItems = mutableListOf<MediaItem>()
         val durations = mutableListOf<Double>()
         var cumulative = 0.0
 
-        if (book.audioFiles.size <= 1) {
-            // Single file
-            val path = book.localPath ?: return
-            mediaItems.add(
-                MediaItem.Builder()
-                    .setUri(Uri.fromFile(File(path)))
-                    .build()
-            )
-        } else {
-            // Multi-track
-            for (af in book.audioFiles.sortedBy { it.index }) {
-                val path = af.localPath
-                    ?: localDir?.let { File(it, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath }
-                    ?: continue
+        // Determine the download directory
+        val localDir = if (localFile.isDirectory) localFile else localFile.parentFile
 
+        if (book.audioFiles.isNotEmpty()) {
+            // We have audio file metadata — use it for ordered multi-track loading
+            if (book.audioFiles.size == 1 && localFile.isFile) {
+                // Single file pointed to directly
                 mediaItems.add(
                     MediaItem.Builder()
-                        .setUri(Uri.fromFile(File(path)))
+                        .setUri(Uri.fromFile(localFile))
                         .build()
                 )
-                cumulative += af.duration.inWholeMilliseconds / 1000.0
-                durations.add(cumulative)
+            } else {
+                for (af in book.audioFiles.sortedBy { it.index }) {
+                    val path = af.localPath
+                        ?: localDir?.let { File(it, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath }
+                        ?: continue
+
+                    mediaItems.add(
+                        MediaItem.Builder()
+                            .setUri(Uri.fromFile(File(path)))
+                            .build()
+                    )
+                    cumulative += af.duration.inWholeMilliseconds / 1000.0
+                    durations.add(cumulative)
+                }
             }
+        } else if (localDir != null && localDir.isDirectory) {
+            // No audio file metadata — scan the directory for audio files
+            val audioExtensions = setOf("mp3", "m4a", "m4b", "opus", "ogg", "flac", "aac", "wma", "wav")
+            val files = localDir.listFiles()
+                ?.filter { f -> f.isFile && f.extension.lowercase() in audioExtensions }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+
+            for (file in files) {
+                mediaItems.add(
+                    MediaItem.Builder()
+                        .setUri(Uri.fromFile(file))
+                        .build()
+                )
+                // No duration metadata available — ExoPlayer will determine it
+            }
+        } else if (localFile.isFile) {
+            // localPath is a single file
+            mediaItems.add(
+                MediaItem.Builder()
+                    .setUri(Uri.fromFile(localFile))
+                    .build()
+            )
         }
 
         trackDurations = durations
@@ -281,16 +358,20 @@ class PlaybackManager @Inject constructor(
 
     fun play() {
         exoPlayer?.let { player ->
-            player.play()
-            _playbackState.value = PlaybackState.PLAYING
-            startPositionPolling()
-            startSessionSync()
+            player.playWhenReady = true
+            // If already in STATE_READY, start immediately
+            if (player.playbackState == Player.STATE_READY) {
+                _playbackState.value = PlaybackState.PLAYING
+                startPositionPolling()
+                startSessionSync()
+            }
+            // Otherwise the player listener will handle the transition when ready
         }
     }
 
     fun pause() {
         exoPlayer?.let { player ->
-            player.pause()
+            player.playWhenReady = false
             _playbackState.value = PlaybackState.PAUSED
             stopPositionPolling()
             stopSessionSync()
@@ -415,13 +496,15 @@ class PlaybackManager @Inject constructor(
         override fun onPlaybackStateChanged(playbackState: Int) {
             when (playbackState) {
                 Player.STATE_BUFFERING -> {
-                    if (_playbackState.value == PlaybackState.PLAYING) {
-                        _playbackState.value = PlaybackState.BUFFERING
-                    }
+                    _playbackState.value = PlaybackState.BUFFERING
                 }
                 Player.STATE_READY -> {
-                    if (_playbackState.value == PlaybackState.BUFFERING) {
+                    if (exoPlayer?.playWhenReady == true) {
                         _playbackState.value = PlaybackState.PLAYING
+                        startPositionPolling()
+                        startSessionSync()
+                    } else {
+                        _playbackState.value = PlaybackState.PAUSED
                     }
                 }
                 Player.STATE_ENDED -> {
@@ -455,6 +538,7 @@ class PlaybackManager @Inject constructor(
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            Log.e(TAG, "onPlayerError: ${error.errorCodeName} — ${error.message}", error)
             _playbackState.value = PlaybackState.STOPPED
             _events.tryEmit(PlaybackEvent.Error("Playback error: ${error.message}"))
         }
@@ -536,13 +620,26 @@ class PlaybackManager @Inject constructor(
         val book = _currentBook.value ?: return
         val pos = _position.value
         val dur = _duration.value
+        val posSec = pos.inWholeMilliseconds / 1000.0
+        val durSec = dur.inWholeMilliseconds / 1000.0
+        val progressFraction = if (durSec > 0) (posSec / durSec).coerceIn(0.0, 1.0) else 0.0
 
-        // Save locally
+        // Save to PlaybackProgress table
         try {
             progressRepository.savePlaybackProgress(
                 audioBookId = book.id,
                 position = pos,
                 isFinished = false,
+            )
+        } catch (_: Exception) {}
+
+        // Also update AudioBook entity so position persists across loads
+        try {
+            audioBookDao.updateProgress(
+                id = book.id,
+                currentTimeSeconds = posSec,
+                progress = progressFraction,
+                isFinished = 0,
             )
         } catch (_: Exception) {}
 

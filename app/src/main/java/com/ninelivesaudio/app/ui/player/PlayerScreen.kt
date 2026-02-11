@@ -3,8 +3,10 @@ package com.ninelivesaudio.app.ui.player
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -41,11 +43,10 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(VoidDeep)
-            .padding(horizontal = 20.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(modifier = Modifier.height(16.dp))
-
         // ─── Source Badge ─────────────────────────────────────────────
         if (uiState.isLocalFile) {
             Surface(
@@ -65,7 +66,7 @@ fun PlayerScreen(
         // ─── Cover Art ────────────────────────────────────────────────
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.55f)
+                .fillMaxWidth(0.65f)
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(VoidElevated),
@@ -124,7 +125,7 @@ fun PlayerScreen(
             )
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(20.dp))
 
         // ─── Progress Slider ──────────────────────────────────────────
         Slider(
@@ -284,7 +285,7 @@ fun PlayerScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 

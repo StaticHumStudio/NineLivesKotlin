@@ -1,12 +1,29 @@
 package com.ninelivesaudio.app.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDownload
-import androidx.compose.material3.*
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -15,17 +32,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.theme.*
 
 /**
- * Library grid item card showing cover art, title, author, progress bar, and download badge.
- * Matches the Windows app's library card design.
+ * Library list item with a compact cover on the left and metadata/status on the right.
  */
 @Composable
-fun BookCard(
+fun BookListItem(
     book: AudioBook,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -37,60 +52,43 @@ fun BookCard(
         colors = CardDefaults.cardColors(containerColor = CardBg),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, StrokeMuted),
+        border = BorderStroke(1.dp, StrokeMuted),
     ) {
-        Column {
-            // Cover art
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
-                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .size(76.dp)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(VoidElevated),
             ) {
                 if (!book.coverPath.isNullOrEmpty()) {
                     AsyncImage(
                         model = book.coverPath,
                         contentDescription = book.title,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize(),
                         contentScale = ContentScale.Crop,
                     )
                 }
-
-                // Download badge
-                if (book.isDownloaded) {
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp),
-                        color = CosmicInfo.copy(alpha = 0.85f),
-                        shape = RoundedCornerShape(6.dp),
-                    ) {
-                        Icon(
-                            Icons.Outlined.CloudDownload,
-                            contentDescription = "Downloaded",
-                            modifier = Modifier
-                                .padding(4.dp)
-                                .size(14.dp),
-                            tint = Starlight,
-                        )
-                    }
-                }
             }
 
-            // Title + Author + Progress
             Column(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Text(
                     text = book.title,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.titleSmall,
                     color = TextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    lineHeight = 16.sp,
                 )
 
                 Text(
@@ -99,31 +97,78 @@ fun BookCard(
                     color = TextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontSize = 11.sp,
                 )
 
-                // Progress bar
-                if (book.hasProgress) {
-                    Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusTag(
+                        label = if (book.isDownloaded) "Downloaded" else "Not downloaded",
+                        isHighlighted = book.isDownloaded,
+                    )
+                    StatusTag(
+                        label = if (book.isFinished) "Completed" else "In progress",
+                        isHighlighted = book.isFinished,
+                    )
+                }
 
+                if (book.hasProgress) {
+                    Spacer(modifier = Modifier.height(3.dp))
                     LinearProgressIndicator(
                         progress = { (book.progress.coerceIn(0.0, 1.0)).toFloat() },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(2.dp)
-                            .clip(RoundedCornerShape(1.dp)),
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)),
                         color = AccentGold,
                         trackColor = StrokeMuted,
                     )
-
                     Text(
                         text = book.progressText,
                         style = MaterialTheme.typography.labelSmall,
                         color = MistFaint,
-                        fontSize = 10.sp,
+                    )
+                }
+            }
+
+            if (book.isDownloaded) {
+                Surface(
+                    color = CosmicInfo.copy(alpha = 0.2f),
+                    shape = RoundedCornerShape(999.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.CloudDownload,
+                        contentDescription = "Downloaded",
+                        modifier = Modifier
+                            .padding(8.dp)
+                            .size(16.dp),
+                        tint = CosmicInfo,
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StatusTag(
+    label: String,
+    isHighlighted: Boolean,
+) {
+    Surface(
+        color = if (isHighlighted) SigilGold.copy(alpha = 0.16f) else VoidSurface,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isHighlighted) SigilGold.copy(alpha = 0.5f) else StrokeMuted,
+        ),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (isHighlighted) SigilGold else Mist,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+        )
     }
 }

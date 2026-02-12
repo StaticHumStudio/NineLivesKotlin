@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Nine Lives</string>
+    <string name="notification_channel_name">Audio Playback</string>
 </resources>

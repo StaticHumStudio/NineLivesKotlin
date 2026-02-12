@@ -32,17 +32,17 @@ class NineLivesApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // Load settings from disk FIRST (serverUrl, prefs, etc.)
+        // Start network monitoring (no dependency on settings)
+        connectivityMonitor.startMonitoring()
+
+        // Load settings from disk FIRST, then start sync.
+        // syncManager.start() must wait for settings to be loaded so it has
+        // a valid server URL and auth token for the first sync attempt.
         appScope.launch {
             settingsManager.loadSettings()
             apiService.initializeFromSettings()
+            syncManager.start()
         }
-
-        // Start network monitoring
-        connectivityMonitor.startMonitoring()
-
-        // Start periodic sync (will wait for auth token before syncing)
-        syncManager.start()
     }
 
     override fun onTerminate() {

@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import android.content.Context
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import com.ninelivesaudio.app.domain.model.AppSettings
@@ -15,6 +16,8 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val TAG = "SettingsManager"
 
 /**
  * Manages application settings and secure token storage.
@@ -61,10 +64,12 @@ class SettingsManager @Inject constructor(
     // ─── Settings ────────────────────────────────────────────────────────
 
     suspend fun loadSettings(): AppSettings = withContext(Dispatchers.IO) {
+        Log.d(TAG, "loadSettings: Loading from ${settingsFile.absolutePath}")
         try {
             if (settingsFile.exists()) {
                 val text = settingsFile.readText()
                 val loaded = json.decodeFromString<AppSettings>(text)
+                Log.d(TAG, "loadSettings: Loaded settings - unhingedThemeEnabled=${loaded.unhingedThemeEnabled}")
                 // Ensure download path has a default
                 val withDefaults = if (loaded.downloadPath.isEmpty()) {
                     loaded.copy(
@@ -74,14 +79,17 @@ class SettingsManager @Inject constructor(
                     loaded
                 }
                 _settings.value = withDefaults
+                Log.d(TAG, "loadSettings: Settings applied to StateFlow")
                 withDefaults
             } else {
+                Log.d(TAG, "loadSettings: No settings file found, creating defaults")
                 val defaults = AppSettings(downloadPath = defaultDownloadPath())
                 _settings.value = defaults
                 saveSettings(defaults)
                 defaults
             }
         } catch (e: Exception) {
+            Log.e(TAG, "loadSettings: Error loading settings", e)
             val defaults = AppSettings(downloadPath = defaultDownloadPath())
             _settings.value = defaults
             defaults
@@ -89,16 +97,20 @@ class SettingsManager @Inject constructor(
     }
 
     suspend fun saveSettings(settings: AppSettings) = withContext(Dispatchers.IO) {
+        Log.d(TAG, "saveSettings: Saving settings - unhingedThemeEnabled=${settings.unhingedThemeEnabled}")
         try {
             settingsFile.writeText(json.encodeToString(settings))
             _settings.value = settings
+            Log.d(TAG, "saveSettings: Settings saved successfully and StateFlow updated")
         } catch (e: Exception) {
-            // Log error in future phases
+            Log.e(TAG, "saveSettings: Error saving settings", e)
         }
     }
 
     suspend fun updateSettings(transform: (AppSettings) -> AppSettings) {
+        Log.d(TAG, "updateSettings: Transforming settings")
         val updated = transform(_settings.value)
+        Log.d(TAG, "updateSettings: Transformed - unhingedThemeEnabled=${updated.unhingedThemeEnabled}")
         saveSettings(updated)
     }
 

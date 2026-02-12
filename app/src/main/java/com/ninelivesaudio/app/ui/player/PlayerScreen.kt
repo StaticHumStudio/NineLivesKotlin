@@ -42,7 +42,7 @@ fun PlayerScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep)
+            .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -128,9 +128,21 @@ fun PlayerScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         // ─── Progress Slider ──────────────────────────────────────────
+        // Track drag state separately: update visual position during drag,
+        // but only seek the player when the user releases the thumb.
+        var isDragging by remember { mutableStateOf(false) }
+        var dragValue by remember { mutableFloatStateOf(0f) }
+
         Slider(
-            value = uiState.progress,
-            onValueChange = { viewModel.seekTo(it) },
+            value = if (isDragging) dragValue else uiState.progress,
+            onValueChange = { value ->
+                isDragging = true
+                dragValue = value
+            },
+            onValueChangeFinished = {
+                viewModel.seekTo(dragValue)
+                isDragging = false
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 4.dp),

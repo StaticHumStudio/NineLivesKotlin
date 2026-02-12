@@ -140,7 +140,10 @@ class DownloadsViewModel @Inject constructor(
         viewModelScope.launch {
             val completed = _uiState.value.completedDownloads
             completed.forEach { item ->
-                downloadItemDao.deleteById(item.download.id)
+                // Use downloadManager.deleteDownload() which also removes files from disk
+                // and updates the audiobook entity. Just deleting the DB record leaves
+                // orphaned files consuming storage.
+                downloadManager.deleteDownload(item.download.audioBookId)
             }
         }
     }

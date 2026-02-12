@@ -137,14 +137,18 @@ class DownloadManager @Inject constructor(
 
     /** Delete a completed download's files and DB record. */
     suspend fun deleteDownload(audioBookId: String) {
-        // Delete files
-        val downloadDir = getDownloadPath(audioBookId)
+        // Use the actual localPath stored on the audiobook — this matches
+        // the path set by processDownload(). The old code used getDownloadPath(audioBookId)
+        // which returns basePath/audioBookId, but downloads are saved to basePath/Author - Title.
+        val bookEntity = audioBookDao.getById(audioBookId)
         withContext(Dispatchers.IO) {
-            downloadDir.deleteRecursively()
+            val localPath = bookEntity?.localPath
+            if (!localPath.isNullOrEmpty()) {
+                File(localPath).deleteRecursively()
+            }
         }
 
         // Update audiobook as not downloaded
-        val bookEntity = audioBookDao.getById(audioBookId)
         if (bookEntity != null) {
             audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null))
         }
@@ -214,6 +218,9 @@ class DownloadManager @Inject constructor(
             val finalPath = File(downloadDir, fileName)
             val partPath = File(downloadDir, "$fileName.part")
 
+            // Snapshot byte count before this file — used to revert on retry
+            val bytesBeforeFile = downloadedBytes
+
             try {
                 // Skip if already downloaded
                 if (finalPath.exists() && finalPath.length() > 0) {
@@ -271,8 +278,8 @@ class DownloadManager @Inject constructor(
                     // Exponential backoff: 10s, 20s, 40s
                     val delayMs = (2.0.pow(retryCount) * 5_000).toLong()
                     delay(delayMs)
-                    // Retry the same file by decrementing
-                    downloadedBytes -= (downloadedBytes - download.downloadedBytes).coerceAtLeast(0)
+                    // Revert byte count to before this file attempt
+                    downloadedBytes = bytesBeforeFile
                     continue
                 }
 
@@ -360,11 +367,6 @@ class DownloadManager @Inject constructor(
         }.ifBlank { audioBook.id }
 
         return File(basePath, folderName)
-    }
-
-    /** Get download directory by audiobook ID (for deletion). */
-    private fun getDownloadPath(audioBookId: String): File {
-        return File(getBasePath(), audioBookId)
     }
 
     /** Base storage directory for all downloads. */

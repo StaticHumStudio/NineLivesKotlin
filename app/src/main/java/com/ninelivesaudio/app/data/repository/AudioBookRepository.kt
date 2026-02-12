@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.map
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration.Companion.seconds
 
 @Singleton
 class AudioBookRepository @Inject constructor(
@@ -74,11 +75,22 @@ class AudioBookRepository @Inject constructor(
             val localBooks = audioBookDao.getByLibrary(libraryId).associateBy { it.id }
             val merged = remote.map { remoteBook ->
                 val local = localBooks[remoteBook.id]
-                if (local != null && local.isDownloaded == 1) {
-                    remoteBook.copy(
-                        isDownloaded = true,
-                        localPath = local.localPath,
-                    )
+                if (local != null) {
+                    // Preserve local download state
+                    val withDownload = if (local.isDownloaded == 1) {
+                        remoteBook.copy(isDownloaded = true, localPath = local.localPath)
+                    } else remoteBook
+
+                    // Preserve local progress if it's ahead of server (offline playback)
+                    val localTime = local.currentTimeSeconds
+                    val remoteTime = withDownload.currentTime.inWholeMilliseconds / 1000.0
+                    if (localTime > remoteTime) {
+                        withDownload.copy(
+                            currentTime = localTime.seconds,
+                            progress = local.progress,
+                            isFinished = local.isFinished == 1,
+                        )
+                    } else withDownload
                 } else {
                     remoteBook
                 }

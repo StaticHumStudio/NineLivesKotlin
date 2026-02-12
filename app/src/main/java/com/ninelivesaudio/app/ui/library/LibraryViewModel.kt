@@ -52,10 +52,19 @@ class LibraryViewModel @Inject constructor(
     private var searchJob: Job? = null
 
     init {
-        // Observe connectivity
+        // Observe connectivity and auto-filter to downloaded when offline
         viewModelScope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
+                val wasConnected = _uiState.value.connectionStatus == ConnectionStatus.CONNECTED
+                val isNowOffline = status == ConnectionStatus.OFFLINE || status == ConnectionStatus.SERVER_UNREACHABLE
+
                 _uiState.update { it.copy(connectionStatus = status) }
+
+                // Auto-enable "Downloaded Only" when going offline or server becomes unreachable
+                if (wasConnected && isNowOffline && !_uiState.value.showDownloadedOnly) {
+                    _uiState.update { it.copy(showDownloadedOnly = true) }
+                    applyFilter()
+                }
             }
         }
 

@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.home
 
+import android.util.Log
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -7,6 +8,7 @@ import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -16,10 +18,13 @@ import java.time.format.DateTimeParseException
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
+private const val TAG = "HomeViewModel"
+
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
     // ─── Data Model ──────────────────────────────────────────────────────────
@@ -79,6 +84,37 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(showEmptyState = true) }
             } finally {
                 _uiState.update { it.copy(isLoading = false) }
+            }
+        }
+    }
+
+    /**
+     * Secret easter egg: Toggle Unhinged Mode by tapping logo 9 times.
+     * Enables the Archive Beneath theme and atmospheric features.
+     */
+    fun toggleUnhingedMode() {
+        Log.d(TAG, "toggleUnhingedMode: Easter egg triggered!")
+        viewModelScope.launch {
+            val currentSettings = settingsManager.currentSettings
+            Log.d(TAG, "toggleUnhingedMode: Current state - unhingedThemeEnabled=${currentSettings.unhingedThemeEnabled}")
+
+            settingsManager.updateSettings { settings ->
+                val newState = !settings.unhingedThemeEnabled
+                Log.d(TAG, "toggleUnhingedMode: Toggling to newState=$newState")
+
+                settings.copy(
+                    unhingedThemeEnabled = newState,
+                    // Enable all features when activating
+                    anomaliesEnabled = if (newState) true else settings.anomaliesEnabled,
+                    whispersEnabled = if (newState) true else settings.whispersEnabled,
+                    copyMode = if (newState) "Unhinged" else settings.copyMode,
+                ).also { updatedSettings ->
+                    Log.d(TAG, "toggleUnhingedMode: Updated settings - " +
+                            "unhingedThemeEnabled=${updatedSettings.unhingedThemeEnabled}, " +
+                            "anomaliesEnabled=${updatedSettings.anomaliesEnabled}, " +
+                            "whispersEnabled=${updatedSettings.whispersEnabled}, " +
+                            "copyMode=${updatedSettings.copyMode}")
+                }
             }
         }
     }

@@ -1,13 +1,18 @@
 package com.ninelivesaudio.app.ui.theme
 
 import android.app.Activity
+import android.util.Log
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
+
+private const val TAG = "NineLivesTheme"
 
 private val CosmicDarkColorScheme = darkColorScheme(
     // Primary = Sigil Gold (accent)
@@ -59,28 +64,47 @@ private val CosmicDarkColorScheme = darkColorScheme(
 
 @Composable
 fun NineLivesAudioTheme(
+    unhingedSettings: com.ninelivesaudio.app.settings.unhinged.UnhingedSettings? = null,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = CosmicDarkColorScheme
-    val view = LocalView.current
+    val isUnhinged = unhingedSettings?.unhingedThemeEnabled == true
+    Log.d(TAG, "NineLivesAudioTheme: isUnhinged=$isUnhinged, settings=$unhingedSettings")
 
-    if (!view.isInEditMode) {
-        SideEffect {
-            val window = (view.context as Activity).window
-            // Set status bar and navigation bar to VoidDeep for immersive dark feel
-            window.statusBarColor = VoidDeep.toArgb()
-            window.navigationBarColor = VoidBase.toArgb()
-            // Use light status bar icons (white) on dark background
-            val insetsController = WindowCompat.getInsetsController(window, view)
-            insetsController.isAppearanceLightStatusBars = false
-            insetsController.isAppearanceLightNavigationBars = false
+    // Switch between normal and unhinged theme based on settings
+    if (isUnhinged) {
+        Log.d(TAG, "NineLivesAudioTheme: Activating UNHINGED (Archive Beneath) theme")
+        com.ninelivesaudio.app.ui.theme.unhinged.UnhingedTheme(
+            unhingedSettings = unhingedSettings,
+            content = content
+        )
+    } else {
+        Log.d(TAG, "NineLivesAudioTheme: Using NORMAL (Cosmic) theme")
+        // Normal cosmic theme (existing)
+        val colorScheme = CosmicDarkColorScheme
+        val view = LocalView.current
+
+        if (!view.isInEditMode) {
+            SideEffect {
+                val window = (view.context as Activity).window
+                // Set status bar and navigation bar to VoidDeep for immersive dark feel
+                window.statusBarColor = VoidDeep.toArgb()
+                window.navigationBarColor = VoidBase.toArgb()
+                // Use light status bar icons (white) on dark background
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.isAppearanceLightStatusBars = false
+                insetsController.isAppearanceLightNavigationBars = false
+            }
+        }
+
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            shapes = Shapes,
+        ) {
+            CompositionLocalProvider(
+                LocalUnhingedSettings provides (unhingedSettings ?: com.ninelivesaudio.app.settings.unhinged.UnhingedSettings.Default),
+                content = content
+            )
         }
     }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        shapes = Shapes,
-        content = content
-    )
 }

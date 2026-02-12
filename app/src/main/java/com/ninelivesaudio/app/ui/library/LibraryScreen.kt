@@ -37,7 +37,7 @@ fun LibraryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep)
+            .background(MaterialTheme.colorScheme.background)
     ) {
         // ─── Header ───────────────────────────────────────────────────
         LibraryHeader(uiState)
@@ -113,7 +113,7 @@ private fun LibraryHeader(uiState: LibraryViewModel.UiState) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(VoidDeep)
+            .background(MaterialTheme.colorScheme.background)
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

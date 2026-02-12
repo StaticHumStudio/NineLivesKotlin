@@ -1,10 +1,14 @@
 package com.ninelivesaudio.app.service
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.os.Looper
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.*
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -16,6 +20,11 @@ import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
+import com.ninelivesaudio.app.MainActivity
+import androidx.media3.session.MediaController
+import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.MoreExecutors
 import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -59,9 +68,20 @@ class PlaybackManager @Inject constructor(
 
     private val syncManager: SyncManager get() = syncManagerLazy.get()
     private var exoPlayer: ExoPlayer? = null
+    private var mediaSession: MediaSession? = null
+    private var mediaController: MediaController? = null
+    private var playbackService: PlaybackService? = null
 
-    /** Expose the current ExoPlayer instance for MediaSession binding. */
+    /** Expose the current ExoPlayer instance. */
     fun getPlayer(): ExoPlayer? = exoPlayer
+
+    /** Expose the current MediaSession for PlaybackService.onGetSession(). */
+    fun getMediaSession(): MediaSession? = mediaSession
+
+    /** Called by PlaybackService when it's created/destroyed. */
+    fun setPlaybackService(service: PlaybackService?) {
+        playbackService = service
+    }
 
     // ─── Coroutine Scope ──────────────────────────────────────────────────
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -106,6 +126,7 @@ class PlaybackManager @Inject constructor(
     private var chapters: List<Chapter> = emptyList()
     private var currentSession: PlaybackSessionInfo? = null
     private var accumulatedListenTime: Double = 0.0
+    private var lastSyncTimestamp: Long = 0L
 
     // Track durations for position calculation
     private var trackDurations: List<Double> = emptyList() // cumulative seconds
@@ -114,6 +135,10 @@ class PlaybackManager @Inject constructor(
 
     @OptIn(UnstableApi::class)
     suspend fun loadAudioBook(book: AudioBook): Boolean {
+        // ExoPlayer must be created and accessed from the Main thread
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "loadAudioBook must be called from the Main thread"
+        }
         var effectiveBook = book
         try {
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
@@ -196,15 +221,24 @@ class PlaybackManager @Inject constructor(
             val isLocal = effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty()
             _isLocalFile.value = isLocal
 
-            // Create ExoPlayer
-            val player = ExoPlayer.Builder(context).build()
+            // Create ExoPlayer with proper audio attributes and focus handling
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
+
+            val player = ExoPlayer.Builder(context)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+                .setHandleAudioBecomingNoisy(true)
+                .build()
             exoPlayer = player
 
-            // Build media items
+            // Build media items with metadata baked in (avoids replaceMediaItem resets)
+            val metadata = buildMediaMetadata(effectiveBook)
             if (isLocal) {
-                loadLocalTracks(player, effectiveBook)
+                loadLocalTracks(player, effectiveBook, metadata)
             } else {
-                loadStreamTracks(player, effectiveBook)
+                loadStreamTracks(player, effectiveBook, metadata)
             }
 
             // Set playback parameters
@@ -219,7 +253,23 @@ class PlaybackManager @Inject constructor(
                 seekToPosition(startPosition)
             }
 
-            // Set playWhenReady so ExoPlayer auto-starts when preparation completes
+            // Create MediaSession BEFORE prepare() so it captures all state transitions.
+            // This is critical: Media3's automatic notification system only works when the
+            // session exists with a bound player when state changes happen.
+            mediaSession?.release()
+            mediaSession = MediaSession.Builder(context, player)
+                .setSessionActivity(createSessionPendingIntent())
+                .build()
+
+            // Start the foreground service — it retrieves the session via getMediaSession().
+            // Media3 MediaSessionService handles startForeground() automatically.
+            startPlaybackService()
+
+            // If the service was already running, it won't get a new onCreate().
+            // Explicitly add the new session so Media3 refreshes the notification.
+            playbackService?.refreshSession(mediaSession!!)
+
+            // NOW prepare — MediaSession exists to receive all state transitions
             player.playWhenReady = true
             player.prepare()
 
@@ -242,7 +292,7 @@ class PlaybackManager @Inject constructor(
     }
 
     @OptIn(UnstableApi::class)
-    private fun loadLocalTracks(player: ExoPlayer, book: AudioBook) {
+    private fun loadLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
         val localPath = book.localPath ?: return
         val localFile = File(localPath)
 
@@ -260,6 +310,7 @@ class PlaybackManager @Inject constructor(
                 mediaItems.add(
                     MediaItem.Builder()
                         .setUri(Uri.fromFile(localFile))
+                        .setMediaMetadata(metadata)
                         .build()
                 )
             } else {
@@ -271,6 +322,7 @@ class PlaybackManager @Inject constructor(
                     mediaItems.add(
                         MediaItem.Builder()
                             .setUri(Uri.fromFile(File(path)))
+                            .setMediaMetadata(metadata)
                             .build()
                     )
                     cumulative += af.duration.inWholeMilliseconds / 1000.0
@@ -289,6 +341,7 @@ class PlaybackManager @Inject constructor(
                 mediaItems.add(
                     MediaItem.Builder()
                         .setUri(Uri.fromFile(file))
+                        .setMediaMetadata(metadata)
                         .build()
                 )
                 // No duration metadata available — ExoPlayer will determine it
@@ -298,6 +351,7 @@ class PlaybackManager @Inject constructor(
             mediaItems.add(
                 MediaItem.Builder()
                     .setUri(Uri.fromFile(localFile))
+                    .setMediaMetadata(metadata)
                     .build()
             )
         }
@@ -307,7 +361,7 @@ class PlaybackManager @Inject constructor(
     }
 
     @OptIn(UnstableApi::class)
-    private suspend fun loadStreamTracks(player: ExoPlayer, book: AudioBook) {
+    private suspend fun loadStreamTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
         val session = currentSession
         val serverUrl = settingsManager.currentSettings.serverUrl.trimEnd('/')
         val token = settingsManager.getAuthToken() ?: ""
@@ -331,7 +385,12 @@ class PlaybackManager @Inject constructor(
                 val url = if (track.contentUrl.startsWith("http")) track.contentUrl
                 else "$serverUrl${track.contentUrl}"
 
-                mediaItems.add(MediaItem.fromUri(url))
+                mediaItems.add(
+                    MediaItem.Builder()
+                        .setUri(url)
+                        .setMediaMetadata(metadata)
+                        .build()
+                )
                 cumulative += track.duration
                 durations.add(cumulative)
             }
@@ -339,7 +398,12 @@ class PlaybackManager @Inject constructor(
             // Fallback: stream individual audio files
             for (af in book.audioFiles.sortedBy { it.index }) {
                 val url = "$serverUrl/api/items/${book.id}/file/${af.ino}"
-                mediaItems.add(MediaItem.fromUri(url))
+                mediaItems.add(
+                    MediaItem.Builder()
+                        .setUri(url)
+                        .setMediaMetadata(metadata)
+                        .build()
+                )
                 cumulative += af.duration.inWholeMilliseconds / 1000.0
                 durations.add(cumulative)
             }
@@ -401,6 +465,7 @@ class PlaybackManager @Inject constructor(
         }
 
         releasePlayer()
+        stopPlaybackService()
         _playbackState.value = PlaybackState.STOPPED
     }
 
@@ -555,11 +620,12 @@ class PlaybackManager @Inject constructor(
                 _position.value = pos
                 updateCurrentChapter(pos)
 
-                // Report position to SyncManager for throttled server pushes
+                // Report position to SyncManager for throttled server pushes.
+                // Uses withContext (not launch) to prevent unbounded coroutine accumulation.
                 val book = _currentBook.value
                 val dur = _duration.value
                 if (book != null && dur > Duration.ZERO) {
-                    launch(Dispatchers.IO) {
+                    withContext(Dispatchers.IO) {
                         try {
                             syncManager.reportPlaybackPosition(
                                 itemId = book.id,
@@ -603,6 +669,7 @@ class PlaybackManager @Inject constructor(
 
     private fun startSessionSync() {
         stopSessionSync()
+        lastSyncTimestamp = System.currentTimeMillis()
         sessionSyncJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(12_000)
@@ -647,7 +714,10 @@ class PlaybackManager @Inject constructor(
         val session = currentSession
         if (session != null) {
             try {
-                accumulatedListenTime += 12
+                val now = System.currentTimeMillis()
+                val elapsed = (now - lastSyncTimestamp).coerceAtLeast(0) / 1000.0
+                lastSyncTimestamp = now
+                accumulatedListenTime += elapsed
                 apiService.syncSessionProgress(
                     sessionId = session.id,
                     currentTime = pos.inWholeMilliseconds / 1000.0,
@@ -678,6 +748,13 @@ class PlaybackManager @Inject constructor(
     // ─── Cleanup ──────────────────────────────────────────────────────────
 
     private fun releasePlayer() {
+        val session = mediaSession
+        if (session != null) {
+            // Remove the session from the service before releasing so Media3 clears the notification
+            playbackService?.removeSession(session)
+            session.release()
+            mediaSession = null
+        }
         exoPlayer?.let { player ->
             player.stop()
             player.release()
@@ -689,7 +766,78 @@ class PlaybackManager @Inject constructor(
         stopPositionPolling()
         stopSessionSync()
         releasePlayer()
+        stopPlaybackService()
         scope.cancel()
+    }
+
+    // ─── Media Metadata ───────────────────────────────────────────────────────
+
+    private fun buildMediaMetadata(book: AudioBook): MediaMetadata {
+        val builder = MediaMetadata.Builder()
+            .setTitle(book.title)
+            .setArtist(book.author)
+            .setAlbumTitle(book.title)
+            .setDisplayTitle(book.title)
+            .setSubtitle(book.author)
+
+        // Set cover art URI so the notification and lock screen show album art
+        if (!book.coverPath.isNullOrEmpty()) {
+            builder.setArtworkUri(Uri.parse(book.coverPath))
+        }
+
+        return builder.build()
+    }
+
+    // ─── MediaSession / Playback Service Management ─────────────────────────
+
+    private fun createSessionPendingIntent(): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        return PendingIntent.getActivity(
+            context, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /**
+     * Connect to PlaybackService via MediaController.
+     * This is the correct Media3 pattern: when a MediaController connects to a
+     * MediaSessionService, Media3 automatically starts the service, calls
+     * startForeground(), and manages the entire foreground service lifecycle.
+     *
+     * The old approach (startForegroundService + manual intent) crashed with
+     * ForegroundServiceDidNotStartInTimeException because onGetSession() could
+     * return null if the MediaSession wasn't ready yet, preventing Media3 from
+     * calling startForeground().
+     */
+    private fun startPlaybackService() {
+        try {
+            val sessionToken = SessionToken(context, android.content.ComponentName(context, PlaybackService::class.java))
+            val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+            controllerFuture.addListener({
+                try {
+                    mediaController = controllerFuture.get()
+                    Log.d(TAG, "MediaController connected to PlaybackService")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to connect MediaController: ${e.message}", e)
+                }
+            }, MoreExecutors.directExecutor())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start PlaybackService: ${e.message}", e)
+        }
+    }
+
+    private fun stopPlaybackService() {
+        try {
+            mediaController?.release()
+            mediaController = null
+            val intent = Intent(context, PlaybackService::class.java)
+            context.stopService(intent)
+            Log.d(TAG, "Stopped PlaybackService")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop PlaybackService: ${e.message}", e)
+        }
     }
 }
 

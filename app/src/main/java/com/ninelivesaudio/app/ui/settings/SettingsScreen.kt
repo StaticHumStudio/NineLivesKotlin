@@ -230,6 +230,22 @@ fun SettingsScreen(
                 thickness = 1.dp,
             )
 
+            // ─── Archive Configuration ────────────────────────────────
+            SectionHeader(text = "Archive Configuration")
+
+            ArchiveConfigurationSection(
+                unhingedThemeEnabled = uiState.unhingedThemeEnabled,
+                sessionCount = uiState.sessionCount,
+                onToggleUnhinged = viewModel::toggleUnhingedTheme
+            )
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = VoidElevated,
+                thickness = 1.dp,
+            )
+
             // ─── Diagnostics ──────────────────────────────────────────
             SectionHeader(text = "Diagnostics")
 
@@ -467,5 +483,110 @@ private fun DiagnosticRow(label: String, value: String) {
             style = MaterialTheme.typography.bodySmall,
             color = Starlight,
         )
+    }
+}
+
+// ─── Archive Configuration ────────────────────────────────────────────────
+
+@Composable
+private fun ArchiveConfigurationSection(
+    unhingedThemeEnabled: Boolean,
+    sessionCount: Int,
+    onToggleUnhinged: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = VoidSurface),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            // Archive Beneath Theme Toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Archive Beneath Theme",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Starlight,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Deep purple/indigo aesthetic with gold accents",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MistFaint,
+                    )
+                }
+                Switch(
+                    checked = unhingedThemeEnabled,
+                    onCheckedChange = { onToggleUnhinged() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = SigilGold,
+                        checkedTrackColor = SigilGoldFaint,
+                    ),
+                )
+            }
+
+            HorizontalDivider(color = VoidElevated, thickness = 1.dp)
+
+            // Session Counter
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        text = "Session Count",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Mist,
+                    )
+                    Text(
+                        text = "Total app launches tracked",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MistFaint,
+                    )
+                }
+                Text(
+                    text = sessionCount.toString(),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = SigilGold,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+
+            // Info message
+            if (unhingedThemeEnabled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = CosmicInfo.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = CosmicInfo,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        text = "Archive Beneath theme active. Surface textures and accent colors enabled.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Starlight,
+                    )
+                }
+            }
+        }
     }
 }

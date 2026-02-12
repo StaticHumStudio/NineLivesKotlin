@@ -18,18 +18,27 @@ object SelfSignedCertTrustManager {
     /**
      * Configures the OkHttpClient.Builder to accept self-signed certificates
      * ONLY for the server host from settings, and ONLY if the user opted in.
+     *
+     * When allowSelfSignedCertificates is false, the default OkHttp trust manager
+     * is used — this properly validates certificate chains against the system CA store.
+     * The old implementation installed a no-op trust manager unconditionally, which
+     * accepted ALL certificates for ALL hosts regardless of the setting.
      */
     fun OkHttpClient.Builder.configureSelfSignedCerts(
         settingsManager: SettingsManager,
     ): OkHttpClient.Builder {
+        // Only install the permissive trust manager when the user has opted in.
+        // Without this guard, the no-op checkServerTrusted() accepts every cert.
+        val settings = settingsManager.currentSettings
+        if (!settings.allowSelfSignedCertificates) {
+            return this
+        }
+
         val trustManager = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
 
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                // Only allow self-signed certs if:
-                // 1. User opted in via settings
-                // 2. The cert is for the configured server host
-                // The actual host check happens at the hostnameVerifier level
+                // Accept self-signed certs — host restriction enforced by hostnameVerifier below
             }
 
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
@@ -40,14 +49,9 @@ object SelfSignedCertTrustManager {
 
         sslSocketFactory(sslContext.socketFactory, trustManager)
 
-        hostnameVerifier { hostname, session ->
-            val settings = settingsManager.currentSettings
-            if (!settings.allowSelfSignedCertificates) {
-                // Default verification — reject mismatches
-                return@hostnameVerifier false
-            }
-
-            val serverUrl = settings.serverUrl
+        hostnameVerifier { hostname, _ ->
+            val currentSettings = settingsManager.currentSettings
+            val serverUrl = currentSettings.serverUrl
             if (serverUrl.isEmpty()) return@hostnameVerifier false
 
             try {

@@ -101,6 +101,9 @@ dependencies {
     // Security (Encrypted Storage)
     implementation(libs.security.crypto)
 
+    // DataStore (Preferences)
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+
     // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

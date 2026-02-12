@@ -23,7 +23,8 @@ object AppModule {
             AppDatabase::class.java,
             AppDatabase.DATABASE_NAME,
         )
-        .fallbackToDestructiveMigration(dropAllTables = true)
+        // Do NOT use fallbackToDestructiveMigration — it silently destroys all user data
+        // on schema changes. Add explicit Migration objects as the schema evolves.
         .build()
     }
 

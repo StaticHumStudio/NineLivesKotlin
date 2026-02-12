@@ -271,9 +271,10 @@ class SyncManager @Inject constructor(
         val now = System.currentTimeMillis()
         val timeSinceLastSync = now - lastSyncTimestamp
         val positionDelta = kotlin.math.abs(currentTime - lastSyncedTime)
+        val lastSyncedProgress = lastSyncedTime / duration.coerceAtLeast(1.0)
         val shouldSync = isFinished ||
                 (timeSinceLastSync >= MIN_SYNC_INTERVAL_MS &&
-                        (positionDelta >= MIN_POSITION_DELTA || progress - lastSyncedTime / (duration.coerceAtLeast(1.0)) >= MIN_PROGRESS_DELTA))
+                        (positionDelta >= MIN_POSITION_DELTA || (progress - lastSyncedProgress) >= MIN_PROGRESS_DELTA))
 
         if (shouldSync && connectivityMonitor.isOnline.value) {
             try {

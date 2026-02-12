@@ -25,8 +25,7 @@ class ApiService @Inject constructor(
         private set
 
     val isAuthenticated: Boolean
-        get() = !authInterceptor.let { true } // checked via token presence
-            .let { settingsManager.currentSettings.serverUrl.isNotEmpty() }
+        get() = authInterceptor.hasToken() && settingsManager.currentSettings.serverUrl.isNotEmpty()
 
     // ─── Auth ────────────────────────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.home
 
+import android.util.Log
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -38,6 +39,8 @@ import com.ninelivesaudio.app.ui.components.CosmicProgressRing
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.theme.*
 
+private const val TAG = "HomeScreen"
+
 @Composable
 fun HomeScreen(
     onNavigateToLibrary: () -> Unit = {},
@@ -54,12 +57,13 @@ fun HomeScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep),
+            .background(MaterialTheme.colorScheme.background),
     ) {
         // ─── Header ──────────────────────────────────────────────────────
         NineLivesHeader(
             totalListeningTime = uiState.totalListeningTimeText,
             connectionStatus = uiState.connectionStatus,
+            onSecretUnlocked = { viewModel.toggleUnhingedMode() },
         )
 
         // ─── Nine Lives List ─────────────────────────────────────────────
@@ -91,7 +95,11 @@ fun HomeScreen(
 private fun NineLivesHeader(
     totalListeningTime: String,
     connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
+    onSecretUnlocked: () -> Unit = {},
 ) {
+    var tapCount by remember { mutableStateOf(0) }
+    var lastTapTime by remember { mutableStateOf(0L) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -108,11 +116,34 @@ private fun NineLivesHeader(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Cosmic cat-eye logo
+        // Cosmic cat-eye logo - SECRET: Tap 9 times to unlock Unhinged Mode
         Image(
             painter = painterResource(R.drawable.nine_lives_logo),
             contentDescription = "Nine Lives Audio",
-            modifier = Modifier.size(72.dp),
+            modifier = Modifier
+                .size(72.dp)
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                ) {
+                    val currentTime = System.currentTimeMillis()
+                    // Reset if more than 2 seconds between taps
+                    if (currentTime - lastTapTime > 2000) {
+                        tapCount = 1
+                        Log.d(TAG, "NineLivesHeader: Tap counter reset (timeout). tapCount=1")
+                    } else {
+                        tapCount++
+                        Log.d(TAG, "NineLivesHeader: Logo tapped. tapCount=$tapCount")
+                    }
+                    lastTapTime = currentTime
+
+                    // Nine taps unlocks the Archive Beneath
+                    if (tapCount == 9) {
+                        Log.d(TAG, "NineLivesHeader: SECRET UNLOCKED! Calling onSecretUnlocked()")
+                        onSecretUnlocked()
+                        tapCount = 0
+                    }
+                },
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -347,7 +378,7 @@ private fun EmptyHomeState(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep),
+            .background(MaterialTheme.colorScheme.background),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -392,8 +423,8 @@ private fun EmptyHomeState(
         Button(
             onClick = onNavigateToLibrary,
             colors = ButtonDefaults.buttonColors(
-                containerColor = SigilGold,
-                contentColor = VoidDeep,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
             shape = RoundedCornerShape(12.dp),
         ) {

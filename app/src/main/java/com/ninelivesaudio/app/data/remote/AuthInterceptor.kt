@@ -22,6 +22,8 @@ class AuthInterceptor @Inject constructor(
         cachedToken = token
     }
 
+    fun hasToken(): Boolean = !cachedToken.isNullOrEmpty()
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
 

@@ -34,7 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.AudioBook
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
  * Library list item with a compact cover on the left and metadata/status on the right.
@@ -49,10 +49,10 @@ fun BookListItem(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
+        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = BorderStroke(1.dp, StrokeMuted),
+        border = BorderStroke(1.dp, ArchiveOutline),
     ) {
         Row(
             modifier = Modifier
@@ -65,7 +65,7 @@ fun BookListItem(
                 modifier = Modifier
                     .size(76.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(VoidElevated),
+                    .background(ArchiveVoidElevated),
             ) {
                 if (!book.coverPath.isNullOrEmpty()) {
                     AsyncImage(
@@ -85,7 +85,7 @@ fun BookListItem(
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.titleSmall,
-                    color = TextPrimary,
+                    color = ArchiveTextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -94,7 +94,7 @@ fun BookListItem(
                 Text(
                     text = book.author,
                     style = MaterialTheme.typography.bodySmall,
-                    color = TextMuted,
+                    color = ArchiveTextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -121,20 +121,20 @@ fun BookListItem(
                             .fillMaxWidth()
                             .height(4.dp)
                             .clip(RoundedCornerShape(2.dp)),
-                        color = AccentGold,
-                        trackColor = StrokeMuted,
+                        color = GoldFilament,
+                        trackColor = ArchiveOutline,
                     )
                     Text(
                         text = book.progressText,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                     )
                 }
             }
 
             if (book.isDownloaded) {
                 Surface(
-                    color = CosmicInfo.copy(alpha = 0.2f),
+                    color = ArchiveInfo.copy(alpha = 0.2f),
                     shape = RoundedCornerShape(999.dp),
                 ) {
                     Icon(
@@ -143,7 +143,7 @@ fun BookListItem(
                         modifier = Modifier
                             .padding(8.dp)
                             .size(16.dp),
-                        tint = CosmicInfo,
+                        tint = ArchiveInfo,
                     )
                 }
             }
@@ -157,17 +157,17 @@ private fun StatusTag(
     isHighlighted: Boolean,
 ) {
     Surface(
-        color = if (isHighlighted) SigilGold.copy(alpha = 0.16f) else VoidSurface,
+        color = if (isHighlighted) GoldFilament.copy(alpha = 0.16f) else ArchiveVoidSurface,
         shape = RoundedCornerShape(8.dp),
         border = BorderStroke(
             width = 1.dp,
-            color = if (isHighlighted) SigilGold.copy(alpha = 0.5f) else StrokeMuted,
+            color = if (isHighlighted) GoldFilament.copy(alpha = 0.5f) else ArchiveOutline,
         ),
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = if (isHighlighted) SigilGold else Mist,
+            color = if (isHighlighted) GoldFilament else ArchiveTextSecondary,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
         )
     }

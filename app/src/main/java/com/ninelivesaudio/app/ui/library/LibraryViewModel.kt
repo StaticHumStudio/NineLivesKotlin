@@ -17,6 +17,13 @@ import javax.inject.Inject
 enum class ViewMode { ALL, SERIES, AUTHOR, GENRE }
 enum class SortMode { DEFAULT, TITLE, AUTHOR, PROGRESS, RECENT_PROGRESS }
 
+enum class LibraryTab(val label: String) {
+    All("All"),
+    InProgress("In Progress"),
+    Completed("Completed"),
+    Downloaded("Downloaded"),
+}
+
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
@@ -39,6 +46,7 @@ class LibraryViewModel @Inject constructor(
         val sortMode: SortMode = SortMode.DEFAULT,
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
+        val selectedTab: LibraryTab = LibraryTab.All,
         val hideFinished: Boolean = false,
         val showDownloadedOnly: Boolean = false,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
@@ -175,6 +183,11 @@ class LibraryViewModel @Inject constructor(
         applyFilter()
     }
 
+    fun onLibraryTabChanged(tab: LibraryTab) {
+        _uiState.update { it.copy(selectedTab = tab) }
+        applyFilter()
+    }
+
     fun onHideFinishedChanged(value: Boolean) {
         _uiState.update { it.copy(hideFinished = value) }
         applyFilter()
@@ -243,6 +256,14 @@ class LibraryViewModel @Inject constructor(
                 ViewMode.GENRE -> filtered.filter { state.selectedGroupFilter in it.genres }
                 else -> filtered
             }
+        }
+
+        // Tab-based filtering
+        filtered = when (state.selectedTab) {
+            LibraryTab.All -> filtered
+            LibraryTab.InProgress -> filtered.filter { it.progress > 0 && !it.isFinished }
+            LibraryTab.Completed -> filtered.filter { it.isFinished || it.progressPercent >= 100.0 }
+            LibraryTab.Downloaded -> filtered.filter { it.isDownloaded }
         }
 
         // Hide finished

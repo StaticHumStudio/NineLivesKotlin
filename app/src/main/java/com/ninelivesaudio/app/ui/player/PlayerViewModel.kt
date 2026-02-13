@@ -58,6 +58,8 @@ class PlayerViewModel @Inject constructor(
         // Chapters
         val chapters: List<Chapter> = emptyList(),
         val currentChapterIndex: Int = -1,
+        val currentChapterPosition: Duration = Duration.ZERO,
+        val currentChapterDuration: Duration = Duration.ZERO,
 
         // Connection
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
@@ -137,6 +139,34 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // Observe chapter progress
+        viewModelScope.launch {
+            combine(
+                playbackManager.position,
+                playbackManager.currentChapter,
+            ) { position, chapter ->
+                if (chapter != null) {
+                    val chapterStart = chapter.startTime
+                    val chapterDuration = chapter.duration
+                    val chapterPosition = (position - chapterStart).coerceAtLeast(Duration.ZERO)
+
+                    _uiState.update {
+                        it.copy(
+                            currentChapterPosition = chapterPosition,
+                            currentChapterDuration = chapterDuration,
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            currentChapterPosition = Duration.ZERO,
+                            currentChapterDuration = Duration.ZERO,
+                        )
+                    }
+                }
+            }.collect()
+        }
+
         // Observe speed/volume
         viewModelScope.launch {
             playbackManager.speed.collect { spd ->
@@ -204,6 +234,18 @@ class PlayerViewModel @Inject constructor(
         val dur = _uiState.value.duration
         val target = (dur * fraction.toDouble())
         playbackManager.seekTo(target)
+    }
+
+    /** Seek within the current chapter by fraction (0–1). */
+    fun seekToChapterPosition(fraction: Float) {
+        val state = _uiState.value
+        val chapter = state.chapters.getOrNull(state.currentChapterIndex) ?: return
+        val chapterDur = state.currentChapterDuration
+        if (chapterDur <= Duration.ZERO) return
+
+        val targetInChapter = chapterDur * fraction.toDouble()
+        val absoluteTarget = chapter.startTime + targetInChapter
+        playbackManager.seekTo(absoluteTarget)
     }
 
     fun setSpeed(speed: Float) {

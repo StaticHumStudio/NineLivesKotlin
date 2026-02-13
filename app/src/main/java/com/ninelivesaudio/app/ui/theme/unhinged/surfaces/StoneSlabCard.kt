@@ -6,16 +6,12 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveOutline
-import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 import com.ninelivesaudio.app.ui.theme.unhinged.StoneSlab
-import com.ninelivesaudio.app.ui.theme.unhinged.isUnhingedThemeActive
 
 /**
  * Stone Slab Card — Surface Language Composable
@@ -42,30 +38,12 @@ fun StoneSlabCard(
     enabled: Boolean = true,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-
-    // Theme-dependent styling
-    val containerColor = if (isUnhinged) {
-        StoneSlab // Matte obsidian surface
-    } else {
-        MaterialTheme.colorScheme.surfaceContainer
-    }
-
-    val elevation = if (isUnhinged) {
-        1.dp // Low elevation - slabs sit close to the void
-    } else {
-        4.dp // Standard elevation for normal cards
-    }
-
-    val border = if (isUnhinged) {
-        BorderStroke(
-            width = 0.5.dp,
-            color = ArchiveOutline.copy(alpha = 0.3f)
-        )
-    } else {
-        null
-    }
+    val containerColor = StoneSlab
+    val elevation = 1.dp
+    val border = BorderStroke(
+        width = 0.5.dp,
+        color = ArchiveOutline.copy(alpha = 0.3f)
+    )
 
     if (onClick != null) {
         Card(

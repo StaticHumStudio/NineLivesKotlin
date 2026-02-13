@@ -24,7 +24,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.components.CosmicProgressRing
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.time.Duration
@@ -48,14 +50,14 @@ fun BookDetailScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = SigilGold,
+                            tint = GoldFilament,
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = VoidDeep),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ArchiveVoidDeep),
             )
         },
-        containerColor = VoidDeep,
+        containerColor = ArchiveVoidDeep,
     ) { innerPadding ->
         when {
             uiState.isLoading -> {
@@ -65,7 +67,7 @@ fun BookDetailScreen(
                         .padding(innerPadding),
                     contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator(color = SigilGold, strokeWidth = 2.dp)
+                    CircularProgressIndicator(color = GoldFilament, strokeWidth = 2.dp)
                 }
             }
             uiState.errorMessage != null -> {
@@ -77,7 +79,7 @@ fun BookDetailScreen(
                 ) {
                     Text(
                         text = uiState.errorMessage ?: "Error",
-                        color = CosmicError,
+                        color = ArchiveError,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -106,8 +108,8 @@ private fun BookDetailContent(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .background(VoidDeep),
-        contentPadding = PaddingValues(bottom = 100.dp), // Space for mini player
+            .background(ArchiveVoidDeep),
+        contentPadding = PaddingValues(bottom = 100.dp),
     ) {
         // ─── Cover + Core Metadata ──────────────────────────────────
         item {
@@ -117,20 +119,48 @@ private fun BookDetailContent(
                     .padding(horizontal = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // Large cover art
+                // Cover art with containment frame + progress ring
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(0.55f)
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(VoidElevated),
+                        .fillMaxWidth(0.6f)
+                        .aspectRatio(1f),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    if (!uiState.coverUrl.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = uiState.coverUrl,
-                            contentDescription = uiState.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
+                    // Cover image inset for ring clearance
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .padding(10.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(ArchiveVoidElevated),
+                    ) {
+                        if (!uiState.coverUrl.isNullOrEmpty()) {
+                            AsyncImage(
+                                model = uiState.coverUrl,
+                                contentDescription = uiState.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
+                    }
+
+                    // Containment frame overlay
+                    ContainmentFrame(
+                        modifier = Modifier.matchParentSize(),
+                        inset = 6.dp,
+                        cornerRadius = 12.dp,
+                    )
+
+                    // Progress ring overlay
+                    if (uiState.hasProgress) {
+                        CosmicProgressRing(
+                            progress = uiState.progress.coerceIn(0.0, 1.0).toFloat(),
+                            modifier = Modifier.matchParentSize().padding(2.dp),
+                            strokeWidth = 5.dp,
+                            progressColor = GoldFilament,
+                            trackColor = ArchiveOutline.copy(alpha = 0.3f),
+                            glowStrength = 0.35f,
+                            showEndCapDot = false,
                         )
                     }
                 }
@@ -141,7 +171,7 @@ private fun BookDetailContent(
                 Text(
                     text = uiState.title,
                     style = MaterialTheme.typography.headlineSmall,
-                    color = Starlight,
+                    color = ArchiveTextPrimary,
                     fontWeight = FontWeight.Bold,
                 )
 
@@ -151,7 +181,7 @@ private fun BookDetailContent(
                 Text(
                     text = "by ${uiState.author}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Mist,
+                    color = ArchiveTextSecondary,
                 )
 
                 // Narrator
@@ -160,7 +190,7 @@ private fun BookDetailContent(
                     Text(
                         text = "Narrated by $narrator",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                     )
                 }
 
@@ -175,12 +205,12 @@ private fun BookDetailContent(
                             Icons.Outlined.CollectionsBookmark,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = SigilGold,
+                            tint = GoldFilament,
                         )
                         Text(
                             text = series,
                             style = MaterialTheme.typography.bodySmall,
-                            color = SigilGold,
+                            color = GoldFilament,
                             fontWeight = FontWeight.Medium,
                         )
                     }
@@ -220,8 +250,8 @@ private fun BookDetailContent(
                             .fillMaxWidth()
                             .height(6.dp)
                             .clip(RoundedCornerShape(3.dp)),
-                        color = SigilGold,
-                        trackColor = ProgressTrack,
+                        color = GoldFilament,
+                        trackColor = ArchiveOutline.copy(alpha = 0.3f),
                     )
 
                     Spacer(modifier = Modifier.height(6.dp))
@@ -230,7 +260,7 @@ private fun BookDetailContent(
                     Text(
                         text = "${uiState.progressPercent}% complete (${formatDuration(currentDuration)} / ${formatDuration(uiState.duration)})",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Mist,
+                        color = ArchiveTextSecondary,
                     )
                 }
             }
@@ -243,7 +273,7 @@ private fun BookDetailContent(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                 ) {
                     Surface(
-                        color = CosmicInfo.copy(alpha = 0.15f),
+                        color = ArchiveInfo.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(8.dp),
                     ) {
                         Row(
@@ -255,12 +285,12 @@ private fun BookDetailContent(
                                 Icons.Outlined.CloudDownload,
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),
-                                tint = CosmicInfo,
+                                tint = ArchiveInfo,
                             )
                             Text(
                                 text = "Downloaded",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = CosmicInfo,
+                                color = ArchiveInfo,
                                 fontWeight = FontWeight.Medium,
                             )
                         }
@@ -282,8 +312,8 @@ private fun BookDetailContent(
                     onClick = onPlayBook,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = SigilGold,
-                        contentColor = VoidDeep,
+                        containerColor = GoldFilament,
+                        contentColor = ArchiveVoidDeep,
                     ),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
@@ -320,7 +350,7 @@ private fun BookDetailContent(
                     Text(
                         text = "Details",
                         style = MaterialTheme.typography.titleSmall,
-                        color = SigilGold,
+                        color = GoldFilament,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.sp,
                     )
@@ -328,7 +358,7 @@ private fun BookDetailContent(
                     Text(
                         text = desc,
                         style = MaterialTheme.typography.bodySmall,
-                        color = StarlightDim,
+                        color = ArchiveTextSecondary,
                         lineHeight = 20.sp,
                     )
                 }
@@ -340,12 +370,12 @@ private fun BookDetailContent(
             item {
                 HorizontalDivider(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    color = VoidElevated,
+                    color = ArchiveVoidElevated,
                 )
                 Text(
                     text = "Chapters (${uiState.chapters.size})",
                     style = MaterialTheme.typography.titleSmall,
-                    color = SigilGold,
+                    color = GoldFilament,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
@@ -379,9 +409,9 @@ private fun DownloadButton(
             OutlinedButton(
                 onClick = onDownload,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = CosmicInfo),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = ArchiveInfo),
                 border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(CosmicInfo.copy(alpha = 0.5f)),
+                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveInfo.copy(alpha = 0.5f)),
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
@@ -406,19 +436,19 @@ private fun DownloadButton(
                 enabled = false,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    disabledContentColor = Mist,
+                    disabledContentColor = ArchiveTextSecondary,
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
-                    color = Mist,
+                    color = ArchiveTextSecondary,
                     strokeWidth = 2.dp,
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Queued…",
+                    text = "Queued\u2026",
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp,
                 )
@@ -432,14 +462,14 @@ private fun DownloadButton(
                     enabled = false,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        disabledContentColor = CosmicInfo,
+                        disabledContentColor = ArchiveInfo,
                     ),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
                 ) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
-                        color = CosmicInfo,
+                        color = ArchiveInfo,
                         strokeWidth = 2.dp,
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -460,8 +490,8 @@ private fun DownloadButton(
                         .padding(top = 4.dp)
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = CosmicInfo,
-                    trackColor = VoidElevated,
+                    color = ArchiveInfo,
+                    trackColor = ArchiveVoidElevated,
                 )
             }
         }
@@ -470,9 +500,9 @@ private fun DownloadButton(
             OutlinedButton(
                 onClick = onDownload,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = SigilGold),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = GoldFilament),
                 border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(SigilGold.copy(alpha = 0.5f)),
+                    brush = androidx.compose.ui.graphics.SolidColor(GoldFilament.copy(alpha = 0.5f)),
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
@@ -484,7 +514,7 @@ private fun DownloadButton(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Paused — Tap to Retry",
+                    text = "Paused \u2014 Tap to Retry",
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp,
                 )
@@ -495,9 +525,9 @@ private fun DownloadButton(
             OutlinedButton(
                 onClick = onDeleteDownload,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = CosmicSuccess),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = ArchiveSuccess),
                 border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(CosmicSuccess.copy(alpha = 0.3f)),
+                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveSuccess.copy(alpha = 0.3f)),
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
@@ -533,12 +563,12 @@ private fun MetadataChip(
             imageVector = icon,
             contentDescription = null,
             modifier = Modifier.size(14.dp),
-            tint = MistFaint,
+            tint = ArchiveTextMuted,
         )
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
             fontSize = 12.sp,
         )
     }
@@ -561,14 +591,14 @@ private fun ChapterRow(
         Text(
             text = "$index",
             style = MaterialTheme.typography.labelMedium,
-            color = MistFaint,
+            color = ArchiveTextMuted,
             modifier = Modifier.width(28.dp),
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = chapter.title,
                 style = MaterialTheme.typography.bodySmall,
-                color = Starlight,
+                color = ArchiveTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -576,7 +606,7 @@ private fun ChapterRow(
         Text(
             text = formatDuration(chapter.duration),
             style = MaterialTheme.typography.labelSmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
         )
     }
 }

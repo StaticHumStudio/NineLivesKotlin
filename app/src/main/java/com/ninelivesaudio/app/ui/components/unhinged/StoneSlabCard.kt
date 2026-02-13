@@ -42,11 +42,7 @@ fun StoneSlabCard(
     elevation: Dp? = null,
     content: @Composable () -> Unit
 ) {
-    val settings = LocalUnhingedSettings.current
-    val isUnhinged = settings.isUnhinged
-
-    // Unhinged uses flatter elevation for "slab" feel
-    val cardElevation = elevation ?: if (isUnhinged) 1.dp else 2.dp
+    val cardElevation = elevation ?: 1.dp
 
     Card(
         modifier = modifier,
@@ -57,13 +53,8 @@ fun StoneSlabCard(
         elevation = CardDefaults.cardElevation(defaultElevation = cardElevation)
     ) {
         Box {
-            // Content layer
             content()
-
-            // Texture overlay (only in Unhinged mode)
-            if (isUnhinged) {
-                StoneTexture()
-            }
+            StoneTexture()
         }
     }
 }

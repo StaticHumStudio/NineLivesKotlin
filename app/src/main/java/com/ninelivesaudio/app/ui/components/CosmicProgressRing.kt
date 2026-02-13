@@ -140,7 +140,7 @@ fun CosmicProgressRing(
                 val radius = (diameter - strokePx) / 2f
                 val centerX = size.width / 2f
                 val centerY = size.height / 2f
-                val angleRad = Math.toRadians((-90f + sweepAngle).toDouble())
+                val angleRad = (-90f + sweepAngle).toDouble() * kotlin.math.PI / 180.0
 
                 // End cap position
                 val dotX = centerX + radius * cos(angleRad).toFloat()

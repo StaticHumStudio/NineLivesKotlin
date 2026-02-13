@@ -19,4 +19,7 @@ interface PendingProgressDao {
 
     @Query("DELETE FROM PendingProgressUpdates")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM PendingProgressUpdates WHERE Id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
 }

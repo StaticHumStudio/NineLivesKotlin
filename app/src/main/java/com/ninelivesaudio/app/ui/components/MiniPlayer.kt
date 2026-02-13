@@ -23,7 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.PlaybackState
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
  * Persistent mini player bar at the bottom of all screens.
@@ -54,7 +54,7 @@ fun MiniPlayer(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-            .background(VoidSurface),
+            .background(ArchiveVoidSurface),
     ) {
         // Progress bar at top
         LinearProgressIndicator(
@@ -62,8 +62,8 @@ fun MiniPlayer(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(2.dp),
-            color = SigilGold,
-            trackColor = ProgressTrack,
+            color = GoldFilament,
+            trackColor = ArchiveOutline.copy(alpha = 0.3f),
         )
 
         // Content row
@@ -80,7 +80,7 @@ fun MiniPlayer(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(VoidElevated),
+                    .background(ArchiveVoidElevated),
             ) {
                 if (!book.coverPath.isNullOrEmpty()) {
                     AsyncImage(
@@ -100,7 +100,7 @@ fun MiniPlayer(
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Starlight,
+                    color = ArchiveTextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -110,7 +110,7 @@ fun MiniPlayer(
                     Text(
                         text = ch.title,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontSize = 11.sp,
@@ -130,12 +130,12 @@ fun MiniPlayer(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(SigilGold),
+                    .background(GoldFilament),
             ) {
                 Icon(
                     imageVector = if (playbackState == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = if (playbackState == PlaybackState.PLAYING) "Pause" else "Play",
-                    tint = VoidDeep,
+                    tint = ArchiveVoidDeep,
                     modifier = Modifier.size(22.dp),
                 )
             }

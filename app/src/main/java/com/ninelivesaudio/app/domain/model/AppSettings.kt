@@ -15,11 +15,11 @@ data class AppSettings(
     val allowSelfSignedCertificates: Boolean = false,
     val diagnosticsMode: Boolean = false,
     val serverProfiles: List<ServerProfile> = emptyList(),
-    // Unhinged Mode settings (secret easter egg - tap logo 9 times)
-    val unhingedThemeEnabled: Boolean = false,
-    val anomaliesEnabled: Boolean = false,
-    val whispersEnabled: Boolean = false,
-    val copyMode: String = "Normal", // Normal, Ritual, or Unhinged
+    // Archive Beneath is permanent. There is no "normal" mode.
+    val unhingedThemeEnabled: Boolean = true,
+    val anomaliesEnabled: Boolean = true,
+    val whispersEnabled: Boolean = true,
+    val copyMode: String = "Unhinged", // Normal, Ritual, or Unhinged
 )
 
 @Serializable

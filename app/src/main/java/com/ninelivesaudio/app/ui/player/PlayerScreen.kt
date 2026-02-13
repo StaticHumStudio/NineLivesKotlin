@@ -1,5 +1,7 @@
 package com.ninelivesaudio.app.ui.player
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -26,7 +28,10 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.components.CosmicProgressRing
+import com.ninelivesaudio.app.ui.theme.unhinged.*
+import kotlin.time.Duration
 
 @Composable
 fun PlayerScreen(
@@ -39,137 +44,247 @@ fun PlayerScreen(
         return
     }
 
+    val animatedBookProgress by animateFloatAsState(
+        targetValue = uiState.progress.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 600),
+        label = "book_progress",
+    )
+
+    val chapterProgress = if (uiState.currentChapterDuration > Duration.ZERO) {
+        (uiState.currentChapterPosition.inWholeMilliseconds.toFloat() /
+         uiState.currentChapterDuration.inWholeMilliseconds.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+
+    val animatedChapterProgress by animateFloatAsState(
+        targetValue = chapterProgress,
+        animationSpec = tween(durationMillis = 400),
+        label = "chapter_progress",
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(ArchiveVoidDeep)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
         // ─── Source Badge ─────────────────────────────────────────────
         if (uiState.isLocalFile) {
             Surface(
-                color = CosmicInfo.copy(alpha = 0.15f),
+                color = ArchiveInfo.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(8.dp),
             ) {
                 Text(
                     text = "Playing from local file",
                     style = MaterialTheme.typography.labelSmall,
-                    color = CosmicInfo,
+                    color = ArchiveInfo,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
         }
 
-        // ─── Cover Art ────────────────────────────────────────────────
+        // ─── Cover Art with Cosmic Progress Ring ────────────────────
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.65f)
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(VoidElevated),
+                .fillMaxWidth(0.78f)
+                .aspectRatio(1f),
+            contentAlignment = Alignment.Center,
         ) {
-            if (!uiState.coverUrl.isNullOrEmpty()) {
-                AsyncImage(
-                    model = uiState.coverUrl,
-                    contentDescription = uiState.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
+            // Cover art — inset for ring clearance
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(14.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(ArchiveVoidElevated),
+            ) {
+                if (!uiState.coverUrl.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = uiState.coverUrl,
+                        contentDescription = uiState.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+            }
+
+            // Containment frame overlay
+            ContainmentFrame(
+                modifier = Modifier.matchParentSize(),
+                inset = 10.dp,
+                cornerRadius = 12.dp,
+            )
+
+            // Book progress ring — outer orbit
+            CosmicProgressRing(
+                progress = animatedBookProgress,
+                modifier = Modifier.matchParentSize().padding(2.dp),
+                strokeWidth = 6.dp,
+                progressColor = GoldFilament,
+                trackColor = ArchiveOutline.copy(alpha = 0.3f),
+                glowStrength = 0.4f,
+                showEndCapDot = false,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ─── Title / Author / Chapter with Chapter Halo Ring ────────
+        if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
+            // Chapter halo ring wrapping title/author block
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .aspectRatio(2.5f),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Chapter progress halo
+                CosmicProgressRing(
+                    progress = animatedChapterProgress,
+                    modifier = Modifier.matchParentSize(),
+                    strokeWidth = 3.dp,
+                    progressColor = ImpossibleAccent,
+                    trackColor = ArchiveOutline.copy(alpha = 0.15f),
+                    glowStrength = 0.3f,
+                    showEndCapDot = false,
                 )
+
+                // Title/Author content inside the halo
+                Column(
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    TitleAuthorBlock(uiState)
+                }
+            }
+        } else {
+            // No chapters — plain title/author
+            TitleAuthorBlock(uiState)
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ─── Chapter Seek Bar (Interactive) ─────────────────────────
+        if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                val chapterLabel = buildString {
+                    append("Chapter ${uiState.currentChapterIndex + 1} of ${uiState.chapters.size}")
+                    uiState.currentChapterTitle?.let { title ->
+                        append(": $title")
+                    }
+                }
+
+                Text(
+                    text = chapterLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ArchiveTextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                var isChapterDragging by remember { mutableStateOf(false) }
+                var chapterDragValue by remember { mutableFloatStateOf(0f) }
+
+                Slider(
+                    value = if (isChapterDragging) chapterDragValue else chapterProgress,
+                    onValueChange = { value ->
+                        isChapterDragging = true
+                        chapterDragValue = value
+                    },
+                    onValueChangeFinished = {
+                        viewModel.seekToChapterPosition(chapterDragValue)
+                        isChapterDragging = false
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = ImpossibleAccent,
+                        activeTrackColor = ImpossibleAccent,
+                        inactiveTrackColor = ArchiveOutline.copy(alpha = 0.3f),
+                    ),
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = formatDuration(uiState.currentChapterPosition),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted,
+                    )
+                    Text(
+                        text = formatDuration(uiState.currentChapterDuration),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted,
+                    )
+                }
+            }
+        } else {
+            // ─── No Chapters: Total Book Seek Bar ───────────────────
+            Column(modifier = Modifier.fillMaxWidth()) {
+                var isDragging by remember { mutableStateOf(false) }
+                var dragValue by remember { mutableFloatStateOf(0f) }
+
+                Slider(
+                    value = if (isDragging) dragValue else uiState.progress,
+                    onValueChange = { value ->
+                        isDragging = true
+                        dragValue = value
+                    },
+                    onValueChangeFinished = {
+                        viewModel.seekTo(dragValue)
+                        isDragging = false
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = GoldFilament,
+                        activeTrackColor = GoldFilament,
+                        inactiveTrackColor = ArchiveOutline.copy(alpha = 0.3f),
+                    ),
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = uiState.positionText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted,
+                    )
+                    Text(
+                        text = uiState.remainingText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted,
+                    )
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // ─── Title / Author / Chapter ─────────────────────────────────
-        Text(
-            text = uiState.title,
-            style = MaterialTheme.typography.titleLarge,
-            color = Starlight,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-        )
-
+        // ─── Total Book Progress (read-only text) ──────────────────
         Spacer(modifier = Modifier.height(4.dp))
-
         Text(
-            text = uiState.author,
-            style = MaterialTheme.typography.bodyMedium,
-            color = Mist,
+            text = "${uiState.positionText} / ${uiState.durationText}",
+            style = MaterialTheme.typography.labelSmall,
+            color = ArchiveTextMuted.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
         )
-
-        uiState.seriesName?.let { series ->
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = series,
-                style = MaterialTheme.typography.bodySmall,
-                color = SigilGold,
-                textAlign = TextAlign.Center,
-            )
-        }
-
-        uiState.currentChapterTitle?.let { chapter ->
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = chapter,
-                style = MaterialTheme.typography.bodySmall,
-                color = MistFaint,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // ─── Progress Slider ──────────────────────────────────────────
-        // Track drag state separately: update visual position during drag,
-        // but only seek the player when the user releases the thumb.
-        var isDragging by remember { mutableStateOf(false) }
-        var dragValue by remember { mutableFloatStateOf(0f) }
-
-        Slider(
-            value = if (isDragging) dragValue else uiState.progress,
-            onValueChange = { value ->
-                isDragging = true
-                dragValue = value
-            },
-            onValueChangeFinished = {
-                viewModel.seekTo(dragValue)
-                isDragging = false
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = SigilGold,
-                activeTrackColor = SigilGold,
-                inactiveTrackColor = ProgressTrack,
-            ),
-        )
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = uiState.positionText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MistFaint,
-            )
-            Text(
-                text = uiState.remainingText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MistFaint,
-            )
-        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -179,66 +294,67 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Previous track (placeholder)
-            IconButton(onClick = {}) {
+            IconButton(onClick = {
+                val prevIndex = uiState.currentChapterIndex - 1
+                if (prevIndex >= 0) viewModel.seekToChapter(prevIndex)
+            }) {
                 Icon(
                     Icons.Outlined.SkipPrevious,
-                    contentDescription = "Previous",
-                    tint = Mist,
+                    contentDescription = "Previous Chapter",
+                    tint = if (uiState.currentChapterIndex > 0) ArchiveTextSecondary else ArchiveTextMuted.copy(alpha = 0.4f),
                     modifier = Modifier.size(28.dp),
                 )
             }
 
-            // Skip backward 10s
             IconButton(onClick = viewModel::skipBackward) {
                 Icon(
                     Icons.Outlined.Replay10,
                     contentDescription = "Skip back 10s",
-                    tint = Starlight,
+                    tint = ArchiveTextPrimary,
                     modifier = Modifier.size(36.dp),
                 )
             }
 
-            // Play / Pause
             IconButton(
                 onClick = viewModel::playPause,
                 modifier = Modifier
                     .size(64.dp)
                     .clip(CircleShape)
-                    .background(SigilGold),
+                    .background(GoldFilament),
             ) {
                 if (uiState.isLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(28.dp),
-                        color = VoidDeep,
+                        color = ArchiveVoidDeep,
                         strokeWidth = 2.dp,
                     )
                 } else {
                     Icon(
                         imageVector = if (uiState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                        tint = VoidDeep,
+                        tint = ArchiveVoidDeep,
                         modifier = Modifier.size(32.dp),
                     )
                 }
             }
 
-            // Skip forward 30s
             IconButton(onClick = viewModel::skipForward) {
                 Icon(
                     Icons.Outlined.Forward30,
                     contentDescription = "Skip forward 30s",
-                    tint = Starlight,
+                    tint = ArchiveTextPrimary,
                     modifier = Modifier.size(36.dp),
                 )
             }
 
-            // Next track (placeholder)
-            IconButton(onClick = {}) {
+            IconButton(onClick = {
+                val nextIndex = uiState.currentChapterIndex + 1
+                if (nextIndex < uiState.chapters.size) viewModel.seekToChapter(nextIndex)
+            }) {
                 Icon(
                     Icons.Outlined.SkipNext,
-                    contentDescription = "Next",
-                    tint = Mist,
+                    contentDescription = "Next Chapter",
+                    tint = if (uiState.currentChapterIndex < uiState.chapters.size - 1) ArchiveTextSecondary else ArchiveTextMuted.copy(alpha = 0.4f),
                     modifier = Modifier.size(28.dp),
                 )
             }
@@ -252,14 +368,12 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Speed picker
             SpeedButton(
                 currentSpeed = uiState.speed,
                 options = viewModel.speedOptions,
                 onSpeedSelected = viewModel::setSpeed,
             )
 
-            // Sleep timer
             SleepTimerButton(
                 isActive = uiState.sleepTimerActive,
                 timerText = uiState.sleepTimerText,
@@ -267,20 +381,19 @@ fun PlayerScreen(
                 onTimerSelected = viewModel::setSleepTimer,
             )
 
-            // Volume (simplified for mobile — just a label)
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Icon(
                     Icons.AutoMirrored.Outlined.VolumeUp,
                     contentDescription = "Volume",
-                    tint = Mist,
+                    tint = ArchiveTextSecondary,
                     modifier = Modifier.size(22.dp),
                 )
                 Text(
                     text = "${(uiState.volume * 100).toInt()}%",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MistFaint,
+                    color = ArchiveTextMuted,
                     fontSize = 10.sp,
                 )
             }
@@ -292,12 +405,58 @@ fun PlayerScreen(
             Text(
                 text = uiState.sleepTimerText,
                 style = MaterialTheme.typography.labelSmall,
-                color = SigilGold,
+                color = GoldFilament,
                 textAlign = TextAlign.Center,
             )
         }
 
         Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+// ─── Title / Author Block ────────────────────────────────────────────────────
+
+@Composable
+private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
+    Text(
+        text = uiState.title,
+        style = MaterialTheme.typography.headlineMedium,
+        color = ArchiveTextPrimary,
+        fontWeight = FontWeight.Bold,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+    )
+
+    Spacer(modifier = Modifier.height(4.dp))
+
+    Text(
+        text = uiState.author,
+        style = MaterialTheme.typography.titleMedium,
+        color = ArchiveTextSecondary,
+        textAlign = TextAlign.Center,
+    )
+
+    uiState.seriesName?.let { series ->
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = series,
+            style = MaterialTheme.typography.bodyMedium,
+            color = GoldFilament,
+            textAlign = TextAlign.Center,
+        )
+    }
+
+    uiState.currentChapterTitle?.let { chapter ->
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = chapter,
+            style = MaterialTheme.typography.bodyMedium,
+            color = ArchiveTextMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -319,13 +478,13 @@ private fun SpeedButton(
             Icon(
                 Icons.Outlined.Speed,
                 contentDescription = "Speed",
-                tint = Mist,
+                tint = ArchiveTextSecondary,
                 modifier = Modifier.size(22.dp),
             )
             Text(
                 text = "${currentSpeed}x",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (currentSpeed != 1.0f) SigilGold else MistFaint,
+                color = if (currentSpeed != 1.0f) GoldFilament else ArchiveTextMuted,
                 fontSize = 10.sp,
             )
         }
@@ -333,14 +492,14 @@ private fun SpeedButton(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            containerColor = VoidSurface,
+            containerColor = ArchiveVoidSurface,
         ) {
             options.forEach { speed ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             "${speed}x",
-                            color = if (speed == currentSpeed) SigilGold else Starlight,
+                            color = if (speed == currentSpeed) GoldFilament else ArchiveTextPrimary,
                             fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal,
                         )
                     },
@@ -373,13 +532,13 @@ private fun SleepTimerButton(
             Icon(
                 Icons.Outlined.Bedtime,
                 contentDescription = "Sleep Timer",
-                tint = if (isActive) SigilGold else Mist,
+                tint = if (isActive) GoldFilament else ArchiveTextSecondary,
                 modifier = Modifier.size(22.dp),
             )
             Text(
                 text = if (isActive) "On" else "Off",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isActive) SigilGold else MistFaint,
+                color = if (isActive) GoldFilament else ArchiveTextMuted,
                 fontSize = 10.sp,
             )
         }
@@ -387,14 +546,14 @@ private fun SleepTimerButton(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            containerColor = VoidSurface,
+            containerColor = ArchiveVoidSurface,
         ) {
             options.forEach { minutes ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             text = if (minutes == null) "Off" else "$minutes min",
-                            color = Starlight,
+                            color = ArchiveTextPrimary,
                         )
                     },
                     onClick = {
@@ -407,14 +566,29 @@ private fun SleepTimerButton(
     }
 }
 
-// ─── Empty State ──────────────────────────────────────────────────────────
+// ─── Duration Formatting ──────────────────────────────────────────────────
+
+private fun formatDuration(duration: Duration): String {
+    val totalSeconds = duration.inWholeSeconds
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+
+    return if (hours > 0) {
+        "%02d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(minutes, seconds)
+    }
+}
+
+// ─── Empty State — "The Silence Holds" ───────────────────────────────────
 
 @Composable
 private fun EmptyPlayerState() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep),
+            .background(ArchiveVoidDeep),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -422,20 +596,20 @@ private fun EmptyPlayerState() {
             Icons.Outlined.Headphones,
             contentDescription = null,
             modifier = Modifier.size(72.dp),
-            tint = MistFaint,
+            tint = ArchiveTextMuted,
         )
         Spacer(modifier = Modifier.height(20.dp))
         Text(
-            text = "No Audiobook Playing",
+            text = "The Silence Holds",
             style = MaterialTheme.typography.titleMedium,
-            color = Starlight,
+            color = ArchiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Select a book from your Library to start listening",
+            text = "Choose a relic from the Archive to begin listening",
             style = MaterialTheme.typography.bodySmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
             textAlign = TextAlign.Center,
         )
     }

@@ -42,7 +42,7 @@ class SyncManager @Inject constructor(
     private val settingsManager: SettingsManager,
 ) {
     companion object {
-        private const val INITIAL_DELAY_MS = 3_000L          // 3 seconds for fast first sync
+        private const val INITIAL_DELAY_MS = 500L             // 0.5s — populate home screen fast
         private const val DEFAULT_SYNC_INTERVAL_MS = 300_000L // 5 minutes
         private const val MIN_SYNC_INTERVAL_MS = 30_000L     // 30 seconds between position pushes
         private const val MIN_POSITION_DELTA = 2.0            // seconds
@@ -54,7 +54,8 @@ class SyncManager @Inject constructor(
 
     // Sync state
     private var syncJob: Job? = null
-    private var activeItemId: String? = null
+    private var connectivityJob: Job? = null
+    @Volatile private var activeItemId: String? = null
 
     // Throttle state for position reporting
     private var lastSyncedTime: Double = 0.0
@@ -89,7 +90,8 @@ class SyncManager @Inject constructor(
         }
 
         // Also flush offline queue when connectivity returns
-        scope.launch {
+        connectivityJob?.cancel()
+        connectivityJob = scope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
                 if (status == ConnectivityMonitor.ConnectionStatus.CONNECTED) {
                     flushOfflineQueue()
@@ -98,10 +100,12 @@ class SyncManager @Inject constructor(
         }
     }
 
-    /** Stop the periodic sync timer. */
+    /** Stop the periodic sync timer and connectivity listener. */
     fun stop() {
         syncJob?.cancel()
         syncJob = null
+        connectivityJob?.cancel()
+        connectivityJob = null
     }
 
     // ─── Sync Operations ─────────────────────────────────────────────────────
@@ -120,11 +124,10 @@ class SyncManager @Inject constructor(
             _isSyncing.value = true
             connectivityMonitor.setSyncing(true)
 
-            // Run library sync and progress sync in parallel
-            coroutineScope {
-                launch { syncLibraries() }
-                launch { syncProgress() }
-            }
+            // Progress sync FIRST — this populates the home screen grid immediately.
+            // Library sync runs after (heavier, fetches all book metadata).
+            syncProgress()
+            syncLibraries()
 
             _syncCompleted.tryEmit(Unit)
         } catch (e: Exception) {

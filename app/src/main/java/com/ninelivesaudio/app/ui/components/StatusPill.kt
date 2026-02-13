@@ -22,7 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
  * Connection status indicator pill, matching the Windows app's status dot + label.
@@ -34,10 +34,10 @@ fun StatusPill(
     modifier: Modifier = Modifier,
 ) {
     val (label, dotColor) = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> "Connected" to CosmicSuccess
-        ConnectionStatus.SYNCING -> "Syncing" to SigilGold
-        ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to CosmicWarning
-        ConnectionStatus.OFFLINE -> "Offline" to MistFaint
+        ConnectionStatus.CONNECTED -> "Connected" to ArchiveSuccess
+        ConnectionStatus.SYNCING -> "Syncing" to GoldFilament
+        ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to ArchiveWarning
+        ConnectionStatus.OFFLINE -> "Offline" to ArchiveTextMuted
     }
 
     val animatedDotColor by animateColorAsState(
@@ -49,7 +49,7 @@ fun StatusPill(
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
-            .background(VoidSurface)
+            .background(ArchiveVoidSurface)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),

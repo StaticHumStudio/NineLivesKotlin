@@ -5,7 +5,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -18,21 +17,17 @@ import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.animation.unhinged.motion.MotionTokens
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 import com.ninelivesaudio.app.ui.theme.unhinged.*
-import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
  * Sigil Progress — Circular Progress Indicator with Subtle Life
  *
- * An animated variant of circular progress that feels alive in unhinged mode:
- * - Very slow rotation drift (0.5-1° per second, barely noticeable)
+ * Atmospheric animated circular progress:
+ * - Very slow rotation drift (0.5-1 deg per second, barely noticeable)
  * - "Filament shimmer" — thin highlight crawling along the progress arc
  * - Gentle breathing opacity during active playback
- *
- * **Normal mode**: Standard circular progress indicator
- * **Unhinged mode**: Atmospheric animated version
- * **Reduce motion**: Static version (no rotation, no shimmer)
+ * - **Reduce motion**: Static version (no rotation, no shimmer)
  *
  * @param progress Current progress (0f to 1f)
  * @param modifier Modifier for this indicator
@@ -48,26 +43,21 @@ fun SigilProgress(
     strokeWidth: Dp = 4.dp,
     isActive: Boolean = false
 ) {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-    val reduceMotion = unhingedSettings.reduceMotionRequested
+    val reduceMotion = LocalUnhingedSettings.current.reduceMotionRequested
 
-    // Colors
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val progressColor = if (isUnhinged) GoldFilament else MaterialTheme.colorScheme.primary
-    val shimmerColor = if (isUnhinged) GoldFilamentBright else MaterialTheme.colorScheme.primary
+    val progressColor = GoldFilament
+    val shimmerColor = GoldFilamentBright
 
-    // Animations (only in unhinged mode with motion enabled)
     val infiniteTransition = rememberInfiniteTransition(label = "sigil_infinite")
 
-    // Very slow rotation drift (0.5° per second = 720s for full rotation)
-    val rotationDrift by if (isUnhinged && !reduceMotion) {
+    val rotationDrift by if (!reduceMotion) {
         infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = 360f,
             animationSpec = infiniteRepeatable(
                 animation = tween(
-                    durationMillis = 720_000, // 12 minutes for full rotation
+                    durationMillis = 720_000,
                     easing = LinearEasing
                 ),
                 repeatMode = RepeatMode.Restart
@@ -78,14 +68,13 @@ fun SigilProgress(
         remember { mutableStateOf(0f) }
     }
 
-    // Shimmer position (light crawling along arc)
-    val shimmerPosition by if (isUnhinged && !reduceMotion && progress > 0f) {
+    val shimmerPosition by if (!reduceMotion && progress > 0f) {
         infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
                 animation = tween(
-                    durationMillis = MotionTokens.DurationUltraSlow * 2, // 6 seconds
+                    durationMillis = MotionTokens.DurationUltraSlow * 2,
                     easing = LinearEasing
                 ),
                 repeatMode = RepeatMode.Restart
@@ -96,8 +85,7 @@ fun SigilProgress(
         remember { mutableStateOf(0f) }
     }
 
-    // Breathing opacity (gentle pulse during active playback)
-    val breathingAlpha by if (isUnhinged && !reduceMotion && isActive) {
+    val breathingAlpha by if (!reduceMotion && isActive) {
         infiniteTransition.animateFloat(
             initialValue = 0.85f,
             targetValue = 1f,
@@ -124,9 +112,7 @@ fun SigilProgress(
         val radius = (diameter - stroke) / 2
         val centerOffset = Offset(diameter / 2, diameter / 2)
 
-        // Apply rotation drift
         rotate(rotationDrift, centerOffset) {
-            // Background track
             drawCircle(
                 color = trackColor,
                 radius = radius,
@@ -134,7 +120,6 @@ fun SigilProgress(
                 style = Stroke(width = stroke)
             )
 
-            // Progress arc
             if (progress > 0f) {
                 val sweepAngle = 360f * progress.coerceIn(0f, 1f)
 
@@ -152,15 +137,12 @@ fun SigilProgress(
                     alpha = breathingAlpha
                 )
 
-                // Filament shimmer (only in unhinged mode with motion)
-                if (isUnhinged && !reduceMotion) {
-                    // Calculate shimmer position along the arc
+                if (!reduceMotion) {
                     val shimmerAngle = -90f + (sweepAngle * shimmerPosition)
-                    val shimmerRad = Math.toRadians(shimmerAngle.toDouble())
+                    val shimmerRad = shimmerAngle.toDouble() * kotlin.math.PI / 180.0
                     val shimmerX = centerOffset.x + radius * cos(shimmerRad).toFloat()
                     val shimmerY = centerOffset.y + radius * sin(shimmerRad).toFloat()
 
-                    // Draw shimmer highlight (small glowing circle)
                     drawCircle(
                         color = shimmerColor,
                         radius = stroke * 0.8f,
@@ -168,7 +150,6 @@ fun SigilProgress(
                         alpha = 0.6f
                     )
 
-                    // Shimmer glow (outer)
                     drawCircle(
                         color = shimmerColor,
                         radius = stroke * 1.4f,
@@ -185,7 +166,7 @@ fun SigilProgress(
  * Sigil Progress Bar — Linear Progress with Filament Shimmer
  *
  * Linear version of SigilProgress for horizontal progress bars.
- * Shows gentle shimmer crawling along the progress bar in unhinged mode.
+ * Shows gentle shimmer crawling along the progress bar.
  *
  * @param progress Current progress (0f to 1f)
  * @param modifier Modifier for this indicator
@@ -199,19 +180,15 @@ fun SigilProgressBar(
     height: Dp = 4.dp,
     isActive: Boolean = false
 ) {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-    val reduceMotion = unhingedSettings.reduceMotionRequested
+    val reduceMotion = LocalUnhingedSettings.current.reduceMotionRequested
 
-    // Colors
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val progressColor = if (isUnhinged) GoldFilament else MaterialTheme.colorScheme.primary
-    val shimmerColor = if (isUnhinged) GoldFilamentBright else MaterialTheme.colorScheme.primary
-    val accentColor = if (isUnhinged) ImpossibleAccent.copy(alpha = 0.3f) else null
+    val progressColor = GoldFilament
+    val shimmerColor = GoldFilamentBright
+    val accentColor = ImpossibleAccent.copy(alpha = 0.3f)
 
-    // Shimmer animation
     val infiniteTransition = rememberInfiniteTransition(label = "bar_shimmer")
-    val shimmerPosition by if (isUnhinged && !reduceMotion && progress > 0f) {
+    val shimmerPosition by if (!reduceMotion && progress > 0f) {
         infiniteTransition.animateFloat(
             initialValue = -0.2f,
             targetValue = 1.2f,
@@ -228,8 +205,7 @@ fun SigilProgressBar(
         remember { mutableStateOf(0f) }
     }
 
-    // Breathing opacity
-    val breathingAlpha by if (isUnhinged && !reduceMotion && isActive) {
+    val breathingAlpha by if (!reduceMotion && isActive) {
         infiniteTransition.animateFloat(
             initialValue = 0.85f,
             targetValue = 1f,
@@ -253,18 +229,15 @@ fun SigilProgressBar(
         val barHeight = height.toPx()
         val barWidth = size.width
 
-        // Background track
         drawRect(
             color = trackColor,
             topLeft = Offset.Zero,
             size = Size(barWidth, barHeight)
         )
 
-        // Progress bar
         if (progress > 0f) {
             val progressWidth = barWidth * progress.coerceIn(0f, 1f)
 
-            // Main progress
             drawRect(
                 color = progressColor,
                 topLeft = Offset.Zero,
@@ -272,17 +245,13 @@ fun SigilProgressBar(
                 alpha = breathingAlpha
             )
 
-            // Impossible accent overlay (thin line on top)
-            if (accentColor != null) {
-                drawRect(
-                    color = accentColor,
-                    topLeft = Offset(0f, barHeight - 1.dp.toPx()),
-                    size = Size(progressWidth, 1.dp.toPx())
-                )
-            }
+            drawRect(
+                color = accentColor,
+                topLeft = Offset(0f, barHeight - 1.dp.toPx()),
+                size = Size(progressWidth, 1.dp.toPx())
+            )
 
-            // Shimmer highlight
-            if (isUnhinged && !reduceMotion && shimmerPosition in 0f..1f) {
+            if (!reduceMotion && shimmerPosition in 0f..1f) {
                 val shimmerX = progressWidth * shimmerPosition
                 val shimmerWidth = 30.dp.toPx()
 
@@ -298,10 +267,13 @@ fun SigilProgressBar(
                     endX = shimmerX + shimmerWidth / 2
                 )
 
+                // Clip to progressWidth so shimmer doesn't bleed into the
+                // unfilled track area. Previous code used barWidth here which
+                // caused the gradient tail to render past the progress fill.
                 drawRect(
                     brush = shimmerBrush,
                     topLeft = Offset.Zero,
-                    size = Size(barWidth, barHeight)
+                    size = Size(progressWidth, barHeight)
                 )
             }
         }

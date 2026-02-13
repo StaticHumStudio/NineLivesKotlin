@@ -1,12 +1,14 @@
 package com.ninelivesaudio.app.ui.library
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -16,15 +18,26 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.ninelivesaudio.app.ui.components.BookListItem
+import coil.compose.AsyncImage
+import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.components.CornerSigils
+import com.ninelivesaudio.app.ui.components.CosmicProgressRing
 import com.ninelivesaudio.app.ui.components.StatusPill
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
+import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,70 +47,66 @@ fun LibraryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+    AnomalyHost(
+        currentContext = AnomalyTriggerContext.LIBRARY,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // ─── Header ───────────────────────────────────────────────────
-        LibraryHeader(uiState)
-
-        // ─── Search Bar ───────────────────────────────────────────────
-        SearchBar(
-            query = uiState.searchQuery,
-            onQueryChange = viewModel::onSearchQueryChanged,
-        )
-
-        // ─── Library Picker + View Mode Chips ─────────────────────────
-        LibraryToolbar(
-            uiState = uiState,
-            onLibrarySelected = viewModel::onLibrarySelected,
-            onViewModeChanged = viewModel::onViewModeChanged,
-        )
-
-        // ─── Group Filter Chips (when in Series/Author/Genre mode) ────
-        AnimatedVisibility(
-            visible = uiState.viewMode != ViewMode.ALL && uiState.availableGroups.isNotEmpty()
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ArchiveVoidDeep)
         ) {
-            GroupFilterRow(
-                groups = uiState.availableGroups,
-                selected = uiState.selectedGroupFilter,
-                onSelected = viewModel::onGroupFilterSelected,
+            // ─── Header ───────────────────────────────────────────────────
+            ArchiveHeader(uiState)
+
+            // ─── Search Bar ───────────────────────────────────────────────
+            RelicSearchBar(
+                query = uiState.searchQuery,
+                onQueryChange = viewModel::onSearchQueryChanged,
             )
-        }
 
-        // ─── Content ──────────────────────────────────────────────────
-        PullToRefreshBox(
-            isRefreshing = uiState.isRefreshing,
-            onRefresh = viewModel::refresh,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            when {
-                uiState.isLoading && uiState.filteredBooks.isEmpty() -> {
-                    LoadingState()
-                }
-                uiState.filteredBooks.isEmpty() -> {
-                    EmptyState(uiState)
-                }
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = 12.dp,
-                            end = 12.dp,
-                            top = 8.dp,
-                            bottom = 100.dp, // Space for mini player / nav bar
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        items(
-                            items = uiState.filteredBooks,
-                            key = { it.id },
-                        ) { book ->
-                            BookListItem(
-                                book = book,
-                                onClick = { onNavigateToBookDetail(book.id) },
-                            )
+            // ─── Stone Tabs ─────────────────────────────────────────────
+            StoneTabsRow(
+                selectedTab = uiState.selectedTab,
+                onTabSelected = viewModel::onLibraryTabChanged,
+            )
+
+            // ─── Content ──────────────────────────────────────────────────
+            PullToRefreshBox(
+                isRefreshing = uiState.isRefreshing,
+                onRefresh = viewModel::refresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                when {
+                    uiState.isLoading && uiState.filteredBooks.isEmpty() -> {
+                        LoadingState()
+                    }
+                    uiState.filteredBooks.isEmpty() -> {
+                        EmptyState(uiState)
+                    }
+                    else -> {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 8.dp,
+                                bottom = 100.dp,
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            itemsIndexed(
+                                items = uiState.filteredBooks,
+                                key = { _, book -> book.id },
+                            ) { index, book ->
+                                ArchiveBookTile(
+                                    book = book,
+                                    index = index,
+                                    onClick = { onNavigateToBookDetail(book.id) },
+                                )
+                            }
                         }
                     }
                 }
@@ -106,261 +115,244 @@ fun LibraryScreen(
     }
 }
 
-// ─── Header ───────────────────────────────────────────────────────────────
+// ─── Archive Header ──────────────────────────────────────────────────────
 
 @Composable
-private fun LibraryHeader(uiState: LibraryViewModel.UiState) {
+private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
+    val subtitle = CopyEngine.getSubtitle(
+        CopyStyleGuide.Library.LIBRARY_NAV_RITUAL,
+        CopyStyleGuide.Library.LIBRARY_NAV_UNHINGED,
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
+            .background(ArchiveVoidDeep)
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "Library",
-            style = MaterialTheme.typography.headlineMedium,
-            color = Starlight,
-            fontWeight = FontWeight.Bold,
-        )
+        Column {
+            Text(
+                text = "The Archive",
+                style = MaterialTheme.typography.headlineMedium,
+                color = ArchiveTextPrimary,
+                fontWeight = FontWeight.Bold,
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                )
+            }
+        }
         Spacer(modifier = Modifier.weight(1f))
         StatusPill(connectionStatus = uiState.connectionStatus)
     }
 }
 
-// ─── Search Bar ───────────────────────────────────────────────────────────
+// ─── Relic Search Bar ────────────────────────────────────────────────────
 
 @Composable
-private fun SearchBar(
+private fun RelicSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
 ) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp),
-        placeholder = {
-            Text("Search books...", color = MistFaint)
-        },
-        leadingIcon = {
-            Icon(
-                Icons.Outlined.Search,
-                contentDescription = null,
-                tint = Mist,
-                modifier = Modifier.size(20.dp),
-            )
-        },
-        trailingIcon = if (query.isNotEmpty()) {
-            {
-                IconButton(onClick = { onQueryChange("") }) {
-                    Icon(
-                        Icons.Outlined.Clear,
-                        contentDescription = "Clear search",
-                        tint = MistFaint,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-        } else null,
-        singleLine = true,
         shape = RoundedCornerShape(12.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = SigilGold,
-            unfocusedBorderColor = VoidElevated,
-            focusedContainerColor = VoidSurface,
-            unfocusedContainerColor = VoidSurface,
-            focusedTextColor = Starlight,
-            unfocusedTextColor = Starlight,
-            cursorColor = SigilGold,
-        ),
-    )
+        color = ArchiveVoidSurface,
+        border = BorderStroke(1.dp, ArchiveOutline),
+        shadowElevation = 2.dp,
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = {
+                Text(
+                    CopyEngine.getSearchHint(
+                        CopyStyleGuide.Search.SEARCH_HINT_NORMAL,
+                        CopyStyleGuide.Search.SEARCH_HINT_RITUAL,
+                        CopyStyleGuide.Search.SEARCH_HINT_UNHINGED,
+                    ),
+                    color = ArchiveTextMuted,
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Outlined.Search,
+                    contentDescription = null,
+                    tint = ArchiveTextSecondary,
+                    modifier = Modifier.size(20.dp),
+                )
+            },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(
+                            Icons.Outlined.Clear,
+                            contentDescription = "Clear search",
+                            tint = ArchiveTextMuted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            } else null,
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = GoldFilament,
+                unfocusedBorderColor = ArchiveOutline.copy(alpha = 0f),
+                focusedContainerColor = ArchiveVoidSurface,
+                unfocusedContainerColor = ArchiveVoidSurface,
+                focusedTextColor = ArchiveTextPrimary,
+                unfocusedTextColor = ArchiveTextPrimary,
+                cursorColor = GoldFilament,
+            ),
+        )
+    }
 }
 
-// ─── Library Picker + View Mode Chips ─────────────────────────────────────
+// ─── Stone Tabs Row ──────────────────────────────────────────────────────
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LibraryToolbar(
-    uiState: LibraryViewModel.UiState,
-    onLibrarySelected: (com.ninelivesaudio.app.domain.model.Library) -> Unit,
-    onViewModeChanged: (ViewMode) -> Unit,
+private fun StoneTabsRow(
+    selectedTab: LibraryTab,
+    onTabSelected: (LibraryTab) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Library picker dropdown
-        if (uiState.libraries.size > 1) {
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = it },
+        LibraryTab.entries.forEach { tab ->
+            val isSelected = tab == selectedTab
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onTabSelected(tab) },
+                shape = RoundedCornerShape(10.dp),
+                color = if (isSelected) GoldFilamentFaint else ArchiveVoidSurface,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isSelected) GoldFilament.copy(alpha = 0.6f) else ArchiveOutline,
+                ),
             ) {
-                Surface(
-                    modifier = Modifier
-                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                        .clip(RoundedCornerShape(8.dp)),
-                    color = VoidSurface,
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            text = uiState.selectedLibrary?.name ?: "Select Library",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Starlight,
-                        )
-                        Icon(
-                            if (expanded) Icons.Outlined.KeyboardArrowUp
-                            else Icons.Outlined.KeyboardArrowDown,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = Mist,
-                        )
-                    }
-                }
-
-                ExposedDropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                    containerColor = VoidSurface,
-                ) {
-                    uiState.libraries.forEach { library ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    library.name,
-                                    color = if (library.id == uiState.selectedLibrary?.id)
-                                        SigilGold else Starlight,
-                                )
-                            },
-                            onClick = {
-                                onLibrarySelected(library)
-                                expanded = false
-                            },
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.weight(1f))
-
-        // View mode filter chips
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            ViewMode.entries.forEach { mode ->
-                val label = when (mode) {
-                    ViewMode.ALL -> "All"
-                    ViewMode.SERIES -> "Series"
-                    ViewMode.AUTHOR -> "Authors"
-                    ViewMode.GENRE -> "Genres"
-                }
-                val selected = uiState.viewMode == mode
-
-                FilterChip(
-                    selected = selected,
-                    onClick = { onViewModeChanged(mode) },
-                    label = {
-                        Text(
-                            text = label,
-                            fontSize = 11.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        containerColor = VoidSurface,
-                        labelColor = Mist,
-                        selectedContainerColor = SigilGoldFaint,
-                        selectedLabelColor = SigilGold,
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = selected,
-                        borderColor = VoidElevated,
-                        selectedBorderColor = SigilGold.copy(alpha = 0.5f),
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.height(32.dp),
+                Text(
+                    text = tab.label,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) GoldFilament else ArchiveTextSecondary,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    fontSize = 11.sp,
                 )
             }
         }
     }
 }
 
-// ─── Group Filter Row (horizontal scroll) ─────────────────────────────────
+// ─── Archive Book Tile ───────────────────────────────────────────────────
 
 @Composable
-private fun GroupFilterRow(
-    groups: List<String>,
-    selected: String?,
-    onSelected: (String?) -> Unit,
+private fun ArchiveBookTile(
+    book: AudioBook,
+    index: Int,
+    onClick: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        // "All" chip to clear filter
-        FilterChip(
-            selected = selected == null,
-            onClick = { onSelected(null) },
-            label = { Text("All", fontSize = 11.sp) },
-            colors = FilterChipDefaults.filterChipColors(
-                containerColor = VoidSurface,
-                labelColor = Mist,
-                selectedContainerColor = SigilGoldFaint,
-                selectedLabelColor = SigilGold,
-            ),
-            border = FilterChipDefaults.filterChipBorder(
-                enabled = true,
-                selected = selected == null,
-                borderColor = VoidElevated,
-                selectedBorderColor = SigilGold.copy(alpha = 0.5f),
-            ),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.height(30.dp),
-        )
+    val progress = book.progress.toFloat().coerceIn(0f, 1f)
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = tween(durationMillis = 800),
+        label = "lib_progress_$index",
+    )
 
-        groups.forEach { group ->
-            FilterChip(
-                selected = group == selected,
-                onClick = { onSelected(if (group == selected) null else group) },
-                label = {
-                    Text(
-                        text = group,
-                        fontSize = 11.sp,
-                        maxLines = 1,
+    // Deterministic misalignment: tile at index 3 gets offset
+    val misalignOffset = if (index == 3) IntOffset(2, -3) else IntOffset.Zero
+
+    Column(
+        modifier = Modifier
+            .offset { misalignOffset }
+            .clickable(onClick = onClick),
+    ) {
+        // Cover art box
+        Box(
+            modifier = Modifier
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Cover image
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(ArchiveVoidElevated),
+            ) {
+                if (!book.coverPath.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = book.coverPath,
+                        contentDescription = book.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
                     )
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    containerColor = VoidSurface,
-                    labelColor = Mist,
-                    selectedContainerColor = SigilGoldFaint,
-                    selectedLabelColor = SigilGold,
-                ),
-                border = FilterChipDefaults.filterChipBorder(
-                    enabled = true,
-                    selected = group == selected,
-                    borderColor = VoidElevated,
-                    selectedBorderColor = SigilGold.copy(alpha = 0.5f),
-                ),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.height(30.dp),
+                }
+            }
+
+            // Containment frame
+            ContainmentFrame(
+                modifier = Modifier.matchParentSize(),
+                inset = 2.dp,
+                cornerRadius = 14.dp,
+            )
+
+            // Progress ring
+            CosmicProgressRing(
+                progress = animatedProgress,
+                modifier = Modifier.matchParentSize().padding(3.dp),
+                strokeWidth = 4.dp,
+                progressColor = GoldFilament,
+                trackColor = ArchiveOutline.copy(alpha = 0.3f),
+                glowStrength = 0.4f,
+                showEndCapDot = false,
+            )
+
+            // Corner sigils
+            CornerSigils(
+                downloaded = book.isDownloaded,
+                bookmarked = false,
+                modifier = Modifier.matchParentSize(),
             )
         }
+
+        // Title + Author below the tile
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Text(
+            text = book.title,
+            style = MaterialTheme.typography.bodySmall,
+            color = ArchiveTextPrimary,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 16.sp,
+        )
+
+        Text(
+            text = book.author,
+            style = MaterialTheme.typography.labelSmall,
+            color = ArchiveTextMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontSize = 11.sp,
+        )
     }
 }
 
@@ -373,7 +365,7 @@ private fun LoadingState() {
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator(
-            color = SigilGold,
+            color = GoldFilament,
             strokeWidth = 2.dp,
         )
     }
@@ -383,15 +375,27 @@ private fun LoadingState() {
 
 @Composable
 private fun EmptyState(uiState: LibraryViewModel.UiState) {
+    val emptyFlavor = CopyEngine.getEmptyStateFlavor(
+        CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
+        CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
+    )
+    val searchFlavor = CopyEngine.getEmptyStateFlavor(
+        CopyStyleGuide.EmptyStates.EMPTY_SEARCH_RITUAL,
+        CopyStyleGuide.EmptyStates.EMPTY_SEARCH_UNHINGED,
+    )
+
     val (title, subtitle) = when {
         uiState.searchQuery.isNotBlank() ->
-            "No Results" to "No books match \"${uiState.searchQuery}\". Try a different search."
+            CopyStyleGuide.Search.NO_RESULTS to (searchFlavor ?: "Nothing in the Archive matches \"${uiState.searchQuery}\".")
         uiState.connectionStatus == com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus.OFFLINE ->
-            "Not Connected" to "Connect to your AudioBookshelf server in Settings."
+            "The Archive Is Sealed" to (CopyEngine.getEmptyStateFlavor(
+                "Connection lost. Check your network.",
+                CopyStyleGuide.Errors.CONNECTION_ERROR_UNHINGED,
+            ) ?: "Connect to your AudioBookshelf server in Settings.")
         uiState.allBooks.isEmpty() ->
-            "Library Empty" to "Your library has no books yet. Add some on your server."
+            "The Archive Stands Empty" to (emptyFlavor ?: "No artifacts have been catalogued yet.")
         else ->
-            "No Books Found" to "Try changing your filters."
+            "No Relics Match" to "Try adjusting your filters."
     }
 
     Column(
@@ -403,20 +407,20 @@ private fun EmptyState(uiState: LibraryViewModel.UiState) {
             Icons.Outlined.AutoStories,
             contentDescription = null,
             modifier = Modifier.size(64.dp),
-            tint = MistFaint,
+            tint = ArchiveTextMuted,
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
-            color = Starlight,
+            color = ArchiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodySmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp),
         )

@@ -3,9 +3,6 @@ package com.ninelivesaudio.app.ui.components.unhinged
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.DividerDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -42,23 +39,10 @@ fun FilamentDivider(
     thickness: Dp = 1.dp,
     color: Color? = null
 ) {
-    val settings = LocalUnhingedSettings.current
-    val isUnhinged = settings.isUnhinged
-
-    if (isUnhinged) {
-        // Unhinged: Gold filament with subtle glow
-        FilamentGlowDivider(
-            modifier = modifier,
-            thickness = thickness
-        )
-    } else {
-        // Normal: Standard Material3 divider
-        HorizontalDivider(
-            modifier = modifier,
-            thickness = thickness,
-            color = color ?: DividerDefaults.color
-        )
-    }
+    FilamentGlowDivider(
+        modifier = modifier,
+        thickness = thickness
+    )
 }
 
 /**

@@ -26,7 +26,9 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.StatusPill
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
 fun SettingsScreen(
@@ -37,7 +39,7 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep)
+            .background(ArchiveVoidDeep)
     ) {
         // ─── Page Header ──────────────────────────────────────────────
         SettingsHeader(uiState)
@@ -72,7 +74,7 @@ fun SettingsScreen(
 
             // Connection status card
             Card(
-                colors = CardDefaults.cardColors(containerColor = VoidSurface),
+                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Row(
@@ -87,7 +89,7 @@ fun SettingsScreen(
                     Text(
                         text = uiState.connectionStatusText,
                         style = MaterialTheme.typography.bodySmall,
-                        color = Mist,
+                        color = ArchiveTextSecondary,
                     )
                 }
             }
@@ -126,7 +128,7 @@ fun SettingsScreen(
 
             // Self-signed certificates toggle
             Card(
-                colors = CardDefaults.cardColors(containerColor = VoidSurface),
+                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Row(
@@ -139,22 +141,22 @@ fun SettingsScreen(
                         Text(
                             text = "Allow Self-Signed Certificates",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Starlight,
+                            color = ArchiveTextPrimary,
                         )
                         Text(
                             text = "Enable for local/development servers",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MistFaint,
+                            color = ArchiveTextMuted,
                         )
                     }
                     Switch(
                         checked = uiState.allowSelfSignedCertificates,
                         onCheckedChange = viewModel::onAllowSelfSignedChanged,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = SigilGold,
-                            checkedTrackColor = SigilGoldFaint,
-                            uncheckedThumbColor = Mist,
-                            uncheckedTrackColor = VoidElevated,
+                            checkedThumbColor = GoldFilament,
+                            checkedTrackColor = GoldFilamentFaint,
+                            uncheckedThumbColor = ArchiveTextSecondary,
+                            uncheckedTrackColor = ArchiveVoidElevated,
                         ),
                     )
                 }
@@ -171,16 +173,16 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f),
                         enabled = !uiState.isConnecting,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = SigilGold,
-                            contentColor = VoidDeep,
-                            disabledContainerColor = SigilGoldDim,
+                            containerColor = GoldFilament,
+                            contentColor = ArchiveVoidDeep,
+                            disabledContainerColor = GoldFilamentDim,
                         ),
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         if (uiState.isConnecting) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(20.dp),
-                                color = VoidDeep,
+                                color = ArchiveVoidDeep,
                                 strokeWidth = 2.dp,
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -195,8 +197,8 @@ fun SettingsScreen(
                         onClick = viewModel::testConnection,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = VoidSurface,
-                            contentColor = SigilGold,
+                            containerColor = ArchiveVoidSurface,
+                            contentColor = GoldFilament,
                         ),
                         shape = RoundedCornerShape(12.dp),
                     ) {
@@ -213,8 +215,8 @@ fun SettingsScreen(
                         onClick = viewModel::disconnect,
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = CosmicError.copy(alpha = 0.15f),
-                            contentColor = CosmicError,
+                            containerColor = ArchiveError.copy(alpha = 0.15f),
+                            contentColor = ArchiveError,
                         ),
                         shape = RoundedCornerShape(12.dp),
                     ) {
@@ -226,23 +228,27 @@ fun SettingsScreen(
             // ─── Divider ──────────────────────────────────────────────
             HorizontalDivider(
                 modifier = Modifier.padding(vertical = 4.dp),
-                color = VoidElevated,
+                color = ArchiveVoidElevated,
                 thickness = 1.dp,
             )
 
-            // ─── Archive Configuration ────────────────────────────────
-            SectionHeader(text = "Archive Configuration")
+            // ─── Archive Preferences ─────────────────────────────────
+            SectionHeader(text = "Archive Preferences")
 
-            ArchiveConfigurationSection(
-                unhingedThemeEnabled = uiState.unhingedThemeEnabled,
+            ArchivePreferencesSection(
+                anomaliesEnabled = uiState.anomaliesEnabled,
+                whispersEnabled = uiState.whispersEnabled,
+                reduceMotionRequested = uiState.reduceMotionRequested,
                 sessionCount = uiState.sessionCount,
-                onToggleUnhinged = viewModel::toggleUnhingedTheme
+                onToggleAnomalies = viewModel::toggleAnomalies,
+                onToggleWhispers = viewModel::toggleWhispers,
+                onToggleReduceMotion = viewModel::toggleReduceMotion,
             )
 
             // ─── Divider ──────────────────────────────────────────────
             HorizontalDivider(
                 modifier = Modifier.padding(vertical = 4.dp),
-                color = VoidElevated,
+                color = ArchiveVoidElevated,
                 thickness = 1.dp,
             )
 
@@ -250,7 +256,7 @@ fun SettingsScreen(
             SectionHeader(text = "Diagnostics")
 
             Card(
-                colors = CardDefaults.cardColors(containerColor = VoidSurface),
+                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Column(
@@ -274,10 +280,10 @@ fun SettingsScreen(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
-                        brush = androidx.compose.ui.graphics.SolidColor(VoidElevated)
+                        brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
                     ),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Mist,
+                        contentColor = ArchiveTextSecondary,
                     ),
                 ) {
                     Icon(
@@ -300,19 +306,33 @@ fun SettingsScreen(
 
 @Composable
 private fun SettingsHeader(uiState: SettingsViewModel.UiState) {
+    val subtitle = CopyEngine.getSubtitle(
+        CopyStyleGuide.Settings.SETTINGS_NAV_RITUAL,
+        CopyStyleGuide.Settings.SETTINGS_NAV_UNHINGED,
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(VoidDeep)
+            .background(ArchiveVoidDeep)
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.headlineMedium,
-            color = Starlight,
-            fontWeight = FontWeight.Bold,
-        )
+        Column {
+            Text(
+                text = CopyStyleGuide.Settings.SETTINGS_NAV,
+                style = MaterialTheme.typography.headlineMedium,
+                color = ArchiveTextPrimary,
+                fontWeight = FontWeight.Bold,
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                )
+            }
+        }
         Spacer(modifier = Modifier.weight(1f))
         StatusPill(connectionStatus = uiState.connectionStatus)
     }
@@ -325,7 +345,7 @@ private fun SectionHeader(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleSmall,
-        color = SigilGold,
+        color = GoldFilament,
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 1.sp,
         modifier = Modifier.padding(top = 4.dp),
@@ -351,7 +371,7 @@ private fun CosmicTextField(
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            color = Mist,
+            color = ArchiveTextSecondary,
             fontSize = 12.sp,
         )
         OutlinedTextField(
@@ -362,7 +382,7 @@ private fun CosmicTextField(
             placeholder = {
                 Text(
                     text = placeholder,
-                    color = MistFaint,
+                    color = ArchiveTextMuted,
                 )
             },
             leadingIcon = leadingIcon?.let {
@@ -370,7 +390,7 @@ private fun CosmicTextField(
                     Icon(
                         imageVector = it,
                         contentDescription = null,
-                        tint = if (enabled) Mist else MistFaint,
+                        tint = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
                         modifier = Modifier.size(20.dp),
                     )
                 }
@@ -384,7 +404,7 @@ private fun CosmicTextField(
                             else
                                 Icons.Outlined.Visibility,
                             contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                            tint = MistFaint,
+                            tint = ArchiveTextMuted,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -401,16 +421,16 @@ private fun CosmicTextField(
             singleLine = true,
             shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = SigilGold,
-                unfocusedBorderColor = VoidElevated,
-                disabledBorderColor = VoidElevated.copy(alpha = 0.5f),
-                focusedContainerColor = VoidSurface,
-                unfocusedContainerColor = VoidSurface,
-                disabledContainerColor = VoidSurface.copy(alpha = 0.5f),
-                focusedTextColor = Starlight,
-                unfocusedTextColor = Starlight,
-                disabledTextColor = Mist,
-                cursorColor = SigilGold,
+                focusedBorderColor = GoldFilament,
+                unfocusedBorderColor = ArchiveVoidElevated,
+                disabledBorderColor = ArchiveVoidElevated.copy(alpha = 0.5f),
+                focusedContainerColor = ArchiveVoidSurface,
+                unfocusedContainerColor = ArchiveVoidSurface,
+                disabledContainerColor = ArchiveVoidSurface.copy(alpha = 0.5f),
+                focusedTextColor = ArchiveTextPrimary,
+                unfocusedTextColor = ArchiveTextPrimary,
+                disabledTextColor = ArchiveTextSecondary,
+                cursorColor = GoldFilament,
             ),
         )
     }
@@ -424,9 +444,9 @@ private fun MessageCard(
     isError: Boolean,
     onDismiss: () -> Unit,
 ) {
-    val bgColor = if (isError) CosmicError.copy(alpha = 0.1f) else CosmicSuccess.copy(alpha = 0.1f)
-    val borderColor = if (isError) CosmicError.copy(alpha = 0.3f) else CosmicSuccess.copy(alpha = 0.3f)
-    val textColor = if (isError) CosmicError else CosmicSuccess
+    val bgColor = if (isError) ArchiveError.copy(alpha = 0.1f) else ArchiveSuccess.copy(alpha = 0.1f)
+    val borderColor = if (isError) ArchiveError.copy(alpha = 0.3f) else ArchiveSuccess.copy(alpha = 0.3f)
+    val textColor = if (isError) ArchiveError else ArchiveSuccess
     val icon = if (isError) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle
 
     Row(
@@ -476,117 +496,139 @@ private fun DiagnosticRow(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
-            color = Starlight,
+            color = ArchiveTextPrimary,
         )
     }
 }
 
-// ─── Archive Configuration ────────────────────────────────────────────────
+// ─── Archive Preferences ──────────────────────────────────────────────────
 
 @Composable
-private fun ArchiveConfigurationSection(
-    unhingedThemeEnabled: Boolean,
+private fun ArchivePreferencesSection(
+    anomaliesEnabled: Boolean,
+    whispersEnabled: Boolean,
+    reduceMotionRequested: Boolean,
     sessionCount: Int,
-    onToggleUnhinged: () -> Unit
+    onToggleAnomalies: () -> Unit,
+    onToggleWhispers: () -> Unit,
+    onToggleReduceMotion: () -> Unit,
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = VoidSurface),
+        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
         shape = RoundedCornerShape(12.dp),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            // Archive Beneath Theme Toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Archive Beneath Theme",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Starlight,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = "Deep purple/indigo aesthetic with gold accents",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MistFaint,
-                    )
-                }
-                Switch(
-                    checked = unhingedThemeEnabled,
-                    onCheckedChange = { onToggleUnhinged() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = SigilGold,
-                        checkedTrackColor = SigilGoldFaint,
-                    ),
-                )
-            }
+            // Anomalies toggle
+            ArchivePreferenceRow(
+                title = CopyStyleGuide.Settings.ANOMALIES_TOGGLE,
+                subtitle = CopyEngine.getSubtitle(
+                    CopyStyleGuide.Settings.ANOMALIES_TOGGLE_DESC_RITUAL,
+                    CopyStyleGuide.Settings.ANOMALIES_TOGGLE_DESC_UNHINGED,
+                ) ?: "Screen tears, ink bleed, crack whispers",
+                checked = anomaliesEnabled,
+                onCheckedChange = { onToggleAnomalies() },
+            )
 
-            HorizontalDivider(color = VoidElevated, thickness = 1.dp)
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+            // Whispers toggle
+            ArchivePreferenceRow(
+                title = CopyStyleGuide.Settings.WHISPERS_TOGGLE,
+                subtitle = CopyEngine.getSubtitle(
+                    CopyStyleGuide.Settings.WHISPERS_TOGGLE_DESC_RITUAL,
+                    CopyStyleGuide.Settings.WHISPERS_TOGGLE_DESC_UNHINGED,
+                ) ?: "Atmospheric contextual text fragments",
+                checked = whispersEnabled,
+                onCheckedChange = { onToggleWhispers() },
+            )
+
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+            // Reduced Motion toggle
+            ArchivePreferenceRow(
+                title = "Reduced Motion",
+                subtitle = "Disables all animations and effects",
+                checked = reduceMotionRequested,
+                onCheckedChange = { onToggleReduceMotion() },
+            )
+
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
 
             // Session Counter
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column {
                     Text(
-                        text = "Session Count",
+                        text = "Sessions Recorded",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Mist,
+                        color = ArchiveTextSecondary,
                     )
                     Text(
-                        text = "Total app launches tracked",
+                        text = "The Archive remembers every visit",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                     )
                 }
                 Text(
                     text = sessionCount.toString(),
                     style = MaterialTheme.typography.headlineSmall,
-                    color = SigilGold,
+                    color = GoldFilament,
                     fontWeight = FontWeight.Bold,
                 )
             }
-
-            // Info message
-            if (unhingedThemeEnabled) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            color = CosmicInfo.copy(alpha = 0.1f),
-                            shape = RoundedCornerShape(8.dp)
-                        )
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Outlined.Info,
-                        contentDescription = null,
-                        tint = CosmicInfo,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Text(
-                        text = "Archive Beneath theme active. Surface textures and accent colors enabled.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Starlight,
-                    )
-                }
-            }
         }
+    }
+}
+
+@Composable
+private fun ArchivePreferenceRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = ArchiveTextPrimary,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = ArchiveTextMuted,
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = GoldFilament,
+                checkedTrackColor = GoldFilamentFaint,
+                uncheckedThumbColor = ArchiveTextSecondary,
+                uncheckedTrackColor = ArchiveVoidElevated,
+            ),
+        )
     }
 }

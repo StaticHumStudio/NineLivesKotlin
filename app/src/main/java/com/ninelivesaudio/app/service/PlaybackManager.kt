@@ -450,10 +450,20 @@ class PlaybackManager @Inject constructor(
         val book = _currentBook.value
         val pos = _position.value
         val dur = _duration.value
+
+        // Release player and update state immediately so the UI reflects stopped state.
+        releasePlayer()
+        stopPlaybackService()
+        _playbackState.value = PlaybackState.STOPPED
+
+        // Flush progress in the background AFTER releasing the player.
+        // All values were captured above so no player access is needed.
         if (book != null) {
             val isFinished = dur > Duration.ZERO && pos >= dur - 1.seconds
             scope.launch(Dispatchers.IO) {
-                syncProgressNow()
+                try {
+                    syncProgressNow()
+                } catch (_: Exception) {}
                 // Flush progress through SyncManager (handles offline queue)
                 syncManager.flushPlaybackProgress(
                     itemId = book.id,
@@ -463,10 +473,6 @@ class PlaybackManager @Inject constructor(
                 closeSession()
             }
         }
-
-        releasePlayer()
-        stopPlaybackService()
-        _playbackState.value = PlaybackState.STOPPED
     }
 
     fun seekTo(position: Duration) {
@@ -541,7 +547,7 @@ class PlaybackManager @Inject constructor(
         val trackPosition = player.currentPosition.milliseconds
 
         val windowIndex = player.currentMediaItemIndex
-        if (windowIndex > 0 && windowIndex <= trackDurations.size) {
+        if (windowIndex > 0 && trackDurations.size > 1 && windowIndex - 1 < trackDurations.size) {
             val previousCumulative = trackDurations[windowIndex - 1]
             return trackPosition + previousCumulative.seconds
         }

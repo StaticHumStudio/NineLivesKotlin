@@ -107,6 +107,11 @@ class ProgressRepository @Inject constructor(
         val entries = pendingProgressDao.getAll()
         if (entries.isEmpty()) return true
 
+        // Capture the IDs we fetched — only these will be deleted after sync.
+        // Any entries inserted by the playback service during the flush window
+        // will have newer IDs and won't be touched.
+        val fetchedIds = entries.map { it.id }
+
         // Group by item and take the latest entry for each
         val latest = entries.groupBy { it.itemId }
             .mapValues { (_, entries) -> entries.maxByOrNull { it.timestamp } }
@@ -123,7 +128,9 @@ class ProgressRepository @Inject constructor(
         }
 
         if (allSuccess) {
-            pendingProgressDao.deleteAll()
+            // Delete only the entries we fetched and synced — not newer ones
+            // that may have been inserted during the network round-trips.
+            pendingProgressDao.deleteByIds(fetchedIds)
         }
 
         return allSuccess

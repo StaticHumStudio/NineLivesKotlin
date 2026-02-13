@@ -178,12 +178,20 @@ class SyncManager @Inject constructor(
                 if (progress.libraryItemId == activeId) continue
 
                 try {
+                    var book = audioBookDao.getById(progress.libraryItemId)
+                    if (book == null) {
+                        val remoteBook = audioBookRepository.fetchFromServer(progress.libraryItemId)
+                        if (remoteBook != null) {
+                            audioBookDao.upsert(remoteBook.toEntity())
+                            book = audioBookDao.getById(progress.libraryItemId)
+                        }
+                    }
+
                     val currentTimeSecs = progress.currentTime.inWholeMilliseconds / 1000.0
                     val positionSeconds = if (currentTimeSecs > 0) {
                         currentTimeSecs
                     } else {
                         // Estimate from progress fraction × duration
-                        val book = audioBookDao.getById(progress.libraryItemId)
                         if (book != null && book.durationSeconds > 0) {
                             progress.progress * book.durationSeconds
                         } else 0.0
@@ -206,7 +214,6 @@ class SyncManager @Inject constructor(
                     )
 
                     // Also update audiobook entity progress
-                    val book = audioBookDao.getById(progress.libraryItemId)
                     if (book != null) {
                         audioBookDao.upsert(
                             book.copy(

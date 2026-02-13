@@ -105,6 +105,9 @@ class PlaybackManager @Inject constructor(
     private val _currentChapter = MutableStateFlow<Chapter?>(null)
     val currentChapter: StateFlow<Chapter?> = _currentChapter.asStateFlow()
 
+    private val _chapters = MutableStateFlow<List<Chapter>>(emptyList())
+    val chapters: StateFlow<List<Chapter>> = _chapters.asStateFlow()
+
     private val _currentChapterIndex = MutableStateFlow(-1)
     val currentChapterIndex: StateFlow<Int> = _currentChapterIndex.asStateFlow()
 
@@ -145,6 +148,7 @@ class PlaybackManager @Inject constructor(
             _playbackState.value = PlaybackState.LOADING
             _currentBook.value = book
             chapters = book.chapters.sortedBy { it.start }
+            _chapters.value = chapters
             _currentChapter.value = null
             _currentChapterIndex.value = -1
             accumulatedListenTime = 0.0
@@ -161,6 +165,7 @@ class PlaybackManager @Inject constructor(
                         currentSession = session
                         if (chapters.isEmpty() && session.chapters.isNotEmpty()) {
                             chapters = session.chapters.sortedBy { it.start }
+                            _chapters.value = chapters
                         }
                     }
                 } catch (e: Exception) {
@@ -179,6 +184,7 @@ class PlaybackManager @Inject constructor(
                             _currentBook.value = effectiveBook
                             if (chapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
                                 chapters = fullBook.chapters.sortedBy { it.start }
+                                _chapters.value = chapters
                             }
                         }
                     } catch (e: Exception) {
@@ -663,6 +669,10 @@ class PlaybackManager @Inject constructor(
                 newIndex = i
                 break
             }
+        }
+
+        if (newIndex == -1 && posSeconds >= chapters.last().end) {
+            newIndex = chapters.lastIndex
         }
 
         if (newIndex != _currentChapterIndex.value) {

@@ -49,8 +49,9 @@ fun AnomalyHost(
 
     // Animation effect
     LaunchedEffect(currentAnomaly, isPlaying) {
-        if (currentAnomaly != null && isPlaying) {
-            val duration = currentAnomaly!!.durationMs
+        val anomaly = currentAnomaly
+        if (anomaly != null && isPlaying) {
+            val duration = anomaly.durationMs
 
             if (reduceMotion) {
                 // Static display for half the duration
@@ -217,8 +218,9 @@ fun AnomalyHostDebug(
 
     // Animation logic
     LaunchedEffect(currentAnomaly, isPlaying) {
-        if (currentAnomaly != null && isPlaying) {
-            val duration = currentAnomaly!!.durationMs
+        val anomaly = currentAnomaly
+        if (anomaly != null && isPlaying) {
+            val duration = anomaly.durationMs
 
             if (reduceMotion) {
                 delay(duration / 2)

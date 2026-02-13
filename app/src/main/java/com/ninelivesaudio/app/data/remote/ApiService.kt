@@ -257,7 +257,7 @@ class ApiService @Inject constructor(
                 UserProgress(
                     libraryItemId = p.libraryItemId,
                     currentTime = p.currentTime.seconds,
-                    progress = p.progress,
+                    progress = p.progress.coerceIn(0.0, 1.0),
                     isFinished = p.isFinished,
                     lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                 )
@@ -278,7 +278,7 @@ class ApiService @Inject constructor(
                     UserProgress(
                         libraryItemId = p.libraryItemId,
                         currentTime = p.currentTime.seconds,
-                        progress = p.progress,
+                        progress = p.progress.coerceIn(0.0, 1.0),
                         isFinished = p.isFinished,
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )

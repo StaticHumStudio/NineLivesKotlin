@@ -45,12 +45,14 @@ class DownloadsViewModel @Inject constructor(
         // Observe active downloads
         viewModelScope.launch {
             downloadItemDao.observeActive().collect { entities ->
-                val items = entities.map { entity ->
+                val items = entities.mapNotNull { entity ->
                     val item = entity.toDomain()
                     val book = audioBookDao.getById(item.audioBookId)
+                    // Skip items where book was deleted from DB
+                    if (book == null) return@mapNotNull null
                     DownloadUiItem(
                         download = item,
-                        coverPath = book?.coverPath,
+                        coverPath = book.coverPath,
                     )
                 }
                 _uiState.update {
@@ -65,12 +67,14 @@ class DownloadsViewModel @Inject constructor(
         // Observe completed downloads
         viewModelScope.launch {
             downloadItemDao.observeCompleted().collect { entities ->
-                val items = entities.map { entity ->
+                val items = entities.mapNotNull { entity ->
                     val item = entity.toDomain()
                     val book = audioBookDao.getById(item.audioBookId)
+                    // Skip items where book was deleted from DB
+                    if (book == null) return@mapNotNull null
                     DownloadUiItem(
                         download = item,
-                        coverPath = book?.coverPath,
+                        coverPath = book.coverPath,
                     )
                 }
                 _uiState.update {
@@ -140,10 +144,14 @@ class DownloadsViewModel @Inject constructor(
         viewModelScope.launch {
             val completed = _uiState.value.completedDownloads
             completed.forEach { item ->
-                // Use downloadManager.deleteDownload() which also removes files from disk
-                // and updates the audiobook entity. Just deleting the DB record leaves
-                // orphaned files consuming storage.
-                downloadManager.deleteDownload(item.download.audioBookId)
+                try {
+                    // Use downloadManager.deleteDownload() which also removes files from disk
+                    // and updates the audiobook entity. Just deleting the DB record leaves
+                    // orphaned files consuming storage.
+                    downloadManager.deleteDownload(item.download.audioBookId)
+                } catch (e: Exception) {
+                    // Continue deleting others even if one fails (e.g., file already deleted)
+                }
             }
         }
     }

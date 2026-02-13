@@ -6,9 +6,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -18,6 +17,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -38,6 +40,7 @@ import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerCont
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+import kotlin.random.Random
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,23 +88,21 @@ fun LibraryScreen(
                         EmptyState(uiState)
                     }
                     else -> {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
+                        LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
-                                start = 16.dp,
-                                end = 16.dp,
+                                start = 12.dp,
+                                end = 12.dp,
                                 top = 8.dp,
                                 bottom = 100.dp,
                             ),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             itemsIndexed(
                                 items = uiState.filteredBooks,
                                 key = { _, book -> book.id },
                             ) { index, book ->
-                                ArchiveBookTile(
+                                ArchiveBookListItem(
                                     book = book,
                                     index = index,
                                     onClick = { onNavigateToBookDetail(book.id) },
@@ -258,7 +259,202 @@ private fun StoneTabsRow(
     }
 }
 
-// ─── Archive Book Tile ───────────────────────────────────────────────────
+// ─── Archive Book List Item ──────────────────────────────────────────────
+
+@Composable
+private fun ArchiveBookListItem(
+    book: AudioBook,
+    index: Int,
+    onClick: () -> Unit,
+) {
+    val progress = book.progress.toFloat().coerceIn(0f, 1f)
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = tween(durationMillis = 800),
+        label = "lib_progress_$index",
+    )
+
+    val comment = remember(book.id) {
+        getBookComment(book)
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = ArchiveVoidSurface,
+        shadowElevation = 1.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // Cover art with progress ring
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Cover image
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(ArchiveVoidElevated),
+                ) {
+                    if (!book.coverPath.isNullOrEmpty()) {
+                        AsyncImage(
+                            model = book.coverPath,
+                            contentDescription = book.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                }
+
+                // Enhanced Progress ring with 3D effect
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .shadow(
+                            elevation = 4.dp,
+                            shape = RoundedCornerShape(8.dp),
+                            clip = false
+                        )
+                ) {
+                    CosmicProgressRing(
+                        progress = animatedProgress,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .padding(2.dp),
+                        strokeWidth = 3.dp,
+                        progressColor = GoldFilament,
+                        trackColor = ArchiveOutline.copy(alpha = 0.3f),
+                        glowStrength = 0.8f, // More pronounced glow
+                        showEndCapDot = true,
+                    )
+                }
+
+                // Corner sigils
+                CornerSigils(
+                    downloaded = book.isDownloaded,
+                    bookmarked = false,
+                    modifier = Modifier.matchParentSize(),
+                )
+            }
+
+            // Book info
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                // Title
+                Text(
+                    text = book.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ArchiveTextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    lineHeight = 18.sp,
+                )
+
+                // Author
+                Text(
+                    text = book.author,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 12.sp,
+                )
+
+                // Random comment
+                if (comment != null) {
+                    Text(
+                        text = comment,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted.copy(alpha = 0.8f),
+                        fontWeight = FontWeight.Light,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+
+                // Progress info
+                if (book.hasProgress) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "${book.progressPercent.toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = GoldFilament,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 11.sp,
+                        )
+                        if (book.chapters.isNotEmpty()) {
+                            val chapterIdx = book.getCurrentChapterIndex()
+                            if (chapterIdx >= 0) {
+                                Text(
+                                    text = "Ch ${chapterIdx + 1}/${book.chapters.size}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ArchiveTextMuted,
+                                    fontSize = 10.sp,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── Book Comment Generator ──────────────────────────────────────────────
+
+private fun getBookComment(book: AudioBook): String? {
+    val comments = listOf(
+        "A timeless classic",
+        "Highly recommended",
+        "Gripping from start to finish",
+        "Beautifully narrated",
+        "A must-listen",
+        "Captivating storytelling",
+        "Thought-provoking",
+        "Couldn't stop listening",
+        "Powerful and moving",
+        "Masterfully crafted",
+        "An unforgettable journey",
+        "Brilliantly performed",
+        "Rich in detail",
+        "Engaging and immersive",
+        "A true gem",
+        "Expertly written",
+        "Absolutely riveting",
+        "Hauntingly beautiful",
+        "Wonderfully complex",
+        "A page-turner in audio form",
+        null, // 5% chance of no comment
+    )
+    
+    // Use book ID for deterministic randomness
+    val seed = book.id.hashCode().toLong()
+    val random = Random(seed)
+    
+    return comments[random.nextInt(comments.size)]
+}
+
+// ─── Archive Book Tile (kept for reference/future use) ───────────────────
 
 @Composable
 private fun ArchiveBookTile(

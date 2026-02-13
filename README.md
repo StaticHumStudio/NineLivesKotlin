@@ -29,12 +29,14 @@ An Android audiobook player for [Audiobookshelf](https://www.audiobookshelf.org/
 - Fast initial sync (500ms delay, progress-first)
 
 ### The Archive (Library)
-- **2-column grid** with containment frames and progress rings
+- **Compact list view** with 72dp cover thumbnails and book details
+- **Random atmospheric comments** on each book (deterministic per book ID)
+- **Enhanced progress rings** with 3D shadow effects and pronounced glow (0.8 intensity)
 - **Stone tab system**: All / In Progress / Completed / Downloaded
+- **11 sorting options**: Recently Added, Title A→Z/Z→A, Author A→Z/Z→A, Progress High/Low, Duration Long/Short, Recently Played, Unplayed First
 - Relic search bar with stone surface aesthetic
 - Server sync with local caching (Room SQLite)
 - Search by title, author, narrator, series
-- Sort by title, author, progress, recently played
 - Auto-switches to downloaded-only when offline
 - Pull-to-refresh
 
@@ -210,6 +212,46 @@ export JAVA_HOME="/path/to/jdk-21"
 - **PlaybackManager `stop()` player race** — released ExoPlayer while background coroutine still syncing; reordered to capture values first, release immediately, flush async
 - **HomeViewModel progress percent range** — assumed 0–1 but API can return 0–100; added conditional normalization
 - **MainActivity lifecycle collection** — `collectAsState()` → `collectAsStateWithLifecycle()` for lifecycle-safe flow collection
+
+### Round 5 — Library UX & Bug Fixes (26 fixes)
+
+**Major Features:**
+- **Library redesigned to list view** — changed from 2-column grid to compact list with 72dp thumbnails, better information density following Audible app patterns
+- **Random book comments** — added 20+ atmospheric comments deterministically assigned per book (e.g., "Gripping from start to finish", "Beautifully narrated")
+- **11 comprehensive sorting options** — expanded from 5 to 11: Recently Added (default), Title A→Z/Z→A, Author A→Z/Z→A, Progress High/Low, Duration Long/Short, Recently Played, Unplayed First
+- **Enhanced visual effects** — progress rings now have pronounced 3D shadow (4dp elevation) and increased glow strength (0.8 from 0.4) for "lifted" appearance
+
+**Bug Fixes (21 bugs from GitHub merge + 5 new bugs):**
+
+*PR #2 & #3 Merged Fixes (21 bugs):*
+1. Library filters (In Progress/Completed) not working — fixed filter logic with normalized progress checks
+2. In Progress tab showing 99%+ books — added `progressPercent < 99.5` exclusion
+3. Build.gradle.kts compileSdk syntax error — changed from version block to direct assignment
+4. BookCard status showing "In progress" for 0% books — now shows "Not started"
+5. BookCard progress bar using raw progress — now uses normalized progressPercent
+6. HomeViewModel progress normalization duplication — uses book.progressPercent directly
+7. PlaybackManager unsafe force unwrap on mediaSession — replaced with safe let block
+8. DownloadManager unnecessary force unwrap on response.body() — replaced with safe call
+9. Excessive logging in UI components — removed verbose logs from HomeScreen, HomeViewModel, Theme
+10. AnomalyHost unsafe force unwraps on currentAnomaly — replaced with safe local variables
+11. Empty catch blocks without documentation — added comments explaining intentional silent failures
+12. AudioBook.progressPercent negative value handling — added validation to prevent negative progress
+13. ApiService progress clamping missing — added 0-1 range clamping from server responses
+14. Chapter validation missing — filters invalid chapters (negative start, end < start)
+15. DownloadManager cleanup error handling — improved with descriptive comments
+16. Chapter navigation unwired — fixed chapter-aware player behavior
+17. Home recent books not synced — hydrated Nine Lives from server progress
+18. PlaybackManager chapter conflicts — renamed private `chapters` var to `cachedChapters`
+19. HomeViewModel progressPercent on entity — added manual calculation for AudioBookEntity
+20. Concurrent sync race conditions — improved handling
+21. Database search optimization opportunity — noted FTS enhancement for future
+
+*New Fixes (5 bugs):*
+22. **DownloadsViewModel null book handling** — `audioBookDao.getById()` can return null when book deleted; changed from `map` to `mapNotNull` with null guard
+23. **DownloadsViewModel clearCompleted error propagation** — deleteDownload can fail if files manually deleted; wrapped in try-catch to continue clearing others
+24. **LibraryViewModel sort null handling** — RECENTLY_ADDED used `addedAt ?: 0L` causing books without timestamp to sort incorrectly; now uses `Long.MIN_VALUE` with title tiebreaker
+25. **ApiService progress clamping inconsistency** — getUserProgress() missing `coerceIn(0.0, 1.0)` on two instances (lines 260, 281); added clamping
+26. **PlaybackManager chapters variable name conflict** — duplicate `chapters` declarations (StateFlow + private var) caused compilation errors; renamed private to `cachedChapters`
 
 ---
 

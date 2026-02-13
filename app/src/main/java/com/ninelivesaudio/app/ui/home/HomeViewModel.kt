@@ -100,13 +100,17 @@ class HomeViewModel @Inject constructor(
             val book = result.audioBook
             val durationHours = book.durationSeconds / 3600.0
             val currentTimeHours = book.currentTimeSeconds / 3600.0
+            
+            // Normalize progress to 0-100 range (API can return 0-1 or 0-100)
+            val validProgress = book.progress.coerceAtLeast(0.0)
+            val normalizedProgress = if (validProgress <= 1.0) validProgress * 100.0 else validProgress
 
             NineLivesItem(
                 audioBookId = book.id,
                 displayTitle = book.title,
                 displayAuthor = book.author ?: "Unknown Author",
                 coverPath = book.coverPath,
-                progressPercent = book.progressPercent.coerceIn(0.0, 100.0),
+                progressPercent = normalizedProgress.coerceIn(0.0, 100.0),
                 isMostRecent = idx == 0,
                 isDownloaded = book.isDownloaded == 1,
                 isBookmarked = false, // TODO: wire to bookmark data when available

@@ -1,6 +1,5 @@
 package com.ninelivesaudio.app.ui.home
 
-import android.util.Log
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -37,8 +36,6 @@ import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerCont
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
-
-private const val TAG = "HomeScreen"
 
 @Composable
 fun HomeScreen(
@@ -227,7 +224,6 @@ private fun NineLivesHeader(
                     }
                     lastTapTime = currentTime
                     if (tapCount == 9) {
-                        Log.d(TAG, "THE VAULT ACKNOWLEDGES YOU")
                         onSecretUnlocked()
                         tapCount = 0
                     }

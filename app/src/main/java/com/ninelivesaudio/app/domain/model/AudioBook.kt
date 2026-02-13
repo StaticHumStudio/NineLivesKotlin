@@ -28,7 +28,11 @@ data class AudioBook(
 ) {
     /** Progress normalized to 0–100 regardless of API format. */
     val progressPercent: Double
-        get() = if (progress <= 1.0) progress * 100.0 else progress
+        get() {
+            // Validate progress is non-negative
+            val validProgress = progress.coerceAtLeast(0.0)
+            return if (validProgress <= 1.0) validProgress * 100.0 else validProgress.coerceIn(0.0, 100.0)
+        }
 
     /** Whether this book has any progress to display. */
     val hasProgress: Boolean

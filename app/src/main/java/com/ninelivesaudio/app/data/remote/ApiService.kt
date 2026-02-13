@@ -376,11 +376,12 @@ class ApiService @Inject constructor(
                     size = af.metadata?.size ?: 0,
                 )
             },
-            chapters = item.media?.chapters?.map { c ->
-                Chapter(id = c.id, start = c.start, end = c.end, title = c.title)
-            } ?: emptyList(),
+            chapters = item.media?.chapters
+                ?.filter { c -> c.start >= 0.0 && c.end > c.start }
+                ?.map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title) }
+                ?: emptyList(),
             currentTime = (item.userMediaProgress?.currentTime ?: 0.0).seconds,
-            progress = item.userMediaProgress?.progress ?: 0.0,
+            progress = (item.userMediaProgress?.progress ?: 0.0).coerceIn(0.0, 1.0),
             isFinished = item.userMediaProgress?.isFinished ?: false,
         )
     }

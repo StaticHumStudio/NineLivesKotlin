@@ -275,7 +275,9 @@ class SyncManager @Inject constructor(
                     )
                 )
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            // Non-fatal: progress already saved to PlaybackProgress table
+        }
 
         // Throttle network pushes
         val now = System.currentTimeMillis()

@@ -273,7 +273,9 @@ class PlaybackManager @Inject constructor(
 
             // If the service was already running, it won't get a new onCreate().
             // Explicitly add the new session so Media3 refreshes the notification.
-            playbackService?.refreshSession(mediaSession!!)
+            mediaSession?.let { session ->
+                playbackService?.refreshSession(session)
+            }
 
             // NOW prepare — MediaSession exists to receive all state transitions
             player.playWhenReady = true

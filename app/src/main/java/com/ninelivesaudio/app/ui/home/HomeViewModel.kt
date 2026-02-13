@@ -1,6 +1,5 @@
 package com.ninelivesaudio.app.ui.home
 
-import android.util.Log
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,8 +16,6 @@ import java.time.Instant
 import java.time.format.DateTimeParseException
 import javax.inject.Inject
 import kotlin.math.roundToInt
-
-private const val TAG = "HomeViewModel"
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -94,7 +91,6 @@ class HomeViewModel @Inject constructor(
      * The Archive Beneath is always active — this is a lore unlock.
      */
     fun triggerVaultEasterEgg() {
-        Log.d(TAG, "triggerVaultEasterEgg: THE VAULT ACKNOWLEDGES YOU")
         // The Archive does not toggle. It simply... notices.
         // Future: unlock hidden lore, achievement, or atmospheric event.
     }
@@ -110,7 +106,7 @@ class HomeViewModel @Inject constructor(
                 displayTitle = book.title,
                 displayAuthor = book.author ?: "Unknown Author",
                 coverPath = book.coverPath,
-                progressPercent = (if (book.progress <= 1.0) book.progress * 100.0 else book.progress).coerceIn(0.0, 100.0),
+                progressPercent = book.progressPercent.coerceIn(0.0, 100.0),
                 isMostRecent = idx == 0,
                 isDownloaded = book.isDownloaded == 1,
                 isBookmarked = false, // TODO: wire to bookmark data when available

@@ -110,7 +110,7 @@ class HomeViewModel @Inject constructor(
                 displayTitle = book.title,
                 displayAuthor = book.author ?: "Unknown Author",
                 coverPath = book.coverPath,
-                progressPercent = (if (book.progress <= 1.0) book.progress * 100.0 else book.progress).coerceIn(0.0, 100.0),
+                progressPercent = book.progressPercent.coerceIn(0.0, 100.0),
                 isMostRecent = idx == 0,
                 isDownloaded = book.isDownloaded == 1,
                 isBookmarked = false, // TODO: wire to bookmark data when available

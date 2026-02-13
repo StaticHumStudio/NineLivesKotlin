@@ -108,15 +108,15 @@ fun BookListItem(
                         isHighlighted = book.isDownloaded,
                     )
                     StatusTag(
-                        label = if (book.isFinished) "Completed" else "In progress",
-                        isHighlighted = book.isFinished,
+                        label = if (book.isFinished) "Completed" else if (book.hasProgress) "In progress" else "Not started",
+                        isHighlighted = book.isFinished || book.hasProgress,
                     )
                 }
 
                 if (book.hasProgress) {
                     Spacer(modifier = Modifier.height(3.dp))
                     LinearProgressIndicator(
-                        progress = { (book.progress.coerceIn(0.0, 1.0)).toFloat() },
+                        progress = { (book.progressPercent / 100.0).coerceIn(0.0, 1.0).toFloat() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(4.dp)

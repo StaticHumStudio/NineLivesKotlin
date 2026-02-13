@@ -240,7 +240,7 @@ class DownloadManager @Inject constructor(
                         throw Exception("HTTP ${response.code()}: Failed to download $fileName")
                     }
 
-                    response.body()!!.use { body ->
+                    response.body()?.use { body ->
                         partPath.outputStream().buffered().use { output ->
                             body.byteStream().use { input ->
                                 val buffer = ByteArray(BUFFER_SIZE)

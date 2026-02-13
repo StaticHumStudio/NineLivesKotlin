@@ -8,9 +8,7 @@ plugins {
 
 android {
     namespace = "com.ninelivesaudio.app"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.ninelivesaudio.app"

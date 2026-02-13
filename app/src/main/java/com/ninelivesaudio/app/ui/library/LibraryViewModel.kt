@@ -261,8 +261,8 @@ class LibraryViewModel @Inject constructor(
         // Tab-based filtering
         filtered = when (state.selectedTab) {
             LibraryTab.All -> filtered
-            LibraryTab.InProgress -> filtered.filter { it.progress > 0 && !it.isFinished }
-            LibraryTab.Completed -> filtered.filter { it.isFinished || it.progressPercent >= 100.0 }
+            LibraryTab.InProgress -> filtered.filter { it.hasProgress && !it.isFinished }
+            LibraryTab.Completed -> filtered.filter { it.isFinished || it.progress >= 1.0 || it.progressPercent >= 99.5 }
             LibraryTab.Downloaded -> filtered.filter { it.isDownloaded }
         }
 

@@ -95,6 +95,12 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        viewModelScope.launch {
+            playbackManager.chapters.collect { chapters ->
+                _uiState.update { it.copy(chapters = chapters) }
+            }
+        }
+
         // Observe position
         viewModelScope.launch {
             playbackManager.position.collect { pos ->
@@ -202,7 +208,6 @@ class PlayerViewModel @Inject constructor(
                 author = book?.author ?: "",
                 coverUrl = book?.coverPath,
                 seriesName = book?.seriesName,
-                chapters = book?.chapters?.sortedBy { c -> c.start } ?: emptyList(),
             )
         }
     }

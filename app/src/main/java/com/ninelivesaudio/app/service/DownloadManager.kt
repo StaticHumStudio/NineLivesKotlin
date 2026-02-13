@@ -269,13 +269,17 @@ class DownloadManager @Inject constructor(
 
                 } catch (e: CancellationException) {
                     // Clean up partial file
-                    try { partPath.delete() } catch (_: Exception) {}
+                    try { partPath.delete() } catch (cleanupError: Exception) {
+                        // Ignore cleanup errors - file may already be deleted
+                    }
                     // Mark as paused (not failed)
                     download = download.copy(status = DownloadStatus.Paused, downloadedBytes = downloadedBytes)
                     downloadItemDao.upsert(download.toEntity())
                     return
                 } catch (e: Exception) {
-                    try { partPath.delete() } catch (_: Exception) {}
+                    try { partPath.delete() } catch (cleanupError: Exception) {
+                        // Ignore cleanup errors - file may already be deleted
+                    }
                     downloadedBytes = bytesBeforeAttempt
 
                     retryCount++

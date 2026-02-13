@@ -23,7 +23,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.ui.components.StatusPill
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
 fun DownloadsScreen(
@@ -34,7 +36,7 @@ fun DownloadsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(VoidDeep),
+            .background(ArchiveVoidDeep),
     ) {
         // ─── Header ──────────────────────────────────────────────────────
         DownloadsHeader(connectionStatus = uiState.connectionStatus)
@@ -83,7 +85,7 @@ fun DownloadsScreen(
                             TextButton(onClick = { viewModel.clearCompleted() }) {
                                 Text(
                                     text = "Clear All",
-                                    color = SigilGold,
+                                    color = GoldFilament,
                                     style = MaterialTheme.typography.labelMedium,
                                 )
                             }
@@ -113,6 +115,11 @@ fun DownloadsScreen(
 private fun DownloadsHeader(
     connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
 ) {
+    val subtitle = CopyEngine.getSubtitle(
+        CopyStyleGuide.Downloads.DOWNLOADS_NAV_RITUAL,
+        CopyStyleGuide.Downloads.DOWNLOADS_NAV_UNHINGED,
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -120,12 +127,21 @@ private fun DownloadsHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "Downloads",
-            style = MaterialTheme.typography.headlineSmall,
-            color = Starlight,
-            fontWeight = FontWeight.Bold,
-        )
+        Column {
+            Text(
+                text = CopyStyleGuide.Downloads.DOWNLOADS_NAV,
+                style = MaterialTheme.typography.headlineSmall,
+                color = ArchiveTextPrimary,
+                fontWeight = FontWeight.Bold,
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                )
+            }
+        }
         StatusPill(connectionStatus = connectionStatus)
     }
 }
@@ -139,7 +155,7 @@ private fun SectionHeader(title: String) {
     Text(
         text = title,
         style = MaterialTheme.typography.titleSmall,
-        color = Mist,
+        color = ArchiveTextSecondary,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(vertical = 4.dp),
     )
@@ -161,7 +177,7 @@ private fun ActiveDownloadCard(
 
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = VoidSurface,
+        color = ArchiveVoidSurface,
     ) {
         Column(
             modifier = Modifier
@@ -178,7 +194,7 @@ private fun ActiveDownloadCard(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(VoidElevated),
+                        .background(ArchiveVoidElevated),
                 ) {
                     if (!item.coverPath.isNullOrEmpty()) {
                         AsyncImage(
@@ -195,7 +211,7 @@ private fun ActiveDownloadCard(
                     Text(
                         text = download.title,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Starlight,
+                        color = ArchiveTextPrimary,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -207,11 +223,11 @@ private fun ActiveDownloadCard(
                     ) {
                         // Status badge
                         val (statusText, statusColor) = when (download.status) {
-                            DownloadStatus.Queued -> "Queued" to MistFaint
-                            DownloadStatus.Downloading -> "Downloading" to SigilGold
-                            DownloadStatus.Paused -> "Paused" to CosmicWarning
-                            DownloadStatus.Failed -> "Failed" to CosmicError
-                            else -> "" to MistFaint
+                            DownloadStatus.Queued -> "Queued" to ArchiveTextMuted
+                            DownloadStatus.Downloading -> "Downloading" to GoldFilament
+                            DownloadStatus.Paused -> "Paused" to ArchiveWarning
+                            DownloadStatus.Failed -> "Failed" to ArchiveError
+                            else -> "" to ArchiveTextMuted
                         }
                         Text(
                             text = statusText,
@@ -224,7 +240,7 @@ private fun ActiveDownloadCard(
                         Text(
                             text = download.sizeDisplay,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MistFaint,
+                            color = ArchiveTextMuted,
                             fontSize = 11.sp,
                         )
                     }
@@ -234,7 +250,7 @@ private fun ActiveDownloadCard(
                         Text(
                             text = download.errorMessage,
                             style = MaterialTheme.typography.labelSmall,
-                            color = CosmicError,
+                            color = ArchiveError,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             fontSize = 10.sp,
@@ -252,7 +268,7 @@ private fun ActiveDownloadCard(
                             Icon(
                                 Icons.Outlined.Pause,
                                 contentDescription = "Pause",
-                                tint = Mist,
+                                tint = ArchiveTextSecondary,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -266,7 +282,7 @@ private fun ActiveDownloadCard(
                             Icon(
                                 Icons.Outlined.PlayArrow,
                                 contentDescription = "Resume",
-                                tint = SigilGold,
+                                tint = GoldFilament,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -279,7 +295,7 @@ private fun ActiveDownloadCard(
                         Icon(
                             Icons.Outlined.Close,
                             contentDescription = "Cancel",
-                            tint = CosmicError,
+                            tint = ArchiveError,
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -295,8 +311,8 @@ private fun ActiveDownloadCard(
                         .fillMaxWidth()
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = SigilGold,
-                    trackColor = ProgressTrack,
+                    color = GoldFilament,
+                    trackColor = ArchiveOutline.copy(alpha = 0.3f),
                 )
 
                 // Progress text
@@ -309,13 +325,13 @@ private fun ActiveDownloadCard(
                     Text(
                         text = "${download.progress.toInt()}%",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                         fontSize = 10.sp,
                     )
                     Text(
                         text = formatDownloadSize(download.downloadedBytes, download.totalBytes),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                         fontSize = 10.sp,
                     )
                 }
@@ -337,7 +353,7 @@ private fun CompletedDownloadCard(
 
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = VoidSurface,
+        color = ArchiveVoidSurface,
     ) {
         Row(
             modifier = Modifier
@@ -351,7 +367,7 @@ private fun CompletedDownloadCard(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(VoidElevated),
+                    .background(ArchiveVoidElevated),
             ) {
                 if (!item.coverPath.isNullOrEmpty()) {
                     AsyncImage(
@@ -368,7 +384,7 @@ private fun CompletedDownloadCard(
                 Text(
                     text = download.title,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Starlight,
+                    color = ArchiveTextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -381,19 +397,19 @@ private fun CompletedDownloadCard(
                     Icon(
                         Icons.Outlined.CheckCircle,
                         contentDescription = null,
-                        tint = CosmicSuccess,
+                        tint = ArchiveSuccess,
                         modifier = Modifier.size(14.dp),
                     )
                     Text(
                         text = "Downloaded",
                         style = MaterialTheme.typography.labelSmall,
-                        color = CosmicSuccess,
+                        color = ArchiveSuccess,
                         fontSize = 11.sp,
                     )
                     Text(
                         text = download.sizeDisplay,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MistFaint,
+                        color = ArchiveTextMuted,
                         fontSize = 11.sp,
                     )
                 }
@@ -407,7 +423,7 @@ private fun CompletedDownloadCard(
                 Icon(
                     Icons.Outlined.Delete,
                     contentDescription = "Delete download",
-                    tint = CosmicError.copy(alpha = 0.7f),
+                    tint = ArchiveError.copy(alpha = 0.7f),
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -432,24 +448,27 @@ private fun EmptyDownloadsState() {
             Icons.Outlined.CloudDownload,
             contentDescription = null,
             modifier = Modifier.size(72.dp),
-            tint = MistFaint,
+            tint = ArchiveTextMuted,
         )
 
         Spacer(modifier = Modifier.height(20.dp))
 
         Text(
-            text = "No Downloads",
+            text = CopyStyleGuide.Downloads.DOWNLOADS_NAV,
             style = MaterialTheme.typography.titleMedium,
-            color = Starlight,
+            color = ArchiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
 
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Download audiobooks from your Library for offline listening",
+            text = CopyEngine.getEmptyStateFlavor(
+                CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_RITUAL,
+                CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_UNHINGED,
+            ) ?: CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_NORMAL,
             style = MaterialTheme.typography.bodySmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
             textAlign = TextAlign.Center,
         )
     }

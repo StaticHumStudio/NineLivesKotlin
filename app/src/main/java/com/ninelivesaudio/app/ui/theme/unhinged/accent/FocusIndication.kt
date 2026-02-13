@@ -3,12 +3,9 @@ package com.ninelivesaudio.app.ui.theme.unhinged.accent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.indication
-import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -19,8 +16,6 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.theme.unhinged.ImpossibleAccent
-import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
-import com.ninelivesaudio.app.ui.theme.unhinged.isUnhingedThemeActive
 
 /**
  * Archive Focus Indication
@@ -41,26 +36,16 @@ fun Modifier.archiveFocusIndication(
     shape: Shape = RoundedCornerShape(8.dp),
     borderWidth: Dp = 2.dp
 ): Modifier = composed {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     this
         .focusable(interactionSource = interactionSource)
         .then(
-            if (isFocused && isUnhinged) {
+            if (isFocused) {
                 Modifier.border(
                     width = borderWidth,
                     color = ImpossibleAccent,
-                    shape = shape
-                )
-            } else if (isFocused) {
-                // Normal mode: use primary color for focus
-                Modifier.border(
-                    width = borderWidth,
-                    color = MaterialTheme.colorScheme.primary,
                     shape = shape
                 )
             } else {
@@ -85,20 +70,11 @@ fun Modifier.selectionEdgeHighlight(
     isSelected: Boolean,
     edgeWidth: Dp = 3.dp
 ): Modifier = composed {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-
     if (isSelected) {
-        val accentColor = if (isUnhinged) {
-            ImpossibleAccent
-        } else {
-            MaterialTheme.colorScheme.primary
-        }
-
         this.border(
             BorderStroke(
                 width = edgeWidth,
-                color = accentColor
+                color = ImpossibleAccent
             ),
             shape = RoundedCornerShape(
                 topStart = 0.dp,
@@ -126,14 +102,10 @@ fun rememberActiveIndicatorColor(
     isActive: Boolean,
     indicatorColor: Color? = null
 ): Color {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-
     return when {
         !isActive -> Color.Transparent
         indicatorColor != null -> indicatorColor
-        isUnhinged -> ImpossibleAccent
-        else -> MaterialTheme.colorScheme.primary
+        else -> ImpossibleAccent
     }
 }
 
@@ -154,11 +126,8 @@ fun rememberProgressAccentColor(
     progress: Float,
     showAccent: Boolean = true
 ): Color? {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
-
-    return if (isUnhinged && showAccent && progress > 0f) {
-        ImpossibleAccent.copy(alpha = 0.2f) // Very subtle overlay
+    return if (showAccent && progress > 0f) {
+        ImpossibleAccent.copy(alpha = 0.2f)
     } else {
         null
     }

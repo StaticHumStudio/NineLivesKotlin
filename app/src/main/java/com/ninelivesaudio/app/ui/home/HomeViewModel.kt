@@ -37,6 +37,7 @@ class HomeViewModel @Inject constructor(
         val progressPercent: Double,
         val isMostRecent: Boolean,
         val isDownloaded: Boolean,
+        val isBookmarked: Boolean,
         val hoursListened: Double,
         val lifeIndex: Int,       // 0–8
         val lifeLabel: String,    // "LIFE I" … "LIFE IX"
@@ -89,34 +90,13 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Secret easter egg: Toggle Unhinged Mode by tapping logo 9 times.
-     * Enables the Archive Beneath theme and atmospheric features.
+     * Secret easter egg: Tap logo 9 times to acknowledge the Vault.
+     * The Archive Beneath is always active — this is a lore unlock.
      */
-    fun toggleUnhingedMode() {
-        Log.d(TAG, "toggleUnhingedMode: Easter egg triggered!")
-        viewModelScope.launch {
-            val currentSettings = settingsManager.currentSettings
-            Log.d(TAG, "toggleUnhingedMode: Current state - unhingedThemeEnabled=${currentSettings.unhingedThemeEnabled}")
-
-            settingsManager.updateSettings { settings ->
-                val newState = !settings.unhingedThemeEnabled
-                Log.d(TAG, "toggleUnhingedMode: Toggling to newState=$newState")
-
-                settings.copy(
-                    unhingedThemeEnabled = newState,
-                    // Enable all features when activating
-                    anomaliesEnabled = if (newState) true else settings.anomaliesEnabled,
-                    whispersEnabled = if (newState) true else settings.whispersEnabled,
-                    copyMode = if (newState) "Unhinged" else settings.copyMode,
-                ).also { updatedSettings ->
-                    Log.d(TAG, "toggleUnhingedMode: Updated settings - " +
-                            "unhingedThemeEnabled=${updatedSettings.unhingedThemeEnabled}, " +
-                            "anomaliesEnabled=${updatedSettings.anomaliesEnabled}, " +
-                            "whispersEnabled=${updatedSettings.whispersEnabled}, " +
-                            "copyMode=${updatedSettings.copyMode}")
-                }
-            }
-        }
+    fun triggerVaultEasterEgg() {
+        Log.d(TAG, "triggerVaultEasterEgg: THE VAULT ACKNOWLEDGES YOU")
+        // The Archive does not toggle. It simply... notices.
+        // Future: unlock hidden lore, achievement, or atmospheric event.
     }
 
     private fun processRecentlyPlayed(results: List<RecentlyPlayedResult>) {
@@ -130,9 +110,10 @@ class HomeViewModel @Inject constructor(
                 displayTitle = book.title,
                 displayAuthor = book.author ?: "Unknown Author",
                 coverPath = book.coverPath,
-                progressPercent = (book.progress * 100).coerceIn(0.0, 100.0),
+                progressPercent = (if (book.progress <= 1.0) book.progress * 100.0 else book.progress).coerceIn(0.0, 100.0),
                 isMostRecent = idx == 0,
                 isDownloaded = book.isDownloaded == 1,
+                isBookmarked = false, // TODO: wire to bookmark data when available
                 hoursListened = currentTimeHours,
                 lifeIndex = idx,
                 lifeLabel = "LIFE ${toRoman(idx + 1)}",

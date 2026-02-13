@@ -30,6 +30,10 @@ class ConnectivityMonitor @Inject constructor(
 
     private var pingJob: Job? = null
 
+    // Guard against concurrent reachability checks during network flaps.
+    // Each new request cancels any in-flight check so only the latest wins.
+    private var reachabilityJob: Job? = null
+
     // ─── State ────────────────────────────────────────────────────────────
 
     private val _isOnline = MutableStateFlow(false)
@@ -56,8 +60,8 @@ class ConnectivityMonitor @Inject constructor(
         override fun onAvailable(network: Network) {
             _isOnline.value = true
             updateConnectionStatus()
-            // Check server reachability on reconnect
-            scope.launch { checkServerReachable() }
+            // Check server reachability on reconnect (deduplicated)
+            launchReachabilityCheck()
         }
 
         override fun onLost(network: Network) {
@@ -79,10 +83,20 @@ class ConnectivityMonitor @Inject constructor(
                 _isOnline.value = hasInternet
                 updateConnectionStatus()
                 if (hasInternet) {
-                    scope.launch { checkServerReachable() }
+                    launchReachabilityCheck()
                 }
             }
         }
+    }
+
+    /**
+     * Cancel any in-flight reachability check and start a fresh one.
+     * Prevents unbounded concurrent server pings during network flaps
+     * (e.g., WiFi → cellular handoff firing onAvailable + onCapabilitiesChanged).
+     */
+    private fun launchReachabilityCheck() {
+        reachabilityJob?.cancel()
+        reachabilityJob = scope.launch { checkServerReachable() }
     }
 
     // ─── Start / Stop ─────────────────────────────────────────────────────
@@ -126,8 +140,8 @@ class ConnectivityMonitor @Inject constructor(
         _isOnline.value = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         updateConnectionStatus()
 
-        // Initial server check
-        scope.launch { checkServerReachable() }
+        // Initial server check (deduplicated)
+        launchReachabilityCheck()
     }
 
     suspend fun checkServerReachable(): Boolean {

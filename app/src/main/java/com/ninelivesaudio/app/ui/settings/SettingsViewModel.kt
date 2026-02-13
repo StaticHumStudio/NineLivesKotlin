@@ -48,8 +48,10 @@ class SettingsViewModel @Inject constructor(
         val settingsFilePath: String = "",
 
         // Archive Configuration
-        val unhingedThemeEnabled: Boolean = false,
         val sessionCount: Int = 0,
+        val anomaliesEnabled: Boolean = true,
+        val whispersEnabled: Boolean = true,
+        val reduceMotionRequested: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -65,23 +67,25 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
-        // Observe Unhinged Mode to update version display and settings
+        // App version — always Archive Beneath
         viewModelScope.launch {
             settingsManager.settings.collect { settings ->
                 _uiState.update {
-                    it.copy(
-                        appVersion = getAppVersion(settings.unhingedThemeEnabled),
-                        unhingedThemeEnabled = settings.unhingedThemeEnabled
-                    )
+                    it.copy(appVersion = getAppVersion())
                 }
             }
         }
 
-        // Observe unhinged settings for session count
+        // Observe unhinged settings for session count + feature preferences
         viewModelScope.launch {
             unhingedRepository.settingsFlow.collect { unhingedSettings ->
                 _uiState.update {
-                    it.copy(sessionCount = unhingedSettings.sessionCount)
+                    it.copy(
+                        sessionCount = unhingedSettings.sessionCount,
+                        anomaliesEnabled = unhingedSettings.anomaliesEnabled,
+                        whispersEnabled = unhingedSettings.whispersEnabled,
+                        reduceMotionRequested = unhingedSettings.reduceMotionRequested,
+                    )
                 }
             }
         }
@@ -102,7 +106,7 @@ class SettingsViewModel @Inject constructor(
                 username = settings.username,
                 allowSelfSignedCertificates = settings.allowSelfSignedCertificates,
                 settingsFilePath = settingsManager.settingsFilePath,
-                appVersion = getAppVersion(settings.unhingedThemeEnabled),
+                appVersion = getAppVersion(),
             )
         }
 
@@ -284,27 +288,26 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(successMessage = null) }
     }
 
-    fun toggleUnhingedTheme() {
+    fun toggleAnomalies() {
         viewModelScope.launch {
-            settingsManager.updateSettings { settings ->
-                val newState = !settings.unhingedThemeEnabled
-                settings.copy(
-                    unhingedThemeEnabled = newState,
-                    anomaliesEnabled = if (newState) true else settings.anomaliesEnabled,
-                    whispersEnabled = if (newState) true else settings.whispersEnabled,
-                    copyMode = if (newState) "Unhinged" else settings.copyMode,
-                )
-            }
+            unhingedRepository.updateSettings { it.copy(anomaliesEnabled = !it.anomaliesEnabled) }
+        }
+    }
+
+    fun toggleWhispers() {
+        viewModelScope.launch {
+            unhingedRepository.updateSettings { it.copy(whispersEnabled = !it.whispersEnabled) }
+        }
+    }
+
+    fun toggleReduceMotion() {
+        viewModelScope.launch {
+            unhingedRepository.updateSettings { it.copy(reduceMotionRequested = !it.reduceMotionRequested) }
         }
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────
 
-    private fun getAppVersion(isUnhinged: Boolean): String {
-        return if (isUnhinged) {
-            "Į̷̙̑̚n̷̲̙͘f̷̰̎̄̂̚i̸̗͎̟̤͛̑̊͐͆̋͑͐̍̕n̶͍͂͊̃i̸̳͂́t̸̡̡̙̪̤̠̀͂͗͜ŷ̴̛̭̪͉̪͕̻̻͙̿̀̅̑͑͛̓͑͜"
-        } else {
-            "1.0.0"
-        }
-    }
+    private fun getAppVersion(): String =
+        "Į̷̙̑̚n̷̲̙͘f̷̰̎̄̂̚i̸̗͎̟̤͛̑̊͐͆̋͑͐̍̕n̶͍͂͊̃i̸̳͂́t̸̡̡̙̪̤̠̀͂͗͜ŷ̴̛̭̪͉̪͕̻̻͙̿̀̅̑͑͛̓͑͜"
 }

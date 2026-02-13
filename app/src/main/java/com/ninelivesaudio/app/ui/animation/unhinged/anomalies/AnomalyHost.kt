@@ -132,7 +132,10 @@ private fun AnomalyScheduler(
     onTriggerAnomaly: (IAnomalyEffect) -> Unit
 ) {
     val config = remember { AnomalyConfig() }
-    var lastTriggerTime by remember { mutableStateOf(0L) }
+    // Initialize to current time so the scheduler waits for the first cooldown
+    // before triggering. Previous value of 0L caused an immediate fire on every
+    // screen entry because the condition (lastTriggerTime == 0L) was always true.
+    var lastTriggerTime by remember { mutableStateOf(System.currentTimeMillis()) }
     var nextTriggerDelay by remember {
         mutableStateOf(
             kotlin.random.Random(config.randomSeed).nextLong(
@@ -151,7 +154,7 @@ private fun AnomalyScheduler(
             val now = System.currentTimeMillis()
 
             // Check if enough time has passed since last anomaly
-            if (lastTriggerTime == 0L || (now - lastTriggerTime) >= nextTriggerDelay) {
+            if ((now - lastTriggerTime) >= nextTriggerDelay) {
                 // Trigger a random anomaly
                 val anomaly = selectRandomAnomaly(config.randomSeed + now)
                 onTriggerAnomaly(anomaly)

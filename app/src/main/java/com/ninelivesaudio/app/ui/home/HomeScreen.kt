@@ -3,41 +3,40 @@ package com.ninelivesaudio.app.ui.home
 import android.util.Log
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.Image
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CloudDownload
-import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.painterResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.R
+import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.components.CornerSigils
 import com.ninelivesaudio.app.ui.components.CosmicProgressRing
 import com.ninelivesaudio.app.ui.components.StatusPill
-import com.ninelivesaudio.app.ui.theme.*
+import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
+import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
+import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 private const val TAG = "HomeScreen"
 
@@ -54,36 +53,130 @@ fun HomeScreen(
         return
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+    AnomalyHost(
+        currentContext = AnomalyTriggerContext.HOME,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        // ─── Header ──────────────────────────────────────────────────────
-        NineLivesHeader(
-            totalListeningTime = uiState.totalListeningTimeText,
-            connectionStatus = uiState.connectionStatus,
-            onSecretUnlocked = { viewModel.toggleUnhingedMode() },
-        )
-
-        // ─── Nine Lives List ─────────────────────────────────────────────
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .background(ArchiveVoidDeep),
         ) {
-            itemsIndexed(
-                items = uiState.lives,
-                key = { _, item -> item.audioBookId },
-            ) { _, life ->
-                NineLivesCard(
-                    item = life,
-                    onClick = { onNavigateToBookDetail(life.audioBookId) },
+            // ─── Header ──────────────────────────────────────────────────────
+            NineLivesHeader(
+                totalListeningTime = uiState.totalListeningTimeText,
+                connectionStatus = uiState.connectionStatus,
+                onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
+            )
+
+            // ─── Nine Lives 3×3 Vault Grid ─────────────────────────────────
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp),
+                contentPadding = PaddingValues(bottom = 80.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                userScrollEnabled = false,
+            ) {
+                itemsIndexed(
+                    items = uiState.lives,
+                    key = { _, item -> item.audioBookId },
+                ) { index, life ->
+                    HomeGridTile(
+                        item = life,
+                        index = index,
+                        onClick = { onNavigateToBookDetail(life.audioBookId) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  3×3 Grid Tile — Cover + ContainmentFrame + CosmicProgressRing + Sigils
+// ═════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun HomeGridTile(
+    item: HomeViewModel.NineLivesItem,
+    index: Int,
+    onClick: () -> Unit,
+) {
+    val animatedProgress by animateFloatAsState(
+        targetValue = (item.progressPercent / 100f).toFloat(),
+        animationSpec = tween(durationMillis = 800),
+        label = "progress_$index",
+    )
+
+    // Deterministic misalignment: the center tile (index 4) gets a subtle offset
+    val misalignOffset = if (index == 4) IntOffset(2, -2) else IntOffset.Zero
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .offset { misalignOffset }
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Cover art (fills the tile with inner padding for ring clearance)
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .padding(6.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(ArchiveVoidElevated),
+        ) {
+            if (!item.coverPath.isNullOrEmpty()) {
+                AsyncImage(
+                    model = item.coverPath,
+                    contentDescription = item.displayTitle,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
                 )
             }
         }
+
+        // Containment frame overlay
+        ContainmentFrame(
+            modifier = Modifier.matchParentSize(),
+            inset = 2.dp,
+            cornerRadius = 14.dp,
+        )
+
+        // Progress ring overlay
+        CosmicProgressRing(
+            progress = animatedProgress,
+            modifier = Modifier.matchParentSize().padding(3.dp),
+            strokeWidth = 4.dp,
+            progressColor = GoldFilament,
+            trackColor = ArchiveOutline.copy(alpha = 0.3f),
+            glowStrength = 0.4f,
+            showEndCapDot = false,
+        )
+
+        // Corner sigils
+        CornerSigils(
+            downloaded = item.isDownloaded,
+            bookmarked = item.isBookmarked,
+            modifier = Modifier.matchParentSize(),
+        )
+
+        // Life label at bottom
+        Text(
+            text = item.lifeLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = GoldFilament,
+            fontWeight = FontWeight.Bold,
+            fontSize = 9.sp,
+            letterSpacing = 1.sp,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 10.dp),
+        )
     }
 }
 
@@ -116,7 +209,7 @@ private fun NineLivesHeader(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Cosmic cat-eye logo - SECRET: Tap 9 times to unlock Unhinged Mode
+        // Cosmic cat-eye logo — tap 9 times for vault acknowledgment
         Image(
             painter = painterResource(R.drawable.nine_lives_logo),
             contentDescription = "Nine Lives Audio",
@@ -127,19 +220,14 @@ private fun NineLivesHeader(
                     interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                 ) {
                     val currentTime = System.currentTimeMillis()
-                    // Reset if more than 2 seconds between taps
                     if (currentTime - lastTapTime > 2000) {
                         tapCount = 1
-                        Log.d(TAG, "NineLivesHeader: Tap counter reset (timeout). tapCount=1")
                     } else {
                         tapCount++
-                        Log.d(TAG, "NineLivesHeader: Logo tapped. tapCount=$tapCount")
                     }
                     lastTapTime = currentTime
-
-                    // Nine taps unlocks the Archive Beneath
                     if (tapCount == 9) {
-                        Log.d(TAG, "NineLivesHeader: SECRET UNLOCKED! Calling onSecretUnlocked()")
+                        Log.d(TAG, "THE VAULT ACKNOWLEDGES YOU")
                         onSecretUnlocked()
                         tapCount = 0
                     }
@@ -148,23 +236,36 @@ private fun NineLivesHeader(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // "NINE LIVES" heading
         Text(
             text = "NINE LIVES",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             letterSpacing = 4.sp,
-            color = SigilGold,
+            color = GoldFilament,
             textAlign = TextAlign.Center,
         )
 
-        // Total listening time
+        val homeSubtitle = CopyEngine.getSubtitle(
+            CopyStyleGuide.Home.HOME_NAV_RITUAL,
+            CopyStyleGuide.Home.HOME_NAV_UNHINGED,
+        )
+        if (homeSubtitle != null) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = homeSubtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = ArchiveTextMuted,
+                textAlign = TextAlign.Center,
+                fontSize = 10.sp,
+            )
+        }
+
         if (totalListeningTime.isNotEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "Total time given: $totalListeningTime",
                 style = MaterialTheme.typography.bodySmall,
-                color = Mist,
+                color = ArchiveTextSecondary,
                 textAlign = TextAlign.Center,
             )
         }
@@ -174,201 +275,7 @@ private fun NineLivesHeader(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  Nine Lives Card — A single "life" entry
-// ═════════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun NineLivesCard(
-    item: HomeViewModel.NineLivesItem,
-    onClick: () -> Unit,
-) {
-    val energyColor = item.cosmicEnergyColor
-    val lifeColor = CosmicEnergyColors.getOrElse(item.lifeIndex) { SigilGold }
-
-    // Animate progress ring
-    val animatedProgress by animateFloatAsState(
-        targetValue = (item.progressPercent / 100f).toFloat(),
-        animationSpec = tween(durationMillis = 800),
-        label = "progress_${item.lifeIndex}",
-    )
-
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        color = if (item.isMostRecent) CardBg.copy(alpha = 1.15f) else CardBg,
-        tonalElevation = if (item.isMostRecent) 2.dp else 0.dp,
-        border = androidx.compose.foundation.BorderStroke(1.dp, StrokeMuted),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // ── Cover Art with Energy Border ────────────────────────────
-            Box(
-                modifier = Modifier.size(64.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                // Energy border glow
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(
-                                    energyColor.copy(alpha = 0.6f),
-                                    energyColor.copy(alpha = 0.2f),
-                                ),
-                            )
-                        ),
-                )
-
-                // Cover image
-                Box(
-                    modifier = Modifier
-                        .size(58.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(VoidElevated),
-                ) {
-                    if (!item.coverPath.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = item.coverPath,
-                            contentDescription = item.displayTitle,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-
-                    // Download indicator dot
-                    if (item.isDownloaded) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(2.dp)
-                                .size(14.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(CosmicInfo.copy(alpha = 0.9f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Outlined.CloudDownload,
-                                contentDescription = "Downloaded",
-                                tint = Starlight,
-                                modifier = Modifier.size(10.dp),
-                            )
-                        }
-                    }
-                }
-            }
-
-            // ── Info Section ────────────────────────────────────────────
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                // Title
-                Text(
-                    text = item.displayTitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Starlight,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-
-                // Author
-                Text(
-                    text = item.displayAuthor,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Mist,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    fontSize = 12.sp,
-                )
-
-                Spacer(modifier = Modifier.height(2.dp))
-
-                // Life label + Weight row
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Life label badge
-                    Text(
-                        text = item.lifeLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = lifeColor,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp,
-                        fontSize = 10.sp,
-                    )
-
-                    // Weight badge
-                    Text(
-                        text = item.weight,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when (item.weight) {
-                            "HEAVY" -> SigilGoldDim
-                            "MEDIUM" -> Mist
-                            else -> MistFaint
-                        },
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 10.sp,
-                    )
-
-                    // Spacer pushes last-played to the right if there's room
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    // Last played
-                    if (item.lastPlayedLabel.isNotEmpty()) {
-                        Text(
-                            text = item.lastPlayedLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MistFaint,
-                            fontSize = 10.sp,
-                        )
-                    }
-                }
-            }
-
-            // ── Progress Ring ───────────────────────────────────────────
-            Box(
-                modifier = Modifier.size(48.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                CosmicProgressRing(
-                    progress = animatedProgress,
-                    progressColor = lifeColor,
-                    trackColor = VoidElevated,
-                    modifier = Modifier.size(44.dp),
-                    strokeWidth = 4.dp,
-                    glowStrength = 0.55f,
-                    innerShadowStrength = 0.6f,
-                    showEndCapDot = true,
-                )
-
-                // Time given text inside ring
-                Text(
-                    text = item.timeGiven,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Starlight,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-//  Empty State — "Begin Your Journey"
+//  Empty State — "The Archive Awaits"
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -378,7 +285,7 @@ private fun EmptyHomeState(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(ArchiveVoidDeep),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -395,25 +302,28 @@ private fun EmptyHomeState(
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             letterSpacing = 3.sp,
-            color = SigilGold,
+            color = GoldFilament,
             textAlign = TextAlign.Center,
         )
 
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Begin your journey",
+            text = "The Archive stands empty",
             style = MaterialTheme.typography.titleMedium,
-            color = Mist,
+            color = ArchiveTextSecondary,
             textAlign = TextAlign.Center,
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "Start listening to track your cosmic progress",
+            text = CopyEngine.getEmptyStateFlavor(
+                CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
+                CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
+            ) ?: "Begin listening to fill these halls with your progress",
             style = MaterialTheme.typography.bodySmall,
-            color = MistFaint,
+            color = ArchiveTextMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 48.dp),
         )
@@ -423,13 +333,13 @@ private fun EmptyHomeState(
         Button(
             onClick = onNavigateToLibrary,
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
+                containerColor = GoldFilament,
+                contentColor = ArchiveVoidDeep,
             ),
             shape = RoundedCornerShape(12.dp),
         ) {
             Text(
-                text = "Go to Library",
+                text = "Enter The Archive",
                 fontWeight = FontWeight.SemiBold,
             )
         }

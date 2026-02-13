@@ -204,7 +204,6 @@ class DownloadManager @Inject constructor(
         download = download.copy(totalBytes = totalBytes)
 
         var downloadedBytes = 0L
-        var retryCount = 0
         val maxRetries = item.maxRetries
 
         // Download each audio file
@@ -218,80 +217,85 @@ class DownloadManager @Inject constructor(
             val finalPath = File(downloadDir, fileName)
             val partPath = File(downloadDir, "$fileName.part")
 
-            // Snapshot byte count before this file — used to revert on retry
-            val bytesBeforeFile = downloadedBytes
+            // Skip if already downloaded
+            if (finalPath.exists() && finalPath.length() > 0) {
+                downloadedBytes += finalPath.length()
+                emitProgress(download.id, downloadedBytes, totalBytes)
+                continue
+            }
 
-            try {
-                // Skip if already downloaded
-                if (finalPath.exists() && finalPath.length() > 0) {
-                    downloadedBytes += finalPath.length()
-                    emitProgress(download.id, downloadedBytes, totalBytes)
-                    continue
-                }
+            // Retry loop for the CURRENT file. The old code used `continue`
+            // in the catch block which advanced the for-loop index, skipping
+            // the failed file instead of retrying it.
+            var retryCount = 0
+            var fileSuccess = false
+            while (!fileSuccess) {
+                // Snapshot byte count before this attempt — used to revert on retry
+                val bytesBeforeAttempt = downloadedBytes
 
-                // Stream the file
-                val response = api.getAudioFileStream(audioBook.id, audioFile.ino)
-                if (!response.isSuccessful || response.body() == null) {
-                    throw Exception("HTTP ${response.code()}: Failed to download $fileName")
-                }
+                try {
+                    // Stream the file
+                    val response = api.getAudioFileStream(audioBook.id, audioFile.ino)
+                    if (!response.isSuccessful || response.body() == null) {
+                        throw Exception("HTTP ${response.code()}: Failed to download $fileName")
+                    }
 
-                val body = response.body()!!
-                partPath.outputStream().buffered().use { output ->
-                    body.byteStream().use { input ->
-                        val buffer = ByteArray(BUFFER_SIZE)
-                        var bytesRead: Int
+                    response.body()!!.use { body ->
+                        partPath.outputStream().buffered().use { output ->
+                            body.byteStream().use { input ->
+                                val buffer = ByteArray(BUFFER_SIZE)
+                                var bytesRead: Int
 
-                        while (input.read(buffer).also { bytesRead = it } > 0) {
-                            currentCoroutineContext().ensureActive()
-                            output.write(buffer, 0, bytesRead)
-                            downloadedBytes += bytesRead
+                                while (input.read(buffer).also { bytesRead = it } > 0) {
+                                    currentCoroutineContext().ensureActive()
+                                    output.write(buffer, 0, bytesRead)
+                                    downloadedBytes += bytesRead
 
-                            // Throttled progress updates
-                            if (downloadedBytes % PROGRESS_UPDATE_INTERVAL < BUFFER_SIZE) {
-                                download = download.copy(downloadedBytes = downloadedBytes)
-                                downloadItemDao.upsert(download.toEntity())
-                                emitProgress(download.id, downloadedBytes, totalBytes)
+                                    // Throttled progress updates
+                                    if (downloadedBytes % PROGRESS_UPDATE_INTERVAL < BUFFER_SIZE) {
+                                        download = download.copy(downloadedBytes = downloadedBytes)
+                                        downloadItemDao.upsert(download.toEntity())
+                                        emitProgress(download.id, downloadedBytes, totalBytes)
+                                    }
+                                }
                             }
                         }
                     }
+
+                    // Atomic rename .part → final
+                    if (finalPath.exists()) finalPath.delete()
+                    partPath.renameTo(finalPath)
+                    fileSuccess = true
+
+                } catch (e: CancellationException) {
+                    // Clean up partial file
+                    try { partPath.delete() } catch (_: Exception) {}
+                    // Mark as paused (not failed)
+                    download = download.copy(status = DownloadStatus.Paused, downloadedBytes = downloadedBytes)
+                    downloadItemDao.upsert(download.toEntity())
+                    return
+                } catch (e: Exception) {
+                    try { partPath.delete() } catch (_: Exception) {}
+                    downloadedBytes = bytesBeforeAttempt
+
+                    retryCount++
+                    if (retryCount < maxRetries) {
+                        // Exponential backoff: 10s, 20s, 40s
+                        val delayMs = (2.0.pow(retryCount) * 5_000).toLong()
+                        delay(delayMs)
+                        // Loop will retry the same file
+                    } else {
+                        // Fail the entire download
+                        download = download.copy(
+                            status = DownloadStatus.Failed,
+                            errorMessage = "$fileName: ${e.message}",
+                            downloadedBytes = downloadedBytes,
+                        )
+                        downloadItemDao.upsert(download.toEntity())
+                        _downloadFailed.tryEmit(download)
+                        return
+                    }
                 }
-
-                // Atomic rename .part → final
-                if (finalPath.exists()) finalPath.delete()
-                partPath.renameTo(finalPath)
-
-                // Reset retry count on success
-                retryCount = 0
-
-            } catch (e: CancellationException) {
-                // Clean up partial file
-                try { partPath.delete() } catch (_: Exception) {}
-                // Mark as paused (not failed)
-                download = download.copy(status = DownloadStatus.Paused, downloadedBytes = downloadedBytes)
-                downloadItemDao.upsert(download.toEntity())
-                return
-            } catch (e: Exception) {
-                try { partPath.delete() } catch (_: Exception) {}
-
-                retryCount++
-                if (retryCount < maxRetries) {
-                    // Exponential backoff: 10s, 20s, 40s
-                    val delayMs = (2.0.pow(retryCount) * 5_000).toLong()
-                    delay(delayMs)
-                    // Revert byte count to before this file attempt
-                    downloadedBytes = bytesBeforeFile
-                    continue
-                }
-
-                // Fail the entire download
-                download = download.copy(
-                    status = DownloadStatus.Failed,
-                    errorMessage = "$fileName: ${e.message}",
-                    downloadedBytes = downloadedBytes,
-                )
-                downloadItemDao.upsert(download.toEntity())
-                _downloadFailed.tryEmit(download)
-                return
             }
         }
 

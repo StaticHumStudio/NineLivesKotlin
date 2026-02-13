@@ -1,7 +1,9 @@
 package com.ninelivesaudio.app.ui.navigation
 
+import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -25,7 +27,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val BOOK_DETAIL = "book_detail/{bookId}"
 
-    fun bookDetail(bookId: String) = "book_detail/$bookId"
+    fun bookDetail(bookId: String) = "book_detail/${Uri.encode(bookId)}"
 }
 
 @Composable
@@ -83,7 +85,11 @@ fun NineLivesNavHost(
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToPlayer = {
                     navController.navigate(Routes.PLAYER) {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
+                        }
                         launchSingleTop = true
+                        restoreState = true
                     }
                 }
             )

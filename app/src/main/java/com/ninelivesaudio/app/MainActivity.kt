@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,11 +19,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.collectAsState
+
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -31,6 +34,9 @@ import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import com.ninelivesaudio.app.ui.components.CosmicBackgroundGradient
 import com.ninelivesaudio.app.ui.components.MiniPlayer
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperContext
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperHost
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperOnEnter
 import com.ninelivesaudio.app.ui.navigation.BottomNavBar
 import com.ninelivesaudio.app.ui.navigation.LeftNavRail
 import com.ninelivesaudio.app.ui.navigation.NineLivesNavHost
@@ -71,7 +77,19 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             // Observe settings for Unhinged Mode
-            val appSettings by settingsManager.settings.collectAsState()
+            val appSettings by settingsManager.settings.collectAsStateWithLifecycle()
+
+            // Detect system reduce motion preference
+            val systemReduceMotion = try {
+                Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+            } catch (_: Exception) { false }
+
+            // Observe DataStore-persisted unhinged settings (includes user's reduce motion toggle)
+            val dataStoreSettings by unhingedRepository.settingsFlow
+                .collectAsStateWithLifecycle(initialValue = UnhingedSettings.Default)
+
+            // Merge: use DataStore reduce motion OR system reduce motion
+            val reduceMotion = dataStoreSettings.reduceMotionRequested || systemReduceMotion
 
             // Convert to UnhingedSettings
             val unhingedSettings = UnhingedSettings.fromAppSettings(
@@ -79,14 +97,14 @@ class MainActivity : ComponentActivity() {
                 anomaliesEnabled = appSettings.anomaliesEnabled,
                 whispersEnabled = appSettings.whispersEnabled,
                 copyModeString = appSettings.copyMode,
-                reduceMotionRequested = false
+                reduceMotionRequested = reduceMotion
             )
 
             Log.d(TAG, "Recomposing with unhingedSettings: " +
-                    "themeEnabled=${unhingedSettings.unhingedThemeEnabled}, " +
                     "anomalies=${unhingedSettings.anomaliesEnabled}, " +
                     "whispers=${unhingedSettings.whispersEnabled}, " +
-                    "copyMode=${unhingedSettings.copyMode}")
+                    "copyMode=${unhingedSettings.copyMode}, " +
+                    "reduceMotion=${unhingedSettings.reduceMotionRequested}")
 
             NineLivesAudioTheme(unhingedSettings = unhingedSettings) {
                 val navController = rememberNavController()
@@ -95,46 +113,56 @@ class MainActivity : ComponentActivity() {
                 val screenWidthDp = LocalConfiguration.current.screenWidthDp
                 val useRailNavigation = screenWidthDp >= 720
 
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    bottomBar = {
-                        if (!useRailNavigation) {
-                            BottomNavBar(navController = navController)
-                        }
-                    }
-                ) { innerPadding ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
-                    ) {
-                        if (useRailNavigation) {
-                            LeftNavRail(
-                                navController = navController,
-                                modifier = Modifier.width(72.dp)
-                            )
-                        }
+                // WhisperHost wraps all content to show atmospheric whisper overlays
+                WhisperHost(modifier = Modifier.fillMaxSize()) {
+                    // Trigger a whisper on app open
+                    WhisperOnEnter(WhisperContext.APP_OPENED)
 
-                        // Main content area with background + screens
-                        Box(modifier = Modifier.weight(1f)) {
-                            // Cosmic gradient background (behind all content)
-                            CosmicBackgroundGradient()
-
-                            // Content stack: NavHost + MiniPlayer overlay
-                            Column(modifier = Modifier.fillMaxSize()) {
-                                NineLivesNavHost(
+                    Scaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        bottomBar = {
+                            if (!useRailNavigation) {
+                                BottomNavBar(navController = navController)
+                            }
+                        }
+                    ) { innerPadding ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                        ) {
+                            if (useRailNavigation) {
+                                LeftNavRail(
                                     navController = navController,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.width(72.dp)
                                 )
-                                if (currentRoute != Routes.PLAYER) {
-                                    MiniPlayer(
-                                        playbackManager = playbackManager,
-                                        onNavigateToPlayer = {
-                                            navController.navigate(Routes.PLAYER) {
-                                                launchSingleTop = true
-                                            }
-                                        }
+                            }
+
+                            // Main content area with background + screens
+                            Box(modifier = Modifier.weight(1f)) {
+                                // Cosmic gradient background (behind all content)
+                                CosmicBackgroundGradient()
+
+                                // Content stack: NavHost + MiniPlayer overlay
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    NineLivesNavHost(
+                                        navController = navController,
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    if (currentRoute != Routes.PLAYER) {
+                                        MiniPlayer(
+                                            playbackManager = playbackManager,
+                                            onNavigateToPlayer = {
+                                                navController.navigate(Routes.PLAYER) {
+                                                    popUpTo(navController.graph.findStartDestination().id) {
+                                                        saveState = true
+                                                    }
+                                                    launchSingleTop = true
+                                                    restoreState = true
+                                                }
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }

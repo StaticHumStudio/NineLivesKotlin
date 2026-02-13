@@ -3,20 +3,15 @@ package com.ninelivesaudio.app.ui.theme.unhinged.surfaces
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
 import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilamentGlow
-import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 import com.ninelivesaudio.app.ui.theme.unhinged.StoneAsh
-import com.ninelivesaudio.app.ui.theme.unhinged.isUnhingedThemeActive
 
 /**
  * Filament Divider — Surface Language Composable
@@ -44,53 +39,36 @@ fun FilamentDivider(
     color: Color? = null,
     withGlow: Boolean = false
 ) {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val isUnhinged = unhingedSettings.isUnhingedThemeActive
+    val lineColor = color ?: StoneAsh
+    val glowColor = GoldFilamentGlow.copy(alpha = 0.15f)
 
-    if (isUnhinged) {
-        // Unhinged: Filament aesthetic with optional glow
-        val lineColor = color ?: StoneAsh
-        val glowColor = GoldFilamentGlow.copy(alpha = 0.15f)
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(if (withGlow) thickness + 2.dp else thickness)
+    ) {
+        val y = size.height / 2f
 
-        Canvas(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(if (withGlow) thickness + 2.dp else thickness)
-        ) {
-            val y = size.height / 2f
-
-            // Draw glow layer if enabled (blurred effect simulated with wider alpha line)
-            if (withGlow) {
-                // Outer glow (very faint, wider)
-                drawLine(
-                    color = glowColor.copy(alpha = 0.05f),
-                    start = Offset(0f, y - 1.dp.toPx()),
-                    end = Offset(size.width, y - 1.dp.toPx()),
-                    strokeWidth = 3.dp.toPx()
-                )
-                // Inner glow (slightly brighter, narrower)
-                drawLine(
-                    color = glowColor.copy(alpha = 0.1f),
-                    start = Offset(0f, y),
-                    end = Offset(size.width, y),
-                    strokeWidth = 1.5.dp.toPx()
-                )
-            }
-
-            // Main filament line (hairline)
+        if (withGlow) {
             drawLine(
-                color = lineColor,
+                color = glowColor.copy(alpha = 0.05f),
+                start = Offset(0f, y - 1.dp.toPx()),
+                end = Offset(size.width, y - 1.dp.toPx()),
+                strokeWidth = 3.dp.toPx()
+            )
+            drawLine(
+                color = glowColor.copy(alpha = 0.1f),
                 start = Offset(0f, y),
                 end = Offset(size.width, y),
-                strokeWidth = thickness.toPx()
+                strokeWidth = 1.5.dp.toPx()
             )
         }
-    } else {
-        // Normal: Standard Material 3 divider
-        HorizontalDivider(
-            modifier = modifier,
-            thickness = thickness,
-            color = color ?: MaterialTheme.colorScheme.outlineVariant
+
+        drawLine(
+            color = lineColor,
+            start = Offset(0f, y),
+            end = Offset(size.width, y),
+            strokeWidth = thickness.toPx()
         )
     }
 }

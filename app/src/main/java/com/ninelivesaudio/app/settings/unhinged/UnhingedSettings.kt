@@ -61,30 +61,32 @@ enum class NotificationIntensity {
  * Design decision: App defaults to Unhinged, users opt OUT to Normal mode
  */
 data class UnhingedSettings(
-    // ─── Master Switch ───────────────────────────────────────────────────────
+    // ─── Identity ─────────────────────────────────────────────────────────────
+    // The Archive Beneath is permanent. There is no "normal" mode.
+    // These properties exist for backwards compatibility but are always true/false.
 
-    /** Master toggle - FALSE by default (Unhinged is active on first launch) */
+    /** @deprecated Always false. The Archive does not negotiate. */
     val normalModeEnabled: Boolean = false,
 
-    /** Convenience property for backwards compatibility */
-    val unhingedThemeEnabled: Boolean = !normalModeEnabled,
+    /** @deprecated Always true. Archive Beneath is the only theme. */
+    val unhingedThemeEnabled: Boolean = true,
 
-    /** Convenience property - inverse of normalModeEnabled */
-    val isUnhinged: Boolean = !normalModeEnabled,
+    /** @deprecated Always true. */
+    val isUnhinged: Boolean = true,
 
-    // ─── Feature Toggles ─────────────────────────────────────────────────────
+    // ─── Feature Toggles (ALL PERMANENTLY ENABLED) ───────────────────────────
 
-    /** Enable anomaly system (screen tears, shadow passes, phantom books) */
+    /** Anomaly system PERMANENTLY ENABLED (screen tears, shadow passes, phantom books) */
     val anomaliesEnabled: Boolean = true,
 
-    /** Enable whisper notifications (subtle cosmic horror messages) */
+    /** Whisper notifications PERMANENTLY ENABLED (subtle cosmic horror messages) */
     val whispersEnabled: Boolean = true,
 
-    /** Enable notification system (loot drops, achievements, milestones) */
+    /** Notification system PERMANENTLY ENABLED (loot drops, achievements, milestones) */
     val notificationsEnabled: Boolean = true,
 
-    /** Enable nuclear options (icon variants, NOTE.txt, status bar modifications) */
-    val nuclearEnabled: Boolean = false,
+    /** Nuclear options PERMANENTLY ENABLED (icon variants, NOTE.txt, status bar modifications) */
+    val nuclearEnabled: Boolean = true,
 
     // ─── Modes ───────────────────────────────────────────────────────────────
 
@@ -136,10 +138,10 @@ data class UnhingedSettings(
 
     companion object {
         /**
-         * Default instance with Unhinged mode DISABLED.
-         * Safe fallback for when settings haven't been loaded yet.
+         * Default instance with Unhinged mode PERMANENTLY ENABLED.
+         * There is no escape. The Archive Beneath is eternal.
          */
-        val Default = UnhingedSettings(normalModeEnabled = true)
+        val Default = UnhingedSettings(normalModeEnabled = false)
 
         // ─── DataStore Keys ──────────────────────────────────────────────────
 
@@ -157,13 +159,14 @@ data class UnhingedSettings(
         internal val STEVEN = booleanPreferencesKey("steven")
         internal val SHADOW = booleanPreferencesKey("shadow")
         internal val ACHIEVEMENTS = stringSetPreferencesKey("achievements")
+        internal val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
 
         /**
          * Deserialize from DataStore Preferences
          */
         fun fromPreferences(prefs: Preferences): UnhingedSettings {
             return UnhingedSettings(
-                normalModeEnabled = prefs[NORMAL_MODE] ?: false,
+                normalModeEnabled = false, // Permanently unhinged. The Archive does not ask.
                 anomaliesEnabled = prefs[ANOMALIES] ?: true,
                 whispersEnabled = prefs[WHISPERS] ?: true,
                 notificationsEnabled = prefs[NOTIFICATIONS] ?: true,
@@ -184,7 +187,8 @@ data class UnhingedSettings(
                 temporalAlignment = prefs[TEMPORAL] ?: true,
                 stevenVisibility = prefs[STEVEN] ?: false,
                 shadowStaffScheduling = prefs[SHADOW] ?: true,
-                unlockedAchievements = prefs[ACHIEVEMENTS] ?: emptySet()
+                unlockedAchievements = prefs[ACHIEVEMENTS] ?: emptySet(),
+                reduceMotionRequested = prefs[REDUCE_MOTION] ?: false
             )
         }
 
@@ -251,6 +255,7 @@ class UnhingedSettingsRepository(private val context: Context) {
             prefs[UnhingedSettings.STEVEN] = updated.stevenVisibility
             prefs[UnhingedSettings.SHADOW] = updated.shadowStaffScheduling
             prefs[UnhingedSettings.ACHIEVEMENTS] = updated.unlockedAchievements
+            prefs[UnhingedSettings.REDUCE_MOTION] = updated.reduceMotionRequested
         }
     }
 

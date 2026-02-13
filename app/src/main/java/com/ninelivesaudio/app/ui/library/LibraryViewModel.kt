@@ -15,7 +15,19 @@ import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 
 enum class ViewMode { ALL, SERIES, AUTHOR, GENRE }
-enum class SortMode { DEFAULT, TITLE, AUTHOR, PROGRESS, RECENT_PROGRESS }
+enum class SortMode { 
+    RECENTLY_ADDED,      // Default - newest first
+    TITLE_AZ,            // Title A→Z
+    TITLE_ZA,            // Title Z→A  
+    AUTHOR_AZ,           // Author A→Z
+    AUTHOR_ZA,           // Author Z→A
+    PROGRESS_HIGH,       // Most progress first
+    PROGRESS_LOW,        // Least progress first
+    DURATION_LONG,       // Longest books first
+    DURATION_SHORT,      // Shortest books first
+    RECENTLY_PLAYED,     // Recently played first
+    UNPLAYED_FIRST,      // Unplayed books first
+}
 
 enum class LibraryTab(val label: String) {
     All("All"),
@@ -43,7 +55,7 @@ class LibraryViewModel @Inject constructor(
         val filteredBooks: List<AudioBook> = emptyList(),
         val searchQuery: String = "",
         val viewMode: ViewMode = ViewMode.ALL,
-        val sortMode: SortMode = SortMode.DEFAULT,
+        val sortMode: SortMode = SortMode.RECENTLY_ADDED,
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
         val selectedTab: LibraryTab = LibraryTab.All,
@@ -261,8 +273,12 @@ class LibraryViewModel @Inject constructor(
         // Tab-based filtering
         filtered = when (state.selectedTab) {
             LibraryTab.All -> filtered
-            LibraryTab.InProgress -> filtered.filter { it.hasProgress && !it.isFinished }
-            LibraryTab.Completed -> filtered.filter { it.isFinished || it.progress >= 1.0 || it.progressPercent >= 99.5 }
+            LibraryTab.InProgress -> filtered.filter { 
+                it.hasProgress && !it.isFinished && it.progressPercent < 99.5 
+            }
+            LibraryTab.Completed -> filtered.filter { 
+                it.isFinished || it.progress >= 1.0 || it.progressPercent >= 99.5 
+            }
             LibraryTab.Downloaded -> filtered.filter { it.isDownloaded }
         }
 
@@ -289,15 +305,26 @@ class LibraryViewModel @Inject constructor(
 
         // Sort
         val sorted = when (state.sortMode) {
-            SortMode.TITLE -> filtered.sortedBy { it.title }
-            SortMode.AUTHOR -> filtered.sortedWith(compareBy({ it.author }, { it.title }))
-            SortMode.PROGRESS -> filtered.sortedByDescending { it.progress }
-            SortMode.RECENT_PROGRESS -> filtered.sortedWith(
-                compareByDescending<AudioBook> { if (it.progress > 0) 1 else 0 }
-                    .thenByDescending { it.currentTime.inWholeSeconds }
-                    .thenBy { it.title }
+            SortMode.RECENTLY_ADDED -> filtered.sortedWith(
+                compareByDescending<AudioBook> { it.addedAt ?: Long.MIN_VALUE }
+                    .thenBy { it.title.lowercase() }
             )
-            SortMode.DEFAULT -> filtered
+            SortMode.TITLE_AZ -> filtered.sortedBy { it.title.lowercase() }
+            SortMode.TITLE_ZA -> filtered.sortedByDescending { it.title.lowercase() }
+            SortMode.AUTHOR_AZ -> filtered.sortedWith(compareBy({ it.author.lowercase() }, { it.title.lowercase() }))
+            SortMode.AUTHOR_ZA -> filtered.sortedWith(compareByDescending<AudioBook> { it.author.lowercase() }.thenByDescending { it.title.lowercase() })
+            SortMode.PROGRESS_HIGH -> filtered.sortedByDescending { it.progressPercent }
+            SortMode.PROGRESS_LOW -> filtered.sortedBy { it.progressPercent }
+            SortMode.DURATION_LONG -> filtered.sortedByDescending { it.duration.inWholeSeconds }
+            SortMode.DURATION_SHORT -> filtered.sortedBy { it.duration.inWholeSeconds }
+            SortMode.RECENTLY_PLAYED -> filtered.sortedWith(
+                compareByDescending<AudioBook> { it.currentTime.inWholeSeconds }
+                    .thenBy { it.title.lowercase() }
+            )
+            SortMode.UNPLAYED_FIRST -> filtered.sortedWith(
+                compareBy<AudioBook> { if (it.hasProgress) 1 else 0 }
+                    .thenBy { it.title.lowercase() }
+            )
         }
 
         _uiState.update { it.copy(filteredBooks = sorted.toList()) }

@@ -126,7 +126,7 @@ class PlaybackManager @Inject constructor(
 
     // ─── Internal State ───────────────────────────────────────────────────
 
-    private var chapters: List<Chapter> = emptyList()
+    private var cachedChapters: List<Chapter> = emptyList()
     private var currentSession: PlaybackSessionInfo? = null
     private var accumulatedListenTime: Double = 0.0
     private var lastSyncTimestamp: Long = 0L
@@ -147,8 +147,8 @@ class PlaybackManager @Inject constructor(
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
             _currentBook.value = book
-            chapters = book.chapters.sortedBy { it.start }
-            _chapters.value = chapters
+            cachedChapters = book.chapters.sortedBy { it.start }
+            _chapters.value = cachedChapters
             _currentChapter.value = null
             _currentChapterIndex.value = -1
             accumulatedListenTime = 0.0
@@ -163,9 +163,9 @@ class PlaybackManager @Inject constructor(
                     val session = apiService.startPlaybackSession(book.id)
                     if (session != null) {
                         currentSession = session
-                        if (chapters.isEmpty() && session.chapters.isNotEmpty()) {
-                            chapters = session.chapters.sortedBy { it.start }
-                            _chapters.value = chapters
+                        if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
+                            cachedChapters = session.chapters.sortedBy { it.start }
+                            _chapters.value = cachedChapters
                         }
                     }
                 } catch (e: Exception) {
@@ -182,9 +182,9 @@ class PlaybackManager @Inject constructor(
                         if (fullBook != null && fullBook.audioFiles.isNotEmpty()) {
                             effectiveBook = fullBook.copy(currentTime = book.currentTime, progress = book.progress)
                             _currentBook.value = effectiveBook
-                            if (chapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
-                                chapters = fullBook.chapters.sortedBy { it.start }
-                                _chapters.value = chapters
+                            if (cachedChapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
+                                cachedChapters = fullBook.chapters.sortedBy { it.start }
+                                _chapters.value = cachedChapters
                             }
                         }
                     } catch (e: Exception) {
@@ -513,8 +513,8 @@ class PlaybackManager @Inject constructor(
     }
 
     fun seekToChapter(chapterIndex: Int) {
-        if (chapterIndex < 0 || chapterIndex >= chapters.size) return
-        val chapter = chapters[chapterIndex]
+        if (chapterIndex < 0 || chapterIndex >= cachedChapters.size) return
+        val chapter = cachedChapters[chapterIndex]
         seekTo(chapter.startTime)
         _currentChapter.value = chapter
         _currentChapterIndex.value = chapterIndex
@@ -662,24 +662,24 @@ class PlaybackManager @Inject constructor(
     // ─── Chapter Tracking ─────────────────────────────────────────────────
 
     private fun updateCurrentChapter(position: Duration) {
-        if (chapters.isEmpty()) return
+        if (cachedChapters.isEmpty()) return
 
         val posSeconds = position.inWholeMilliseconds / 1000.0
         var newIndex = -1
-        for (i in chapters.indices) {
-            if (posSeconds >= chapters[i].start && posSeconds < chapters[i].end) {
+        for (i in cachedChapters.indices) {
+            if (posSeconds >= cachedChapters[i].start && posSeconds < cachedChapters[i].end) {
                 newIndex = i
                 break
             }
         }
 
-        if (newIndex == -1 && posSeconds >= chapters.last().end) {
-            newIndex = chapters.lastIndex
+        if (newIndex == -1 && posSeconds >= cachedChapters.last().end) {
+            newIndex = cachedChapters.lastIndex
         }
 
         if (newIndex != _currentChapterIndex.value) {
             _currentChapterIndex.value = newIndex
-            _currentChapter.value = if (newIndex >= 0) chapters[newIndex] else null
+            _currentChapter.value = if (newIndex >= 0) cachedChapters[newIndex] else null
         }
     }
 

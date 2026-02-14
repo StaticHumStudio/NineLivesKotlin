@@ -123,7 +123,7 @@ class HomeViewModel @Inject constructor(
                     else -> "HEAVY"
                 },
                 timeGiven = formatListeningTime(book.currentTimeSeconds),
-                lastPlayedLabel = formatRelativeTime(result.LastPlayedAt),
+                lastPlayedLabel = formatRelativeTime(result.lastPlayedAt),
                 cosmicEnergyColor = getCosmicEnergyColor(currentTimeHours),
             )
         }

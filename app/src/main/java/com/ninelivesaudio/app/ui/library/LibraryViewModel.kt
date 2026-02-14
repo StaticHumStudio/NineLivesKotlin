@@ -134,8 +134,6 @@ class LibraryViewModel @Inject constructor(
     }
 
     private suspend fun loadAudioBooks(libraryId: String) {
-        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-
         try {
             // Load local first
             var books = audioBookRepository.getByLibrary(libraryId)
@@ -157,8 +155,6 @@ class LibraryViewModel @Inject constructor(
             _uiState.update {
                 it.copy(errorMessage = "Failed to load audiobooks: ${e.message}")
             }
-        } finally {
-            _uiState.update { it.copy(isLoading = false) }
         }
     }
 

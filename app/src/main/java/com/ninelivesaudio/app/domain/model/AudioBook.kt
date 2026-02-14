@@ -55,7 +55,7 @@ data class AudioBook(
     /** Find the current chapter based on currentTime. */
     fun getCurrentChapter(): Chapter? {
         if (chapters.isEmpty()) return null
-        val posSeconds = currentTime.inWholeMilliseconds / 1000.0
+        val posSeconds = currentTime.toDouble(kotlin.time.DurationUnit.SECONDS)
         return chapters.firstOrNull { posSeconds >= it.start && posSeconds < it.end }
             ?: if (posSeconds >= chapters.last().end) chapters.last() else null
     }
@@ -63,7 +63,7 @@ data class AudioBook(
     /** Get current chapter index (0-based), or -1 if none. */
     fun getCurrentChapterIndex(): Int {
         if (chapters.isEmpty()) return -1
-        val posSeconds = currentTime.inWholeMilliseconds / 1000.0
+        val posSeconds = currentTime.toDouble(kotlin.time.DurationUnit.SECONDS)
         for (i in chapters.indices) {
             if (posSeconds >= chapters[i].start && posSeconds < chapters[i].end) {
                 return i
@@ -77,7 +77,7 @@ data class AudioBook(
         get() {
             val ch = getCurrentChapter() ?: return 0.0
             if (ch.durationSeconds <= 0) return 0.0
-            val elapsed = currentTime.inWholeMilliseconds / 1000.0 - ch.start
+            val elapsed = currentTime.toDouble(kotlin.time.DurationUnit.SECONDS) - ch.start
             return (elapsed / ch.durationSeconds * 100.0).coerceIn(0.0, 100.0)
         }
 

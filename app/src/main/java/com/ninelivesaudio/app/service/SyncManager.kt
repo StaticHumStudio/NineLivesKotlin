@@ -187,7 +187,7 @@ class SyncManager @Inject constructor(
                         }
                     }
 
-                    val currentTimeSecs = progress.currentTime.inWholeMilliseconds / 1000.0
+                    val currentTimeSecs = progress.currentTime.toDouble(kotlin.time.DurationUnit.SECONDS)
                     val positionSeconds = if (currentTimeSecs > 0) {
                         currentTimeSecs
                     } else {

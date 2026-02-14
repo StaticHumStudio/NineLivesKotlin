@@ -333,7 +333,7 @@ class PlaybackManager @Inject constructor(
                             .setMediaMetadata(metadata)
                             .build()
                     )
-                    cumulative += af.duration.inWholeMilliseconds / 1000.0
+                    cumulative += af.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
                     durations.add(cumulative)
                 }
             }
@@ -412,7 +412,7 @@ class PlaybackManager @Inject constructor(
                         .setMediaMetadata(metadata)
                         .build()
                 )
-                cumulative += af.duration.inWholeMilliseconds / 1000.0
+                cumulative += af.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
                 durations.add(cumulative)
             }
         }
@@ -475,9 +475,9 @@ class PlaybackManager @Inject constructor(
                 // Flush progress through SyncManager (handles offline queue)
                 syncManager.flushPlaybackProgress(
                     itemId = book.id,
-                    currentTime = pos.inWholeMilliseconds / 1000.0,
+                    currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                     isFinished = isFinished,
-                    duration = dur.inWholeMilliseconds / 1000.0,
+                    duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                 )
                 closeSession()
             }
@@ -525,7 +525,7 @@ class PlaybackManager @Inject constructor(
 
     private fun seekToPosition(position: Duration) {
         val player = exoPlayer ?: return
-        val posSeconds = position.inWholeMilliseconds / 1000.0
+        val posSeconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
 
         if (trackDurations.size <= 1) {
             // Single track
@@ -592,10 +592,11 @@ class PlaybackManager @Inject constructor(
                     stopPositionPolling()
                     stopSessionSync()
                     _playbackState.value = PlaybackState.STOPPED
+                    stopPlaybackService()
 
                     val book = _currentBook.value
                     if (book != null) {
-                        val durSecs = _duration.value.inWholeMilliseconds / 1000.0
+                        val durSecs = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS)
                         scope.launch(Dispatchers.IO) {
                             // Flush through SyncManager (handles both local save + server/offline queue)
                             syncManager.flushPlaybackProgress(
@@ -620,7 +621,10 @@ class PlaybackManager @Inject constructor(
 
         override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "onPlayerError: ${error.errorCodeName} — ${error.message}", error)
+            stopPositionPolling()
+            stopSessionSync()
             _playbackState.value = PlaybackState.STOPPED
+            stopPlaybackService()
             _events.tryEmit(PlaybackEvent.Error("Playback error: ${error.message}"))
         }
     }
@@ -645,8 +649,8 @@ class PlaybackManager @Inject constructor(
                     try {
                         syncManager.reportPlaybackPosition(
                             itemId = book.id,
-                            currentTime = pos.inWholeMilliseconds / 1000.0,
-                            duration = dur.inWholeMilliseconds / 1000.0,
+                            currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                             isFinished = false,
                         )
                     } catch (_: Exception) {}
@@ -665,7 +669,7 @@ class PlaybackManager @Inject constructor(
     private fun updateCurrentChapter(position: Duration) {
         if (cachedChapters.isEmpty()) return
 
-        val posSeconds = position.inWholeMilliseconds / 1000.0
+        val posSeconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
         var newIndex = -1
         for (i in cachedChapters.indices) {
             if (posSeconds >= cachedChapters[i].start && posSeconds < cachedChapters[i].end) {
@@ -706,8 +710,8 @@ class PlaybackManager @Inject constructor(
         val book = _currentBook.value ?: return
         val pos = _position.value
         val dur = _duration.value
-        val posSec = pos.inWholeMilliseconds / 1000.0
-        val durSec = dur.inWholeMilliseconds / 1000.0
+        val posSec = pos.toDouble(kotlin.time.DurationUnit.SECONDS)
+        val durSec = dur.toDouble(kotlin.time.DurationUnit.SECONDS)
         val progressFraction = if (durSec > 0) (posSec / durSec).coerceIn(0.0, 1.0) else 0.0
 
         // Save to PlaybackProgress table
@@ -739,8 +743,8 @@ class PlaybackManager @Inject constructor(
                 accumulatedListenTime += elapsed
                 apiService.syncSessionProgress(
                     sessionId = session.id,
-                    currentTime = pos.inWholeMilliseconds / 1000.0,
-                    duration = dur.inWholeMilliseconds / 1000.0,
+                    currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                     timeListened = accumulatedListenTime,
                 )
             } catch (_: Exception) {}
@@ -749,7 +753,7 @@ class PlaybackManager @Inject constructor(
             try {
                 progressRepository.enqueuePendingProgress(
                     book.id,
-                    pos.inWholeMilliseconds / 1000.0,
+                    pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                     isFinished = false,
                 )
             } catch (_: Exception) {}

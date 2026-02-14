@@ -8,6 +8,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -22,6 +23,7 @@ class SettingsViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val libraryDao: LibraryDao,
     private val unhingedRepository: UnhingedSettingsRepository,
+    private val syncManager: SyncManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -38,6 +40,9 @@ class SettingsViewModel @Inject constructor(
 
         // Security
         val allowSelfSignedCertificates: Boolean = false,
+
+        // Sync
+        val isSyncing: Boolean = false,
 
         // Messages
         val errorMessage: String? = null,
@@ -90,6 +95,13 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
+        // Observe sync state
+        viewModelScope.launch {
+            syncManager.isSyncing.collect { syncing ->
+                _uiState.update { it.copy(isSyncing = syncing) }
+            }
+        }
+
         // Load settings on init
         viewModelScope.launch {
             initialize()
@@ -113,15 +125,24 @@ class SettingsViewModel @Inject constructor(
         // Check if already connected by validating stored token
         val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
         if (hasToken) {
-            val valid = apiService.validateToken()
-            _uiState.update {
-                it.copy(
-                    isConnected = valid,
-                    connectionStatusText = if (valid) "Connected to ${settings.serverUrl}" else "Not connected",
-                )
-            }
-            if (!valid) {
-                apiService.logout()
+            try {
+                val valid = apiService.validateToken()
+                _uiState.update {
+                    it.copy(
+                        isConnected = valid,
+                        connectionStatusText = if (valid) "Connected to ${settings.serverUrl}" else "Session expired — please reconnect",
+                    )
+                }
+                if (!valid) {
+                    apiService.logout()
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isConnected = false,
+                        connectionStatusText = "Connection check failed: ${e.message}",
+                    )
+                }
             }
         }
     }
@@ -264,6 +285,23 @@ class SettingsViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(errorMessage = "Connection test error: ${e.message}")
                 }
+            }
+        }
+    }
+
+    fun syncNow() {
+        if (!_uiState.value.isConnected) {
+            _uiState.update { it.copy(errorMessage = "Not connected. Please connect first.") }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(errorMessage = null, successMessage = null) }
+            try {
+                syncManager.syncNow()
+                _uiState.update { it.copy(successMessage = "Sync completed successfully") }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(errorMessage = "Sync failed: ${e.message}") }
             }
         }
     }

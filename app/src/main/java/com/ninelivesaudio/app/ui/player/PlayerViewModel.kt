@@ -2,7 +2,9 @@ package com.ninelivesaudio.app.ui.player
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ninelivesaudio.app.data.repository.BookmarkRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.Bookmark
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.ConnectivityMonitor
@@ -13,6 +15,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -20,6 +23,7 @@ import kotlin.time.Duration.Companion.seconds
 class PlayerViewModel @Inject constructor(
     private val playbackManager: PlaybackManager,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val bookmarkRepository: BookmarkRepository,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -60,6 +64,11 @@ class PlayerViewModel @Inject constructor(
         val currentChapterIndex: Int = -1,
         val currentChapterPosition: Duration = Duration.ZERO,
         val currentChapterDuration: Duration = Duration.ZERO,
+
+        // Bookmarks
+        val bookmarks: List<Bookmark> = emptyList(),
+        val showBookmarks: Boolean = false,
+        val bookmarkItemId: String? = null,
 
         // Connection
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
@@ -106,7 +115,7 @@ class PlayerViewModel @Inject constructor(
             playbackManager.position.collect { pos ->
                 val dur = _uiState.value.duration
                 val progress = if (dur > Duration.ZERO) {
-                    (pos.inWholeMilliseconds.toFloat() / dur.inWholeMilliseconds.toFloat()).coerceIn(0f, 1f)
+                    (pos.inWholeMilliseconds.toDouble() / dur.inWholeMilliseconds.toDouble()).coerceIn(0.0, 1.0).toFloat()
                 } else 0f
 
                 _uiState.update {
@@ -208,7 +217,14 @@ class PlayerViewModel @Inject constructor(
                 author = book?.author ?: "",
                 coverUrl = book?.coverPath,
                 seriesName = book?.seriesName,
+                bookmarkItemId = book?.id,
             )
+        }
+        // Load bookmarks when a new book is loaded
+        if (book != null) {
+            loadBookmarks(book.id)
+        } else {
+            _uiState.update { it.copy(bookmarks = emptyList()) }
         }
     }
 
@@ -237,6 +253,7 @@ class PlayerViewModel @Inject constructor(
 
     fun seekTo(fraction: Float) {
         val dur = _uiState.value.duration
+        if (dur <= Duration.ZERO) return
         val safeFraction = fraction.coerceIn(0f, 1f)
         val target = dur * safeFraction.toDouble()
         playbackManager.seekTo(target)
@@ -265,6 +282,55 @@ class PlayerViewModel @Inject constructor(
 
     fun seekToChapter(index: Int) {
         playbackManager.seekToChapter(index)
+    }
+
+    // ─── Bookmarks ────────────────────────────────────────────────────────
+
+    fun toggleBookmarks() {
+        _uiState.update { it.copy(showBookmarks = !it.showBookmarks) }
+    }
+
+    fun dismissBookmarks() {
+        _uiState.update { it.copy(showBookmarks = false) }
+    }
+
+    private fun loadBookmarks(itemId: String) {
+        viewModelScope.launch {
+            try {
+                val bookmarks = bookmarkRepository.getBookmarks(itemId)
+                _uiState.update { it.copy(bookmarks = bookmarks) }
+            } catch (_: Exception) {
+                _uiState.update { it.copy(bookmarks = emptyList()) }
+            }
+        }
+    }
+
+    fun addBookmark(title: String) {
+        val itemId = _uiState.value.bookmarkItemId ?: return
+        val currentTimeSeconds = _uiState.value.position.toDouble(kotlin.time.DurationUnit.SECONDS)
+
+        viewModelScope.launch {
+            val success = bookmarkRepository.createBookmark(itemId, title, currentTimeSeconds)
+            if (success) {
+                loadBookmarks(itemId)
+            }
+        }
+    }
+
+    fun deleteBookmark(bookmark: Bookmark) {
+        val itemId = _uiState.value.bookmarkItemId ?: return
+
+        viewModelScope.launch {
+            val success = bookmarkRepository.deleteBookmark(itemId, bookmark.time)
+            if (success) {
+                loadBookmarks(itemId)
+            }
+        }
+    }
+
+    fun seekToBookmark(bookmark: Bookmark) {
+        val targetPosition = bookmark.time.seconds
+        playbackManager.seekTo(targetPosition)
     }
 
     // ─── Sleep Timer ──────────────────────────────────────────────────────
@@ -300,9 +366,7 @@ class PlayerViewModel @Inject constructor(
                     break
                 } else {
                     _uiState.update {
-                        it.copy(sleepTimerRemaining = remaining.toLong().let { ms ->
-                            (ms / 1000).seconds
-                        })
+                        it.copy(sleepTimerRemaining = remaining.milliseconds)
                     }
                     updateSleepTimerText()
                 }

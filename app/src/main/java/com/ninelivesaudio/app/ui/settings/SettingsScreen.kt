@@ -252,6 +252,47 @@ fun SettingsScreen(
                 thickness = 1.dp,
             )
 
+            // ─── Sync ──────────────────────────────────────────────────
+            SectionHeader(text = "Sync")
+
+            Button(
+                onClick = viewModel::syncNow,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = uiState.isConnected && !uiState.isSyncing,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ArchiveVoidSurface,
+                    contentColor = GoldFilament,
+                    disabledContainerColor = ArchiveVoidSurface.copy(alpha = 0.5f),
+                    disabledContentColor = ArchiveTextMuted,
+                ),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                if (uiState.isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = GoldFilament,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Syncing...", fontWeight = FontWeight.SemiBold)
+                } else {
+                    Icon(
+                        Icons.Outlined.Sync,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sync Now", fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = ArchiveVoidElevated,
+                thickness = 1.dp,
+            )
+
             // ─── Diagnostics ──────────────────────────────────────────
             SectionHeader(text = "Diagnostics")
 

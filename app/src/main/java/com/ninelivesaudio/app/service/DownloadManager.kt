@@ -231,7 +231,7 @@ class DownloadManager @Inject constructor(
         // Calculate total bytes
         val totalBytes = book.audioFiles.sumOf { it.size }.let { size ->
             if (size > 0) size
-            else (book.audioFiles.sumOf { it.duration.inWholeSeconds } * 16_000L)
+            else (book.audioFiles.sumOf { it.duration.inWholeSeconds.coerceAtLeast(0) } * 16_000L)
         }
         download = download.copy(totalBytes = totalBytes)
 

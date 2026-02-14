@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.data.remote
 
 import com.ninelivesaudio.app.service.SettingsManager
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -27,6 +28,13 @@ class DynamicBaseUrlInterceptor @Inject constructor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
+        val originalUrl = originalRequest.url
+
+        // Only rewrite requests created from the Retrofit placeholder host.
+        if (originalUrl.host != PLACEHOLDER_BASE_URL.toHttpUrlOrNull()?.host) {
+            return chain.proceed(originalRequest)
+        }
+
         val serverUrl = settingsManager.currentSettings.serverUrl
 
         if (serverUrl.isEmpty()) {
@@ -35,12 +43,35 @@ class DynamicBaseUrlInterceptor @Inject constructor(
 
         val newBaseUrl = serverUrl.trimEnd('/').toHttpUrlOrNull() ?: return chain.proceed(originalRequest)
 
-        // Rebuild the URL replacing the placeholder host/scheme with the real server
-        val newUrl = originalRequest.url.newBuilder()
+        // Rebuild URL with server scheme/host/port and optional base path segments.
+        val originalPath = originalUrl.encodedPath.trimStart('/')
+        val combinedPathSegments = buildList {
+            addAll(newBaseUrl.encodedPathSegments.filter { it.isNotEmpty() })
+            addAll(originalUrl.encodedPathSegments.filter { it.isNotEmpty() })
+        }
+
+        val newUrlBuilder = HttpUrl.Builder()
             .scheme(newBaseUrl.scheme)
             .host(newBaseUrl.host)
             .port(newBaseUrl.port)
-            .build()
+
+        if (combinedPathSegments.isEmpty()) {
+            if (originalPath.isBlank()) {
+                newUrlBuilder.addPathSegment("")
+            }
+        } else {
+            combinedPathSegments.forEach { segment ->
+                newUrlBuilder.addEncodedPathSegment(segment)
+            }
+        }
+
+        originalUrl.queryParameterNames.forEach { name ->
+            originalUrl.queryParameterValues(name).forEach { value ->
+                newUrlBuilder.addQueryParameter(name, value)
+            }
+        }
+
+        val newUrl = newUrlBuilder.build()
 
         val newRequest = originalRequest.newBuilder()
             .url(newUrl)

@@ -145,12 +145,11 @@ class DownloadsViewModel @Inject constructor(
             val completed = _uiState.value.completedDownloads
             completed.forEach { item ->
                 try {
-                    // Use downloadManager.deleteDownload() which also removes files from disk
-                    // and updates the audiobook entity. Just deleting the DB record leaves
-                    // orphaned files consuming storage.
-                    downloadManager.deleteDownload(item.download.audioBookId)
-                } catch (e: Exception) {
-                    // Continue deleting others even if one fails (e.g., file already deleted)
+                    // Only remove the download tracking record — keep the actual files
+                    // on disk so the user's downloaded audiobooks remain playable.
+                    downloadItemDao.deleteById(item.download.id)
+                } catch (_: Exception) {
+                    // Continue clearing others even if one fails
                 }
             }
         }

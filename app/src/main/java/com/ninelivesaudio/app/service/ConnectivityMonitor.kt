@@ -130,6 +130,8 @@ class ConnectivityMonitor @Inject constructor(
             connectivityManager.unregisterNetworkCallback(networkCallback)
         } catch (_: Exception) {}
         pingJob?.cancel()
+        reachabilityJob?.cancel()
+        reachabilityJob = null
     }
 
     // ─── Checks ───────────────────────────────────────────────────────────

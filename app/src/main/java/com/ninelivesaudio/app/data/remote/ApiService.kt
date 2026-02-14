@@ -241,15 +241,21 @@ class ApiService @Inject constructor(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean = false,
+        duration: Double = 0.0,
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            val safeTime = currentTime.coerceAtLeast(0.0)
+            val progress = when {
+                isFinished -> 1.0
+                duration > 0.0 -> (safeTime / duration).coerceIn(0.0, 1.0)
+                else -> 0.0
+            }
             val response = api.updateProgress(
                 itemId,
-                // API expects progress as fraction [0, 1], not seconds.
                 UpdateProgressRequest(
-                    currentTime = currentTime.coerceAtLeast(0.0),
+                    currentTime = safeTime,
                     isFinished = isFinished,
-                    progress = if (isFinished) 1.0 else 0.0,
+                    progress = progress,
                 )
             )
             response.isSuccessful

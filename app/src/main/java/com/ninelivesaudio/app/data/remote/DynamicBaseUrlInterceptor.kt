@@ -44,7 +44,6 @@ class DynamicBaseUrlInterceptor @Inject constructor(
         val newBaseUrl = serverUrl.trimEnd('/').toHttpUrlOrNull() ?: return chain.proceed(originalRequest)
 
         // Rebuild URL with server scheme/host/port and optional base path segments.
-        val originalPath = originalUrl.encodedPath.trimStart('/')
         val combinedPathSegments = buildList {
             addAll(newBaseUrl.encodedPathSegments.filter { it.isNotEmpty() })
             addAll(originalUrl.encodedPathSegments.filter { it.isNotEmpty() })
@@ -56,9 +55,7 @@ class DynamicBaseUrlInterceptor @Inject constructor(
             .port(newBaseUrl.port)
 
         if (combinedPathSegments.isEmpty()) {
-            if (originalPath.isBlank()) {
-                newUrlBuilder.addPathSegment("")
-            }
+            newUrlBuilder.addPathSegment("")
         } else {
             combinedPathSegments.forEach { segment ->
                 newUrlBuilder.addEncodedPathSegment(segment)

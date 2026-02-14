@@ -1,14 +1,12 @@
 package com.ninelivesaudio.app.data.remote
 
+import android.net.Uri
 import android.os.Build
 import com.ninelivesaudio.app.data.remote.dto.*
 import com.ninelivesaudio.app.domain.model.*
 import com.ninelivesaudio.app.service.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import retrofit2.Response
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -187,11 +185,14 @@ class ApiService @Inject constructor(
                     duration = session.duration,
                     mediaType = session.mediaType ?: "book",
                     audioTracks = session.audioTracks?.map { t ->
-                        val contentUrl = if (t.contentUrl.startsWith("http")) {
-                            "${t.contentUrl}?token=$token"
+                        val baseContentUrl = if (t.contentUrl.startsWith("http", ignoreCase = true)) {
+                            t.contentUrl
                         } else {
-                            "$serverUrl${t.contentUrl}?token=$token"
+                            val normalizedPath = if (t.contentUrl.startsWith("/")) t.contentUrl else "/${t.contentUrl}"
+                            "$serverUrl$normalizedPath"
                         }
+                        val separator = if ('?' in baseContentUrl) '&' else '?'
+                        val contentUrl = "$baseContentUrl${separator}token=${Uri.encode(token)}"
                         AudioStreamInfo(
                             index = t.index,
                             codec = t.codec ?: "mp3",
@@ -344,8 +345,8 @@ class ApiService @Inject constructor(
 
     fun getCoverUrl(itemId: String): String {
         val serverUrl = settingsManager.currentSettings.serverUrl
-        val encodedItemId = URLEncoder.encode(itemId, StandardCharsets.UTF_8.toString())
-        return "$serverUrl/api/items/$encodedItemId/cover"
+        if (serverUrl.isBlank() || itemId.isBlank()) return ""
+        return "$serverUrl/api/items/${Uri.encode(itemId)}/cover"
     }
 
     // ─── Mapping Helpers ─────────────────────────────────────────────────
@@ -359,19 +360,20 @@ class ApiService @Inject constructor(
         return AudioBook(
             id = item.id,
             libraryId = libraryId ?: item.libraryId,
-            title = metadata?.title ?: "Unknown Title",
-            author = metadata?.authorName
-                ?: metadata?.authors?.firstOrNull()?.name
+            title = metadata?.title?.takeIf { it.isNotBlank() } ?: "Unknown Title",
+            author = metadata?.authorName?.takeIf { it.isNotBlank() }
+                ?: metadata?.authors?.firstOrNull()?.name?.takeIf { it.isNotBlank() }
                 ?: "Unknown Author",
-            narrator = metadata?.narratorName ?: metadata?.narrators?.firstOrNull(),
+            narrator = metadata?.narratorName?.takeIf { it.isNotBlank() }
+                ?: metadata?.narrators?.firstOrNull()?.takeIf { it.isNotBlank() },
             description = metadata?.description,
             coverPath = if (!item.media?.coverPath.isNullOrEmpty()) {
                 "$serverUrl/api/items/${item.id}/cover"
             } else null,
             duration = (item.media?.duration ?: 0.0).seconds,
             addedAt = item.addedAt,
-            seriesName = firstSeries?.name ?: metadata?.seriesName,
-            seriesSequence = firstSeries?.sequence,
+            seriesName = firstSeries?.name?.takeIf { it.isNotBlank() } ?: metadata?.seriesName?.takeIf { it.isNotBlank() },
+            seriesSequence = firstSeries?.sequence?.takeIf { it.isNotBlank() },
             genres = metadata?.genres ?: emptyList(),
             tags = metadata?.tags ?: emptyList(),
             audioFiles = audioFiles.mapIndexed { idx, af ->
@@ -380,14 +382,14 @@ class ApiService @Inject constructor(
                     ino = af.ino ?: "",
                     index = af.index ?: idx,
                     duration = (af.duration ?: 0.0).seconds,
-                    filename = af.metadata?.filename ?: "track_${idx + 1}",
+                    filename = af.metadata?.filename?.takeIf { it.isNotBlank() } ?: "track_${idx + 1}",
                     mimeType = af.mimeType,
                     size = af.metadata?.size ?: 0,
                 )
             },
             chapters = item.media?.chapters
                 ?.filter { c -> c.start >= 0.0 && c.end > c.start }
-                ?.map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title) }
+                ?.map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title.ifBlank { "Chapter ${c.id}" }) }
                 ?: emptyList(),
             currentTime = (item.userMediaProgress?.currentTime ?: 0.0).seconds,
             progress = normalizeProgress(item.userMediaProgress?.progress ?: 0.0),
@@ -406,15 +408,18 @@ class ApiService @Inject constructor(
 
     private fun normalizeServerUrl(url: String): String {
         var normalized = url.trim().replace("\\", "/")
+        if (normalized.isEmpty()) return ""
+
         if ("://" !in normalized) {
             normalized = when {
                 normalized.startsWith("https:", ignoreCase = true) ->
-                    "https://" + normalized.substringAfter(":", "").trimStart('/')
+                    "https://${normalized.substringAfter(':').trimStart('/')}"
                 normalized.startsWith("http:", ignoreCase = true) ->
-                    "http://" + normalized.substringAfter(":", "").trimStart('/')
+                    "http://${normalized.substringAfter(':').trimStart('/')}"
                 else -> "http://$normalized"
             }
         }
-        return normalized.trimEnd('/')
+
+        return normalized.trimEnd('/').removeSuffix("/api")
     }
 }

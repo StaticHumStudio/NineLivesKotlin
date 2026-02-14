@@ -53,7 +53,7 @@ class AudioBookRepository @Inject constructor(
         audioBookDao.getRecentlyPlayed(limit).map { result ->
             val book = result.audioBook.toDomain()
             val lastPlayed = try {
-                result.LastPlayedAt?.let { Instant.parse(it).toEpochMilli() } ?: 0L
+                result.lastPlayedAt?.let { Instant.parse(it).toEpochMilli() } ?: 0L
             } catch (_: Exception) { 0L }
             book to lastPlayed
         }
@@ -64,7 +64,7 @@ class AudioBookRepository @Inject constructor(
             results.map { result ->
                 val book = result.audioBook.toDomain()
                 val lastPlayed = try {
-                    result.LastPlayedAt?.let { Instant.parse(it).toEpochMilli() } ?: 0L
+                    result.lastPlayedAt?.let { Instant.parse(it).toEpochMilli() } ?: 0L
                 } catch (_: Exception) { 0L }
                 book to lastPlayed
             }

@@ -374,7 +374,7 @@ class ApiService @Inject constructor(
                 ?: metadata?.narrators?.firstOrNull()?.takeIf { it.isNotBlank() },
             description = metadata?.description,
             coverPath = if (!item.media?.coverPath.isNullOrEmpty()) {
-                "$serverUrl/api/items/${item.id}/cover"
+                "$serverUrl/api/items/${Uri.encode(item.id)}/cover"
             } else null,
             duration = (item.media?.duration ?: 0.0).seconds,
             addedAt = item.addedAt,

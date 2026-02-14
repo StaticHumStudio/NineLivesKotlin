@@ -36,7 +36,7 @@ data class AudioBook(
 
     /** Whether this book has any progress to display. */
     val hasProgress: Boolean
-        get() = progress > 0
+        get() = progressPercent > 0
 
     /** Formatted progress text for library tiles — shows chapter info if available. */
     val progressText: String

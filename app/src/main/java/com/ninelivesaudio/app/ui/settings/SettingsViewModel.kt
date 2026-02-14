@@ -120,21 +120,24 @@ class SettingsViewModel @Inject constructor(
                     connectionStatusText = if (valid) "Connected to ${settings.serverUrl}" else "Not connected",
                 )
             }
+            if (!valid) {
+                apiService.logout()
+            }
         }
     }
 
     // ─── User Actions ─────────────────────────────────────────────────────
 
     fun onServerUrlChanged(value: String) {
-        _uiState.update { it.copy(serverUrl = value) }
+        _uiState.update { it.copy(serverUrl = value.trim(), errorMessage = null) }
     }
 
     fun onUsernameChanged(value: String) {
-        _uiState.update { it.copy(username = value) }
+        _uiState.update { it.copy(username = value.trim(), errorMessage = null) }
     }
 
     fun onPasswordChanged(value: String) {
-        _uiState.update { it.copy(password = value) }
+        _uiState.update { it.copy(password = value, errorMessage = null) }
     }
 
     fun onAllowSelfSignedChanged(value: Boolean) {
@@ -223,6 +226,8 @@ class SettingsViewModel @Inject constructor(
                         isConnected = false,
                         connectionStatusText = "Not connected",
                         successMessage = "Disconnected successfully",
+                        password = "",
+                        errorMessage = null,
                     )
                 }
             } catch (e: Exception) {

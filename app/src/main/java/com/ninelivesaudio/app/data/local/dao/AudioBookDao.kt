@@ -43,7 +43,7 @@ interface AudioBookDao {
 
     /** Nine Lives — recently played books with their last-played timestamp. */
     @Query("""
-        SELECT ab.*, pp.UpdatedAt AS LastPlayedAt
+        SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
         ORDER BY pp.UpdatedAt DESC
@@ -53,7 +53,7 @@ interface AudioBookDao {
 
     /** Nine Lives — observable version for reactive UI. */
     @Query("""
-        SELECT ab.*, pp.UpdatedAt AS LastPlayedAt
+        SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
         ORDER BY pp.UpdatedAt DESC

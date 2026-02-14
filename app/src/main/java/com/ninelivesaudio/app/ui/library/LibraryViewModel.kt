@@ -318,7 +318,9 @@ class LibraryViewModel @Inject constructor(
             SortMode.DURATION_LONG -> filtered.sortedByDescending { it.duration.inWholeSeconds }
             SortMode.DURATION_SHORT -> filtered.sortedBy { it.duration.inWholeSeconds }
             SortMode.RECENTLY_PLAYED -> filtered.sortedWith(
-                compareByDescending<AudioBook> { it.currentTime.inWholeSeconds }
+                // Books with progress first, then by most recently added
+                compareByDescending<AudioBook> { if (it.hasProgress) 1 else 0 }
+                    .thenByDescending { it.addedAt ?: Long.MIN_VALUE }
                     .thenBy { it.title.lowercase() }
             )
             SortMode.UNPLAYED_FIRST -> filtered.sortedWith(

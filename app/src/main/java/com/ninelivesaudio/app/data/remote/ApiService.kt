@@ -1,12 +1,12 @@
 package com.ninelivesaudio.app.data.remote
 
+import android.net.Uri
 import android.os.Build
 import com.ninelivesaudio.app.data.remote.dto.*
 import com.ninelivesaudio.app.domain.model.*
 import com.ninelivesaudio.app.service.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import retrofit2.Response
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -33,11 +33,12 @@ class ApiService @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeServerUrl(serverUrl)
+                val normalizedUsername = username.trim()
 
                 // Update settings with server URL first (so Retrofit uses it)
-                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, username = username) }
+                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, username = normalizedUsername) }
 
-                val response = api.login(LoginRequest(username, password))
+                val response = api.login(LoginRequest(normalizedUsername, password))
 
                 if (!response.isSuccessful) {
                     lastError = "Login failed: ${response.code()} - ${response.errorBody()?.string()}"
@@ -184,11 +185,14 @@ class ApiService @Inject constructor(
                     duration = session.duration,
                     mediaType = session.mediaType ?: "book",
                     audioTracks = session.audioTracks?.map { t ->
-                        val contentUrl = if (t.contentUrl.startsWith("http")) {
-                            "${t.contentUrl}?token=$token"
+                        val baseContentUrl = if (t.contentUrl.startsWith("http", ignoreCase = true)) {
+                            t.contentUrl
                         } else {
-                            "$serverUrl${t.contentUrl}?token=$token"
+                            val normalizedPath = if (t.contentUrl.startsWith("/")) t.contentUrl else "/${t.contentUrl}"
+                            "$serverUrl$normalizedPath"
                         }
+                        val separator = if ('?' in baseContentUrl) '&' else '?'
+                        val contentUrl = "$baseContentUrl${separator}token=${Uri.encode(token)}"
                         AudioStreamInfo(
                             index = t.index,
                             codec = t.codec ?: "mp3",
@@ -237,11 +241,22 @@ class ApiService @Inject constructor(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean = false,
+        duration: Double = 0.0,
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            val safeTime = currentTime.coerceAtLeast(0.0)
+            val progress = when {
+                isFinished -> 1.0
+                duration > 0.0 -> (safeTime / duration).coerceIn(0.0, 1.0)
+                else -> 0.0
+            }
             val response = api.updateProgress(
                 itemId,
-                UpdateProgressRequest(currentTime, isFinished, currentTime)
+                UpdateProgressRequest(
+                    currentTime = safeTime,
+                    isFinished = isFinished,
+                    progress = progress,
+                )
             )
             response.isSuccessful
         } catch (e: Exception) {
@@ -254,13 +269,13 @@ class ApiService @Inject constructor(
             val response = api.getUserProgress(itemId)
             if (!response.isSuccessful) return@withContext null
             response.body()?.let { p ->
-                UserProgress(
-                    libraryItemId = p.libraryItemId,
-                    currentTime = p.currentTime.seconds,
-                    progress = p.progress.coerceIn(0.0, 1.0),
-                    isFinished = p.isFinished,
-                    lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
-                )
+                    UserProgress(
+                        libraryItemId = p.libraryItemId,
+                        currentTime = p.currentTime.seconds,
+                        progress = normalizeProgress(p.progress),
+                        isFinished = p.isFinished,
+                        lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
+                    )
             }
         } catch (e: Exception) {
             null
@@ -278,7 +293,7 @@ class ApiService @Inject constructor(
                     UserProgress(
                         libraryItemId = p.libraryItemId,
                         currentTime = p.currentTime.seconds,
-                        progress = p.progress.coerceIn(0.0, 1.0),
+                        progress = normalizeProgress(p.progress),
                         isFinished = p.isFinished,
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
@@ -336,7 +351,8 @@ class ApiService @Inject constructor(
 
     fun getCoverUrl(itemId: String): String {
         val serverUrl = settingsManager.currentSettings.serverUrl
-        return "$serverUrl/api/items/$itemId/cover"
+        if (serverUrl.isBlank() || itemId.isBlank()) return ""
+        return "$serverUrl/api/items/${Uri.encode(itemId)}/cover"
     }
 
     // ─── Mapping Helpers ─────────────────────────────────────────────────
@@ -350,19 +366,20 @@ class ApiService @Inject constructor(
         return AudioBook(
             id = item.id,
             libraryId = libraryId ?: item.libraryId,
-            title = metadata?.title ?: "Unknown Title",
-            author = metadata?.authorName
-                ?: metadata?.authors?.firstOrNull()?.name
+            title = metadata?.title?.takeIf { it.isNotBlank() } ?: "Unknown Title",
+            author = metadata?.authorName?.takeIf { it.isNotBlank() }
+                ?: metadata?.authors?.firstOrNull()?.name?.takeIf { it.isNotBlank() }
                 ?: "Unknown Author",
-            narrator = metadata?.narratorName ?: metadata?.narrators?.firstOrNull(),
+            narrator = metadata?.narratorName?.takeIf { it.isNotBlank() }
+                ?: metadata?.narrators?.firstOrNull()?.takeIf { it.isNotBlank() },
             description = metadata?.description,
             coverPath = if (!item.media?.coverPath.isNullOrEmpty()) {
                 "$serverUrl/api/items/${item.id}/cover"
             } else null,
             duration = (item.media?.duration ?: 0.0).seconds,
             addedAt = item.addedAt,
-            seriesName = firstSeries?.name ?: metadata?.seriesName,
-            seriesSequence = firstSeries?.sequence,
+            seriesName = firstSeries?.name?.takeIf { it.isNotBlank() } ?: metadata?.seriesName?.takeIf { it.isNotBlank() },
+            seriesSequence = firstSeries?.sequence?.takeIf { it.isNotBlank() },
             genres = metadata?.genres ?: emptyList(),
             tags = metadata?.tags ?: emptyList(),
             audioFiles = audioFiles.mapIndexed { idx, af ->
@@ -371,32 +388,44 @@ class ApiService @Inject constructor(
                     ino = af.ino ?: "",
                     index = af.index ?: idx,
                     duration = (af.duration ?: 0.0).seconds,
-                    filename = af.metadata?.filename ?: "track_${idx + 1}",
+                    filename = af.metadata?.filename?.takeIf { it.isNotBlank() } ?: "track_${idx + 1}",
                     mimeType = af.mimeType,
                     size = af.metadata?.size ?: 0,
                 )
             },
             chapters = item.media?.chapters
                 ?.filter { c -> c.start >= 0.0 && c.end > c.start }
-                ?.map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title) }
+                ?.map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title.ifBlank { "Chapter ${c.id}" }) }
                 ?: emptyList(),
             currentTime = (item.userMediaProgress?.currentTime ?: 0.0).seconds,
-            progress = (item.userMediaProgress?.progress ?: 0.0).coerceIn(0.0, 1.0),
+            progress = normalizeProgress(item.userMediaProgress?.progress ?: 0.0),
             isFinished = item.userMediaProgress?.isFinished ?: false,
         )
     }
 
+    private fun normalizeProgress(value: Double): Double {
+        val nonNegative = value.coerceAtLeast(0.0)
+        return if (nonNegative > 1.0) {
+            (nonNegative / 100.0).coerceIn(0.0, 1.0)
+        } else {
+            nonNegative.coerceIn(0.0, 1.0)
+        }
+    }
+
     private fun normalizeServerUrl(url: String): String {
-        var normalized = url.trim()
+        var normalized = url.trim().replace("\\", "/")
+        if (normalized.isEmpty()) return ""
+
         if ("://" !in normalized) {
             normalized = when {
                 normalized.startsWith("https:", ignoreCase = true) ->
-                    "https://" + normalized.removePrefix("https:").trimStart('/')
+                    "https://${normalized.substringAfter(':').trimStart('/')}"
                 normalized.startsWith("http:", ignoreCase = true) ->
-                    "http://" + normalized.removePrefix("http:").trimStart('/')
+                    "http://${normalized.substringAfter(':').trimStart('/')}"
                 else -> "http://$normalized"
             }
         }
-        return normalized.trimEnd('/')
+
+        return normalized.trimEnd('/').removeSuffix("/api")
     }
 }

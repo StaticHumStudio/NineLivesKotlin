@@ -51,7 +51,6 @@ class LibraryViewModel @Inject constructor(
         val isRefreshing: Boolean = false,
         val libraries: List<Library> = emptyList(),
         val selectedLibrary: Library? = null,
-        val allBooks: List<AudioBook> = emptyList(),
         val filteredBooks: List<AudioBook> = emptyList(),
         val searchQuery: String = "",
         val viewMode: ViewMode = ViewMode.ALL,
@@ -70,6 +69,9 @@ class LibraryViewModel @Inject constructor(
 
     // Search debounce
     private var searchJob: Job? = null
+
+    // Keep one in-memory source list to avoid duplicating full collections in UiState.
+    private var cachedBooks: List<AudioBook> = emptyList()
 
     init {
         // Observe connectivity and auto-filter to downloaded when offline
@@ -148,7 +150,7 @@ class LibraryViewModel @Inject constructor(
                 // Use cached
             }
 
-            _uiState.update { it.copy(allBooks = books) }
+            cachedBooks = books
             updateAvailableGroups()
             applyFilter()
         } catch (e: Exception) {
@@ -223,19 +225,19 @@ class LibraryViewModel @Inject constructor(
     private fun updateAvailableGroups() {
         val state = _uiState.value
         val groups = when (state.viewMode) {
-            ViewMode.SERIES -> state.allBooks
+            ViewMode.SERIES -> cachedBooks
                 .mapNotNull { it.seriesName }
                 .filter { it.isNotEmpty() }
                 .distinct()
                 .sorted()
 
-            ViewMode.AUTHOR -> state.allBooks
+            ViewMode.AUTHOR -> cachedBooks
                 .map { it.author }
                 .filter { it.isNotEmpty() }
                 .distinct()
                 .sorted()
 
-            ViewMode.GENRE -> state.allBooks
+            ViewMode.GENRE -> cachedBooks
                 .flatMap { it.genres }
                 .filter { it.isNotEmpty() }
                 .distinct()
@@ -248,7 +250,7 @@ class LibraryViewModel @Inject constructor(
 
     private fun applyFilter() {
         val state = _uiState.value
-        var filtered = state.allBooks.asSequence()
+        var filtered = cachedBooks.asSequence()
 
         // Library filter
         val libraryId = state.selectedLibrary?.id

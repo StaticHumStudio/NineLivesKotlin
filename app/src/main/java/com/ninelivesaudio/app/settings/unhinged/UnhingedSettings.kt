@@ -249,7 +249,11 @@ class UnhingedSettingsRepository(private val context: Context) {
             prefs[UnhingedSettings.COPY_MODE] = updated.copyMode.name
             prefs[UnhingedSettings.NOTIF_LEVEL] = updated.notificationLevel.name
             prefs[UnhingedSettings.SESSION_COUNT] = updated.sessionCount
-            updated.lastOpenedTimestamp?.let { prefs[UnhingedSettings.LAST_OPENED] = it }
+            if (updated.lastOpenedTimestamp != null) {
+                prefs[UnhingedSettings.LAST_OPENED] = updated.lastOpenedTimestamp
+            } else {
+                prefs.remove(UnhingedSettings.LAST_OPENED)
+            }
             prefs[UnhingedSettings.MEMBRANE] = updated.membranePermeability
             prefs[UnhingedSettings.TEMPORAL] = updated.temporalAlignment
             prefs[UnhingedSettings.STEVEN] = updated.stevenVisibility

@@ -25,9 +25,12 @@ import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.CosmicProgressRing
+import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
+import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.ui.theme.unhinged.*
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.*
 import kotlin.time.Duration
 
@@ -151,16 +154,14 @@ private fun BookDetailContent(
                         cornerRadius = 12.dp,
                     )
 
-                    // Progress ring overlay
+                    // Containment Halo progress ring
                     if (uiState.hasProgress) {
-                        CosmicProgressRing(
-                            progress = uiState.progress.coerceIn(0.0, 1.0).toFloat(),
-                            modifier = Modifier.matchParentSize().padding(2.dp),
-                            strokeWidth = 5.dp,
+                        ContainmentProgressRing(
+                            progress = uiState.progress.toFloat().coerceIn(0f, 1f),
+                            modifier = Modifier.matchParentSize(),
+                            style = RingStyle.BookDetail,
                             progressColor = GoldFilament,
-                            trackColor = ArchiveOutline.copy(alpha = 0.3f),
-                            glowStrength = 0.35f,
-                            showEndCapDot = false,
+                            trackColor = ArchiveOutline,
                         )
                     }
                 }
@@ -627,9 +628,13 @@ private fun formatDuration(duration: Duration): String {
 
 private fun formatDate(epochMillis: Long): String {
     return try {
-        val sdf = SimpleDateFormat("MMM d, yyyy", Locale.US)
-        sdf.format(Date(epochMillis))
-    } catch (_: Exception) {
+        // Use thread-safe DateTimeFormatter instead of SimpleDateFormat
+        val formatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US)
+        val instant = Instant.ofEpochMilli(epochMillis)
+        instant.atZone(ZoneId.systemDefault()).format(formatter)
+    } catch (e: Exception) {
+        // Log specific error for debugging rather than silently swallowing
+        android.util.Log.w("BookDetailScreen", "Failed to format date: $epochMillis", e)
         ""
     }
 }

@@ -29,7 +29,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.CosmicProgressRing
+import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
+import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -50,7 +51,8 @@ fun PlayerScreen(
         label = "book_progress",
     )
 
-    val chapterProgress = if (uiState.currentChapterDuration > Duration.ZERO) {
+    val chapterProgress = if (uiState.currentChapterDuration > Duration.ZERO &&
+                                   uiState.currentChapterPosition >= Duration.ZERO) {
         (uiState.currentChapterPosition.inWholeMilliseconds.toFloat() /
          uiState.currentChapterDuration.inWholeMilliseconds.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -119,14 +121,12 @@ fun PlayerScreen(
             )
 
             // Book progress ring — outer orbit
-            CosmicProgressRing(
+            ContainmentProgressRing(
                 progress = animatedBookProgress,
-                modifier = Modifier.matchParentSize().padding(2.dp),
-                strokeWidth = 6.dp,
+                modifier = Modifier.matchParentSize(),
+                style = RingStyle.PlayerLarge,
                 progressColor = GoldFilament,
-                trackColor = ArchiveOutline.copy(alpha = 0.3f),
-                glowStrength = 0.4f,
-                showEndCapDot = false,
+                trackColor = ArchiveOutline,
             )
         }
 
@@ -142,14 +142,15 @@ fun PlayerScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 // Chapter progress halo
-                CosmicProgressRing(
+                ContainmentProgressRing(
                     progress = animatedChapterProgress,
                     modifier = Modifier.matchParentSize(),
-                    strokeWidth = 3.dp,
+                    style = RingStyle.LibrarySmall.copy(
+                        usePartialTrack = false,  // Full ring for chapter halo
+                        glowAlpha = 0.25f
+                    ),
                     progressColor = ImpossibleAccent,
-                    trackColor = ArchiveOutline.copy(alpha = 0.15f),
-                    glowStrength = 0.3f,
-                    showEndCapDot = false,
+                    trackColor = ArchiveOutline,
                 )
 
                 // Title/Author content inside the halo
@@ -569,7 +570,8 @@ private fun SleepTimerButton(
 // ─── Duration Formatting ──────────────────────────────────────────────────
 
 private fun formatDuration(duration: Duration): String {
-    val totalSeconds = duration.inWholeSeconds
+    // Handle negative durations gracefully
+    val totalSeconds = duration.inWholeSeconds.coerceAtLeast(0)
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60

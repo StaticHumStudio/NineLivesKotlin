@@ -5,6 +5,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.ninelivesaudio.app.domain.model.Bookmark
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.RingStyle
@@ -39,6 +42,18 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Bookmark bottom sheet
+    if (uiState.showBookmarks) {
+        BookmarkSheet(
+            bookmarks = uiState.bookmarks,
+            positionText = uiState.positionText,
+            onAddBookmark = { title -> viewModel.addBookmark(title) },
+            onSeekToBookmark = { bookmark -> viewModel.seekToBookmark(bookmark) },
+            onDeleteBookmark = { bookmark -> viewModel.deleteBookmark(bookmark) },
+            onDismiss = { viewModel.dismissBookmarks() },
+        )
+    }
 
     if (!uiState.hasBook) {
         EmptyPlayerState()
@@ -382,6 +397,25 @@ fun PlayerScreen(
                 onTimerSelected = viewModel::setSleepTimer,
             )
 
+            // Bookmark button
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.clickable { viewModel.toggleBookmarks() },
+            ) {
+                Icon(
+                    Icons.Outlined.Bookmarks,
+                    contentDescription = "Bookmarks",
+                    tint = if (uiState.bookmarks.isNotEmpty()) GoldFilament else ArchiveTextSecondary,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    text = if (uiState.bookmarks.isNotEmpty()) "${uiState.bookmarks.size}" else "Marks",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 10.sp,
+                )
+            }
+
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -614,5 +648,181 @@ private fun EmptyPlayerState() {
             color = ArchiveTextMuted,
             textAlign = TextAlign.Center,
         )
+    }
+}
+
+// ─── Bookmark Sheet ──────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BookmarkSheet(
+    bookmarks: List<Bookmark>,
+    positionText: String,
+    onAddBookmark: (String) -> Unit,
+    onSeekToBookmark: (Bookmark) -> Unit,
+    onDeleteBookmark: (Bookmark) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var newBookmarkTitle by remember { mutableStateOf("") }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ArchiveVoidSurface,
+        contentColor = ArchiveTextPrimary,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+        ) {
+            // Header
+            Text(
+                text = "Bookmarks",
+                style = MaterialTheme.typography.titleMedium,
+                color = GoldFilament,
+                fontWeight = FontWeight.Bold,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Add bookmark row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = newBookmarkTitle,
+                    onValueChange = { newBookmarkTitle = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = {
+                        Text(
+                            "Bookmark at $positionText",
+                            color = ArchiveTextMuted,
+                        )
+                    },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = GoldFilament,
+                        unfocusedBorderColor = ArchiveOutline,
+                        cursorColor = GoldFilament,
+                        focusedTextColor = ArchiveTextPrimary,
+                        unfocusedTextColor = ArchiveTextPrimary,
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                )
+
+                FilledIconButton(
+                    onClick = {
+                        val title = newBookmarkTitle.ifBlank { "Bookmark at $positionText" }
+                        onAddBookmark(title)
+                        newBookmarkTitle = ""
+                    },
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = GoldFilament,
+                        contentColor = ArchiveVoidDeep,
+                    ),
+                ) {
+                    Icon(
+                        Icons.Outlined.BookmarkAdd,
+                        contentDescription = "Add bookmark",
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Bookmark list
+            if (bookmarks.isEmpty()) {
+                Text(
+                    text = "No bookmarks yet",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 300.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(
+                        items = bookmarks,
+                        key = { "${it.libraryItemId}_${it.time}" },
+                    ) { bookmark ->
+                        BookmarkRow(
+                            bookmark = bookmark,
+                            onSeek = { onSeekToBookmark(bookmark) },
+                            onDelete = { onDeleteBookmark(bookmark) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookmarkRow(
+    bookmark: Bookmark,
+    onSeek: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = ArchiveVoidElevated,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSeek),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                Icons.Outlined.Bookmark,
+                contentDescription = null,
+                tint = GoldFilament,
+                modifier = Modifier.size(20.dp),
+            )
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = bookmark.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextPrimary,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = bookmark.timeFormatted,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 11.sp,
+                )
+            }
+
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "Delete bookmark",
+                    tint = ArchiveError.copy(alpha = 0.7f),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
     }
 }

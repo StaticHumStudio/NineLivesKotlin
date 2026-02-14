@@ -30,7 +30,7 @@ class ProgressRepository @Inject constructor(
         playbackProgressDao.upsert(
             PlaybackProgressEntity(
                 audioBookId = audioBookId,
-                positionSeconds = position.inWholeMilliseconds / 1000.0,
+                positionSeconds = position.toDouble(kotlin.time.DurationUnit.SECONDS),
                 isFinished = if (isFinished) 1 else 0,
                 updatedAt = Instant.now().atOffset(ZoneOffset.UTC)
                     .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),

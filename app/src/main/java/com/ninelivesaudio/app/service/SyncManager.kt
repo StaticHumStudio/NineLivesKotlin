@@ -254,13 +254,18 @@ class SyncManager @Inject constructor(
         duration: Double,
         isFinished: Boolean,
     ) {
-        val progress = if (duration > 0) (currentTime / duration).coerceIn(0.0, 1.0) else 0.0
+        val safeCurrentTime = currentTime.coerceAtLeast(0.0)
+        val safeDuration = duration.coerceAtLeast(0.0)
+        // Only auto-mark as finished if position is within 1 second of the end.
+        // Exact >= comparison can fire prematurely during seeks near the end.
+        val computedFinished = isFinished || (safeDuration > 0.0 && safeDuration - safeCurrentTime < 1.0)
+        val progress = if (safeDuration > 0) (safeCurrentTime / safeDuration).coerceIn(0.0, 1.0) else 0.0
 
         // Always save locally (crash safety)
         progressRepository.savePlaybackProgress(
             audioBookId = itemId,
-            position = currentTime.seconds,
-            isFinished = isFinished,
+            position = safeCurrentTime.seconds,
+            isFinished = computedFinished,
         )
 
         // Update audiobook entity
@@ -269,9 +274,9 @@ class SyncManager @Inject constructor(
             if (book != null) {
                 audioBookDao.upsert(
                     book.copy(
-                        currentTimeSeconds = currentTime,
+                        currentTimeSeconds = safeCurrentTime,
                         progress = progress,
-                        isFinished = if (isFinished) 1 else 0,
+                        isFinished = if (computedFinished) 1 else 0,
                     )
                 )
             }
@@ -282,17 +287,17 @@ class SyncManager @Inject constructor(
         // Throttle network pushes
         val now = System.currentTimeMillis()
         val timeSinceLastSync = now - lastSyncTimestamp
-        val positionDelta = kotlin.math.abs(currentTime - lastSyncedTime)
-        val lastSyncedProgress = lastSyncedTime / duration.coerceAtLeast(1.0)
-        val shouldSync = isFinished ||
+        val positionDelta = kotlin.math.abs(safeCurrentTime - lastSyncedTime)
+        val lastSyncedProgress = lastSyncedTime / safeDuration.coerceAtLeast(1.0)
+        val shouldSync = computedFinished ||
                 (timeSinceLastSync >= MIN_SYNC_INTERVAL_MS &&
                         (positionDelta >= MIN_POSITION_DELTA || (progress - lastSyncedProgress) >= MIN_PROGRESS_DELTA))
 
         if (shouldSync && connectivityMonitor.isOnline.value) {
             try {
-                val success = progressRepository.pushProgressToServer(itemId, currentTime, isFinished)
+                val success = progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
                 if (success) {
-                    lastSyncedTime = currentTime
+                    lastSyncedTime = safeCurrentTime
                     lastSyncTimestamp = now
                 }
             } catch (_: Exception) {
@@ -309,24 +314,29 @@ class SyncManager @Inject constructor(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean,
+        duration: Double = 0.0,
     ) {
+        val safeCurrentTime = currentTime.coerceAtLeast(0.0)
+        val safeDuration = duration.coerceAtLeast(0.0)
+        val computedFinished = isFinished
+
         // Always save locally first
         progressRepository.savePlaybackProgress(
             audioBookId = itemId,
-            position = currentTime.seconds,
-            isFinished = isFinished,
+            position = safeCurrentTime.seconds,
+            isFinished = computedFinished,
         )
 
         if (connectivityMonitor.isOnline.value) {
             try {
-                progressRepository.pushProgressToServer(itemId, currentTime, isFinished)
+                progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
             } catch (_: Exception) {
                 // Failed → enqueue
-                progressRepository.enqueuePendingProgress(itemId, currentTime, isFinished)
+                progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished)
             }
         } else {
             // Offline → enqueue for later
-            progressRepository.enqueuePendingProgress(itemId, currentTime, isFinished)
+            progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished)
         }
 
         // Clear active item
@@ -356,6 +366,6 @@ class SyncManager @Inject constructor(
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private suspend fun hasAuthToken(): Boolean {
-        return settingsManager.getAuthToken()?.isNotEmpty() == true
+        return settingsManager.getAuthToken()?.isNotBlank() == true
     }
 }

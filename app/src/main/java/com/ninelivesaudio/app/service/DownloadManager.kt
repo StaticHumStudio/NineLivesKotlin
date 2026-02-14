@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlin.time.Duration.Companion.seconds
 import java.io.File
+import android.os.Environment
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -77,16 +78,37 @@ class DownloadManager @Inject constructor(
      */
     suspend fun queueDownload(audioBook: AudioBook): DownloadItem {
         val downloadId = UUID.randomUUID().toString()
-        val files = audioBook.audioFiles.map { it.ino }
+
+        // Ensure we have file metadata before queuing.
+        val resolvedBook = if (audioBook.audioFiles.isEmpty()) {
+            fetchFullBookDetails(audioBook.id) ?: audioBook
+        } else {
+            audioBook
+        }
+
+        val files = resolvedBook.audioFiles.mapNotNull { it.ino.takeIf { ino -> ino.isNotBlank() } }
+        if (files.isEmpty()) {
+            val failedItem = DownloadItem(
+                id = downloadId,
+                audioBookId = audioBook.id,
+                title = audioBook.title,
+                status = DownloadStatus.Failed,
+                errorMessage = "No downloadable audio files found for this book",
+                startedAt = System.currentTimeMillis(),
+            )
+            downloadItemDao.upsert(failedItem.toEntity())
+            _downloadFailed.tryEmit(failedItem)
+            return failedItem
+        }
 
         val downloadItem = DownloadItem(
             id = downloadId,
             audioBookId = audioBook.id,
             title = audioBook.title,
             status = DownloadStatus.Queued,
-            totalBytes = audioBook.audioFiles.sumOf { it.size }.let { size ->
+            totalBytes = resolvedBook.audioFiles.sumOf { it.size }.let { size ->
                 if (size > 0) size
-                else (audioBook.audioFiles.sumOf { it.duration.inWholeSeconds } * 16_000L) // ~128kbps estimate
+                else (resolvedBook.audioFiles.sumOf { it.duration.inWholeSeconds } * 16_000L) // ~128kbps estimate
             },
             downloadedBytes = 0,
             startedAt = System.currentTimeMillis(),
@@ -97,7 +119,7 @@ class DownloadManager @Inject constructor(
         downloadItemDao.upsert(downloadItem.toEntity())
 
         // Start the download
-        launchDownload(downloadItem, audioBook)
+        launchDownload(downloadItem, resolvedBook)
 
         return downloadItem
     }
@@ -196,6 +218,16 @@ class DownloadManager @Inject constructor(
             audioBook
         }
 
+        if (book.audioFiles.isEmpty()) {
+            download = download.copy(
+                status = DownloadStatus.Failed,
+                errorMessage = "No audio files available for download",
+            )
+            downloadItemDao.upsert(download.toEntity())
+            _downloadFailed.tryEmit(download)
+            return
+        }
+
         // Calculate total bytes
         val totalBytes = book.audioFiles.sumOf { it.size }.let { size ->
             if (size > 0) size
@@ -235,7 +267,11 @@ class DownloadManager @Inject constructor(
 
                 try {
                     // Stream the file
-                    val response = api.getAudioFileStream(audioBook.id, audioFile.ino)
+                    if (audioFile.ino.isBlank()) {
+                        throw Exception("Missing audio file identifier for $fileName")
+                    }
+
+                    val response = api.getAudioFileStream(book.id, audioFile.ino)
                     if (!response.isSuccessful || response.body() == null) {
                         throw Exception("HTTP ${response.code()}: Failed to download $fileName")
                     }
@@ -264,7 +300,10 @@ class DownloadManager @Inject constructor(
 
                     // Atomic rename .part → final
                     if (finalPath.exists()) finalPath.delete()
-                    partPath.renameTo(finalPath)
+                    val renamed = partPath.renameTo(finalPath)
+                    if (!renamed) {
+                        throw Exception("Failed to finalize $fileName")
+                    }
                     fileSuccess = true
 
                 } catch (e: CancellationException) {
@@ -306,7 +345,7 @@ class DownloadManager @Inject constructor(
         // All files downloaded successfully
         download = download.copy(
             status = DownloadStatus.Completed,
-            downloadedBytes = totalBytes,
+            downloadedBytes = maxOf(downloadedBytes, totalBytes),
             completedAt = System.currentTimeMillis(),
         )
         downloadItemDao.upsert(download.toEntity())
@@ -351,7 +390,7 @@ class DownloadManager @Inject constructor(
     }
 
     private fun emitProgress(downloadId: String, downloaded: Long, total: Long) {
-        val progress = if (total > 0) downloaded.toDouble() / total * 100.0 else 0.0
+        val progress = if (total > 0) (downloaded.toDouble() / total * 100.0).coerceIn(0.0, 100.0) else 0.0
         _progressUpdates.tryEmit(
             DownloadProgress(
                 downloadId = downloadId,
@@ -379,9 +418,15 @@ class DownloadManager @Inject constructor(
 
     /** Base storage directory for all downloads. */
     private fun getBasePath(): File {
-        // Use app-specific external storage: /storage/emulated/0/Android/data/package/files/Music/AudioBookshelf/
-        val musicDir = context.getExternalFilesDir("Music")
-        return File(musicDir, "AudioBookshelf").also { it.mkdirs() }
+        // Respect user-configured path when possible.
+        val configuredPath = settingsManager.currentSettings.downloadPath.trim()
+        if (configuredPath.isNotEmpty()) {
+            return File(configuredPath).also { it.mkdirs() }
+        }
+
+        // Fallback to app-specific external storage.
+        val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
+        return File(musicDir, "Audiobookshelf").also { it.mkdirs() }
     }
 
     /** Sanitize a filename for the filesystem. */

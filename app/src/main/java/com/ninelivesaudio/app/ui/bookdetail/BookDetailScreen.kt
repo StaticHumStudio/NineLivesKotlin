@@ -615,26 +615,26 @@ private fun ChapterRow(
 // ─── Formatting Helpers ───────────────────────────────────────────────────
 
 private fun formatDuration(duration: Duration): String {
-    val totalSeconds = duration.inWholeSeconds
+    val totalSeconds = duration.inWholeSeconds.coerceAtLeast(0)
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
+    val secs = totalSeconds % 60
 
     return when {
         hours > 0 -> "${hours}h ${minutes}m"
-        minutes > 0 -> "${minutes}m"
-        else -> "${totalSeconds}s"
+        minutes > 0 -> "${minutes}m ${secs}s"
+        else -> "${secs}s"
     }
 }
 
 private fun formatDate(epochMillis: Long): String {
+    if (epochMillis <= 0) return ""
     return try {
         // Use thread-safe DateTimeFormatter instead of SimpleDateFormat
         val formatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US)
         val instant = Instant.ofEpochMilli(epochMillis)
         instant.atZone(ZoneId.systemDefault()).format(formatter)
-    } catch (e: Exception) {
-        // Log specific error for debugging rather than silently swallowing
-        android.util.Log.w("BookDetailScreen", "Failed to format date: $epochMillis", e)
+    } catch (_: Exception) {
         ""
     }
 }

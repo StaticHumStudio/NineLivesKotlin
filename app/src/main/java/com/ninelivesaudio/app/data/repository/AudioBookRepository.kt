@@ -42,8 +42,11 @@ class AudioBookRepository @Inject constructor(
         audioBookDao.getById(id)?.toDomain()
 
     /** Search audiobooks by title or author. */
-    suspend fun search(query: String): List<AudioBook> =
-        audioBookDao.search(query).map { it.toDomain() }
+    suspend fun search(query: String): List<AudioBook> {
+        val normalized = query.trim()
+        if (normalized.isEmpty()) return getAll()
+        return audioBookDao.search(normalized).map { it.toDomain() }
+    }
 
     /** Get recently played audiobooks for Nine Lives home screen. */
     suspend fun getRecentlyPlayed(limit: Int = 9): List<Pair<AudioBook, Long>> =
@@ -96,6 +99,7 @@ class AudioBookRepository @Inject constructor(
                 }
             }
             audioBookDao.upsertAll(merged.map { it.toEntity() })
+            return merged
         }
         return remote
     }

@@ -237,7 +237,8 @@ class PlayerViewModel @Inject constructor(
 
     fun seekTo(fraction: Float) {
         val dur = _uiState.value.duration
-        val target = (dur * fraction.toDouble())
+        val safeFraction = fraction.coerceIn(0f, 1f)
+        val target = dur * safeFraction.toDouble()
         playbackManager.seekTo(target)
     }
 
@@ -248,7 +249,8 @@ class PlayerViewModel @Inject constructor(
         val chapterDur = state.currentChapterDuration
         if (chapterDur <= Duration.ZERO) return
 
-        val targetInChapter = chapterDur * fraction.toDouble()
+        val safeFraction = fraction.coerceIn(0f, 1f)
+        val targetInChapter = chapterDur * safeFraction.toDouble()
         val absoluteTarget = chapter.startTime + targetInChapter
         playbackManager.seekTo(absoluteTarget)
     }

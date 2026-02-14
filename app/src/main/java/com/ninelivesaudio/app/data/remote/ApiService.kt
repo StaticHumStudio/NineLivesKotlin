@@ -7,6 +7,8 @@ import com.ninelivesaudio.app.service.SettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import retrofit2.Response
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -33,11 +35,12 @@ class ApiService @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val normalizedUrl = normalizeServerUrl(serverUrl)
+                val normalizedUsername = username.trim()
 
                 // Update settings with server URL first (so Retrofit uses it)
-                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, username = username) }
+                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, username = normalizedUsername) }
 
-                val response = api.login(LoginRequest(username, password))
+                val response = api.login(LoginRequest(normalizedUsername, password))
 
                 if (!response.isSuccessful) {
                     lastError = "Login failed: ${response.code()} - ${response.errorBody()?.string()}"
@@ -241,7 +244,12 @@ class ApiService @Inject constructor(
         try {
             val response = api.updateProgress(
                 itemId,
-                UpdateProgressRequest(currentTime, isFinished, currentTime)
+                // API expects progress as fraction [0, 1], not seconds.
+                UpdateProgressRequest(
+                    currentTime = currentTime.coerceAtLeast(0.0),
+                    isFinished = isFinished,
+                    progress = if (isFinished) 1.0 else 0.0,
+                )
             )
             response.isSuccessful
         } catch (e: Exception) {
@@ -254,13 +262,13 @@ class ApiService @Inject constructor(
             val response = api.getUserProgress(itemId)
             if (!response.isSuccessful) return@withContext null
             response.body()?.let { p ->
-                UserProgress(
-                    libraryItemId = p.libraryItemId,
-                    currentTime = p.currentTime.seconds,
-                    progress = p.progress.coerceIn(0.0, 1.0),
-                    isFinished = p.isFinished,
-                    lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
-                )
+                    UserProgress(
+                        libraryItemId = p.libraryItemId,
+                        currentTime = p.currentTime.seconds,
+                        progress = normalizeProgress(p.progress),
+                        isFinished = p.isFinished,
+                        lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
+                    )
             }
         } catch (e: Exception) {
             null
@@ -278,7 +286,7 @@ class ApiService @Inject constructor(
                     UserProgress(
                         libraryItemId = p.libraryItemId,
                         currentTime = p.currentTime.seconds,
-                        progress = p.progress.coerceIn(0.0, 1.0),
+                        progress = normalizeProgress(p.progress),
                         isFinished = p.isFinished,
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
@@ -336,7 +344,8 @@ class ApiService @Inject constructor(
 
     fun getCoverUrl(itemId: String): String {
         val serverUrl = settingsManager.currentSettings.serverUrl
-        return "$serverUrl/api/items/$itemId/cover"
+        val encodedItemId = URLEncoder.encode(itemId, StandardCharsets.UTF_8.toString())
+        return "$serverUrl/api/items/$encodedItemId/cover"
     }
 
     // ─── Mapping Helpers ─────────────────────────────────────────────────
@@ -381,19 +390,28 @@ class ApiService @Inject constructor(
                 ?.map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title) }
                 ?: emptyList(),
             currentTime = (item.userMediaProgress?.currentTime ?: 0.0).seconds,
-            progress = (item.userMediaProgress?.progress ?: 0.0).coerceIn(0.0, 1.0),
+            progress = normalizeProgress(item.userMediaProgress?.progress ?: 0.0),
             isFinished = item.userMediaProgress?.isFinished ?: false,
         )
     }
 
+    private fun normalizeProgress(value: Double): Double {
+        val nonNegative = value.coerceAtLeast(0.0)
+        return if (nonNegative > 1.0) {
+            (nonNegative / 100.0).coerceIn(0.0, 1.0)
+        } else {
+            nonNegative.coerceIn(0.0, 1.0)
+        }
+    }
+
     private fun normalizeServerUrl(url: String): String {
-        var normalized = url.trim()
+        var normalized = url.trim().replace("\\", "/")
         if ("://" !in normalized) {
             normalized = when {
                 normalized.startsWith("https:", ignoreCase = true) ->
-                    "https://" + normalized.removePrefix("https:").trimStart('/')
+                    "https://" + normalized.substringAfter(":", "").trimStart('/')
                 normalized.startsWith("http:", ignoreCase = true) ->
-                    "http://" + normalized.removePrefix("http:").trimStart('/')
+                    "http://" + normalized.substringAfter(":", "").trimStart('/')
                 else -> "http://$normalized"
             }
         }

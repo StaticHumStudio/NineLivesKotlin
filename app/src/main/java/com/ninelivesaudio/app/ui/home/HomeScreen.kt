@@ -28,8 +28,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.CornerSigils
-import com.ninelivesaudio.app.ui.components.CosmicProgressRing
+import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
@@ -144,15 +145,13 @@ private fun HomeGridTile(
             cornerRadius = 14.dp,
         )
 
-        // Progress ring overlay
-        CosmicProgressRing(
+        // Containment Halo progress ring
+        ContainmentProgressRing(
             progress = animatedProgress,
-            modifier = Modifier.matchParentSize().padding(3.dp),
-            strokeWidth = 4.dp,
+            modifier = Modifier.matchParentSize(),
+            style = RingStyle.HomeSmall,
             progressColor = GoldFilament,
-            trackColor = ArchiveOutline.copy(alpha = 0.3f),
-            glowStrength = 0.4f,
-            showEndCapDot = false,
+            trackColor = ArchiveOutline,
         )
 
         // Corner sigils

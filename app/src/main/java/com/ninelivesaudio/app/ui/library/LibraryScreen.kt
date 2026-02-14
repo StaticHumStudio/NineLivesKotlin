@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.library
 
+// Force rebuild v2
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -32,8 +33,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.CornerSigils
-import com.ninelivesaudio.app.ui.components.CosmicProgressRing
+import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
@@ -316,7 +318,7 @@ private fun ArchiveBookListItem(
                     }
                 }
 
-                // Enhanced Progress ring with 3D effect
+                // Containment Halo progress ring
                 Box(
                     modifier = Modifier
                         .matchParentSize()
@@ -326,16 +328,12 @@ private fun ArchiveBookListItem(
                             clip = false
                         )
                 ) {
-                    CosmicProgressRing(
+                    ContainmentProgressRing(
                         progress = animatedProgress,
-                        modifier = Modifier
-                            .matchParentSize()
-                            .padding(2.dp),
-                        strokeWidth = 3.dp,
+                        modifier = Modifier.matchParentSize(),
+                        style = RingStyle.LibrarySmall,
                         progressColor = GoldFilament,
-                        trackColor = ArchiveOutline.copy(alpha = 0.3f),
-                        glowStrength = 0.8f, // More pronounced glow
-                        showEndCapDot = true,
+                        trackColor = ArchiveOutline,
                     )
                 }
 
@@ -509,15 +507,13 @@ private fun ArchiveBookTile(
                 cornerRadius = 14.dp,
             )
 
-            // Progress ring
-            CosmicProgressRing(
+            // Containment Halo progress ring
+            ContainmentProgressRing(
                 progress = animatedProgress,
-                modifier = Modifier.matchParentSize().padding(3.dp),
-                strokeWidth = 4.dp,
+                modifier = Modifier.matchParentSize(),
+                style = RingStyle.LibrarySmall,
                 progressColor = GoldFilament,
-                trackColor = ArchiveOutline.copy(alpha = 0.3f),
-                glowStrength = 0.4f,
-                showEndCapDot = false,
+                trackColor = ArchiveOutline,
             )
 
             // Corner sigils

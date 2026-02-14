@@ -256,7 +256,9 @@ class SyncManager @Inject constructor(
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
-        val computedFinished = isFinished || (safeDuration > 0.0 && safeCurrentTime >= safeDuration)
+        // Only auto-mark as finished if position is within 1 second of the end.
+        // Exact >= comparison can fire prematurely during seeks near the end.
+        val computedFinished = isFinished || (safeDuration > 0.0 && safeDuration - safeCurrentTime < 1.0)
         val progress = if (safeDuration > 0) (safeCurrentTime / safeDuration).coerceIn(0.0, 1.0) else 0.0
 
         // Always save locally (crash safety)
@@ -293,7 +295,7 @@ class SyncManager @Inject constructor(
 
         if (shouldSync && connectivityMonitor.isOnline.value) {
             try {
-                val success = progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished)
+                val success = progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
                 if (success) {
                     lastSyncedTime = safeCurrentTime
                     lastSyncTimestamp = now
@@ -312,8 +314,10 @@ class SyncManager @Inject constructor(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean,
+        duration: Double = 0.0,
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
+        val safeDuration = duration.coerceAtLeast(0.0)
         val computedFinished = isFinished
 
         // Always save locally first
@@ -325,7 +329,7 @@ class SyncManager @Inject constructor(
 
         if (connectivityMonitor.isOnline.value) {
             try {
-                progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished)
+                progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
             } catch (_: Exception) {
                 // Failed → enqueue
                 progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished)

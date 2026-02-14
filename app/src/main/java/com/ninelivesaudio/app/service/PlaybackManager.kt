@@ -405,7 +405,7 @@ class PlaybackManager @Inject constructor(
         } else {
             // Fallback: stream individual audio files
             for (af in book.audioFiles.sortedBy { it.index }) {
-                val url = "$serverUrl/api/items/${book.id}/file/${af.ino}"
+                val url = "$serverUrl/api/items/${Uri.encode(book.id)}/file/${Uri.encode(af.ino)}"
                 mediaItems.add(
                     MediaItem.Builder()
                         .setUri(url)
@@ -467,7 +467,7 @@ class PlaybackManager @Inject constructor(
         // Flush progress in the background AFTER releasing the player.
         // All values were captured above so no player access is needed.
         if (book != null) {
-            val isFinished = dur > Duration.ZERO && pos >= dur - 1.seconds
+            val isFinished = dur > Duration.ZERO && pos >= (dur - 1.seconds).coerceAtLeast(Duration.ZERO)
             scope.launch(Dispatchers.IO) {
                 try {
                     syncProgressNow()
@@ -477,6 +477,7 @@ class PlaybackManager @Inject constructor(
                     itemId = book.id,
                     currentTime = pos.inWholeMilliseconds / 1000.0,
                     isFinished = isFinished,
+                    duration = dur.inWholeMilliseconds / 1000.0,
                 )
                 closeSession()
             }
@@ -601,6 +602,7 @@ class PlaybackManager @Inject constructor(
                                 itemId = book.id,
                                 currentTime = durSecs,
                                 isFinished = true,
+                                duration = durSecs,
                             )
                             closeSession()
                         }
@@ -635,20 +637,19 @@ class PlaybackManager @Inject constructor(
                 updateCurrentChapter(pos)
 
                 // Report position to SyncManager for throttled server pushes.
-                // Uses withContext (not launch) to prevent unbounded coroutine accumulation.
+                // Calling sequentially (not launch) prevents unbounded coroutine accumulation.
+                // Room and network calls inside reportPlaybackPosition handle their own dispatchers.
                 val book = _currentBook.value
                 val dur = _duration.value
                 if (book != null && dur > Duration.ZERO) {
-                    withContext(Dispatchers.IO) {
-                        try {
-                            syncManager.reportPlaybackPosition(
-                                itemId = book.id,
-                                currentTime = pos.inWholeMilliseconds / 1000.0,
-                                duration = dur.inWholeMilliseconds / 1000.0,
-                                isFinished = false,
-                            )
-                        } catch (_: Exception) {}
-                    }
+                    try {
+                        syncManager.reportPlaybackPosition(
+                            itemId = book.id,
+                            currentTime = pos.inWholeMilliseconds / 1000.0,
+                            duration = dur.inWholeMilliseconds / 1000.0,
+                            isFinished = false,
+                        )
+                    } catch (_: Exception) {}
                 }
             }
         }

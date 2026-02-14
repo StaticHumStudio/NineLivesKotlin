@@ -100,7 +100,8 @@ class ProgressRepository @Inject constructor(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean,
-    ): Boolean = apiService.updateProgress(itemId, currentTime, isFinished)
+        duration: Double = 0.0,
+    ): Boolean = apiService.updateProgress(itemId, currentTime, isFinished, duration)
 
     /** Flush all pending progress updates to the server. */
     suspend fun flushPendingProgress(): Boolean {

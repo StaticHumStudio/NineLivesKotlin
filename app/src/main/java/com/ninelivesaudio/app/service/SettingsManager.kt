@@ -135,8 +135,8 @@ class SettingsManager @Inject constructor(
     // ─── Helpers ─────────────────────────────────────────────────────────
 
     private fun defaultDownloadPath(): String {
-        val musicDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
-        return File(musicDir, "AudioBookshelf").also { it.mkdirs() }.absolutePath
+        val musicDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC) ?: context.filesDir
+        return File(musicDir, "Audiobookshelf").also { it.mkdirs() }.absolutePath
     }
 
     /** Path to the settings file (for diagnostics). */

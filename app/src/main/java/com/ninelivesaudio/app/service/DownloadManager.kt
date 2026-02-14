@@ -40,7 +40,8 @@ class DownloadManager @Inject constructor(
     companion object {
         private const val MAX_CONCURRENT = 2
         private const val BUFFER_SIZE = 81_920 // 80 KB
-        private const val PROGRESS_UPDATE_INTERVAL = 512 * 1024 // Every 512 KB
+        private const val MIN_PROGRESS_UPDATE_INTERVAL_MS = 750L
+        private const val MIN_PROGRESS_DELTA_BYTES = 512 * 1024L // 512 KB
     }
 
     // Coroutine scope for download tasks
@@ -236,6 +237,8 @@ class DownloadManager @Inject constructor(
         download = download.copy(totalBytes = totalBytes)
 
         var downloadedBytes = 0L
+        var lastPersistedBytes = 0L
+        var lastPersistedAt = System.currentTimeMillis()
         val maxRetries = item.maxRetries
 
         // Download each audio file
@@ -287,11 +290,19 @@ class DownloadManager @Inject constructor(
                                     output.write(buffer, 0, bytesRead)
                                     downloadedBytes += bytesRead
 
-                                    // Throttled progress updates
-                                    if (downloadedBytes % PROGRESS_UPDATE_INTERVAL < BUFFER_SIZE) {
+                                    // Throttled progress updates (time + byte delta)
+                                    val now = System.currentTimeMillis()
+                                    val bytesDelta = downloadedBytes - lastPersistedBytes
+                                    val timeDelta = now - lastPersistedAt
+                                    val shouldPersist = bytesDelta >= MIN_PROGRESS_DELTA_BYTES ||
+                                        timeDelta >= MIN_PROGRESS_UPDATE_INTERVAL_MS
+
+                                    if (shouldPersist) {
                                         download = download.copy(downloadedBytes = downloadedBytes)
                                         downloadItemDao.upsert(download.toEntity())
                                         emitProgress(download.id, downloadedBytes, totalBytes)
+                                        lastPersistedBytes = downloadedBytes
+                                        lastPersistedAt = now
                                     }
                                 }
                             }
@@ -305,6 +316,13 @@ class DownloadManager @Inject constructor(
                         throw Exception("Failed to finalize $fileName")
                     }
                     fileSuccess = true
+
+                    // Always flush progress after each completed file.
+                    download = download.copy(downloadedBytes = downloadedBytes)
+                    downloadItemDao.upsert(download.toEntity())
+                    emitProgress(download.id, downloadedBytes, totalBytes)
+                    lastPersistedBytes = downloadedBytes
+                    lastPersistedAt = System.currentTimeMillis()
 
                 } catch (e: CancellationException) {
                     // Clean up partial file

@@ -24,6 +24,7 @@ import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -70,6 +71,7 @@ class PlaybackManager @Inject constructor(
     private var exoPlayer: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
     private var mediaController: MediaController? = null
+    private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     private var playbackService: PlaybackService? = null
 
     /** Expose the current ExoPlayer instance. */
@@ -836,10 +838,23 @@ class PlaybackManager @Inject constructor(
      */
     private fun startPlaybackService() {
         try {
+            // Replace any existing controller/future before starting a new connection.
+            mediaController?.release()
+            mediaController = null
+            mediaControllerFuture?.cancel(true)
+            mediaControllerFuture = null
+
             val sessionToken = SessionToken(context, android.content.ComponentName(context, PlaybackService::class.java))
             val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+            mediaControllerFuture = controllerFuture
             controllerFuture.addListener({
                 try {
+                    // Ignore stale async completions from previous attempts.
+                    if (mediaControllerFuture !== controllerFuture) {
+                        runCatching { controllerFuture.get().release() }
+                        return@addListener
+                    }
+
                     mediaController = controllerFuture.get()
                     Log.d(TAG, "MediaController connected to PlaybackService")
                 } catch (e: Exception) {
@@ -855,6 +870,8 @@ class PlaybackManager @Inject constructor(
         try {
             mediaController?.release()
             mediaController = null
+            mediaControllerFuture?.cancel(true)
+            mediaControllerFuture = null
             val intent = Intent(context, PlaybackService::class.java)
             context.stopService(intent)
             Log.d(TAG, "Stopped PlaybackService")

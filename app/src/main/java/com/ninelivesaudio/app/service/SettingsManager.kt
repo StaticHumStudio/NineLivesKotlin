@@ -3,7 +3,7 @@ package com.ninelivesaudio.app.service
 import android.content.Context
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
+import androidx.security.crypto.MasterKey
 import com.ninelivesaudio.app.domain.model.AppSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -43,13 +43,17 @@ class SettingsManager @Inject constructor(
         get() = File(settingsDir, "settings.json")
 
     // Encrypted SharedPreferences for auth token
-    private val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+    private val masterKey by lazy {
+        MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+    }
 
     private val encryptedPrefs by lazy {
         EncryptedSharedPreferences.create(
-            "nine_lives_secure_prefs",
-            masterKeyAlias,
             context,
+            "nine_lives_secure_prefs",
+            masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )

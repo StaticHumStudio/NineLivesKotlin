@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
-import java.time.format.DateTimeParseException
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
@@ -169,7 +168,7 @@ class HomeViewModel @Inject constructor(
         }
         if (hoursListened >= colorStops.last().hours) {
             val s = colorStops.last()
-            return Color(0xFF000000 or (s.r.toLong() shl 16) or (s.g.toLong() shl 8) or s.b.toLong())
+            return Color(red = s.r, green = s.g, blue = s.b)
         }
         for (i in 0 until colorStops.size - 1) {
             val a = colorStops[i]
@@ -179,11 +178,11 @@ class HomeViewModel @Inject constructor(
                 val r = lerp(a.r, b.r, t)
                 val g = lerp(a.g, b.g, t)
                 val blue = lerp(a.b, b.b, t)
-                return Color(0xFF000000 or (r.toLong() shl 16) or (g.toLong() shl 8) or blue.toLong())
+                return Color(red = r, green = g, blue = blue)
             }
         }
         val last = colorStops.last()
-        return Color(0xFF000000 or (last.r.toLong() shl 16) or (last.g.toLong() shl 8) or last.b.toLong())
+        return Color(red = last.r, green = last.g, blue = last.b)
     }
 
     private fun lerp(a: Int, b: Int, t: Double): Int =
@@ -224,7 +223,7 @@ class HomeViewModel @Inject constructor(
                     "${dt.month.name.take(3).lowercase().replaceFirstChar { it.uppercase() }} ${dt.dayOfMonth}"
                 }
             }
-        } catch (e: DateTimeParseException) {
+        } catch (_: Exception) {
             ""
         }
     }

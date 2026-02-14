@@ -125,7 +125,12 @@ class SettingsManager @Inject constructor(
     }
 
     suspend fun saveAuthToken(token: String) = withContext(Dispatchers.IO) {
-        encryptedPrefs.edit().putString(KEY_AUTH_TOKEN, token).apply()
+        val sanitized = token.trim()
+        if (sanitized.isEmpty()) {
+            encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).apply()
+        } else {
+            encryptedPrefs.edit().putString(KEY_AUTH_TOKEN, sanitized).apply()
+        }
     }
 
     suspend fun clearAuthToken() = withContext(Dispatchers.IO) {
@@ -136,6 +141,7 @@ class SettingsManager @Inject constructor(
 
     private fun defaultDownloadPath(): String {
         val musicDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
+            ?: context.filesDir
         return File(musicDir, "AudioBookshelf").also { it.mkdirs() }.absolutePath
     }
 

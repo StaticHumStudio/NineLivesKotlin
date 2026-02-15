@@ -34,6 +34,7 @@ import com.ninelivesaudio.app.domain.model.Bookmark
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.RingStyle
+import com.ninelivesaudio.app.domain.util.toClockString
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -235,12 +236,12 @@ fun PlayerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = formatDuration(uiState.currentChapterPosition),
+                        text = uiState.currentChapterPosition.toClockString(),
                         style = MaterialTheme.typography.labelSmall,
                         color = ArchiveTextMuted,
                     )
                     Text(
-                        text = formatDuration(uiState.currentChapterDuration),
+                        text = uiState.currentChapterDuration.toClockString(),
                         style = MaterialTheme.typography.labelSmall,
                         color = ArchiveTextMuted,
                     )
@@ -598,22 +599,6 @@ private fun SleepTimerButton(
                 )
             }
         }
-    }
-}
-
-// ─── Duration Formatting ──────────────────────────────────────────────────
-
-private fun formatDuration(duration: Duration): String {
-    // Handle negative durations gracefully
-    val totalSeconds = duration.inWholeSeconds.coerceAtLeast(0)
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    val seconds = totalSeconds % 60
-
-    return if (hours > 0) {
-        "%02d:%02d:%02d".format(hours, minutes, seconds)
-    } else {
-        "%02d:%02d".format(minutes, seconds)
     }
 }
 

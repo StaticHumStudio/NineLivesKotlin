@@ -5,9 +5,9 @@ import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.util.toEpochMillis
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -52,9 +52,7 @@ class AudioBookRepository @Inject constructor(
     suspend fun getRecentlyPlayed(limit: Int = 9): List<Pair<AudioBook, Long>> =
         audioBookDao.getRecentlyPlayed(limit).map { result ->
             val book = result.audioBook.toDomain()
-            val lastPlayed = try {
-                result.lastPlayedAt?.let { Instant.parse(it).toEpochMilli() } ?: 0L
-            } catch (_: Exception) { 0L }
+            val lastPlayed = result.lastPlayedAt?.toEpochMillis() ?: 0L
             book to lastPlayed
         }
 
@@ -63,9 +61,7 @@ class AudioBookRepository @Inject constructor(
         audioBookDao.observeRecentlyPlayed(limit).map { results ->
             results.map { result ->
                 val book = result.audioBook.toDomain()
-                val lastPlayed = try {
-                    result.lastPlayedAt?.let { Instant.parse(it).toEpochMilli() } ?: 0L
-                } catch (_: Exception) { 0L }
+                val lastPlayed = result.lastPlayedAt?.toEpochMillis() ?: 0L
                 book to lastPlayed
             }
         }

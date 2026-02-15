@@ -584,7 +584,7 @@ private fun EmptyState(uiState: LibraryViewModel.UiState) {
                 "Connection lost. Check your network.",
                 CopyStyleGuide.Errors.CONNECTION_ERROR_UNHINGED,
             ) ?: "Connect to your AudioBookshelf server in Settings.")
-        uiState.allBooks.isEmpty() ->
+        uiState.totalBookCount == 0 ->
             "The Archive Stands Empty" to (emptyFlavor ?: "No artifacts have been catalogued yet.")
         else ->
             "No Relics Match" to "Try adjusting your filters."

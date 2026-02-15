@@ -86,10 +86,9 @@ fun NineLivesNavHost(
                 onNavigateToPlayer = {
                     navController.navigate(Routes.PLAYER) {
                         popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
+                            inclusive = false
                         }
                         launchSingleTop = true
-                        restoreState = true
                     }
                 }
             )

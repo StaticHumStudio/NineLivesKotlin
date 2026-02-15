@@ -6,9 +6,8 @@ import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.UserProgress
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
+import com.ninelivesaudio.app.domain.util.toEpochMillis
+import com.ninelivesaudio.app.domain.util.toIso8601
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -32,8 +31,7 @@ class ProgressRepository @Inject constructor(
                 audioBookId = audioBookId,
                 positionSeconds = position.toDouble(kotlin.time.DurationUnit.SECONDS),
                 isFinished = if (isFinished) 1 else 0,
-                updatedAt = Instant.now().atOffset(ZoneOffset.UTC)
-                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                updatedAt = System.currentTimeMillis().toIso8601(),
             )
         )
     }
@@ -45,9 +43,7 @@ class ProgressRepository @Inject constructor(
 
     suspend fun getPlaybackProgressWithTimestamp(audioBookId: String): Triple<Duration, Boolean, Long>? {
         val entity = playbackProgressDao.getByAudioBookId(audioBookId) ?: return null
-        val updatedAt = entity.updatedAt?.let {
-            try { Instant.parse(it).toEpochMilli() } catch (_: Exception) { 0L }
-        } ?: 0L
+        val updatedAt = entity.updatedAt?.toEpochMillis() ?: 0L
         return Triple(
             entity.positionSeconds.seconds,
             entity.isFinished == 1,
@@ -63,8 +59,7 @@ class ProgressRepository @Inject constructor(
                 itemId = itemId,
                 currentTime = currentTime,
                 isFinished = if (isFinished) 1 else 0,
-                timestamp = Instant.now().atOffset(ZoneOffset.UTC)
-                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                timestamp = System.currentTimeMillis().toIso8601(),
             )
         )
     }
@@ -75,9 +70,7 @@ class ProgressRepository @Inject constructor(
                 itemId = entity.itemId,
                 currentTime = entity.currentTime,
                 isFinished = entity.isFinished == 1,
-                timestamp = try {
-                    Instant.parse(entity.timestamp).toEpochMilli()
-                } catch (_: Exception) { 0L }
+                timestamp = entity.timestamp.toEpochMillis() ?: 0L
             )
         }
 

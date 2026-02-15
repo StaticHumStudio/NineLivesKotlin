@@ -2,14 +2,19 @@ package com.ninelivesaudio.app.data.local.converter
 
 import com.ninelivesaudio.app.data.local.entity.*
 import com.ninelivesaudio.app.domain.model.*
+import com.ninelivesaudio.app.domain.util.toEpochMillis
+import com.ninelivesaudio.app.domain.util.toIso8601
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import kotlin.time.Duration.Companion.seconds
 
 private val json = Json { ignoreUnknownKeys = true }
+
+private inline fun <reified T> decodeJsonList(jsonString: String?): List<T> =
+    jsonString?.let {
+        try { json.decodeFromString<List<T>>(it) }
+        catch (_: Exception) { emptyList() }
+    } ?: emptyList()
 
 // ─── AudioBook ───────────────────────────────────────────────────────────
 
@@ -23,24 +28,12 @@ fun AudioBookEntity.toDomain(): AudioBook = AudioBook(
     coverPath = coverPath,
     duration = durationSeconds.seconds,
     addedAt = addedAt?.toEpochMillis(),
-    audioFiles = audioFilesJson?.let {
-        try { json.decodeFromString<List<AudioFileJson>>(it).map { af -> af.toDomain() } }
-        catch (_: Exception) { emptyList() }
-    } ?: emptyList(),
+    audioFiles = decodeJsonList<AudioFileJson>(audioFilesJson).map { it.toDomain() },
     seriesName = seriesName,
     seriesSequence = seriesSequence,
-    genres = genresJson?.let {
-        try { json.decodeFromString<List<String>>(it) }
-        catch (_: Exception) { emptyList() }
-    } ?: emptyList(),
-    tags = tagsJson?.let {
-        try { json.decodeFromString<List<String>>(it) }
-        catch (_: Exception) { emptyList() }
-    } ?: emptyList(),
-    chapters = chaptersJson?.let {
-        try { json.decodeFromString<List<ChapterJson>>(it).map { ch -> ch.toDomain() } }
-        catch (_: Exception) { emptyList() }
-    } ?: emptyList(),
+    genres = decodeJsonList<String>(genresJson),
+    tags = decodeJsonList<String>(tagsJson),
+    chapters = decodeJsonList<ChapterJson>(chaptersJson).map { it.toDomain() },
     currentTime = currentTimeSeconds.seconds,
     progress = progress,
     isFinished = isFinished == 1,
@@ -76,10 +69,7 @@ fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
 fun LibraryEntity.toDomain(): Library = Library(
     id = id,
     name = name,
-    folders = foldersJson?.let {
-        try { json.decodeFromString<List<FolderJson>>(it).map { f -> f.toDomain() } }
-        catch (_: Exception) { emptyList() }
-    } ?: emptyList(),
+    folders = decodeJsonList<FolderJson>(foldersJson).map { it.toDomain() },
     displayOrder = displayOrder,
     icon = icon,
     mediaType = mediaType,
@@ -106,10 +96,7 @@ fun DownloadItemEntity.toDomain(): DownloadItem = DownloadItem(
     startedAt = startedAt?.toEpochMillis(),
     completedAt = completedAt?.toEpochMillis(),
     errorMessage = errorMessage,
-    filesToDownload = filesToDownloadJson?.let {
-        try { json.decodeFromString<List<String>>(it) }
-        catch (_: Exception) { emptyList() }
-    } ?: emptyList(),
+    filesToDownload = decodeJsonList<String>(filesToDownloadJson),
 )
 
 fun DownloadItem.toEntity(): DownloadItemEntity = DownloadItemEntity(
@@ -202,21 +189,3 @@ internal fun Folder.toJson(): FolderJson = FolderJson(
     LibraryId = libraryId,
 )
 
-// ─── Timestamp helpers ───────────────────────────────────────────────────
-
-private val isoFormatter = DateTimeFormatter.ISO_INSTANT
-
-internal fun String.toEpochMillis(): Long? = try {
-    Instant.from(isoFormatter.parse(this)).toEpochMilli()
-} catch (_: Exception) {
-    try {
-        // Fallback: parse as ISO_OFFSET_DATE_TIME
-        java.time.OffsetDateTime.parse(this).toInstant().toEpochMilli()
-    } catch (_: Exception) {
-        null
-    }
-}
-
-internal fun Long.toIso8601(): String =
-    Instant.ofEpochMilli(this).atOffset(ZoneOffset.UTC)
-        .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)

@@ -23,6 +23,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Chapter
+import com.ninelivesaudio.app.domain.util.toHumanReadableString
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
@@ -225,7 +226,7 @@ private fun BookDetailContent(
                 ) {
                     MetadataChip(
                         icon = Icons.Outlined.Schedule,
-                        text = formatDuration(uiState.duration),
+                        text = uiState.duration.toHumanReadableString(),
                     )
                     uiState.addedAt?.let { epochMillis ->
                         MetadataChip(
@@ -259,7 +260,7 @@ private fun BookDetailContent(
 
                     val currentDuration = uiState.duration * uiState.progress
                     Text(
-                        text = "${uiState.progressPercent}% complete (${formatDuration(currentDuration)} / ${formatDuration(uiState.duration)})",
+                        text = "${uiState.progressPercent}% complete (${currentDuration.toHumanReadableString()} / ${uiState.duration.toHumanReadableString()})",
                         style = MaterialTheme.typography.bodySmall,
                         color = ArchiveTextSecondary,
                     )
@@ -605,7 +606,7 @@ private fun ChapterRow(
             )
         }
         Text(
-            text = formatDuration(chapter.duration),
+            text = chapter.duration.toHumanReadableString(),
             style = MaterialTheme.typography.labelSmall,
             color = ArchiveTextMuted,
         )
@@ -613,19 +614,6 @@ private fun ChapterRow(
 }
 
 // ─── Formatting Helpers ───────────────────────────────────────────────────
-
-private fun formatDuration(duration: Duration): String {
-    val totalSeconds = duration.inWholeSeconds.coerceAtLeast(0)
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    val secs = totalSeconds % 60
-
-    return when {
-        hours > 0 -> "${hours}h ${minutes}m"
-        minutes > 0 -> "${minutes}m ${secs}s"
-        else -> "${secs}s"
-    }
-}
 
 private fun formatDate(epochMillis: Long): String {
     if (epochMillis <= 0) return ""

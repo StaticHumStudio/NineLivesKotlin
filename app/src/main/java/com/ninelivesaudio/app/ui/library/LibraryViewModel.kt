@@ -62,6 +62,7 @@ class LibraryViewModel @Inject constructor(
         val showDownloadedOnly: Boolean = false,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val errorMessage: String? = null,
+        val totalBookCount: Int = 0,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -327,6 +328,6 @@ class LibraryViewModel @Inject constructor(
             )
         }
 
-        _uiState.update { it.copy(filteredBooks = sorted.toList()) }
+        _uiState.update { it.copy(filteredBooks = sorted.toList(), totalBookCount = cachedBooks.size) }
     }
 }

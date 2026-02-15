@@ -13,10 +13,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import com.ninelivesaudio.app.domain.util.toIso8601
 import kotlin.time.Duration.Companion.seconds
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -197,11 +195,7 @@ class SyncManager @Inject constructor(
                         } else 0.0
                     }
 
-                    val updatedAtStr = progress.lastUpdate?.let { ts ->
-                        Instant.ofEpochMilli(ts)
-                            .atOffset(ZoneOffset.UTC)
-                            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
-                    }
+                    val updatedAtStr = progress.lastUpdate?.toIso8601()
 
                     // Save server progress to local DB
                     playbackProgressDao.upsert(

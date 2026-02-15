@@ -10,6 +10,7 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.PlaybackState
+import com.ninelivesaudio.app.domain.util.toClockString
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -122,8 +123,8 @@ class PlayerViewModel @Inject constructor(
                     it.copy(
                         position = pos,
                         progress = progress,
-                        positionText = formatDuration(pos),
-                        remainingText = "-${formatDuration((dur - pos).coerceAtLeast(Duration.ZERO))}",
+                        positionText = pos.toClockString(),
+                        remainingText = "-${(dur - pos).coerceAtLeast(Duration.ZERO).toClockString()}",
                     )
                 }
             }
@@ -135,7 +136,7 @@ class PlayerViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         duration = dur,
-                        durationText = formatDuration(dur),
+                        durationText = dur.toClockString(),
                     )
                 }
             }
@@ -397,18 +398,4 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    // ─── Formatting ───────────────────────────────────────────────────────
-
-    private fun formatDuration(duration: Duration): String {
-        val totalSeconds = duration.inWholeSeconds
-        val hours = totalSeconds / 3600
-        val minutes = (totalSeconds % 3600) / 60
-        val seconds = totalSeconds % 60
-
-        return if (hours > 0) {
-            "%02d:%02d:%02d".format(hours, minutes, seconds)
-        } else {
-            "%02d:%02d".format(minutes, seconds)
-        }
-    }
 }

@@ -22,6 +22,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.DownloadStatus
+import com.ninelivesaudio.app.domain.util.toDisplaySize
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
@@ -329,7 +330,7 @@ private fun ActiveDownloadCard(
                         fontSize = 10.sp,
                     )
                     Text(
-                        text = formatDownloadSize(download.downloadedBytes, download.totalBytes),
+                        text = "${download.downloadedBytes.toDisplaySize()} / ${download.totalBytes.toDisplaySize()}",
                         style = MaterialTheme.typography.labelSmall,
                         color = ArchiveTextMuted,
                         fontSize = 10.sp,
@@ -478,12 +479,3 @@ private fun EmptyDownloadsState() {
 //  Helpers
 // ═════════════════════════════════════════════════════════════════════════════
 
-private fun formatDownloadSize(downloaded: Long, total: Long): String {
-    fun formatBytes(bytes: Long): String = when {
-        bytes > 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824.0)
-        bytes > 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
-        bytes > 1024 -> "%.1f KB".format(bytes / 1024.0)
-        else -> "$bytes B"
-    }
-    return "${formatBytes(downloaded)} / ${formatBytes(total)}"
-}

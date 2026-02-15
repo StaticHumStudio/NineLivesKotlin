@@ -94,7 +94,7 @@ fun HomeScreen(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  3×3 Grid Tile — Cover + ContainmentFrame + CosmicProgressRing + Sigils
+//  3×3 Grid Tile — Cover + ContainmentFrame + ContainmentProgressRing + Sigils
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable

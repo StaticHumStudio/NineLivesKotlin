@@ -1,4 +1,4 @@
-# Nine Lives Audio
+# Nine Lives Audio — v0.5
 
 An Android audiobook player for [Audiobookshelf](https://www.audiobookshelf.org/) servers. Built with Kotlin, Jetpack Compose, and Media3. Wrapped in the **Archive Beneath** — a dark cosmic vault aesthetic with gold containment frames, progress rings, stone surfaces, and atmospheric anomalies.
 
@@ -85,7 +85,7 @@ There is no "normal mode." The cosmic archive aesthetic is the app's sole identi
 ### Visual System
 - **ContainmentFrame** — dual-stroke gold border (outer faint + inner bright) around tiles
 - **CornerSigils** — small indicator dots for downloaded (gold) and bookmarked (purple) state
-- **CosmicProgressRing** — Canvas-drawn circular progress with glow, sweep gradient, optional end-cap dot
+- **ContainmentProgressRing** — Canvas-drawn circular progress with glow, sweep gradient, ring-style presets, and 3D shadow effects
 - **SigilProgressBar** — linear progress bar with shimmer animation (clipped to fill)
 - **StoneSlabCard / RelicSurface** — stone-textured surface components
 - **FilamentDivider** — gold-accented section dividers
@@ -117,7 +117,7 @@ There is no "normal mode." The cosmic archive aesthetic is the app's sole identi
 - **No `fallbackToDestructiveMigration`** — explicit Room migrations required as schema evolves
 - **Self-signed cert trust manager** only installed when the user opts in, not unconditionally
 - **No dual theme** — Archive Beneath is always active; `UnhingedSettings` controls feature intensity (anomalies, whispers, motion), not theme switching
-- **Navigation uses `popUpTo(findStartDestination)`** everywhere — consistent back stack behavior between bottom nav tabs and deep links
+- **Navigation uses `popUpTo(findStartDestination)` without save/restore state** — consistent back stack behavior; prevents cached detail screens from hijacking bottom nav taps
 - **BookId URL-encoded** in navigation routes — safe for IDs containing special characters
 
 ---
@@ -252,6 +252,20 @@ export JAVA_HOME="/path/to/jdk-21"
 24. **LibraryViewModel sort null handling** — RECENTLY_ADDED used `addedAt ?: 0L` causing books without timestamp to sort incorrectly; now uses `Long.MIN_VALUE` with title tiebreaker
 25. **ApiService progress clamping inconsistency** — getUserProgress() missing `coerceIn(0.0, 1.0)` on two instances (lines 260, 281); added clamping
 26. **PlaybackManager chapters variable name conflict** — duplicate `chapters` declarations (StateFlow + private var) caused compilation errors; renamed private to `cachedChapters`
+
+### Round 6 — Navigation Fix & Codebase Refactor (v0.5)
+
+**Navigation Fix:**
+- **Bottom nav stuck on BookDetail** — `saveState = true` / `restoreState = true` in BottomNavBar and LeftNavRail cached BookDetail on the back stack; tapping Home or Library restored the cached BookDetail instead of navigating to the labeled destination. Removed save/restore state and switched to `inclusive = false` in `popUpTo`. Same fix applied to NineLivesNavHost player navigation.
+
+**Refactoring — Deduplication & Shared Utilities:**
+- **Created `FormatUtils.kt`** — extracted 4 formatting functions (`Duration.toClockString()`, `Duration.toHumanReadableString()`, `Double.secondsToClockString()`, `Long.toDisplaySize()`) that were duplicated across 6+ files
+- **Created `TimeUtils.kt`** — extracted timestamp parsing/formatting (`String.toEpochMillis()`, `Long.toIso8601()`) from EntityMappers.kt, replacing inline java.time code across 4 files
+- **EntityMappers.kt `decodeJsonList<T>()` helper** — replaced 6 identical try/catch JSON deserialization blocks with a single `inline reified` generic function
+- **Deleted `CosmicProgressRing.kt`** — 168 lines of dead code with zero call sites (replaced by `ContainmentProgressRing` in a prior round)
+- **LibraryViewModel empty state fix** — replaced `allBooks.isEmpty()` with `totalBookCount` field to avoid exposing unfiltered list to the UI
+
+**Files changed:** 19 files, ~50 lines added, ~330 lines removed (net −280 lines)
 
 ---
 

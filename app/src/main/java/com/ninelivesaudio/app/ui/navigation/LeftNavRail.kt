@@ -54,10 +54,9 @@ fun LeftNavRail(
                 onClick = {
                     navController.navigate(item.route) {
                         popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
+                            inclusive = false
                         }
                         launchSingleTop = true
-                        restoreState = true
                     }
                 }
             )

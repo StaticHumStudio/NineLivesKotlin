@@ -35,6 +35,7 @@ import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.domain.util.toClockString
+import com.ninelivesaudio.app.ui.animation.unhinged.sigil.SigilProgressBar
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -148,38 +149,20 @@ fun PlayerScreen(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // ─── Title / Author / Chapter with Chapter Halo Ring ────────
-        if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
-            // Chapter halo ring wrapping title/author block
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .aspectRatio(2.5f),
-                contentAlignment = Alignment.Center,
-            ) {
-                // Chapter progress halo
-                ContainmentProgressRing(
-                    progress = animatedChapterProgress,
-                    modifier = Modifier.matchParentSize(),
-                    style = RingStyle.LibrarySmall.copy(
-                        usePartialTrack = false,  // Full ring for chapter halo
-                        glowAlpha = 0.25f
-                    ),
-                    progressColor = ImpossibleAccent,
-                    trackColor = ArchiveOutline,
-                )
+        // ─── Title / Author / Chapter (no giant halo rings) ─────────
+        TitleAuthorBlock(uiState)
 
-                // Title/Author content inside the halo
-                Column(
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    TitleAuthorBlock(uiState)
-                }
-            }
-        } else {
-            // No chapters — plain title/author
-            TitleAuthorBlock(uiState)
+        // A tighter chapter progress indicator (thin, readable, less circus)
+        if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
+            Spacer(modifier = Modifier.height(10.dp))
+            SigilProgressBar(
+                progress = animatedChapterProgress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                height = 4.dp,
+                isActive = uiState.isPlaying,
+            )
         }
 
         Spacer(modifier = Modifier.height(20.dp))

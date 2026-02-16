@@ -31,7 +31,7 @@ object CopyStyleGuide {
 
         const val HOME_NAV = "Home"
         const val HOME_NAV_RITUAL = "The foyer."
-        const val HOME_NAV_UNHINGED = "You are here. Probably."
+        const val HOME_NAV_UNHINGED = "You are here. The floor agrees."
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -41,15 +41,15 @@ object CopyStyleGuide {
     object Library {
         const val LIBRARY_NAV = "Library"
         const val LIBRARY_NAV_RITUAL = "The collection."
-        const val LIBRARY_NAV_UNHINGED = "The shelves remember what you don't."
+        const val LIBRARY_NAV_UNHINGED = "The shelves remember what you don't. And they take notes."
 
         const val ALL_BOOKS = "All Books"
         const val ALL_BOOKS_RITUAL = "The full archive."
-        const val ALL_BOOKS_UNHINGED = "Every spine accounted for. We checked."
+        const val ALL_BOOKS_UNHINGED = "Every spine accounted for. The ones that moved got counted twice."
 
         const val AUTHORS = "Authors"
         const val AUTHORS_RITUAL = "Sorted by voice."
-        const val AUTHORS_UNHINGED = "The ones who wrote it down before they forgot."
+        const val AUTHORS_UNHINGED = "The ones who wrote it down before the ink started whispering back."
 
         const val SERIES = "Series"
         const val SERIES_RITUAL = "Grouped tellings."
@@ -57,7 +57,7 @@ object CopyStyleGuide {
 
         const val GENRES = "Genres"
         const val GENRES_RITUAL = "Sorted by nature."
-        const val GENRES_UNHINGED = "Categories are a comfort. Enjoy them."
+        const val GENRES_UNHINGED = "Categories are a comfort. Until they start sorting you."
 
         const val SORT_BY = "Sort By"
         const val SORT_BY_RITUAL = "Arrange the shelves."
@@ -143,7 +143,7 @@ object CopyStyleGuide {
     object Search {
         const val SEARCH = "Search"
         const val SEARCH_RITUAL = "Find."
-        const val SEARCH_UNHINGED = "Name what you seek."
+        const val SEARCH_UNHINGED = "Name what you seek. Watch what answers."
 
         const val NO_RESULTS = "No results found"
         const val NO_RESULTS_RITUAL = "Nothing surfaced."
@@ -151,7 +151,7 @@ object CopyStyleGuide {
 
         const val SEARCH_HINT_NORMAL = "Search books..."
         const val SEARCH_HINT_RITUAL = "Search the archive..."
-        const val SEARCH_HINT_UNHINGED = "Type slowly. The shelves are listening."
+        const val SEARCH_HINT_UNHINGED = "Type slowly. The shelves are listening through the keys."
     }
 
     // ═══════════════════════════════════════════════════════════════

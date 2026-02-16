@@ -76,6 +76,15 @@ fun LibraryScreen(
                 onTabSelected = viewModel::onLibraryTabChanged,
             )
 
+            // ─── Filters + Sorting ─────────────────────────────────────
+            LibraryFiltersRow(
+                uiState = uiState,
+                onViewModeChanged = viewModel::onViewModeChanged,
+                onSortModeChanged = viewModel::onSortModeChanged,
+                onHideFinishedChanged = viewModel::onHideFinishedChanged,
+                onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
+            )
+
             // ─── Content ──────────────────────────────────────────────────
             PullToRefreshBox(
                 isRefreshing = uiState.isRefreshing,
@@ -173,7 +182,10 @@ private fun RelicSearchBar(
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChange,
-            modifier = Modifier.fillMaxWidth(),
+            // Keep it truly single-line height (no chunky default paddings)
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 46.dp),
             placeholder = {
                 Text(
                     CopyEngine.getSearchHint(
@@ -182,6 +194,8 @@ private fun RelicSearchBar(
                         CopyStyleGuide.Search.SEARCH_HINT_UNHINGED,
                     ),
                     color = ArchiveTextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             },
             leadingIcon = {
@@ -205,6 +219,8 @@ private fun RelicSearchBar(
                 }
             } else null,
             singleLine = true,
+            minLines = 1,
+            maxLines = 1,
             shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = GoldFilament,
@@ -256,6 +272,139 @@ private fun StoneTabsRow(
                     maxLines = 1,
                     fontSize = 11.sp,
                 )
+            }
+        }
+    }
+}
+
+// ─── Filters / Sorting (More knobs, less suffering) ───────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LibraryFiltersRow(
+    uiState: LibraryViewModel.UiState,
+    onViewModeChanged: (ViewMode) -> Unit,
+    onSortModeChanged: (SortMode) -> Unit,
+    onHideFinishedChanged: (Boolean) -> Unit,
+    onShowDownloadedOnlyChanged: (Boolean) -> Unit,
+) {
+    var sortExpanded by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // Row 1: View mode chips + Sort menu
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = uiState.viewMode == ViewMode.ALL,
+                onClick = { onViewModeChanged(ViewMode.ALL) },
+                label = { Text("All") },
+            )
+            FilterChip(
+                selected = uiState.viewMode == ViewMode.SERIES,
+                onClick = { onViewModeChanged(ViewMode.SERIES) },
+                label = { Text("Series") },
+            )
+            FilterChip(
+                selected = uiState.viewMode == ViewMode.AUTHOR,
+                onClick = { onViewModeChanged(ViewMode.AUTHOR) },
+                label = { Text("Author") },
+            )
+            FilterChip(
+                selected = uiState.viewMode == ViewMode.GENRE,
+                onClick = { onViewModeChanged(ViewMode.GENRE) },
+                label = { Text("Genre") },
+            )
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Box {
+                AssistChip(
+                    onClick = { sortExpanded = true },
+                    label = {
+                        Text(
+                            when (uiState.sortMode) {
+                                SortMode.RECENTLY_ADDED -> "Newest"
+                                SortMode.TITLE_AZ -> "Title A→Z"
+                                SortMode.TITLE_ZA -> "Title Z→A"
+                                SortMode.AUTHOR_AZ -> "Author A→Z"
+                                SortMode.AUTHOR_ZA -> "Author Z→A"
+                                SortMode.PROGRESS_HIGH -> "Progress ↑"
+                                SortMode.PROGRESS_LOW -> "Progress ↓"
+                                SortMode.DURATION_LONG -> "Longest"
+                                SortMode.DURATION_SHORT -> "Shortest"
+                                SortMode.RECENTLY_PLAYED -> "Recent play"
+                                SortMode.UNPLAYED_FIRST -> "Unplayed"
+                            }
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Outlined.Sort,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+
+                DropdownMenu(
+                    expanded = sortExpanded,
+                    onDismissRequest = { sortExpanded = false },
+                    containerColor = ArchiveVoidSurface,
+                ) {
+                    SortMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = mode.name
+                                        .lowercase()
+                                        .replace('_', ' ')
+                                        .replaceFirstChar { it.uppercase() },
+                                    color = if (mode == uiState.sortMode) GoldFilament else ArchiveTextPrimary,
+                                    fontWeight = if (mode == uiState.sortMode) FontWeight.Bold else FontWeight.Normal,
+                                )
+                            },
+                            onClick = {
+                                onSortModeChanged(mode)
+                                sortExpanded = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        // Row 2: Quick toggles
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(
+                    checked = uiState.hideFinished,
+                    onCheckedChange = onHideFinishedChanged,
+                    thumbContent = null,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Hide finished", color = ArchiveTextSecondary, style = MaterialTheme.typography.labelMedium)
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(
+                    checked = uiState.showDownloadedOnly,
+                    onCheckedChange = onShowDownloadedOnlyChanged,
+                    thumbContent = null,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Downloaded only", color = ArchiveTextSecondary, style = MaterialTheme.typography.labelMedium)
             }
         }
     }

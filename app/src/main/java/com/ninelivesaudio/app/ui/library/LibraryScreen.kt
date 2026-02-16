@@ -9,6 +9,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -155,6 +157,8 @@ private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = ArchiveTextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -293,12 +297,14 @@ private fun LibraryFiltersRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // Row 1: View mode chips + Sort menu
+        // Row 1: View mode chips + sort, horizontally scrollable to avoid crowding
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -322,8 +328,6 @@ private fun LibraryFiltersRow(
                 onClick = { onViewModeChanged(ViewMode.GENRE) },
                 label = { Text("Genre") },
             )
-
-            Spacer(modifier = Modifier.weight(1f))
 
             Box {
                 AssistChip(
@@ -381,31 +385,37 @@ private fun LibraryFiltersRow(
             }
         }
 
-        // Row 2: Quick toggles
+        // Row 2: Compact toggles
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(
-                    checked = uiState.hideFinished,
-                    onCheckedChange = onHideFinishedChanged,
-                    thumbContent = null,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Hide finished", color = ArchiveTextSecondary, style = MaterialTheme.typography.labelMedium)
-            }
+            FilterChip(
+                selected = uiState.hideFinished,
+                onClick = { onHideFinishedChanged(!uiState.hideFinished) },
+                label = { Text("Hide finished") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.VisibilityOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(FilterChipDefaults.IconSize),
+                    )
+                },
+            )
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(
-                    checked = uiState.showDownloadedOnly,
-                    onCheckedChange = onShowDownloadedOnlyChanged,
-                    thumbContent = null,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Downloaded only", color = ArchiveTextSecondary, style = MaterialTheme.typography.labelMedium)
-            }
+            FilterChip(
+                selected = uiState.showDownloadedOnly,
+                onClick = { onShowDownloadedOnlyChanged(!uiState.showDownloadedOnly) },
+                label = { Text("Downloaded") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.DownloadDone,
+                        contentDescription = null,
+                        modifier = Modifier.size(FilterChipDefaults.IconSize),
+                    )
+                },
+            )
         }
     }
 }

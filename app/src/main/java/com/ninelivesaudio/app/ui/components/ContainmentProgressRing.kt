@@ -234,16 +234,16 @@ data class RingStyle(
          * Large ring preset for player screen book cover.
          *
          * Features:
-         * - Ceremonial 4.8dp stroke (prominent but not dominant)
-         * - 10dp inset for breathing room on large covers
+         * - Tightened 3.9dp stroke — less "hula hoop", more "quiet orbit"
+         * - 12dp inset for generous breathing room on large covers
          * - Full 360° ring (appropriate for hero display)
-         * - Stronger glow for depth on large canvas
+         * - Subtle glow for depth without circus energy
          */
         val PlayerLarge = RingStyle(
-            strokeDp = 4.8f,
-            insetDp = 10.0f,
-            trackAlpha = 0.18f,
-            glowAlpha = 0.30f,
+            strokeDp = 3.9f,
+            insetDp = 12.0f,
+            trackAlpha = 0.14f,
+            glowAlpha = 0.22f,
             usePartialTrack = false,
             trackStartAngle = -90f,
             trackSweepAngle = 360f

@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.player
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -31,11 +32,13 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Bookmark
+import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.domain.util.toClockString
-import com.ninelivesaudio.app.ui.animation.unhinged.sigil.SigilProgressBar
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperCatalog
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperContext
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -73,12 +76,6 @@ fun PlayerScreen(
         (uiState.currentChapterPosition.inWholeMilliseconds.toFloat() /
          uiState.currentChapterDuration.inWholeMilliseconds.toFloat()).coerceIn(0f, 1f)
     } else 0f
-
-    val animatedChapterProgress by animateFloatAsState(
-        targetValue = chapterProgress,
-        animationSpec = tween(durationMillis = 400),
-        label = "chapter_progress",
-    )
 
     Column(
         modifier = Modifier
@@ -152,29 +149,16 @@ fun PlayerScreen(
         // ─── Title / Author / Chapter (no giant halo rings) ─────────
         TitleAuthorBlock(uiState)
 
-        // A tighter chapter progress indicator (thin, readable, less circus)
-        if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
-            Spacer(modifier = Modifier.height(10.dp))
-            SigilProgressBar(
-                progress = animatedChapterProgress,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                height = 4.dp,
-                isActive = uiState.isPlaying,
-            )
-        }
+        Spacer(modifier = Modifier.height(10.dp))
+        BookWhisperCard(uiState.title)
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // ─── Chapter Seek Bar (Interactive) ─────────────────────────
         if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 val chapterLabel = buildString {
                     append("Chapter ${uiState.currentChapterIndex + 1} of ${uiState.chapters.size}")
-                    uiState.currentChapterTitle?.let { title ->
-                        append(": $title")
-                    }
                 }
 
                 Text(
@@ -368,6 +352,12 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            ChapterSelectorButton(
+                chapters = uiState.chapters,
+                currentChapterIndex = uiState.currentChapterIndex,
+                onChapterSelected = viewModel::seekToChapter,
+            )
+
             SpeedButton(
                 currentSpeed = uiState.speed,
                 options = viewModel.speedOptions,
@@ -400,22 +390,10 @@ fun PlayerScreen(
                 )
             }
 
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Outlined.VolumeUp,
-                    contentDescription = "Volume",
-                    tint = ArchiveTextSecondary,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    text = "${(uiState.volume * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
-                    fontSize = 10.sp,
-                )
-            }
+            VolumeButton(
+                volume = uiState.volume,
+                onVolumeChange = viewModel::setVolume,
+            )
         }
 
         // Sleep timer countdown
@@ -466,16 +444,137 @@ private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
         )
     }
 
-    uiState.currentChapterTitle?.let { chapter ->
-        Spacer(modifier = Modifier.height(4.dp))
+}
+
+@Composable
+private fun BookWhisperCard(seedText: String) {
+    val whisper = remember(seedText) {
+        val whispers = WhisperCatalog.getWhispers(WhisperContext.PLAYBACK_RESUMED)
+        whispers[seedText.hashCode().mod(whispers.size)]
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = ArchiveVoidElevated,
+        border = BorderStroke(1.dp, ArchiveOutline),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Text(
-            text = chapter,
-            style = MaterialTheme.typography.bodyMedium,
+            text = whisper,
+            style = MaterialTheme.typography.bodySmall,
             color = ArchiveTextMuted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
         )
+    }
+}
+
+@Composable
+private fun ChapterSelectorButton(
+    chapters: List<Chapter>,
+    currentChapterIndex: Int,
+    onChapterSelected: (Int) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    if (chapters.isEmpty()) return
+
+    Box {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.clickable { expanded = true },
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.MenuBook,
+                contentDescription = "Chapter selector",
+                tint = ArchiveTextSecondary,
+                modifier = Modifier.size(22.dp),
+            )
+            Text(
+                text = "Chapter",
+                style = MaterialTheme.typography.labelSmall,
+                color = ArchiveTextMuted,
+                fontSize = 10.sp,
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = ArchiveVoidSurface,
+        ) {
+            chapters.forEachIndexed { index, chapter ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = "${index + 1}. ${chapter.title}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (index == currentChapterIndex) GoldFilament else ArchiveTextPrimary,
+                        )
+                    },
+                    onClick = {
+                        onChapterSelected(index)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VolumeButton(
+    volume: Float,
+    onVolumeChange: (Float) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.clickable { expanded = true },
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.VolumeUp,
+                contentDescription = "Volume",
+                tint = if (volume > 0f) ArchiveTextSecondary else ArchiveTextMuted,
+                modifier = Modifier.size(22.dp),
+            )
+            Text(
+                text = "${(volume * 100).toInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = ArchiveTextMuted,
+                fontSize = 10.sp,
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = ArchiveVoidSurface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .width(200.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = "Volume",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ArchiveTextPrimary,
+                )
+                Slider(
+                    value = volume,
+                    onValueChange = { onVolumeChange(it.coerceIn(0f, 1f)) },
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = GoldFilament,
+                        activeTrackColor = GoldFilament,
+                        inactiveTrackColor = ArchiveOutline,
+                    ),
+                )
+            }
+        }
     }
 }
 

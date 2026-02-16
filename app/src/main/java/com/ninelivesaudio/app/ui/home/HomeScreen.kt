@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.home
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +35,7 @@ import com.ninelivesaudio.app.ui.components.RingStyle
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
+import com.ninelivesaudio.app.ui.animation.unhinged.sigil.SigilProgress
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -61,8 +63,9 @@ fun HomeScreen(
                 .background(ArchiveVoidDeep),
         ) {
             // ─── Header ──────────────────────────────────────────────────────
-            NineLivesHeader(
+            NineLivesAltar(
                 totalListeningTime = uiState.totalListeningTimeText,
+                totalListeningSeconds = uiState.totalListeningSeconds,
                 connectionStatus = uiState.connectionStatus,
                 onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
             )
@@ -181,18 +184,42 @@ private fun HomeGridTile(
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun NineLivesHeader(
+private fun NineLivesAltar(
     totalListeningTime: String,
+    totalListeningSeconds: Double,
     connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
     onSecretUnlocked: () -> Unit = {},
 ) {
     var tapCount by remember { mutableStateOf(0) }
     var lastTapTime by remember { mutableStateOf(0L) }
 
+    val altarEpithet = remember(totalListeningSeconds) { AltarCopy.epithet(totalListeningSeconds) }
+    val altarPhrase = remember(totalListeningSeconds) { AltarCopy.phrase(totalListeningSeconds) }
+
+    // Escalation intensity: ramps up over the first ~60 hours, then caps.
+    val altarIntensity = remember(totalListeningSeconds) {
+        val hours = (totalListeningSeconds / 3600.0).coerceAtLeast(0.0)
+        (hours / 60.0).toFloat().coerceIn(0f, 1f)
+    }
+
+    // Stable-ish seed so effects don't re-roll constantly.
+    val fxSeed = remember(totalListeningSeconds) {
+        // Changes slowly: about every ~17 minutes.
+        ((totalListeningSeconds / (17.0 * 60.0)).toLong().toInt() * 101) + 9
+    }
+
+    val glitchOffsetState = rememberAltarGlitchOffset(intensity = altarIntensity, seed = fxSeed)
+
+    // A soft "progress" for the altar ring: caps at 150h, then loops
+    val altarProgress = remember(totalListeningSeconds) {
+        val cap = 150.0 * 3600.0
+        ((totalListeningSeconds % cap) / cap).toFloat().coerceIn(0f, 1f)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Status pill — top right
@@ -203,69 +230,128 @@ private fun NineLivesHeader(
             StatusPill(connectionStatus = connectionStatus)
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        // Cosmic cat-eye logo — tap 9 times for vault acknowledgment
-        Image(
-            painter = painterResource(R.drawable.nine_lives_logo),
-            contentDescription = "Nine Lives Audio",
-            modifier = Modifier
-                .size(72.dp)
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+        // The Altar: a ceremonial slab with a ringed sigil and escalating copy
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = ArchiveVoidSurface,
+            tonalElevation = 2.dp,
+            shadowElevation = 4.dp,
+            border = BorderStroke(1.dp, ArchiveOutline.copy(alpha = 0.7f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+            ) {
+                // Effects layer (soot + flicker + faint scratches)
+                AltarEffects(
+                    modifier = Modifier.matchParentSize(),
+                    intensity = altarIntensity,
+                    seed = fxSeed,
+                )
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastTapTime > 2000) {
-                        tapCount = 1
-                    } else {
-                        tapCount++
+                    Text(
+                        text = altarEpithet,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted,
+                        letterSpacing = 2.sp,
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Box(contentAlignment = Alignment.Center) {
+                        // Ringed sigil around the logo
+                        SigilProgress(
+                            progress = altarProgress,
+                            size = 86.dp,
+                            strokeWidth = 5.dp,
+                            isActive = false,
+                        )
+
+                        // Cosmic cat-eye logo — tap 9 times for vault acknowledgment
+                        Image(
+                            painter = painterResource(R.drawable.nine_lives_logo),
+                            contentDescription = "Nine Lives Audio",
+                            modifier = Modifier
+                                .offset { glitchOffsetState.value }
+                                .size(64.dp)
+                                .clickable(
+                                    indication = null,
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                ) {
+                                    val currentTime = System.currentTimeMillis()
+                                    if (currentTime - lastTapTime > 2000) {
+                                        tapCount = 1
+                                    } else {
+                                        tapCount++
+                                    }
+                                    lastTapTime = currentTime
+                                    if (tapCount == 9) {
+                                        onSecretUnlocked()
+                                        tapCount = 0
+                                    }
+                                },
+                        )
                     }
-                    lastTapTime = currentTime
-                    if (tapCount == 9) {
-                        onSecretUnlocked()
-                        tapCount = 0
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "NINE LIVES",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 4.sp,
+                        color = GoldFilament,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.offset { glitchOffsetState.value },
+                    )
+
+                    val homeSubtitle = CopyEngine.getSubtitle(
+                        CopyStyleGuide.Home.HOME_NAV_RITUAL,
+                        CopyStyleGuide.Home.HOME_NAV_UNHINGED,
+                    )
+                    if (homeSubtitle != null) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = homeSubtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ArchiveTextMuted,
+                            textAlign = TextAlign.Center,
+                            fontSize = 10.sp,
+                        )
                     }
-                },
-        )
 
-        Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-        Text(
-            text = "NINE LIVES",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 4.sp,
-            color = GoldFilament,
-            textAlign = TextAlign.Center,
-        )
+                    Text(
+                        text = altarPhrase,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
 
-        val homeSubtitle = CopyEngine.getSubtitle(
-            CopyStyleGuide.Home.HOME_NAV_RITUAL,
-            CopyStyleGuide.Home.HOME_NAV_UNHINGED,
-        )
-        if (homeSubtitle != null) {
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = homeSubtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextMuted,
-                textAlign = TextAlign.Center,
-                fontSize = 10.sp,
-            )
+                    if (totalListeningTime.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Total time given: $totalListeningTime",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = GoldFilament,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
         }
 
-        if (totalListeningTime.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Total time given: $totalListeningTime",
-                style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextSecondary,
-                textAlign = TextAlign.Center,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }
 

@@ -15,10 +15,10 @@ import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 
 enum class ViewMode { ALL, SERIES, AUTHOR, GENRE }
-enum class SortMode { 
-    RECENTLY_ADDED,      // Default - newest first
+enum class SortMode {
+    RECENTLY_ADDED,      // Newest first
     TITLE_AZ,            // Title A→Z
-    TITLE_ZA,            // Title Z→A  
+    TITLE_ZA,            // Title Z→A
     AUTHOR_AZ,           // Author A→Z
     AUTHOR_ZA,           // Author Z→A
     PROGRESS_HIGH,       // Most progress first
@@ -35,6 +35,34 @@ enum class LibraryTab(val label: String) {
     Completed("Completed"),
     Downloaded("Downloaded"),
 }
+
+// ─── Grouped section models ───────────────────────────────────────────────
+
+sealed class LibraryListItem {
+    data class GroupHeader(
+        val groupKey: String,
+        val title: String,
+        val count: Int,
+        val isExpanded: Boolean,
+    ) : LibraryListItem()
+
+    data class BookRow(
+        val groupKey: String,
+        val book: AudioBook,
+    ) : LibraryListItem()
+}
+
+data class GroupedSection(
+    val key: String,
+    val title: String,
+    val books: List<AudioBook>,
+)
+
+private const val UNKNOWN_SERIES_GROUP = "Standalone/Unknown Series"
+private const val UNKNOWN_AUTHOR_GROUP = "Unknown Author"
+private const val UNKNOWN_GENRE_GROUP = "Uncategorized Genre"
+
+// ─── ViewModel ───────────────────────────────────────────────────────────
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -54,9 +82,11 @@ class LibraryViewModel @Inject constructor(
         val filteredBooks: List<AudioBook> = emptyList(),
         val searchQuery: String = "",
         val viewMode: ViewMode = ViewMode.ALL,
-        val sortMode: SortMode = SortMode.RECENTLY_ADDED,
+        val sortMode: SortMode = SortMode.RECENTLY_PLAYED,
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
+        val groupedSections: List<GroupedSection> = emptyList(),
+        val expandedGroups: Set<String> = emptySet(),
         val selectedTab: LibraryTab = LibraryTab.All,
         val hideFinished: Boolean = false,
         val showDownloadedOnly: Boolean = false,
@@ -209,6 +239,31 @@ class LibraryViewModel @Inject constructor(
         applyFilter()
     }
 
+    fun onGroupExpansionToggled(groupKey: String) {
+        _uiState.update { state ->
+            val updated = state.expandedGroups.toMutableSet().apply {
+                if (!add(groupKey)) remove(groupKey)
+            }
+            state.copy(expandedGroups = updated)
+        }
+    }
+
+    fun resetFilters() {
+        _uiState.update {
+            it.copy(
+                searchQuery = "",
+                viewMode = ViewMode.ALL,
+                selectedGroupFilter = null,
+                selectedTab = LibraryTab.All,
+                hideFinished = false,
+                showDownloadedOnly = false,
+                sortMode = SortMode.RECENTLY_PLAYED,
+            )
+        }
+        updateAvailableGroups()
+        applyFilter()
+    }
+
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true) }
@@ -259,24 +314,14 @@ class LibraryViewModel @Inject constructor(
             filtered = filtered.filter { it.libraryId == libraryId }
         }
 
-        // View mode group filter
-        if (state.viewMode != ViewMode.ALL && !state.selectedGroupFilter.isNullOrEmpty()) {
-            filtered = when (state.viewMode) {
-                ViewMode.SERIES -> filtered.filter { it.seriesName == state.selectedGroupFilter }
-                ViewMode.AUTHOR -> filtered.filter { it.author == state.selectedGroupFilter }
-                ViewMode.GENRE -> filtered.filter { state.selectedGroupFilter in it.genres }
-                else -> filtered
-            }
-        }
-
         // Tab-based filtering
         filtered = when (state.selectedTab) {
             LibraryTab.All -> filtered
-            LibraryTab.InProgress -> filtered.filter { 
-                it.hasProgress && !it.isFinished && it.progressPercent < 99.5 
+            LibraryTab.InProgress -> filtered.filter {
+                it.hasProgress && !it.isFinished && it.progressPercent < 99.5
             }
-            LibraryTab.Completed -> filtered.filter { 
-                it.isFinished || it.progress >= 1.0 || it.progressPercent >= 99.5 
+            LibraryTab.Completed -> filtered.filter {
+                it.isFinished || it.progress >= 1.0 || it.progressPercent >= 99.5
             }
             LibraryTab.Downloaded -> filtered.filter { it.isDownloaded }
         }
@@ -302,30 +347,134 @@ class LibraryViewModel @Inject constructor(
             }
         }
 
-        // Sort
-        val sorted = when (state.sortMode) {
-            SortMode.RECENTLY_ADDED -> filtered.sortedWith(
-                compareByDescending<AudioBook> { it.addedAt ?: Long.MIN_VALUE }
-                    .thenBy { it.title.lowercase() }
-            )
-            SortMode.TITLE_AZ -> filtered.sortedBy { it.title.lowercase() }
-            SortMode.TITLE_ZA -> filtered.sortedByDescending { it.title.lowercase() }
-            SortMode.AUTHOR_AZ -> filtered.sortedWith(compareBy({ it.author.lowercase() }, { it.title.lowercase() }))
-            SortMode.AUTHOR_ZA -> filtered.sortedWith(compareByDescending<AudioBook> { it.author.lowercase() }.thenByDescending { it.title.lowercase() })
-            SortMode.PROGRESS_HIGH -> filtered.sortedByDescending { it.progressPercent }
-            SortMode.PROGRESS_LOW -> filtered.sortedBy { it.progressPercent }
-            SortMode.DURATION_LONG -> filtered.sortedByDescending { it.duration.inWholeSeconds }
-            SortMode.DURATION_SHORT -> filtered.sortedBy { it.duration.inWholeSeconds }
-            SortMode.RECENTLY_PLAYED -> filtered.sortedWith(
-                compareByDescending<AudioBook> { it.lastPlayedAt ?: Long.MIN_VALUE }
-                    .thenBy { it.title.lowercase() }
-            )
-            SortMode.UNPLAYED_FIRST -> filtered.sortedWith(
-                compareBy<AudioBook> { if (it.hasProgress) 1 else 0 }
-                    .thenBy { it.title.lowercase() }
+        // Sort and group
+        val sortedBooks = sortBooks(filtered.toList(), state.sortMode)
+        val groupedSections = buildGroupedSections(
+            books = sortedBooks,
+            viewMode = state.viewMode,
+            sortMode = state.sortMode,
+        )
+
+        // Preserve expansions for existing groups; auto-expand newly appearing groups
+        val groupKeys = groupedSections.map { it.key }.toSet()
+        val previousKeys = state.groupedSections.map { it.key }.toSet()
+        val expandedGroups = state.expandedGroups
+            .filterTo(mutableSetOf()) { it in groupKeys }
+            .apply { addAll(groupKeys - previousKeys) }
+
+        _uiState.update {
+            it.copy(
+                filteredBooks = sortedBooks,
+                groupedSections = groupedSections,
+                expandedGroups = expandedGroups,
+                totalBookCount = cachedBooks.size,
             )
         }
-
-        _uiState.update { it.copy(filteredBooks = sorted.toList(), totalBookCount = cachedBooks.size) }
     }
+}
+
+// ─── Grouping helpers (internal for testability) ──────────────────────────
+
+internal fun buildGroupedSections(
+    books: List<AudioBook>,
+    viewMode: ViewMode,
+    sortMode: SortMode,
+): List<GroupedSection> {
+    if (viewMode == ViewMode.ALL) return emptyList()
+
+    // Genre view uses multi-placement: a book appears in every genre group it belongs to.
+    val grouped = mutableMapOf<String, MutableList<AudioBook>>()
+    books.forEach { book ->
+        val keys = groupingKeysForBook(book, viewMode)
+        keys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
+    }
+
+    return grouped.entries
+        .map { (key, values) ->
+            GroupedSection(key = key, title = key, books = sortBooks(values, sortMode))
+        }
+        .sortedWith(groupedSectionComparator(sortMode))
+}
+
+internal fun flattenGroupedItems(
+    groupedSections: List<GroupedSection>,
+    expandedGroups: Set<String>,
+): List<LibraryListItem> = buildList {
+    groupedSections.forEach { section ->
+        val expanded = section.key in expandedGroups
+        add(
+            LibraryListItem.GroupHeader(
+                groupKey = section.key,
+                title = section.title,
+                count = section.books.size,
+                isExpanded = expanded,
+            )
+        )
+        if (expanded) {
+            section.books.forEach { add(LibraryListItem.BookRow(groupKey = section.key, book = it)) }
+        }
+    }
+}
+
+private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<String> = when (viewMode) {
+    ViewMode.SERIES -> listOf(book.seriesName?.takeIf { it.isNotBlank() } ?: UNKNOWN_SERIES_GROUP)
+    ViewMode.AUTHOR -> listOf(book.author.takeIf { it.isNotBlank() } ?: UNKNOWN_AUTHOR_GROUP)
+    ViewMode.GENRE -> book.genres
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+        .toList()
+        .ifEmpty { listOf(UNKNOWN_GENRE_GROUP) }
+    ViewMode.ALL -> emptyList()
+}
+
+private fun groupedSectionComparator(sortMode: SortMode): Comparator<GroupedSection> {
+    val alphaAsc = compareBy<GroupedSection> { it.title.lowercase() }
+    return when (sortMode) {
+        SortMode.TITLE_ZA, SortMode.AUTHOR_ZA -> alphaAsc.reversed()
+        SortMode.TITLE_AZ, SortMode.AUTHOR_AZ -> alphaAsc
+        SortMode.PROGRESS_LOW, SortMode.DURATION_SHORT ->
+            compareBy<GroupedSection> { it.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MAX_VALUE }
+                .then(alphaAsc)
+        else ->
+            compareByDescending<GroupedSection> { it.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MIN_VALUE }
+                .then(alphaAsc)
+    }
+}
+
+private fun sortSignal(book: AudioBook, sortMode: SortMode): Long = when (sortMode) {
+    SortMode.RECENTLY_ADDED -> book.addedAt ?: Long.MIN_VALUE
+    SortMode.RECENTLY_PLAYED -> book.lastPlayedAt ?: Long.MIN_VALUE
+    SortMode.PROGRESS_HIGH, SortMode.PROGRESS_LOW -> (book.progressPercent * 1000).toLong()
+    SortMode.DURATION_LONG, SortMode.DURATION_SHORT -> book.duration.inWholeSeconds
+    SortMode.UNPLAYED_FIRST -> if (book.hasProgress) 0L else 1L
+    SortMode.TITLE_AZ, SortMode.TITLE_ZA, SortMode.AUTHOR_AZ, SortMode.AUTHOR_ZA -> 0L
+}
+
+internal fun sortBooks(books: List<AudioBook>, sortMode: SortMode): List<AudioBook> {
+    val sequence = books.asSequence()
+    return when (sortMode) {
+        SortMode.RECENTLY_ADDED -> sequence.sortedWith(
+            compareByDescending<AudioBook> { it.addedAt ?: Long.MIN_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+        SortMode.TITLE_AZ -> sequence.sortedBy { it.title.lowercase() }
+        SortMode.TITLE_ZA -> sequence.sortedByDescending { it.title.lowercase() }
+        SortMode.AUTHOR_AZ -> sequence.sortedWith(compareBy({ it.author.lowercase() }, { it.title.lowercase() }))
+        SortMode.AUTHOR_ZA -> sequence.sortedWith(compareByDescending<AudioBook> { it.author.lowercase() }.thenByDescending { it.title.lowercase() })
+        SortMode.PROGRESS_HIGH -> sequence.sortedByDescending { it.progressPercent }
+        SortMode.PROGRESS_LOW -> sequence.sortedBy { it.progressPercent }
+        SortMode.DURATION_LONG -> sequence.sortedByDescending { it.duration.inWholeSeconds }
+        SortMode.DURATION_SHORT -> sequence.sortedBy { it.duration.inWholeSeconds }
+        SortMode.RECENTLY_PLAYED -> sequence.sortedWith(
+            // Treat books with no playback history as oldest via Long.MIN_VALUE fallback.
+            compareByDescending<AudioBook> { it.lastPlayedAt ?: Long.MIN_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+        SortMode.UNPLAYED_FIRST -> sequence.sortedWith(
+            compareBy<AudioBook> { if (it.hasProgress) 1 else 0 }
+                .thenBy { it.title.lowercase() }
+        )
+    }.toList()
 }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder gradient: replace this file with the actual library_header.png/webp image -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="90"
+                android:startColor="#0A0520"
+                android:centerColor="#1A1135"
+                android:endColor="#251945"
+                android:type="linear" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="45"
+                android:startColor="#00E8C468"
+                android:endColor="#33E8C468"
+                android:type="linear" />
+        </shape>
+    </item>
+</layer-list>

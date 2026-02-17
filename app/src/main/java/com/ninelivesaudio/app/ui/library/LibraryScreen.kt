@@ -6,12 +6,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -23,8 +25,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -107,7 +111,7 @@ fun LibraryScreen(
                             contentPadding = PaddingValues(
                                 start = 12.dp,
                                 end = 12.dp,
-                                top = 8.dp,
+                                top = 4.dp,
                                 bottom = 100.dp,
                             ),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -143,20 +147,20 @@ private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
         modifier = Modifier
             .fillMaxWidth()
             .background(ArchiveVoidDeep)
-            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 8.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column {
             Text(
                 text = "The Archive",
-                style = MaterialTheme.typography.headlineMedium,
+                style = MaterialTheme.typography.titleLarge,
                 color = ArchiveTextPrimary,
                 fontWeight = FontWeight.Bold,
             )
             if (subtitle != null) {
                 Text(
                     text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = ArchiveTextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -170,74 +174,96 @@ private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
 
 // ─── Relic Search Bar ────────────────────────────────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RelicSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
 ) {
-    Surface(
+    val interactionSource = remember { MutableInteractionSource() }
+
+    BasicTextField(
+        value = query,
+        onValueChange = onQueryChange,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = ArchiveVoidSurface,
-        border = BorderStroke(1.dp, ArchiveOutline),
-        shadowElevation = 2.dp,
-    ) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            // Keep it truly single-line height (no chunky default paddings)
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 46.dp),
-            placeholder = {
-                Text(
-                    CopyEngine.getSearchHint(
-                        CopyStyleGuide.Search.SEARCH_HINT_NORMAL,
-                        CopyStyleGuide.Search.SEARCH_HINT_RITUAL,
-                        CopyStyleGuide.Search.SEARCH_HINT_UNHINGED,
-                    ),
-                    color = ArchiveTextMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            },
-            leadingIcon = {
-                Icon(
-                    Icons.Outlined.Search,
-                    contentDescription = null,
-                    tint = ArchiveTextSecondary,
-                    modifier = Modifier.size(20.dp),
-                )
-            },
-            trailingIcon = if (query.isNotEmpty()) {
-                {
-                    IconButton(onClick = { onQueryChange("") }) {
-                        Icon(
-                            Icons.Outlined.Clear,
-                            contentDescription = "Clear search",
-                            tint = ArchiveTextMuted,
-                            modifier = Modifier.size(18.dp),
-                        )
+            .padding(horizontal = 16.dp)
+            .height(36.dp),
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodySmall.copy(color = ArchiveTextPrimary),
+        cursorBrush = SolidColor(GoldFilament),
+        interactionSource = interactionSource,
+        decorationBox = { innerTextField ->
+            OutlinedTextFieldDefaults.DecorationBox(
+                value = query,
+                innerTextField = innerTextField,
+                enabled = true,
+                singleLine = true,
+                visualTransformation = VisualTransformation.None,
+                interactionSource = interactionSource,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                placeholder = {
+                    Text(
+                        CopyEngine.getSearchHint(
+                            CopyStyleGuide.Search.SEARCH_HINT_NORMAL,
+                            CopyStyleGuide.Search.SEARCH_HINT_RITUAL,
+                            CopyStyleGuide.Search.SEARCH_HINT_UNHINGED,
+                        ),
+                        color = ArchiveTextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Outlined.Search,
+                        contentDescription = null,
+                        tint = ArchiveTextSecondary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+                trailingIcon = if (query.isNotEmpty()) {
+                    {
+                        IconButton(
+                            onClick = { onQueryChange("") },
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.Clear,
+                                contentDescription = "Clear search",
+                                tint = ArchiveTextMuted,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
-                }
-            } else null,
-            singleLine = true,
-            minLines = 1,
-            maxLines = 1,
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = GoldFilament,
-                unfocusedBorderColor = ArchiveOutline.copy(alpha = 0f),
-                focusedContainerColor = ArchiveVoidSurface,
-                unfocusedContainerColor = ArchiveVoidSurface,
-                focusedTextColor = ArchiveTextPrimary,
-                unfocusedTextColor = ArchiveTextPrimary,
-                cursorColor = GoldFilament,
-            ),
-        )
-    }
+                } else null,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = GoldFilament,
+                    unfocusedBorderColor = ArchiveOutline,
+                    focusedContainerColor = ArchiveVoidSurface,
+                    unfocusedContainerColor = ArchiveVoidSurface,
+                    focusedTextColor = ArchiveTextPrimary,
+                    unfocusedTextColor = ArchiveTextPrimary,
+                    cursorColor = GoldFilament,
+                ),
+                container = {
+                    OutlinedTextFieldDefaults.ContainerBox(
+                        enabled = true,
+                        isError = false,
+                        interactionSource = interactionSource,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GoldFilament,
+                            unfocusedBorderColor = ArchiveOutline,
+                            focusedContainerColor = ArchiveVoidSurface,
+                            unfocusedContainerColor = ArchiveVoidSurface,
+                        ),
+                    )
+                },
+            )
+        },
+    )
 }
 
 // ─── Stone Tabs Row ──────────────────────────────────────────────────────
@@ -250,17 +276,17 @@ private fun StoneTabsRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         LibraryTab.entries.forEach { tab ->
             val isSelected = tab == selectedTab
             Surface(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .clickable { onTabSelected(tab) },
-                shape = RoundedCornerShape(10.dp),
+                shape = RoundedCornerShape(8.dp),
                 color = if (isSelected) GoldFilamentFaint else ArchiveVoidSurface,
                 border = BorderStroke(
                     width = 1.dp,
@@ -269,7 +295,7 @@ private fun StoneTabsRow(
             ) {
                 Text(
                     text = tab.label,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = if (isSelected) GoldFilament else ArchiveTextSecondary,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
@@ -299,8 +325,8 @@ private fun LibraryFiltersRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 16.dp, vertical = 0.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         // Row 1: View mode chips + sort, horizontally scrollable to avoid crowding
         Row(

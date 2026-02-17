@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,7 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -67,24 +67,10 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .background(ArchiveVoidDeep)
         ) {
-            // ─── Header Image ─────────────────────────────────────────────
-            ArchiveHeader()
-
-            // ─── Search Bar ───────────────────────────────────────────────
-            RelicSearchBar(
-                query = uiState.searchQuery,
-                onQueryChange = viewModel::onSearchQueryChanged,
-            )
-
-            // ─── Stone Tabs ─────────────────────────────────────────────
-            StoneTabsRow(
-                selectedTab = uiState.selectedTab,
-                onTabSelected = viewModel::onLibraryTabChanged,
-            )
-
-            // ─── Filters + Sorting ─────────────────────────────────────
-            LibraryFiltersRow(
+            ArchiveControlDeck(
                 uiState = uiState,
+                onSearchQueryChanged = viewModel::onSearchQueryChanged,
+                onLibraryTabChanged = viewModel::onLibraryTabChanged,
                 onViewModeChanged = viewModel::onViewModeChanged,
                 onSortModeChanged = viewModel::onSortModeChanged,
                 onHideFinishedChanged = viewModel::onHideFinishedChanged,
@@ -111,7 +97,7 @@ fun LibraryScreen(
                             contentPadding = PaddingValues(
                                 start = 18.dp,
                                 end = 18.dp,
-                                top = 4.dp,
+                                top = 12.dp,
                                 bottom = 100.dp,
                             ),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -134,47 +120,89 @@ fun LibraryScreen(
     }
 }
 
-// ─── Archive Header ──────────────────────────────────────────────────────
-
 @Composable
-private fun ArchiveHeader() {
-    Box(
+private fun ArchiveControlDeck(
+    uiState: LibraryViewModel.UiState,
+    onSearchQueryChanged: (String) -> Unit,
+    onLibraryTabChanged: (LibraryTab) -> Unit,
+    onViewModeChanged: (ViewMode) -> Unit,
+    onSortModeChanged: (SortMode) -> Unit,
+    onHideFinishedChanged: (Boolean) -> Unit,
+    onShowDownloadedOnlyChanged: (Boolean) -> Unit,
+    onGroupFilterSelected: (String?) -> Unit,
+) {
+    val outerHorizontalPadding = 20.dp
+    val sectionSpacing = 14.dp
+    val archiveSubtitle = CopyEngine.getSubtitle(
+        ritualSubtitle = "Cataloged echoes, awaiting selection.",
+        unhingedSubtitle = "Every spine twitches if you stare long enough.",
+    )
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(120.dp)
+            .padding(horizontal = outerHorizontalPadding)
+            .padding(top = 16.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(sectionSpacing),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
                         ArchiveVoidElevated,
                         ArchiveVoidBase,
-                        ArchiveVoidDeep,
+                        ArchiveVoidSurface,
                     )
                 )
             ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = "The Archive",
-            color = GoldFilament,
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Light,
-            letterSpacing = 4.sp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "The Archive",
+                    color = GoldFilament,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Light,
+                    letterSpacing = 4.sp,
+                )
+
+                archiveSubtitle?.let { subtitle ->
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextSecondary,
+                    )
+                }
+            }
+        }
+
+        RelicSearchBar(
+            query = uiState.searchQuery,
+            onQueryChange = onSearchQueryChanged,
+            modifier = Modifier.fillMaxWidth(),
         )
 
-        // Bottom fade gradient so the search bar feels anchored
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(40.dp)
-                .align(Alignment.BottomCenter)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            ArchiveVoidDeep,
-                        )
-                    )
-                )
+        StoneTabsRow(
+            selectedTab = uiState.selectedTab,
+            onTabSelected = onLibraryTabChanged,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        LibraryFiltersRow(
+            uiState = uiState,
+            onViewModeChanged = onViewModeChanged,
+            onSortModeChanged = onSortModeChanged,
+            onHideFinishedChanged = onHideFinishedChanged,
+            onShowDownloadedOnlyChanged = onShowDownloadedOnlyChanged,
+            onGroupFilterSelected = onGroupFilterSelected,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }
@@ -186,18 +214,25 @@ private fun ArchiveHeader() {
 private fun RelicSearchBar(
     query: String,
     onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
 
     BasicTextField(
         value = query,
         onValueChange = onQueryChange,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .height(36.dp),
+            .height(48.dp)
+            .shadow(
+                elevation = if (isFocused) 6.dp else 2.dp,
+                shape = RoundedCornerShape(12.dp),
+                ambientColor = GoldFilament.copy(alpha = if (isFocused) 0.35f else 0.12f),
+                spotColor = GoldFilament.copy(alpha = if (isFocused) 0.35f else 0.12f),
+            ),
         singleLine = true,
-        textStyle = MaterialTheme.typography.bodySmall.copy(color = ArchiveTextPrimary),
+        textStyle = MaterialTheme.typography.bodyMedium.copy(color = ArchiveTextPrimary),
         cursorBrush = SolidColor(GoldFilament),
         interactionSource = interactionSource,
         decorationBox = { innerTextField ->
@@ -208,26 +243,26 @@ private fun RelicSearchBar(
                 singleLine = true,
                 visualTransformation = VisualTransformation.None,
                 interactionSource = interactionSource,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 placeholder = {
                     Text(
                         CopyEngine.getSearchHint(
-                            CopyStyleGuide.Search.SEARCH_HINT_NORMAL,
-                            CopyStyleGuide.Search.SEARCH_HINT_RITUAL,
-                            CopyStyleGuide.Search.SEARCH_HINT_UNHINGED,
+                            normalHint = "Search titles, authors, or series",
+                            ritualHint = "Seek titles, authors, or bloodlines",
+                            unhingedHint = "Whisper a title and see what answers back",
                         ),
-                        color = ArchiveTextMuted,
+                        color = if (isFocused) ArchiveTextSecondary else ArchiveTextMuted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                 },
                 leadingIcon = {
                     Icon(
                         Icons.Outlined.Search,
                         contentDescription = null,
-                        tint = ArchiveTextSecondary,
-                        modifier = Modifier.size(18.dp),
+                        tint = if (isFocused) GoldFilament else ArchiveTextSecondary,
+                        modifier = Modifier.size(20.dp),
                     )
                 },
                 trailingIcon = if (query.isNotEmpty()) {
@@ -240,13 +275,13 @@ private fun RelicSearchBar(
                                 Icons.Outlined.Clear,
                                 contentDescription = "Clear search",
                                 tint = ArchiveTextMuted,
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(18.dp),
                             )
                         }
                     }
                 } else null,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = GoldFilament,
+                    focusedBorderColor = GoldFilament.copy(alpha = 0.95f),
                     unfocusedBorderColor = ArchiveOutline,
                     focusedContainerColor = ArchiveVoidSurface,
                     unfocusedContainerColor = ArchiveVoidSurface,
@@ -259,9 +294,9 @@ private fun RelicSearchBar(
                         enabled = true,
                         isError = false,
                         interactionSource = interactionSource,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GoldFilament,
+                            focusedBorderColor = GoldFilament.copy(alpha = 0.95f),
                             unfocusedBorderColor = ArchiveOutline,
                             focusedContainerColor = ArchiveVoidSurface,
                             unfocusedContainerColor = ArchiveVoidSurface,
@@ -279,11 +314,11 @@ private fun RelicSearchBar(
 private fun StoneTabsRow(
     selectedTab: LibraryTab,
     onTabSelected: (LibraryTab) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         LibraryTab.entries.forEach { tab ->
@@ -326,14 +361,15 @@ private fun LibraryFiltersRow(
     onHideFinishedChanged: (Boolean) -> Unit,
     onShowDownloadedOnlyChanged: (Boolean) -> Unit,
     onGroupFilterSelected: (String?) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var sortExpanded by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 0.dp),
-        verticalArrangement = Arrangement.spacedBy(0.dp),
+            .padding(vertical = 0.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // Row 1: View mode chips + sort, horizontally scrollable to avoid crowding
         Row(
@@ -422,7 +458,9 @@ private fun LibraryFiltersRow(
 
         // Row 2: Compact toggles
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -448,6 +486,24 @@ private fun LibraryFiltersRow(
                         imageVector = Icons.Outlined.DownloadDone,
                         contentDescription = null,
                         modifier = Modifier.size(FilterChipDefaults.IconSize),
+                    )
+                },
+            )
+
+            AssistChip(
+                onClick = {
+                    onViewModeChanged(ViewMode.ALL)
+                    onSortModeChanged(SortMode.RECENTLY_ADDED)
+                    onHideFinishedChanged(false)
+                    onShowDownloadedOnlyChanged(false)
+                    onGroupFilterSelected(null)
+                },
+                label = { Text("Reset") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.RestartAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
                     )
                 },
             )

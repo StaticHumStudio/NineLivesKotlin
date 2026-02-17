@@ -4,7 +4,6 @@ package com.ninelivesaudio.app.ui.library
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -31,7 +30,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -39,7 +37,6 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
@@ -153,15 +150,15 @@ private fun ArchiveHeader() {
                         ArchiveVoidDeep,
                     )
                 )
-            )
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        // Header image — replace library_header.xml with a real PNG/WEBP
-        // to show the actual artwork
-        Image(
-            painter = painterResource(id = R.drawable.library_header),
-            contentDescription = "The Archive",
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.FillBounds,
+        Text(
+            text = "The Archive",
+            color = GoldFilament,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Light,
+            letterSpacing = 4.sp,
         )
 
         // Bottom fade gradient so the search bar feels anchored

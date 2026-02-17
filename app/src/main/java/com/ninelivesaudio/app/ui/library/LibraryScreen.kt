@@ -4,6 +4,7 @@ package com.ninelivesaudio.app.ui.library
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -24,6 +25,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -31,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
@@ -61,14 +64,20 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .background(ArchiveVoidDeep)
         ) {
-            // ─── Header ───────────────────────────────────────────────────
-            ArchiveHeader(uiState)
+            // ─── Header Image ─────────────────────────────────────────────
+            ArchiveHeader()
+
+            // ─── Header → Search: 20dp breathing room ─────────────────────
+            Spacer(modifier = Modifier.height(20.dp))
 
             // ─── Search Bar ───────────────────────────────────────────────
             RelicSearchBar(
                 query = uiState.searchQuery,
                 onQueryChange = viewModel::onSearchQueryChanged,
             )
+
+            // ─── Search → Primary Tabs: 14dp (tight grouping) ────────────
+            Spacer(modifier = Modifier.height(14.dp))
 
             // ─── Stone Tabs ─────────────────────────────────────────────
             StoneTabsRow(
@@ -93,12 +102,12 @@ fun LibraryScreen(
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(
-                                start = 12.dp,
-                                end = 12.dp,
-                                top = 8.dp,
+                                start = 18.dp,
+                                end = 18.dp,
+                                top = 22.dp,
                                 bottom = 100.dp,
                             ),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
                             itemsIndexed(
                                 items = uiState.filteredBooks,
@@ -121,35 +130,35 @@ fun LibraryScreen(
 // ─── Archive Header ──────────────────────────────────────────────────────
 
 @Composable
-private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
-    val subtitle = CopyEngine.getSubtitle(
-        CopyStyleGuide.Library.LIBRARY_NAV_RITUAL,
-        CopyStyleGuide.Library.LIBRARY_NAV_UNHINGED,
-    )
-
-    Row(
+private fun ArchiveHeader() {
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(ArchiveVoidDeep)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .height(220.dp)
     ) {
-        Column {
-            Text(
-                text = "The Archive",
-                style = MaterialTheme.typography.headlineMedium,
-                color = ArchiveTextPrimary,
-                fontWeight = FontWeight.Bold,
-            )
-            if (subtitle != null) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+        // Header image
+        Image(
+            painter = painterResource(id = R.drawable.library_header),
+            contentDescription = "The Archive",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
+
+        // Bottom fade gradient so the search bar feels anchored
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(80.dp)
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            ArchiveVoidDeep,
+                        )
+                    )
                 )
-            }
-        }
-        Spacer(modifier = Modifier.weight(1f))
+        )
     }
 }
 
@@ -163,7 +172,7 @@ private fun RelicSearchBar(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 18.dp),
         shape = RoundedCornerShape(12.dp),
         color = ArchiveVoidSurface,
         border = BorderStroke(1.dp, ArchiveOutline),
@@ -228,7 +237,7 @@ private fun StoneTabsRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 18.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         LibraryTab.entries.forEach { tab ->
@@ -289,8 +298,8 @@ private fun ArchiveBookListItem(
     ) {
         Row(
             modifier = Modifier
-                .padding(10.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             // Cover art with progress ring
             Box(

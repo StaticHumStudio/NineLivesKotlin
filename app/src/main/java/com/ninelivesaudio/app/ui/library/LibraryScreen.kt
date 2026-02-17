@@ -73,17 +73,11 @@ fun LibraryScreen(
             // ─── Header Image ─────────────────────────────────────────────
             ArchiveHeader()
 
-            // ─── Header → Search: 20dp breathing room ─────────────────────
-            Spacer(modifier = Modifier.height(20.dp))
-
             // ─── Search Bar ───────────────────────────────────────────────
             RelicSearchBar(
                 query = uiState.searchQuery,
                 onQueryChange = viewModel::onSearchQueryChanged,
             )
-
-            // ─── Search → Primary Tabs: 14dp (tight grouping) ────────────
-            Spacer(modifier = Modifier.height(14.dp))
 
             // ─── Stone Tabs ─────────────────────────────────────────────
             StoneTabsRow(
@@ -120,10 +114,10 @@ fun LibraryScreen(
                             contentPadding = PaddingValues(
                                 start = 18.dp,
                                 end = 18.dp,
-                                top = 22.dp,
+                                top = 4.dp,
                                 bottom = 100.dp,
                             ),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             itemsIndexed(
                                 items = uiState.filteredBooks,
@@ -150,7 +144,7 @@ private fun ArchiveHeader() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(220.dp)
+            .height(120.dp)
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -174,7 +168,7 @@ private fun ArchiveHeader() {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(80.dp)
+                .height(40.dp)
                 .align(Alignment.BottomCenter)
                 .background(
                     Brush.verticalGradient(
@@ -524,8 +518,8 @@ private fun ArchiveBookListItem(
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // Cover art with progress ring
             Box(

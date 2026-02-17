@@ -36,7 +36,7 @@ import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.CornerSigils
 import com.ninelivesaudio.app.ui.components.RingStyle
-import com.ninelivesaudio.app.ui.components.StatusPill
+
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
@@ -150,7 +150,6 @@ private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
             }
         }
         Spacer(modifier = Modifier.weight(1f))
-        StatusPill(connectionStatus = uiState.connectionStatus)
     }
 }
 

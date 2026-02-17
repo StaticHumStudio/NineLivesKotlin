@@ -85,6 +85,7 @@ fun LibraryScreen(
                 onSortModeChanged = viewModel::onSortModeChanged,
                 onHideFinishedChanged = viewModel::onHideFinishedChanged,
                 onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
+                onGroupFilterSelected = viewModel::onGroupFilterSelected,
             )
 
             // ─── Content ──────────────────────────────────────────────────
@@ -142,7 +143,7 @@ private fun ArchiveHeader(uiState: LibraryViewModel.UiState) {
         modifier = Modifier
             .fillMaxWidth()
             .background(ArchiveVoidDeep)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column {
@@ -291,6 +292,7 @@ private fun LibraryFiltersRow(
     onSortModeChanged: (SortMode) -> Unit,
     onHideFinishedChanged: (Boolean) -> Unit,
     onShowDownloadedOnlyChanged: (Boolean) -> Unit,
+    onGroupFilterSelected: (String?) -> Unit,
 ) {
     var sortExpanded by remember { mutableStateOf(false) }
 
@@ -416,6 +418,37 @@ private fun LibraryFiltersRow(
                     )
                 },
             )
+        }
+
+        // Row 3: Group picker (visible when a view mode like Series/Author/Genre is active)
+        if (uiState.viewMode != ViewMode.ALL && uiState.availableGroups.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // "All" chip to clear the group filter
+                FilterChip(
+                    selected = uiState.selectedGroupFilter == null,
+                    onClick = { onGroupFilterSelected(null) },
+                    label = { Text("All") },
+                )
+                uiState.availableGroups.forEach { group ->
+                    FilterChip(
+                        selected = uiState.selectedGroupFilter == group,
+                        onClick = { onGroupFilterSelected(group) },
+                        label = {
+                            Text(
+                                text = group,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                    )
+                }
+            }
         }
     }
 }

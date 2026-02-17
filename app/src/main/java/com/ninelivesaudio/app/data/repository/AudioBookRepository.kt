@@ -37,6 +37,14 @@ class AudioBookRepository @Inject constructor(
     suspend fun getByLibrary(libraryId: String): List<AudioBook> =
         audioBookDao.getByLibrary(libraryId).map { it.toDomain() }
 
+    /** Get audiobooks by library with last-played timestamps enriched. */
+    suspend fun getByLibraryWithLastPlayed(libraryId: String): List<AudioBook> =
+        audioBookDao.getByLibraryWithLastPlayed(libraryId).map { result ->
+            result.audioBook.toDomain().copy(
+                lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
+            )
+        }
+
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =
         audioBookDao.getById(id)?.toDomain()

@@ -54,7 +54,7 @@ class LibraryViewModel @Inject constructor(
         val filteredBooks: List<AudioBook> = emptyList(),
         val searchQuery: String = "",
         val viewMode: ViewMode = ViewMode.ALL,
-        val sortMode: SortMode = SortMode.RECENTLY_ADDED,
+        val sortMode: SortMode = SortMode.RECENTLY_PLAYED,
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
         val selectedTab: LibraryTab = LibraryTab.All,
@@ -209,6 +209,22 @@ class LibraryViewModel @Inject constructor(
         applyFilter()
     }
 
+    fun resetFilters() {
+        _uiState.update {
+            it.copy(
+                searchQuery = "",
+                viewMode = ViewMode.ALL,
+                selectedGroupFilter = null,
+                selectedTab = LibraryTab.All,
+                hideFinished = false,
+                showDownloadedOnly = false,
+                sortMode = SortMode.RECENTLY_PLAYED,
+            )
+        }
+        updateAvailableGroups()
+        applyFilter()
+    }
+
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true) }
@@ -317,6 +333,7 @@ class LibraryViewModel @Inject constructor(
             SortMode.DURATION_LONG -> filtered.sortedByDescending { it.duration.inWholeSeconds }
             SortMode.DURATION_SHORT -> filtered.sortedBy { it.duration.inWholeSeconds }
             SortMode.RECENTLY_PLAYED -> filtered.sortedWith(
+                // Treat books with no playback history as oldest via Long.MIN_VALUE fallback.
                 compareByDescending<AudioBook> { it.lastPlayedAt ?: Long.MIN_VALUE }
                     .thenBy { it.title.lowercase() }
             )

@@ -90,6 +90,7 @@ fun LibraryScreen(
                 onHideFinishedChanged = viewModel::onHideFinishedChanged,
                 onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
                 onGroupFilterSelected = viewModel::onGroupFilterSelected,
+                onResetFilters = viewModel::resetFilters,
             )
 
             // ─── Content ──────────────────────────────────────────────────
@@ -326,6 +327,7 @@ private fun LibraryFiltersRow(
     onHideFinishedChanged: (Boolean) -> Unit,
     onShowDownloadedOnlyChanged: (Boolean) -> Unit,
     onGroupFilterSelected: (String?) -> Unit,
+    onResetFilters: () -> Unit,
 ) {
     var sortExpanded by remember { mutableStateOf(false) }
 
@@ -379,7 +381,7 @@ private fun LibraryFiltersRow(
                                 SortMode.PROGRESS_LOW -> "Progress ↓"
                                 SortMode.DURATION_LONG -> "Longest"
                                 SortMode.DURATION_SHORT -> "Shortest"
-                                SortMode.RECENTLY_PLAYED -> "Recent play"
+                                SortMode.RECENTLY_PLAYED -> "Recently played"
                                 SortMode.UNPLAYED_FIRST -> "Unplayed"
                             }
                         )
@@ -448,6 +450,18 @@ private fun LibraryFiltersRow(
                         imageVector = Icons.Outlined.DownloadDone,
                         contentDescription = null,
                         modifier = Modifier.size(FilterChipDefaults.IconSize),
+                    )
+                },
+            )
+
+            AssistChip(
+                onClick = onResetFilters,
+                label = { Text("Reset") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.RestartAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
                     )
                 },
             )

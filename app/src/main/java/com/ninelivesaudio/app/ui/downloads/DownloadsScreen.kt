@@ -23,7 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
-import com.ninelivesaudio.app.ui.components.StatusPill
+
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -40,7 +40,7 @@ fun DownloadsScreen(
             .background(ArchiveVoidDeep),
     ) {
         // ─── Header ──────────────────────────────────────────────────────
-        DownloadsHeader(connectionStatus = uiState.connectionStatus)
+        DownloadsHeader()
 
         if (uiState.showEmptyState) {
             EmptyDownloadsState()
@@ -113,9 +113,7 @@ fun DownloadsScreen(
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun DownloadsHeader(
-    connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
-) {
+private fun DownloadsHeader() {
     val subtitle = CopyEngine.getSubtitle(
         CopyStyleGuide.Downloads.DOWNLOADS_NAV_RITUAL,
         CopyStyleGuide.Downloads.DOWNLOADS_NAV_UNHINGED,
@@ -143,7 +141,6 @@ private fun DownloadsHeader(
                 )
             }
         }
-        StatusPill(connectionStatus = connectionStatus)
     }
 }
 

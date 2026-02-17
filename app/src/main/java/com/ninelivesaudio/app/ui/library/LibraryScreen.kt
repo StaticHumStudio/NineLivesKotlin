@@ -151,13 +151,23 @@ private fun ArchiveHeader() {
         modifier = Modifier
             .fillMaxWidth()
             .height(220.dp)
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        ArchiveVoidElevated,
+                        ArchiveVoidBase,
+                        ArchiveVoidDeep,
+                    )
+                )
+            )
     ) {
-        // Header image
+        // Header image — replace library_header.xml with a real PNG/WEBP
+        // to show the actual artwork
         Image(
             painter = painterResource(id = R.drawable.library_header),
             contentDescription = "The Archive",
             modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
+            contentScale = ContentScale.FillBounds,
         )
 
         // Bottom fade gradient so the search bar feels anchored

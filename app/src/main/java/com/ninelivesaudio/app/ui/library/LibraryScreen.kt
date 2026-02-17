@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,6 +58,9 @@ fun LibraryScreen(
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val groupedListItems = remember(uiState.groupedSections, uiState.expandedGroups) {
+        flattenGroupedItems(uiState.groupedSections, uiState.expandedGroups)
+    }
 
     AnomalyHost(
         currentContext = AnomalyTriggerContext.LIBRARY,
@@ -89,7 +93,6 @@ fun LibraryScreen(
                 onSortModeChanged = viewModel::onSortModeChanged,
                 onHideFinishedChanged = viewModel::onHideFinishedChanged,
                 onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
-                onGroupFilterSelected = viewModel::onGroupFilterSelected,
             )
 
             // ─── Content ──────────────────────────────────────────────────
@@ -116,15 +119,42 @@ fun LibraryScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            itemsIndexed(
-                                items = uiState.filteredBooks,
-                                key = { _, book -> book.id },
-                            ) { index, book ->
-                                ArchiveBookListItem(
-                                    book = book,
-                                    index = index,
-                                    onClick = { onNavigateToBookDetail(book.id) },
-                                )
+                            if (uiState.viewMode == ViewMode.ALL) {
+                                itemsIndexed(
+                                    items = uiState.filteredBooks,
+                                    key = { _, book -> book.id },
+                                ) { index, book ->
+                                    ArchiveBookListItem(
+                                        book = book,
+                                        index = index,
+                                        onClick = { onNavigateToBookDetail(book.id) },
+                                    )
+                                }
+                            } else {
+                                itemsIndexed(
+                                    items = groupedListItems,
+                                    key = { _, item ->
+                                        when (item) {
+                                            is LibraryListItem.GroupHeader -> "header-${item.groupKey}"
+                                            is LibraryListItem.BookRow -> "book-${item.groupKey}-${item.book.id}"
+                                        }
+                                    },
+                                ) { index, item ->
+                                    when (item) {
+                                        is LibraryListItem.GroupHeader -> GroupHeaderRow(
+                                            title = item.title,
+                                            count = item.count,
+                                            isExpanded = item.isExpanded,
+                                            onClick = { viewModel.onGroupExpansionToggled(item.groupKey) },
+                                        )
+
+                                        is LibraryListItem.BookRow -> ArchiveBookListItem(
+                                            book = item.book,
+                                            index = index,
+                                            onClick = { onNavigateToBookDetail(item.book.id) },
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -325,7 +355,6 @@ private fun LibraryFiltersRow(
     onSortModeChanged: (SortMode) -> Unit,
     onHideFinishedChanged: (Boolean) -> Unit,
     onShowDownloadedOnlyChanged: (Boolean) -> Unit,
-    onGroupFilterSelected: (String?) -> Unit,
 ) {
     var sortExpanded by remember { mutableStateOf(false) }
 
@@ -453,35 +482,43 @@ private fun LibraryFiltersRow(
             )
         }
 
-        // Row 3: Group picker (visible when a view mode like Series/Author/Genre is active)
-        if (uiState.viewMode != ViewMode.ALL && uiState.availableGroups.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // "All" chip to clear the group filter
-                FilterChip(
-                    selected = uiState.selectedGroupFilter == null,
-                    onClick = { onGroupFilterSelected(null) },
-                    label = { Text("All") },
-                )
-                uiState.availableGroups.forEach { group ->
-                    FilterChip(
-                        selected = uiState.selectedGroupFilter == group,
-                        onClick = { onGroupFilterSelected(group) },
-                        label = {
-                            Text(
-                                text = group,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                    )
-                }
-            }
+    }
+}
+
+// ─── Group Header Row ────────────────────────────────────────────────────
+
+@Composable
+private fun GroupHeaderRow(
+    title: String,
+    count: Int,
+    isExpanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = ArchiveVoidElevated,
+        border = BorderStroke(1.dp, ArchiveOutline),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                tint = GoldFilament,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = "$title • $count",
+                style = MaterialTheme.typography.titleSmall,
+                color = ArchiveTextPrimary,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 }

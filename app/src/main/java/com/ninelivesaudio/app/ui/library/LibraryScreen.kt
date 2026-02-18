@@ -39,16 +39,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.CornerSigils
-import com.ninelivesaudio.app.ui.components.RingStyle
+import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
 import com.ninelivesaudio.app.ui.theme.unhinged.*
-import kotlin.random.Random
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -594,8 +593,8 @@ private fun ArchiveBookListItem(
         label = "lib_progress_$index",
     )
 
-    val comment = remember(book.id) {
-        getBookComment(book)
+    val whisper = remember(book.id, book.currentTime, book.isFinished) {
+        BookWhisperCatalog.getWhisper(book)
     }
 
     Surface(
@@ -636,24 +635,14 @@ private fun ArchiveBookListItem(
                     }
                 }
 
-                // Containment Halo progress ring
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .shadow(
-                            elevation = 4.dp,
-                            shape = RoundedCornerShape(8.dp),
-                            clip = false
-                        )
-                ) {
-                    ContainmentProgressRing(
-                        progress = animatedProgress,
-                        modifier = Modifier.matchParentSize(),
-                        style = RingStyle.LibrarySmall,
-                        progressColor = GoldFilament,
-                        trackColor = ArchiveOutline,
-                    )
-                }
+                // Fluorescent square progress glow
+                FluorescentSquareProgress(
+                    progress = animatedProgress,
+                    modifier = Modifier.matchParentSize(),
+                    cornerRadius = 8.dp,
+                    padding = 4.dp,
+                    strokeScale = 0.6f,
+                )
 
                 // Corner sigils
                 CornerSigils(
@@ -691,19 +680,17 @@ private fun ArchiveBookListItem(
                     fontSize = 12.sp,
                 )
 
-                // Random comment
-                if (comment != null) {
-                    Text(
-                        text = comment,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted.copy(alpha = 0.8f),
-                        fontWeight = FontWeight.Light,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
+                // Book whisper — time-aware atmospheric phrase
+                Text(
+                    text = whisper,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted.copy(alpha = 0.8f),
+                    fontWeight = FontWeight.Light,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
 
                 // Progress info
                 if (book.hasProgress) {
@@ -734,40 +721,6 @@ private fun ArchiveBookListItem(
             }
         }
     }
-}
-
-// ─── Book Comment Generator ──────────────────────────────────────────────
-
-private fun getBookComment(book: AudioBook): String? {
-    val comments = listOf(
-        "A timeless classic",
-        "Highly recommended",
-        "Gripping from start to finish",
-        "Beautifully narrated",
-        "A must-listen",
-        "Captivating storytelling",
-        "Thought-provoking",
-        "Couldn't stop listening",
-        "Powerful and moving",
-        "Masterfully crafted",
-        "An unforgettable journey",
-        "Brilliantly performed",
-        "Rich in detail",
-        "Engaging and immersive",
-        "A true gem",
-        "Expertly written",
-        "Absolutely riveting",
-        "Hauntingly beautiful",
-        "Wonderfully complex",
-        "A page-turner in audio form",
-        null, // 5% chance of no comment
-    )
-
-    // Use book ID for deterministic randomness
-    val seed = book.id.hashCode().toLong()
-    val random = Random(seed)
-
-    return comments[random.nextInt(comments.size)]
 }
 
 // ─── Archive Book Tile (kept for reference/future use) ───────────────────
@@ -825,13 +778,12 @@ private fun ArchiveBookTile(
                 cornerRadius = 14.dp,
             )
 
-            // Containment Halo progress ring
-            ContainmentProgressRing(
+            // Fluorescent square progress glow
+            FluorescentSquareProgress(
                 progress = animatedProgress,
                 modifier = Modifier.matchParentSize(),
-                style = RingStyle.LibrarySmall,
-                progressColor = GoldFilament,
-                trackColor = ArchiveOutline,
+                cornerRadius = 14.dp,
+                padding = 6.dp,
             )
 
             // Corner sigils

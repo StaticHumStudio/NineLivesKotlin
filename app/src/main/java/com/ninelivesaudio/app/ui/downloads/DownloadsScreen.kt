@@ -373,6 +373,7 @@ private fun CompletedDownloadCard(
                         contentDescription = download.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
                     )
                 }
             }

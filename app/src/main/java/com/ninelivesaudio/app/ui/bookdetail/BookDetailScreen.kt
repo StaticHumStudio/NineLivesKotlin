@@ -26,9 +26,10 @@ import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.util.toHumanReadableString
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
-import com.ninelivesaudio.app.ui.components.RingStyle
+import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.viewinterop.AndroidView
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -155,14 +156,13 @@ private fun BookDetailContent(
                         cornerRadius = 12.dp,
                     )
 
-                    // Containment Halo progress ring
+                    // Fluorescent square progress glow
                     if (uiState.hasProgress) {
-                        ContainmentProgressRing(
+                        FluorescentSquareProgress(
                             progress = uiState.progress.toFloat().coerceIn(0f, 1f),
                             modifier = Modifier.matchParentSize(),
-                            style = RingStyle.BookDetail,
-                            progressColor = GoldFilament,
-                            trackColor = ArchiveOutline,
+                            cornerRadius = 12.dp,
+                            padding = 10.dp,
                         )
                     }
                 }
@@ -357,11 +357,23 @@ private fun BookDetailContent(
                         letterSpacing = 1.sp,
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = desc,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextSecondary,
-                        lineHeight = 20.sp,
+                    val descColor = ArchiveTextSecondary.toArgb()
+                    AndroidView(
+                        factory = { context ->
+                            android.widget.TextView(context).apply {
+                                setTextColor(descColor)
+                                textSize = 14f
+                                setLineSpacing(4f, 1f)
+                                setLinkTextColor(GoldFilament.toArgb())
+                            }
+                        },
+                        update = { textView ->
+                            textView.text = android.text.Html.fromHtml(
+                                desc,
+                                android.text.Html.FROM_HTML_MODE_COMPACT,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }

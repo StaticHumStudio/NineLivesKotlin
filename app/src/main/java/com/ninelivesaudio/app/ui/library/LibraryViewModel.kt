@@ -98,6 +98,19 @@ class LibraryViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    /**
+     * Epoch counter that increments each time the Library screen is entered.
+     * Used as a seed component for whisper selection so whispers re-roll
+     * each time the user taps the Library nav button.
+     */
+    private val _whisperEpoch = MutableStateFlow(0)
+    val whisperEpoch: StateFlow<Int> = _whisperEpoch.asStateFlow()
+
+    /** Called by LibraryScreen on each composition entry to re-roll whispers. */
+    fun incrementWhisperEpoch() {
+        _whisperEpoch.update { it + 1 }
+    }
+
     // Search debounce
     private var searchJob: Job? = null
 

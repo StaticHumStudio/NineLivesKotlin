@@ -145,6 +145,7 @@ private fun BookDetailContent(
                                 contentDescription = uiState.title,
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop,
+                                alignment = Alignment.TopCenter,
                             )
                         }
                     }

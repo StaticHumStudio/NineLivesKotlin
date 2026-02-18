@@ -136,6 +136,7 @@ private fun HomeGridTile(
                     contentDescription = item.displayTitle,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
+                    alignment = Alignment.TopCenter,
                 )
             }
         }
@@ -152,6 +153,8 @@ private fun HomeGridTile(
             progress = animatedProgress,
             modifier = Modifier.matchParentSize(),
             color = GoldFilament,
+            cornerRadius = 14.dp,
+            padding = 6.dp,
         )
 
         // Corner sigils

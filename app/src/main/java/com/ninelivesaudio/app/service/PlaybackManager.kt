@@ -16,12 +16,14 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
 import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -61,6 +63,7 @@ class PlaybackManager @Inject constructor(
     private val settingsManager: SettingsManager,
     private val progressRepository: ProgressRepository,
     private val audioBookDao: AudioBookDao,
+    private val audioBookRepository: AudioBookRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
 ) {
     companion object {
@@ -73,6 +76,7 @@ class PlaybackManager @Inject constructor(
     private var mediaController: MediaController? = null
     private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     private var playbackService: PlaybackService? = null
+    private var chapterPlayer: ChapterAwareForwardingPlayer? = null
 
     /** Expose the current ExoPlayer instance. */
     fun getPlayer(): ExoPlayer? = exoPlayer
@@ -83,6 +87,21 @@ class PlaybackManager @Inject constructor(
     /** Called by PlaybackService when it's created/destroyed. */
     fun setPlaybackService(service: PlaybackService?) {
         playbackService = service
+    }
+
+    /**
+     * Load and play a book by its ID. Used by Android Auto when the user
+     * selects a book from the browse tree.
+     */
+    suspend fun loadBookById(bookId: String): Boolean {
+        val book = withContext(Dispatchers.IO) {
+            audioBookRepository.getById(bookId)
+                ?: audioBookRepository.fetchFromServer(bookId)
+        } ?: return false
+
+        return withContext(Dispatchers.Main) {
+            loadAudioBook(book)
+        }
     }
 
     // ─── Coroutine Scope ──────────────────────────────────────────────────
@@ -265,9 +284,27 @@ class PlaybackManager @Inject constructor(
             // This is critical: Media3's automatic notification system only works when the
             // session exists with a bound player when state changes happen.
             mediaSession?.release()
-            mediaSession = MediaSession.Builder(context, player)
-                .setSessionActivity(createSessionPendingIntent())
-                .build()
+
+            // Wrap the player so the notification seek bar shows chapter-relative position/duration
+            val wrapper = ChapterAwareForwardingPlayer(player)
+            wrapper.seekHandler = { absoluteMs ->
+                seekTo(absoluteMs.milliseconds)
+            }
+            chapterPlayer = wrapper
+
+            // Build a MediaLibrarySession (extends MediaSession) so Android Auto
+            // can browse the library. Falls back to a plain MediaSession if the
+            // service hasn't been created yet (should never happen in practice).
+            val libraryCallback = playbackService?.createLibraryCallback()
+            mediaSession = if (libraryCallback != null) {
+                MediaLibrarySession.Builder(context, wrapper, libraryCallback)
+                    .setSessionActivity(createSessionPendingIntent())
+                    .build()
+            } else {
+                MediaSession.Builder(context, wrapper)
+                    .setSessionActivity(createSessionPendingIntent())
+                    .build()
+            }
 
             // Start the foreground service — it retrieves the session via getMediaSession().
             // Media3 MediaSessionService handles startForeground() automatically.
@@ -640,6 +677,7 @@ class PlaybackManager @Inject constructor(
                 delay(500)
                 val pos = getCurrentPosition()
                 _position.value = pos
+                chapterPlayer?.absolutePositionMs = pos.inWholeMilliseconds
                 updateCurrentChapter(pos)
 
                 // Report position to SyncManager for throttled server pushes.
@@ -686,7 +724,9 @@ class PlaybackManager @Inject constructor(
 
         if (newIndex != _currentChapterIndex.value) {
             _currentChapterIndex.value = newIndex
-            _currentChapter.value = if (newIndex >= 0) cachedChapters[newIndex] else null
+            val chapter = if (newIndex >= 0) cachedChapters[newIndex] else null
+            _currentChapter.value = chapter
+            chapterPlayer?.currentChapter = chapter
         }
     }
 
@@ -780,6 +820,7 @@ class PlaybackManager @Inject constructor(
             session.release()
             mediaSession = null
         }
+        chapterPlayer = null
         exoPlayer?.let { player ->
             player.stop()
             player.release()

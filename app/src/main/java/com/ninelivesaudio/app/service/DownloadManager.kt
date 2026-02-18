@@ -62,13 +62,13 @@ class DownloadManager @Inject constructor(
         val totalBytes: Long,
     )
 
-    private val _progressUpdates = MutableSharedFlow<DownloadProgress>(replay = 0, extraBufferCapacity = 64)
+    private val _progressUpdates = MutableSharedFlow<DownloadProgress>(replay = 1, extraBufferCapacity = 64)
     val progressUpdates: SharedFlow<DownloadProgress> = _progressUpdates.asSharedFlow()
 
-    private val _downloadCompleted = MutableSharedFlow<DownloadItem>(replay = 0, extraBufferCapacity = 8)
+    private val _downloadCompleted = MutableSharedFlow<DownloadItem>(replay = 1, extraBufferCapacity = 8)
     val downloadCompleted: SharedFlow<DownloadItem> = _downloadCompleted.asSharedFlow()
 
-    private val _downloadFailed = MutableSharedFlow<DownloadItem>(replay = 0, extraBufferCapacity = 8)
+    private val _downloadFailed = MutableSharedFlow<DownloadItem>(replay = 1, extraBufferCapacity = 8)
     val downloadFailed: SharedFlow<DownloadItem> = _downloadFailed.asSharedFlow()
 
     // ─── Queue Operations ────────────────────────────────────────────────────

@@ -56,6 +56,13 @@ fun LibraryScreen(
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val whisperEpoch by viewModel.whisperEpoch.collectAsStateWithLifecycle()
+
+    // Increment whisper epoch each time this screen enters composition
+    // (i.e. each time the user navigates to the Library tab).
+    LaunchedEffect(Unit) {
+        viewModel.incrementWhisperEpoch()
+    }
 
     // Flatten grouped items only when groupedSections or expandedGroups change
     val groupedListItems = remember(uiState.groupedSections, uiState.expandedGroups) {
@@ -116,6 +123,7 @@ fun LibraryScreen(
                                     ArchiveBookListItem(
                                         book = book,
                                         index = index,
+                                        whisperEpoch = whisperEpoch,
                                         onClick = { onNavigateToBookDetail(book.id) },
                                     )
                                 }
@@ -140,6 +148,7 @@ fun LibraryScreen(
                                         is LibraryListItem.BookRow -> ArchiveBookListItem(
                                             book = item.book,
                                             index = index,
+                                            whisperEpoch = whisperEpoch,
                                             onClick = { onNavigateToBookDetail(item.book.id) },
                                         )
                                     }
@@ -583,6 +592,7 @@ private fun GroupHeaderRow(
 private fun ArchiveBookListItem(
     book: AudioBook,
     index: Int,
+    whisperEpoch: Int = 0,
     onClick: () -> Unit,
 ) {
     // progressPercent is normalized to 0–100 regardless of API format; divide back to 0–1 for the ring.
@@ -593,8 +603,12 @@ private fun ArchiveBookListItem(
         label = "lib_progress_$index",
     )
 
-    val whisper = remember(book.id, book.currentTime, book.isFinished) {
-        BookWhisperCatalog.getWhisper(book)
+    // 50% of books show a whisper; re-rolls each time Library is entered
+    val showWhisper = remember(book.id, whisperEpoch) {
+        BookWhisperCatalog.shouldShowWhisper(book.id, whisperEpoch)
+    }
+    val whisper = remember(book.id, book.currentTime, book.isFinished, whisperEpoch) {
+        if (showWhisper) BookWhisperCatalog.getWhisper(book, whisperEpoch) else null
     }
 
     Surface(
@@ -631,6 +645,7 @@ private fun ArchiveBookListItem(
                             contentDescription = book.title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop,
+                            alignment = Alignment.TopCenter,
                         )
                     }
                 }
@@ -680,17 +695,19 @@ private fun ArchiveBookListItem(
                     fontSize = 12.sp,
                 )
 
-                // Book whisper — time-aware atmospheric phrase
-                Text(
-                    text = whisper,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted.copy(alpha = 0.8f),
-                    fontWeight = FontWeight.Light,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
+                // Book whisper — time-aware atmospheric phrase (shown on ~50% of books)
+                if (whisper != null) {
+                    Text(
+                        text = whisper,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted.copy(alpha = 0.8f),
+                        fontWeight = FontWeight.Light,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
 
                 // Progress info
                 if (book.hasProgress) {
@@ -767,6 +784,7 @@ private fun ArchiveBookTile(
                         contentDescription = book.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
                     )
                 }
             }

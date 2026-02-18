@@ -29,9 +29,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
 import com.ninelivesaudio.app.ui.components.CornerSigils
-import com.ninelivesaudio.app.ui.components.RingStyle
+import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
@@ -97,7 +96,7 @@ fun HomeScreen(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  3×3 Grid Tile — Cover + ContainmentFrame + ContainmentProgressRing + Sigils
+//  3×3 Grid Tile — Cover + ContainmentFrame + FluorescentSquareProgress + Sigils
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -148,13 +147,11 @@ private fun HomeGridTile(
             cornerRadius = 14.dp,
         )
 
-        // Containment Halo progress ring
-        ContainmentProgressRing(
+        // Fluorescent square progress glow
+        FluorescentSquareProgress(
             progress = animatedProgress,
             modifier = Modifier.matchParentSize(),
-            style = RingStyle.HomeSmall,
-            progressColor = GoldFilament,
-            trackColor = ArchiveOutline,
+            color = GoldFilament,
         )
 
         // Corner sigils

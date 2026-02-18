@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -40,6 +41,7 @@ fun FluorescentSquareProgress(
 ) {
     val clampedProgress = progress.coerceIn(0f, 1f)
     val density = LocalDensity.current
+    val glowColor = color
 
     // ── Breathing animation (continuous, regardless of progress) ──────────
     val infiniteTransition = rememberInfiniteTransition(label = "fluorescent_breath")
@@ -143,12 +145,12 @@ fun FluorescentSquareProgress(
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
                 strokeWidth = with(density) { 6.dp.toPx() }
-                color = Color(
-                    red = color.red,
-                    green = color.green,
-                    blue = color.blue,
+                setColor(Color(
+                    red = glowColor.red,
+                    green = glowColor.green,
+                    blue = glowColor.blue,
                     alpha = 0.15f * breathAlpha,
-                ).toArgb()
+                ).toArgb())
                 maskFilter = BlurMaskFilter(bloomPx, BlurMaskFilter.Blur.NORMAL)
                 pathEffect = dashEffect(bleedDrawLength, bleedTotalLength, bleedPhaseOffset)
             }
@@ -166,12 +168,12 @@ fun FluorescentSquareProgress(
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
                 strokeWidth = with(density) { 4.dp.toPx() }
-                color = Color(
-                    red = color.red,
-                    green = color.green,
-                    blue = color.blue,
+                setColor(Color(
+                    red = glowColor.red,
+                    green = glowColor.green,
+                    blue = glowColor.blue,
                     alpha = 0.35f * breathAlpha,
-                ).toArgb()
+                ).toArgb())
                 maskFilter = BlurMaskFilter(
                     with(density) { 12.dp.toPx() },
                     BlurMaskFilter.Blur.NORMAL,
@@ -185,12 +187,12 @@ fun FluorescentSquareProgress(
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
                 strokeWidth = with(density) { 3.dp.toPx() }
-                color = Color(
-                    red = color.red,
-                    green = color.green,
-                    blue = color.blue,
+                setColor(Color(
+                    red = glowColor.red,
+                    green = glowColor.green,
+                    blue = glowColor.blue,
                     alpha = 0.80f * breathAlpha,
-                ).toArgb()
+                ).toArgb())
                 maskFilter = BlurMaskFilter(
                     with(density) { 4.dp.toPx() },
                     BlurMaskFilter.Blur.NORMAL,
@@ -205,7 +207,7 @@ fun FluorescentSquareProgress(
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
                 strokeWidth = with(density) { 1.5.dp.toPx() }
-                color = filamentColor.copy(alpha = 0.60f * breathAlpha).toArgb()
+                setColor(filamentColor.copy(alpha = 0.60f * breathAlpha).toArgb())
                 pathEffect = dashEffect(drawLength, totalLength, phaseOffset)
             }
             nativeCanvas.drawPath(nativePath, filamentPaint)

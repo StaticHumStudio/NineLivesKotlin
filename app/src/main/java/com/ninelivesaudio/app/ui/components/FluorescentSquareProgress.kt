@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
 
@@ -32,12 +33,20 @@ import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
  * all modulated by a slow breathing animation.
  *
  * The progress arc starts and ends at the top-center of the rounded square.
+ *
+ * @param progress 0.0–1.0 listening progress
+ * @param cornerRadius rounded-rect corner radius — match the surrounding clip shape
+ * @param padding clearance between widget edge and the glow path
+ * @param strokeScale multiplier for all stroke widths (use < 1.0 for small thumbnails)
  */
 @Composable
 fun FluorescentSquareProgress(
     progress: Float,
     modifier: Modifier = Modifier,
     color: Color = GoldFilament,
+    cornerRadius: Dp = 20.dp,
+    padding: Dp = 8.dp,
+    strokeScale: Float = 1.0f,
 ) {
     val clampedProgress = progress.coerceIn(0f, 1f)
     val density = LocalDensity.current
@@ -47,28 +56,28 @@ fun FluorescentSquareProgress(
     val infiniteTransition = rememberInfiniteTransition(label = "fluorescent_breath")
 
     val breathAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.70f,
+        initialValue = 0.55f,
         targetValue = 1.00f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 4000, easing = EaseInOutSine),
+            animation = tween(durationMillis = 3000, easing = EaseInOutSine),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "breath_alpha",
     )
 
     val breathBloom by infiniteTransition.animateFloat(
-        initialValue = 24f,
-        targetValue = 32f,
+        initialValue = 20f,
+        targetValue = 38f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 4000, easing = EaseInOutSine),
+            animation = tween(durationMillis = 3000, easing = EaseInOutSine),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "breath_bloom",
     )
 
     Canvas(modifier = modifier) {
-        val paddingPx = with(density) { 8.dp.toPx() }
-        val cornerRadiusPx = with(density) { 20.dp.toPx() }
+        val paddingPx = with(density) { padding.toPx() }
+        val cornerRadiusPx = with(density) { cornerRadius.toPx() }
 
         val left = paddingPx
         val top = paddingPx
@@ -108,7 +117,7 @@ fun FluorescentSquareProgress(
         val drawLength = clampedProgress * totalLength
 
         // ── Outset path for the outer bleed layer ────────────────────────
-        val outsetPx = with(density) { 8.dp.toPx() }
+        val outsetPx = with(density) { (8.dp * strokeScale).toPx() }
         val bleedPath = Path().apply {
             addRoundRect(
                 androidx.compose.ui.geometry.RoundRect(
@@ -135,7 +144,7 @@ fun FluorescentSquareProgress(
             return DashPathEffect(floatArrayOf(seg, gap), total - phase)
         }
 
-        val bloomPx = with(density) { breathBloom.dp.toPx() }
+        val bloomPx = with(density) { (breathBloom * strokeScale).dp.toPx() }
 
         drawIntoCanvas { canvas ->
             val nativeCanvas = canvas.nativeCanvas
@@ -144,12 +153,12 @@ fun FluorescentSquareProgress(
             val bleedPaint = android.graphics.Paint().apply {
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
-                strokeWidth = with(density) { 6.dp.toPx() }
+                strokeWidth = with(density) { (6.dp * strokeScale).toPx() }
                 setColor(Color(
                     red = glowColor.red,
                     green = glowColor.green,
                     blue = glowColor.blue,
-                    alpha = 0.15f * breathAlpha,
+                    alpha = 0.22f * breathAlpha,
                 ).toArgb())
                 maskFilter = BlurMaskFilter(bloomPx, BlurMaskFilter.Blur.NORMAL)
                 pathEffect = dashEffect(bleedDrawLength, bleedTotalLength, bleedPhaseOffset)
@@ -158,7 +167,7 @@ fun FluorescentSquareProgress(
 
             // Second bleed draw with slight offset for light scatter
             nativeCanvas.save()
-            val scatterPx = with(density) { 1.5.dp.toPx() }
+            val scatterPx = with(density) { (1.5.dp * strokeScale).toPx() }
             nativeCanvas.translate(scatterPx, -scatterPx)
             nativeCanvas.drawPath(bleedNativePath, bleedPaint)
             nativeCanvas.restore()
@@ -167,15 +176,15 @@ fun FluorescentSquareProgress(
             val coronaPaint = android.graphics.Paint().apply {
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
-                strokeWidth = with(density) { 4.dp.toPx() }
+                strokeWidth = with(density) { (4.dp * strokeScale).toPx() }
                 setColor(Color(
                     red = glowColor.red,
                     green = glowColor.green,
                     blue = glowColor.blue,
-                    alpha = 0.35f * breathAlpha,
+                    alpha = 0.45f * breathAlpha,
                 ).toArgb())
                 maskFilter = BlurMaskFilter(
-                    with(density) { 12.dp.toPx() },
+                    with(density) { (12.dp * strokeScale).toPx() },
                     BlurMaskFilter.Blur.NORMAL,
                 )
                 pathEffect = dashEffect(drawLength, totalLength, phaseOffset)
@@ -186,15 +195,15 @@ fun FluorescentSquareProgress(
             val corePaint = android.graphics.Paint().apply {
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
-                strokeWidth = with(density) { 3.dp.toPx() }
+                strokeWidth = with(density) { (3.dp * strokeScale).toPx() }
                 setColor(Color(
                     red = glowColor.red,
                     green = glowColor.green,
                     blue = glowColor.blue,
-                    alpha = 0.80f * breathAlpha,
+                    alpha = 0.90f * breathAlpha,
                 ).toArgb())
                 maskFilter = BlurMaskFilter(
-                    with(density) { 4.dp.toPx() },
+                    with(density) { (4.dp * strokeScale).toPx() },
                     BlurMaskFilter.Blur.NORMAL,
                 )
                 pathEffect = dashEffect(drawLength, totalLength, phaseOffset)
@@ -206,8 +215,8 @@ fun FluorescentSquareProgress(
             val filamentPaint = android.graphics.Paint().apply {
                 isAntiAlias = true
                 style = android.graphics.Paint.Style.STROKE
-                strokeWidth = with(density) { 1.5.dp.toPx() }
-                setColor(filamentColor.copy(alpha = 0.60f * breathAlpha).toArgb())
+                strokeWidth = with(density) { (1.5.dp * strokeScale).toPx() }
+                setColor(filamentColor.copy(alpha = 0.75f * breathAlpha).toArgb())
                 pathEffect = dashEffect(drawLength, totalLength, phaseOffset)
             }
             nativeCanvas.drawPath(nativePath, filamentPaint)

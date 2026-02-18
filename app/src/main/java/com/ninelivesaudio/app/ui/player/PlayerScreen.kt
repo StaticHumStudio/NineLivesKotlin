@@ -34,11 +34,9 @@ import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Bookmark
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
-import com.ninelivesaudio.app.ui.components.RingStyle
+import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.domain.util.toClockString
-import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperCatalog
-import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperContext
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -134,13 +132,12 @@ fun PlayerScreen(
                 cornerRadius = 12.dp,
             )
 
-            // Book progress ring — outer orbit
-            ContainmentProgressRing(
+            // Fluorescent square progress glow
+            FluorescentSquareProgress(
                 progress = animatedBookProgress,
                 modifier = Modifier.matchParentSize(),
-                style = RingStyle.PlayerLarge,
-                progressColor = GoldFilament,
-                trackColor = ArchiveOutline,
+                cornerRadius = 12.dp,
+                padding = 14.dp,
             )
         }
 
@@ -150,7 +147,7 @@ fun PlayerScreen(
         TitleAuthorBlock(uiState)
 
         Spacer(modifier = Modifier.height(10.dp))
-        BookWhisperCard(uiState.title)
+        BookWhisperCard(uiState)
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -447,10 +444,17 @@ private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
 }
 
 @Composable
-private fun BookWhisperCard(seedText: String) {
-    val whisper = remember(seedText) {
-        val whispers = WhisperCatalog.getWhispers(WhisperContext.PLAYBACK_RESUMED)
-        whispers[seedText.hashCode().mod(whispers.size)]
+private fun BookWhisperCard(uiState: PlayerViewModel.UiState) {
+    // Derive the whisper from book ID + listening position + finished state.
+    // Re-keyed on bookmarkItemId (book ID) so it stays stable while scrubbing.
+    val bookId = uiState.bookmarkItemId ?: uiState.title
+    val whisper = remember(bookId, uiState.duration) {
+        BookWhisperCatalog.getWhisper(
+            bookId = bookId,
+            position = uiState.position,
+            duration = uiState.duration,
+            isFinished = uiState.progress >= 1f,
+        )
     }
 
     Surface(

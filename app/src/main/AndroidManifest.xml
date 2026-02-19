@@ -50,8 +50,13 @@
         <service
             android:name=".service.PlaybackService"
             android:exported="true"
+            android:permission="android.permission.BIND_MEDIA_BROWSER_SERVICE"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
+                <!-- Required for Android Auto media app discovery -->
+                <action android:name="android.media.browse.MediaBrowserService" />
+
+                <!-- Media3 session binding action -->
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>

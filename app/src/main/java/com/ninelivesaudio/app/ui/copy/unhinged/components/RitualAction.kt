@@ -68,7 +68,7 @@ fun RitualAction(
             )
 
             // Flavor text - only in Ritual/Unhinged mode
-            if (showFlavor && subtitle != null) {
+            if (showFlavor) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
@@ -111,7 +111,7 @@ fun RitualTextAction(
                 style = MaterialTheme.typography.labelLarge
             )
 
-            if (showFlavor && subtitle != null) {
+            if (showFlavor) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
@@ -159,7 +159,7 @@ fun RitualOutlinedAction(
                 style = MaterialTheme.typography.labelLarge
             )
 
-            if (showFlavor && subtitle != null) {
+            if (showFlavor) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
@@ -224,7 +224,7 @@ fun RitualIconAction(
     val unhingedSettings = LocalUnhingedSettings.current
     val showFlavor = unhingedSettings.copyMode != CopyMode.Normal && subtitle != null
 
-    val tooltipText = if (showFlavor && subtitle != null) {
+    val tooltipText = if (showFlavor) {
         "$label\n$subtitle"
     } else {
         label

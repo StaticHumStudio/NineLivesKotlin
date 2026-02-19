@@ -26,7 +26,6 @@ import javax.inject.Singleton
 class MediaBrowseTree @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val audioBookRepository: AudioBookRepository,
-    private val settingsManager: SettingsManager,
 ) {
     companion object {
         const val ROOT_ID = "root"

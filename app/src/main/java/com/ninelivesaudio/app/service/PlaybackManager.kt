@@ -558,6 +558,7 @@ class PlaybackManager @Inject constructor(
         seekTo(chapter.startTime)
         _currentChapter.value = chapter
         _currentChapterIndex.value = chapterIndex
+        chapterPlayer?.currentChapter = chapter
     }
 
     // ─── Position Calculation (multi-track aware) ─────────────────────────

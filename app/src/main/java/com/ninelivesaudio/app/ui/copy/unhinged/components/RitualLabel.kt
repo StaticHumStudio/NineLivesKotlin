@@ -35,7 +35,7 @@ fun RitualLabel(
     val unhingedSettings = LocalUnhingedSettings.current
     val showFlavor = unhingedSettings.copyMode != CopyMode.Normal && flavor != null
 
-    if (showFlavor && flavor != null) {
+    if (showFlavor) {
         Column(
             modifier = modifier.semantics {
                 contentDescription = text
@@ -111,7 +111,7 @@ fun RitualEmptyState(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        if (showFlavor && flavorMessage != null) {
+        if (showFlavor) {
             Text(
                 text = flavorMessage,
                 style = MaterialTheme.typography.bodyMedium,
@@ -154,7 +154,7 @@ fun RitualNavLabel(
         )
 
         // Only show flavor for selected nav items in Unhinged mode
-        if (showFlavor && flavor != null) {
+        if (showFlavor) {
             Text(
                 text = flavor,
                 style = MaterialTheme.typography.labelSmall,

@@ -75,9 +75,13 @@ class ChapterAwareForwardingPlayer(
     }
 
     override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
-        // Notification always calls the single-arg seekTo; this override
-        // just delegates to our chapter-aware version for safety.
-        seekTo(positionMs)
+        if (currentChapter != null) {
+            // Chapter mode: interpret positionMs as chapter-relative
+            seekTo(positionMs)
+        } else {
+            // No chapters: pass through to the real player with the track index intact
+            super.seekTo(mediaItemIndex, positionMs)
+        }
     }
 
     // ─── Command Availability ───────────────────────────────────────────

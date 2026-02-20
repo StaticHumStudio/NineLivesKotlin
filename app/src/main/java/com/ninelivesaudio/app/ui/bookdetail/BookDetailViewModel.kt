@@ -5,10 +5,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.DownloadStatus
+import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.PlaybackManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,6 +27,7 @@ class BookDetailViewModel @Inject constructor(
     private val playbackManager: PlaybackManager,
     private val downloadManager: DownloadManager,
     private val downloadItemDao: DownloadItemDao,
+    private val apiService: ApiService,
 ) : ViewModel() {
 
     private val bookId: String = savedStateHandle["bookId"] ?: ""
@@ -58,6 +61,9 @@ class BookDetailViewModel @Inject constructor(
         val errorMessage: String? = null,
         val downloadState: DownloadButtonState = DownloadButtonState.NONE,
         val downloadProgress: Int = 0, // 0-100
+        val listeningSessions: List<ListeningSession> = emptyList(),
+        val isHistoryExpanded: Boolean = false,
+        val isHistoryLoading: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -228,6 +234,44 @@ class BookDetailViewModel @Inject constructor(
                     downloadState = DownloadButtonState.NONE,
                     downloadProgress = 0,
                 )
+            }
+        }
+    }
+
+    // ─── Listening History ────────────────────────────────────────────────────
+
+    fun toggleHistoryExpanded() {
+        val wasExpanded = _uiState.value.isHistoryExpanded
+        _uiState.update { it.copy(isHistoryExpanded = !wasExpanded) }
+        if (!wasExpanded && _uiState.value.listeningSessions.isEmpty() && !_uiState.value.isHistoryLoading) {
+            loadListeningSessions()
+        }
+    }
+
+    private fun loadListeningSessions() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isHistoryLoading = true) }
+            try {
+                val sessions = apiService.getListeningSessions(bookId)
+                _uiState.update {
+                    it.copy(listeningSessions = sessions, isHistoryLoading = false)
+                }
+            } catch (_: Exception) {
+                _uiState.update { it.copy(isHistoryLoading = false) }
+            }
+        }
+    }
+
+    /**
+     * Load this book, seek to the session's position, and navigate to the player.
+     */
+    fun jumpToSession(session: ListeningSession, onReady: () -> Unit) {
+        val book = _uiState.value.book ?: return
+        viewModelScope.launch {
+            val loaded = playbackManager.loadAudioBook(book)
+            if (loaded) {
+                playbackManager.seekTo(session.currentTime)
+                onReady()
             }
         }
     }

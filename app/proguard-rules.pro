@@ -42,7 +42,6 @@
 # ─── OkHttp ───────────────────────────────────────────────────────────────────
 -dontwarn okhttp3.**
 -dontwarn okio.**
--dontwarn javax.annotation.**
 -keepnames class okhttp3.internal.publicsuffix.PublicSuffixDatabase
 
 # ─── Room ─────────────────────────────────────────────────────────────────────
@@ -51,12 +50,14 @@
 -dontwarn androidx.room.paging.**
 
 # ─── Hilt ─────────────────────────────────────────────────────────────────────
--keep class dagger.hilt.** { *; }
--keep class javax.inject.** { *; }
+# Hilt's own consumer ProGuard rules handle most cases; only keep entry points
 -keep @dagger.hilt.android.AndroidEntryPoint class *
+-dontwarn dagger.hilt.**
 
 # ─── Media3 ───────────────────────────────────────────────────────────────────
--keep class androidx.media3.** { *; }
+# Keep session/common classes needed by Media3 internals via reflection
+-keep class androidx.media3.session.** { *; }
+-keep class androidx.media3.common.** { *; }
 -dontwarn androidx.media3.**
 
 # ─── Coil ─────────────────────────────────────────────────────────────────────

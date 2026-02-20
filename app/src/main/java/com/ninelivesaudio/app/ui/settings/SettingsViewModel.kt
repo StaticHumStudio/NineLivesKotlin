@@ -7,6 +7,7 @@ import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
@@ -24,6 +25,7 @@ class SettingsViewModel @Inject constructor(
     private val libraryDao: LibraryDao,
     private val unhingedRepository: UnhingedSettingsRepository,
     private val syncManager: SyncManager,
+    private val playbackManager: PlaybackManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -57,6 +59,12 @@ class SettingsViewModel @Inject constructor(
         val anomaliesEnabled: Boolean = true,
         val whispersEnabled: Boolean = true,
         val reduceMotionRequested: Boolean = false,
+
+        // Equalizer
+        val eqEnabled: Boolean = false,
+        val eqBandGains: List<Int> = List(9) { 0 },
+        val eqBandFrequencies: List<Int> = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000),
+        val eqBandRange: Pair<Int, Int> = Pair(-1500, 1500),
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -99,6 +107,24 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             syncManager.isSyncing.collect { syncing ->
                 _uiState.update { it.copy(isSyncing = syncing) }
+            }
+        }
+
+        // Observe EQ state
+        viewModelScope.launch {
+            playbackManager.eqEnabled.collect { enabled ->
+                _uiState.update { it.copy(eqEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
+            playbackManager.eqBandGains.collect { gains ->
+                _uiState.update {
+                    it.copy(
+                        eqBandGains = gains,
+                        eqBandFrequencies = playbackManager.getEqBandFrequencies(),
+                        eqBandRange = playbackManager.getEqBandRange(),
+                    )
+                }
             }
         }
 
@@ -346,6 +372,33 @@ class SettingsViewModel @Inject constructor(
     fun toggleReduceMotion() {
         viewModelScope.launch {
             unhingedRepository.updateSettings { it.copy(reduceMotionRequested = !it.reduceMotionRequested) }
+        }
+    }
+
+    // ─── Equalizer ───────────────────────────────────────────────────────
+
+    fun toggleEq() {
+        val newEnabled = !_uiState.value.eqEnabled
+        playbackManager.setEqEnabled(newEnabled)
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(eqEnabled = newEnabled) }
+        }
+    }
+
+    fun setEqBandGain(band: Int, gainMillibels: Int) {
+        playbackManager.setEqBandGain(band, gainMillibels)
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(eqBandGains = playbackManager.eqBandGains.value) }
+        }
+    }
+
+    fun resetEq() {
+        val bandCount = _uiState.value.eqBandGains.size
+        for (i in 0 until bandCount) {
+            playbackManager.setEqBandGain(i, 0)
+        }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(eqBandGains = List(bandCount) { 0 }) }
         }
     }
 

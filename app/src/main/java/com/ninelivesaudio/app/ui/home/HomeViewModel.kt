@@ -48,6 +48,7 @@ class HomeViewModel @Inject constructor(
         val isLoading: Boolean = false,
         val showEmptyState: Boolean = true,
         val totalListeningTimeText: String = "",
+        val totalListeningSeconds: Double = 0.0,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
     )
 
@@ -136,6 +137,7 @@ class HomeViewModel @Inject constructor(
                 lives = lives,
                 showEmptyState = lives.isEmpty(),
                 totalListeningTimeText = totalText,
+                totalListeningSeconds = totalSeconds,
             )
         }
     }

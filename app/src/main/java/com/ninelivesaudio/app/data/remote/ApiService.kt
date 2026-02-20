@@ -1,7 +1,6 @@
 package com.ninelivesaudio.app.data.remote
 
 import android.net.Uri
-import android.os.Build
 import com.ninelivesaudio.app.data.remote.dto.*
 import com.ninelivesaudio.app.domain.model.*
 import com.ninelivesaudio.app.service.SettingsManager
@@ -167,7 +166,7 @@ class ApiService @Inject constructor(
                 val request = StartPlaybackRequest(
                     deviceInfo = DeviceInfo(
                         clientName = "NineLivesAudio",
-                        deviceId = Build.MODEL,
+                        deviceId = settingsManager.getDeviceId(),
                     )
                 )
                 val response = api.startPlaybackSession(itemId, request)
@@ -175,7 +174,6 @@ class ApiService @Inject constructor(
 
                 val session = response.body() ?: return@withContext null
                 val serverUrl = settingsManager.currentSettings.serverUrl
-                val token = settingsManager.getAuthToken() ?: ""
 
                 PlaybackSessionInfo(
                     id = session.id,
@@ -185,14 +183,16 @@ class ApiService @Inject constructor(
                     duration = session.duration,
                     mediaType = session.mediaType ?: "book",
                     audioTracks = session.audioTracks?.map { t ->
-                        val baseContentUrl = if (t.contentUrl.startsWith("http", ignoreCase = true)) {
+                        // Build the content URL without embedding the auth token.
+                        // Auth is handled via Authorization header in PlaybackManager's
+                        // DefaultHttpDataSource.Factory — tokens in URLs leak into
+                        // server logs, proxy logs, and Referer headers.
+                        val contentUrl = if (t.contentUrl.startsWith("http", ignoreCase = true)) {
                             t.contentUrl
                         } else {
                             val normalizedPath = if (t.contentUrl.startsWith("/")) t.contentUrl else "/${t.contentUrl}"
                             "$serverUrl$normalizedPath"
                         }
-                        val separator = if ('?' in baseContentUrl) '&' else '?'
-                        val contentUrl = "$baseContentUrl${separator}token=${Uri.encode(token)}"
                         AudioStreamInfo(
                             index = t.index,
                             codec = t.codec ?: "mp3",
@@ -303,6 +303,61 @@ class ApiService @Inject constructor(
         }
     }
 
+    // ─── Listening Sessions ──────────────────────────────────────────────
+
+    suspend fun getListeningSessions(
+        libraryItemId: String,
+        itemsPerPage: Int = 50,
+    ): List<ListeningSession> = withContext(Dispatchers.IO) {
+        try {
+            val allSessions = mutableListOf<ListeningSession>()
+            var currentPage = 0
+            val maxPages = 3
+
+            while (currentPage < maxPages) {
+                val response = api.getListeningSessions(
+                    itemsPerPage = itemsPerPage,
+                    page = currentPage,
+                )
+                if (!response.isSuccessful) break
+
+                val body = response.body() ?: break
+                if (body.sessions.isEmpty()) break
+
+                val filtered = body.sessions
+                    .filter { it.libraryItemId == libraryItemId }
+                    .map { session ->
+                        val startedAtMillis = normalizeEpoch(session.startedAt)
+                        val updatedAtMillis = normalizeEpoch(session.updatedAt)
+
+                        ListeningSession(
+                            id = session.id,
+                            libraryItemId = session.libraryItemId,
+                            currentTime = session.currentTime.seconds,
+                            timeListening = session.timeListening.seconds,
+                            startedAt = startedAtMillis,
+                            updatedAt = updatedAtMillis,
+                            displayTitle = session.displayTitle,
+                        )
+                    }
+                allSessions.addAll(filtered)
+
+                if (currentPage >= body.numPages - 1) break
+                currentPage++
+            }
+
+            allSessions.sortedByDescending { it.startedAt }
+        } catch (e: Exception) {
+            lastError = "Failed to load listening sessions: ${e.message}"
+            emptyList()
+        }
+    }
+
+    /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
+    private fun normalizeEpoch(value: Long): Long {
+        return if (value in 1..999_999_999_999L) value * 1000 else value
+    }
+
     // ─── Bookmarks ───────────────────────────────────────────────────────
 
     suspend fun getBookmarks(itemId: String): List<Bookmark> = withContext(Dispatchers.IO) {
@@ -363,6 +418,21 @@ class ApiService @Inject constructor(
         val firstSeries = metadata?.series?.firstOrNull()
         val serverUrl = settingsManager.currentSettings.serverUrl
 
+        // Resolve series name and sequence. The non-expanded library items endpoint does not
+        // populate the series array — it only returns metadata.seriesName as a combined string
+        // like "Dungeon Crawler Carl #7". If the array is present, use it directly. Otherwise
+        // parse the combined field to extract the name and sequence separately so that all books
+        // in the same series share a common seriesName key for grouping.
+        val (resolvedSeriesName, resolvedSeriesSequence) = when {
+            firstSeries?.name?.isNotBlank() == true -> {
+                firstSeries.name to firstSeries.sequence?.takeIf { it.isNotBlank() }
+            }
+            metadata?.seriesName?.isNotBlank() == true -> {
+                parseSeriesNameField(metadata.seriesName)
+            }
+            else -> null to null
+        }
+
         return AudioBook(
             id = item.id,
             libraryId = libraryId ?: item.libraryId,
@@ -378,8 +448,8 @@ class ApiService @Inject constructor(
             } else null,
             duration = (item.media?.duration ?: 0.0).seconds,
             addedAt = item.addedAt,
-            seriesName = firstSeries?.name?.takeIf { it.isNotBlank() } ?: metadata?.seriesName?.takeIf { it.isNotBlank() },
-            seriesSequence = firstSeries?.sequence?.takeIf { it.isNotBlank() },
+            seriesName = resolvedSeriesName,
+            seriesSequence = resolvedSeriesSequence,
             genres = metadata?.genres ?: emptyList(),
             tags = metadata?.tags ?: emptyList(),
             audioFiles = audioFiles.mapIndexed { idx, af ->
@@ -403,6 +473,25 @@ class ApiService @Inject constructor(
         )
     }
 
+    /**
+     * Parses the ABS combined seriesName field (e.g. "Dungeon Crawler Carl #7") into a
+     * (name, sequence) pair. The non-expanded library items endpoint returns this single
+     * concatenated string instead of the structured series array that the expanded endpoint
+     * provides. Supported formats:
+     *   "Series Name #7"    → ("Series Name", "7")
+     *   "Series Name #1.5"  → ("Series Name", "1.5")
+     *   "Series Name"       → ("Series Name", null)
+     */
+    private fun parseSeriesNameField(seriesName: String): Pair<String?, String?> {
+        val trimmed = seriesName.trim()
+        val hashMatch = Regex("""^(.+?)\s*#([\d.]+)\s*$""").find(trimmed)
+        return if (hashMatch != null) {
+            hashMatch.groupValues[1].trim() to hashMatch.groupValues[2]
+        } else {
+            trimmed to null
+        }
+    }
+
     private fun normalizeProgress(value: Double): Double {
         val nonNegative = value.coerceAtLeast(0.0)
         return if (nonNegative > 1.0) {
@@ -422,7 +511,7 @@ class ApiService @Inject constructor(
                     "https://${normalized.substringAfter(':').trimStart('/')}"
                 normalized.startsWith("http:", ignoreCase = true) ->
                     "http://${normalized.substringAfter(':').trimStart('/')}"
-                else -> "http://$normalized"
+                else -> "https://$normalized"
             }
         }
 

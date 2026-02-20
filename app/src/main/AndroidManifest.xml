@@ -26,8 +26,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.NineLivesAudio"
-        android:networkSecurityConfig="@xml/network_security_config"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <!-- Android Auto media app declaration -->
         <meta-data
@@ -46,13 +45,14 @@
             </intent-filter>
         </activity>
 
-        <!-- Media3 Playback Service for background audio -->
+        <!-- Media3 Playback Service for background audio + Android Auto browsing -->
         <service
             android:name=".service.PlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
     </application>

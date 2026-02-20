@@ -25,6 +25,7 @@ data class AudioBook(
     val isFinished: Boolean = false,
     val isDownloaded: Boolean = false,
     val localPath: String? = null,
+    val lastPlayedAt: Long? = null, // epoch millis, from PlaybackProgress.UpdatedAt
 ) {
     /** Progress normalized to 0–100 regardless of API format. */
     val progressPercent: Double

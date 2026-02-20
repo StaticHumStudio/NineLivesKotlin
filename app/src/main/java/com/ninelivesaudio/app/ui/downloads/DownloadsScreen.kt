@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -23,7 +24,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
-import com.ninelivesaudio.app.ui.components.StatusPill
+
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -40,7 +41,7 @@ fun DownloadsScreen(
             .background(ArchiveVoidDeep),
     ) {
         // ─── Header ──────────────────────────────────────────────────────
-        DownloadsHeader(connectionStatus = uiState.connectionStatus)
+        DownloadsHeader()
 
         if (uiState.showEmptyState) {
             EmptyDownloadsState()
@@ -113,37 +114,48 @@ fun DownloadsScreen(
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun DownloadsHeader(
-    connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
-) {
+private fun DownloadsHeader() {
     val subtitle = CopyEngine.getSubtitle(
         CopyStyleGuide.Downloads.DOWNLOADS_NAV_RITUAL,
         CopyStyleGuide.Downloads.DOWNLOADS_NAV_UNHINGED,
     )
 
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        ArchiveVoidElevated,
+                        ArchiveVoidBase,
+                        ArchiveVoidSurface,
+                    )
+                )
+            ),
     ) {
-        Column {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             Text(
                 text = CopyStyleGuide.Downloads.DOWNLOADS_NAV,
-                style = MaterialTheme.typography.headlineSmall,
-                color = ArchiveTextPrimary,
-                fontWeight = FontWeight.Bold,
+                color = GoldFilament,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Light,
+                letterSpacing = 4.sp,
             )
             if (subtitle != null) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = ArchiveTextSecondary,
                 )
             }
         }
-        StatusPill(connectionStatus = connectionStatus)
     }
 }
 
@@ -376,6 +388,7 @@ private fun CompletedDownloadCard(
                         contentDescription = download.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
                     )
                 }
             }

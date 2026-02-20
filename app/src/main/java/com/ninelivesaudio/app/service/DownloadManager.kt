@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import android.content.Context
+import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -38,6 +39,7 @@ class DownloadManager @Inject constructor(
     private val settingsManager: SettingsManager,
 ) {
     companion object {
+        private const val TAG = "DownloadManager"
         private const val MAX_CONCURRENT = 2
         private const val BUFFER_SIZE = 81_920 // 80 KB
         private const val MIN_PROGRESS_UPDATE_INTERVAL_MS = 750L
@@ -62,13 +64,13 @@ class DownloadManager @Inject constructor(
         val totalBytes: Long,
     )
 
-    private val _progressUpdates = MutableSharedFlow<DownloadProgress>(replay = 0, extraBufferCapacity = 64)
+    private val _progressUpdates = MutableSharedFlow<DownloadProgress>(replay = 1, extraBufferCapacity = 64)
     val progressUpdates: SharedFlow<DownloadProgress> = _progressUpdates.asSharedFlow()
 
-    private val _downloadCompleted = MutableSharedFlow<DownloadItem>(replay = 0, extraBufferCapacity = 8)
+    private val _downloadCompleted = MutableSharedFlow<DownloadItem>(replay = 1, extraBufferCapacity = 8)
     val downloadCompleted: SharedFlow<DownloadItem> = _downloadCompleted.asSharedFlow()
 
-    private val _downloadFailed = MutableSharedFlow<DownloadItem>(replay = 0, extraBufferCapacity = 8)
+    private val _downloadFailed = MutableSharedFlow<DownloadItem>(replay = 1, extraBufferCapacity = 8)
     val downloadFailed: SharedFlow<DownloadItem> = _downloadFailed.asSharedFlow()
 
     // ─── Queue Operations ────────────────────────────────────────────────────
@@ -436,10 +438,21 @@ class DownloadManager @Inject constructor(
 
     /** Base storage directory for all downloads. */
     private fun getBasePath(): File {
-        // Respect user-configured path when possible.
+        // Respect user-configured path when possible, with path traversal validation.
         val configuredPath = settingsManager.currentSettings.downloadPath.trim()
         if (configuredPath.isNotEmpty()) {
-            return File(configuredPath).also { it.mkdirs() }
+            try {
+                val candidate = File(configuredPath).canonicalFile
+                // Reject paths targeting sensitive system directories
+                val forbidden = listOf("/system", "/data/data", "/data/user", "/proc", "/dev")
+                val isSafe = forbidden.none { candidate.absolutePath.startsWith(it) }
+                if (isSafe) {
+                    return candidate.also { it.mkdirs() }
+                }
+                Log.w(TAG, "getBasePath: Configured path rejected (targets system dir): $configuredPath")
+            } catch (e: Exception) {
+                Log.w(TAG, "getBasePath: Failed to resolve configured path: $configuredPath", e)
+            }
         }
 
         // Fallback to app-specific external storage.

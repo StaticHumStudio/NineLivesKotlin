@@ -22,7 +22,7 @@ An Android audiobook player for [Audiobookshelf](https://www.audiobookshelf.org/
 
 ### Nine Lives Home
 - **3×3 vault wall grid** of recently played books (up to 9 "lives")
-- Gold containment frames with cosmic progress rings per tile
+- Fluorescent rounded-square progress glow per tile (4-layer: outer bleed, mid corona, core tube, hot filament) with continuous breathing animation
 - Corner sigils for download and bookmark status
 - One deterministic misaligned tile for Archive aesthetic
 - Weight badges, last-played timestamps, listening time summaries
@@ -85,7 +85,8 @@ There is no "normal mode." The cosmic archive aesthetic is the app's sole identi
 ### Visual System
 - **ContainmentFrame** — dual-stroke gold border (outer faint + inner bright) around tiles
 - **CornerSigils** — small indicator dots for downloaded (gold) and bookmarked (purple) state
-- **ContainmentProgressRing** — Canvas-drawn circular progress with glow, sweep gradient, ring-style presets, and 3D shadow effects
+- **ContainmentProgressRing** — Canvas-drawn circular progress with glow, sweep gradient, ring-style presets, and 3D shadow effects (library, player, book detail)
+- **FluorescentSquareProgress** — Rounded-square neon-tube progress with 4-layer glow stack (outer bleed, mid corona, core tube, hot filament), BlurMaskFilter rendering via nativeCanvas, DashPathEffect clipped to progress, and continuous breathing animation (home grid)
 - **SigilProgressBar** — linear progress bar with shimmer animation (clipped to fill)
 - **StoneSlabCard / RelicSurface** — stone-textured surface components
 - **FilamentDivider** — gold-accented section dividers

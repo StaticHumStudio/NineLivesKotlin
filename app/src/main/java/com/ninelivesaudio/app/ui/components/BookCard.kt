@@ -74,6 +74,7 @@ fun BookListItem(
                         modifier = Modifier
                             .fillMaxSize(),
                         contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
                     )
                 }
             }

@@ -58,7 +58,7 @@ fun RitualHeader(
         )
 
         // Flavor text - only in Ritual/Unhinged mode
-        if (showFlavor && subtitle != null) {
+        if (showFlavor) {
             Text(
                 text = subtitle,
                 style = subtitleStyle,

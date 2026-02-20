@@ -33,6 +33,7 @@ import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
 fun SettingsScreen(
+    onNavigateToDossier: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -357,6 +358,39 @@ fun SettingsScreen(
                     Text("Clear Cache")
                 }
             }
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = ArchiveVoidElevated,
+                thickness = 1.dp,
+            )
+
+            // ─── Nightwatch Dossier ────────────────────────────────
+            SectionHeader(text = "Nightwatch Dossier")
+
+            Button(
+                onClick = onNavigateToDossier,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ArchiveVoidSurface,
+                    contentColor = GoldFilament,
+                ),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Analytics,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Open Dossier", fontWeight = FontWeight.SemiBold)
+            }
+            Text(
+                text = "Listening stats, behavioral patterns, and temporal analysis",
+                style = MaterialTheme.typography.bodySmall,
+                color = ArchiveTextMuted,
+            )
 
             // Bottom padding for mini player space
             Spacer(modifier = Modifier.height(80.dp))

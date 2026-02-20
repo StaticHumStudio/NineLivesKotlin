@@ -10,6 +10,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailScreen
+import com.ninelivesaudio.app.ui.dossier.NightwatchDossierScreen
 import com.ninelivesaudio.app.ui.downloads.DownloadsScreen
 import com.ninelivesaudio.app.ui.home.HomeScreen
 import com.ninelivesaudio.app.ui.library.LibraryScreen
@@ -25,6 +26,7 @@ object Routes {
     const val PLAYER = "player"
     const val DOWNLOADS = "downloads"
     const val SETTINGS = "settings"
+    const val DOSSIER = "dossier"
     const val BOOK_DETAIL = "book_detail/{bookId}"
 
     fun bookDetail(bookId: String) = "book_detail/${Uri.encode(bookId)}"
@@ -70,7 +72,19 @@ fun NineLivesNavHost(
         }
 
         composable(Routes.SETTINGS) {
-            SettingsScreen()
+            SettingsScreen(
+                onNavigateToDossier = {
+                    navController.navigate(Routes.DOSSIER) {
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
+        composable(Routes.DOSSIER) {
+            NightwatchDossierScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
         }
 
         composable(

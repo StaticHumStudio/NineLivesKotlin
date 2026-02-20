@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -243,6 +244,26 @@ fun SettingsScreen(
                 onToggleAnomalies = viewModel::toggleAnomalies,
                 onToggleWhispers = viewModel::toggleWhispers,
                 onToggleReduceMotion = viewModel::toggleReduceMotion,
+            )
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = ArchiveVoidElevated,
+                thickness = 1.dp,
+            )
+
+            // ─── Equalizer ──────────────────────────────────────────
+            SectionHeader(text = "Equalizer")
+
+            EqualizerSection(
+                eqEnabled = uiState.eqEnabled,
+                bandGains = uiState.eqBandGains,
+                bandFrequencies = uiState.eqBandFrequencies,
+                bandRange = uiState.eqBandRange,
+                onToggleEq = viewModel::toggleEq,
+                onBandGainChange = viewModel::setEqBandGain,
+                onResetEq = viewModel::resetEq,
             )
 
             // ─── Divider ──────────────────────────────────────────────
@@ -672,4 +693,188 @@ private fun ArchivePreferenceRow(
             ),
         )
     }
+}
+
+// ─── Equalizer Section ───────────────────────────────────────────────────
+
+@Composable
+private fun EqualizerSection(
+    eqEnabled: Boolean,
+    bandGains: List<Int>,
+    bandFrequencies: List<Int>,
+    bandRange: Pair<Int, Int>,
+    onToggleEq: () -> Unit,
+    onBandGainChange: (Int, Int) -> Unit,
+    onResetEq: () -> Unit,
+) {
+    val (minGain, maxGain) = bandRange
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Enable toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text(
+                        text = "9-Band Equalizer",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ArchiveTextPrimary,
+                    )
+                    Text(
+                        text = "Shape the frequency response",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                    )
+                }
+                Switch(
+                    checked = eqEnabled,
+                    onCheckedChange = { onToggleEq() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = GoldFilament,
+                        checkedTrackColor = GoldFilamentFaint,
+                        uncheckedThumbColor = ArchiveTextSecondary,
+                        uncheckedTrackColor = ArchiveVoidElevated,
+                    ),
+                )
+            }
+
+            // dB labels
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "+${maxGain / 100}dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+                Text(
+                    text = "0dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+                Text(
+                    text = "${minGain / 100}dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+            }
+
+            // Band sliders
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                bandGains.forEachIndexed { index, gain ->
+                    val freq = bandFrequencies.getOrElse(index) { 0 }
+                    SettingsEqBandSlider(
+                        gain = gain,
+                        minGain = minGain,
+                        maxGain = maxGain,
+                        frequencyLabel = formatSettingsFrequency(freq),
+                        enabled = eqEnabled,
+                        onGainChange = { newGain -> onBandGainChange(index, newGain) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            // Reset button
+            OutlinedButton(
+                onClick = onResetEq,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = eqEnabled,
+                shape = RoundedCornerShape(10.dp),
+                border = ButtonDefaults.outlinedButtonBorder(enabled = eqEnabled).copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
+                ),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = ArchiveTextSecondary,
+                    disabledContentColor = ArchiveTextMuted,
+                ),
+            ) {
+                Text("Reset EQ")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsEqBandSlider(
+    gain: Int,
+    minGain: Int,
+    maxGain: Int,
+    frequencyLabel: String,
+    enabled: Boolean,
+    onGainChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "${if (gain >= 0) "+" else ""}${gain / 100}",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Slider(
+                value = gain.toFloat(),
+                onValueChange = { onGainChange(it.toInt()) },
+                valueRange = minGain.toFloat()..maxGain.toFloat(),
+                enabled = enabled,
+                modifier = Modifier
+                    .width(160.dp)
+                    .graphicsLayer { rotationZ = -90f },
+                colors = SliderDefaults.colors(
+                    thumbColor = if (enabled) GoldFilament else ArchiveTextMuted,
+                    activeTrackColor = if (enabled) GoldFilament else ArchiveTextMuted,
+                    inactiveTrackColor = ArchiveOutline,
+                    disabledThumbColor = ArchiveTextMuted,
+                    disabledActiveTrackColor = ArchiveTextMuted.copy(alpha = 0.5f),
+                    disabledInactiveTrackColor = ArchiveOutline.copy(alpha = 0.5f),
+                ),
+            )
+        }
+
+        Text(
+            text = frequencyLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+    }
+}
+
+private fun formatSettingsFrequency(hz: Int): String = when {
+    hz >= 1000 -> "${hz / 1000}k"
+    else -> "$hz"
 }

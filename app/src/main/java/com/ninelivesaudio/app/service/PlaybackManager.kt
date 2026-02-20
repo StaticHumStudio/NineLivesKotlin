@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.service
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.audiofx.Equalizer
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
@@ -77,6 +78,7 @@ class PlaybackManager @Inject constructor(
     private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     private var playbackService: PlaybackService? = null
     private var chapterPlayer: ChapterAwareForwardingPlayer? = null
+    private var sessionInitialized = false
 
     /** Expose the current ExoPlayer instance. */
     fun getPlayer(): ExoPlayer? = exoPlayer
@@ -86,7 +88,57 @@ class PlaybackManager @Inject constructor(
 
     /** Called by PlaybackService when it's created/destroyed. */
     fun setPlaybackService(service: PlaybackService?) {
+        Log.d(TAG, "setPlaybackService: ${if (service != null) "attached" else "detached"}")
         playbackService = service
+    }
+
+    /**
+     * Initialize the persistent ExoPlayer, ForwardingPlayer, and MediaLibrarySession.
+     * Called from PlaybackService.onCreate() so Android Auto always has a session
+     * to browse, even before any book is loaded.
+     * Idempotent — safe to call multiple times.
+     */
+    @OptIn(UnstableApi::class)
+    fun initSession() {
+        if (sessionInitialized) {
+            Log.d(TAG, "initSession: already initialized, skipping")
+            return
+        }
+        Log.d(TAG, "initSession: creating persistent player + session (service=${playbackService != null})")
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+            .setUsage(C.USAGE_MEDIA)
+            .build()
+
+        val player = ExoPlayer.Builder(context)
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+        exoPlayer = player
+        player.addListener(createPlayerListener())
+
+        val wrapper = ChapterAwareForwardingPlayer(player)
+        wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
+        chapterPlayer = wrapper
+
+        val libraryCallback = playbackService?.createLibraryCallback()
+        val isLibrarySession = libraryCallback != null
+        mediaSession = if (isLibrarySession) {
+            MediaLibrarySession.Builder(context, wrapper, libraryCallback!!)
+                .setSessionActivity(createSessionPendingIntent())
+                .build()
+        } else {
+            MediaSession.Builder(context, wrapper)
+                .setSessionActivity(createSessionPendingIntent())
+                .build()
+        }
+
+        // Register with the service so onGetSession() returns it
+        mediaSession?.let { playbackService?.refreshSession(it) }
+
+        sessionInitialized = true
+        Log.d(TAG, "initSession: OK isLibrarySession=$isLibrarySession sessionId=${mediaSession?.id}")
     }
 
     /**
@@ -138,6 +190,14 @@ class PlaybackManager @Inject constructor(
     private val _volume = MutableStateFlow(0.8f)
     val volume: StateFlow<Float> = _volume.asStateFlow()
 
+    private val _eqEnabled = MutableStateFlow(false)
+    val eqEnabled: StateFlow<Boolean> = _eqEnabled.asStateFlow()
+
+    private val _eqBandGains = MutableStateFlow(List(9) { 0 })
+    val eqBandGains: StateFlow<List<Int>> = _eqBandGains.asStateFlow()
+
+    private var equalizer: Equalizer? = null
+
     private val _isLocalFile = MutableStateFlow(false)
     val isLocalFile: StateFlow<Boolean> = _isLocalFile.asStateFlow()
 
@@ -174,8 +234,21 @@ class PlaybackManager @Inject constructor(
             _currentChapterIndex.value = -1
             accumulatedListenTime = 0.0
 
-            // Release previous player
-            releasePlayer()
+            // Ensure persistent player and session exist
+            initSession()
+
+            // Stop and clear previous content from the player
+            stopPositionPolling()
+            stopSessionSync()
+            exoPlayer!!.stop()
+            exoPlayer!!.clearMediaItems()
+
+            // Reset chapter state on the wrapper
+            chapterPlayer?.currentChapter = null
+            chapterPlayer?.absolutePositionMs = 0L
+
+            // Release old equalizer (will re-attach after loading new items)
+            releaseEqualizer()
 
             // Start server session (must complete before building stream URLs)
             currentSession = null
@@ -248,17 +321,8 @@ class PlaybackManager @Inject constructor(
             val isLocal = effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty()
             _isLocalFile.value = isLocal
 
-            // Create ExoPlayer with proper audio attributes and focus handling
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
-                .setUsage(C.USAGE_MEDIA)
-                .build()
-
-            val player = ExoPlayer.Builder(context)
-                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
-                .setHandleAudioBecomingNoisy(true)
-                .build()
-            exoPlayer = player
+            // Reuse the persistent ExoPlayer — load new media items into it
+            val player = exoPlayer!!
 
             // Build media items with metadata baked in (avoids replaceMediaItem resets)
             val metadata = buildMediaMetadata(effectiveBook)
@@ -272,51 +336,23 @@ class PlaybackManager @Inject constructor(
             player.playbackParameters = PlaybackParameters(_speed.value)
             player.volume = _volume.value
 
-            // Listen for player events
-            player.addListener(createPlayerListener())
+            // Load EQ settings
+            val appSettings = settingsManager.currentSettings
+            _eqEnabled.value = appSettings.eqEnabled
+            _eqBandGains.value = appSettings.eqBandGains
+
+            // Attach equalizer effect
+            attachEqualizer()
 
             // Seek to saved position before prepare
             if (startPosition > Duration.ZERO) {
                 seekToPosition(startPosition)
             }
 
-            // Create MediaSession BEFORE prepare() so it captures all state transitions.
-            // This is critical: Media3's automatic notification system only works when the
-            // session exists with a bound player when state changes happen.
-            mediaSession?.release()
-
-            // Wrap the player so the notification seek bar shows chapter-relative position/duration
-            val wrapper = ChapterAwareForwardingPlayer(player)
-            wrapper.seekHandler = { absoluteMs ->
-                seekTo(absoluteMs.milliseconds)
-            }
-            chapterPlayer = wrapper
-
-            // Build a MediaLibrarySession (extends MediaSession) so Android Auto
-            // can browse the library. Falls back to a plain MediaSession if the
-            // service hasn't been created yet (should never happen in practice).
-            val libraryCallback = playbackService?.createLibraryCallback()
-            mediaSession = if (libraryCallback != null) {
-                MediaLibrarySession.Builder(context, wrapper, libraryCallback)
-                    .setSessionActivity(createSessionPendingIntent())
-                    .build()
-            } else {
-                MediaSession.Builder(context, wrapper)
-                    .setSessionActivity(createSessionPendingIntent())
-                    .build()
-            }
-
-            // Start the foreground service — it retrieves the session via getMediaSession().
-            // Media3 MediaSessionService handles startForeground() automatically.
+            // Start the foreground service (MediaController connect triggers startForeground)
             startPlaybackService()
 
-            // If the service was already running, it won't get a new onCreate().
-            // Explicitly add the new session so Media3 refreshes the notification.
-            mediaSession?.let { session ->
-                playbackService?.refreshSession(session)
-            }
-
-            // NOW prepare — MediaSession exists to receive all state transitions
+            // Prepare and play — the persistent MediaSession already wraps this player
             player.playWhenReady = true
             player.prepare()
 
@@ -491,6 +527,7 @@ class PlaybackManager @Inject constructor(
     }
 
     fun stop() {
+        Log.d(TAG, "stop: book=${_currentBook.value?.title} pos=${_position.value}")
         stopPositionPolling()
         stopSessionSync()
 
@@ -550,6 +587,61 @@ class PlaybackManager @Inject constructor(
     fun setVolume(vol: Float) {
         _volume.value = vol.coerceIn(0f, 1f)
         exoPlayer?.volume = _volume.value
+    }
+
+    fun setEqEnabled(enabled: Boolean) {
+        _eqEnabled.value = enabled
+        equalizer?.enabled = enabled
+    }
+
+    fun setEqBandGain(band: Int, gainMillibels: Int) {
+        val gains = _eqBandGains.value.toMutableList()
+        if (band in gains.indices) {
+            gains[band] = gainMillibels
+            _eqBandGains.value = gains
+        }
+        val eq = equalizer ?: return
+        if (band < eq.numberOfBands) {
+            eq.setBandLevel(band.toShort(), gainMillibels.toShort())
+        }
+    }
+
+    fun getEqBandCount(): Int = equalizer?.numberOfBands?.toInt() ?: 9
+
+    fun getEqBandFrequencies(): List<Int> {
+        val eq = equalizer ?: return listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000)
+        return (0 until eq.numberOfBands).map { band ->
+            eq.getCenterFreq(band.toShort()) / 1000 // milliHz → Hz
+        }
+    }
+
+    fun getEqBandRange(): Pair<Int, Int> {
+        val eq = equalizer ?: return Pair(-1500, 1500)
+        val range = eq.bandLevelRange
+        return Pair(range[0].toInt(), range[1].toInt())
+    }
+
+    private fun attachEqualizer() {
+        val player = exoPlayer ?: return
+        try {
+            equalizer?.release()
+            val eq = Equalizer(0, player.audioSessionId)
+            equalizer = eq
+            eq.enabled = _eqEnabled.value
+            val gains = _eqBandGains.value
+            for (band in 0 until eq.numberOfBands.toInt().coerceAtMost(gains.size)) {
+                eq.setBandLevel(band.toShort(), gains[band].toShort())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "attachEqualizer: failed: ${e.message}", e)
+        }
+    }
+
+    private fun releaseEqualizer() {
+        try {
+            equalizer?.release()
+        } catch (_: Exception) {}
+        equalizer = null
     }
 
     fun seekToChapter(chapterIndex: Int) {
@@ -614,6 +706,14 @@ class PlaybackManager @Inject constructor(
 
     private fun createPlayerListener() = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
+            val stateName = when (playbackState) {
+                Player.STATE_IDLE -> "IDLE"
+                Player.STATE_BUFFERING -> "BUFFERING"
+                Player.STATE_READY -> "READY"
+                Player.STATE_ENDED -> "ENDED"
+                else -> "UNKNOWN($playbackState)"
+            }
+            Log.d(TAG, "onPlaybackStateChanged: $stateName playWhenReady=${exoPlayer?.playWhenReady} items=${exoPlayer?.mediaItemCount}")
             when (playbackState) {
                 Player.STATE_BUFFERING -> {
                     _playbackState.value = PlaybackState.BUFFERING
@@ -654,8 +754,15 @@ class PlaybackManager @Inject constructor(
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            // Track changed (multi-track auto-advance)
             val idx = exoPlayer?.currentMediaItemIndex ?: 0
+            val reasonStr = when (reason) {
+                Player.MEDIA_ITEM_TRANSITION_REASON_AUTO -> "AUTO"
+                Player.MEDIA_ITEM_TRANSITION_REASON_SEEK -> "SEEK"
+                Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED -> "PLAYLIST_CHANGED"
+                Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT -> "REPEAT"
+                else -> "UNKNOWN($reason)"
+            }
+            Log.d(TAG, "onMediaItemTransition: idx=$idx reason=$reasonStr title=${mediaItem?.mediaMetadata?.title}")
             _events.tryEmit(PlaybackEvent.TrackChanged(idx))
         }
 
@@ -813,27 +920,47 @@ class PlaybackManager @Inject constructor(
 
     // ─── Cleanup ──────────────────────────────────────────────────────────
 
+    /** Soft-stop: clear content but keep player and session alive for Android Auto browsing. */
     private fun releasePlayer() {
+        Log.d(TAG, "releasePlayer: soft-stop (keeping session alive)")
+        chapterPlayer?.currentChapter = null
+        chapterPlayer?.absolutePositionMs = 0L
+        releaseEqualizer()
+        exoPlayer?.stop()
+        exoPlayer?.clearMediaItems()
+    }
+
+    /** Full teardown: release player, session, and all resources. Called on service destroy. */
+    fun releaseAll() {
+        Log.d(TAG, "releaseAll: full teardown starting (sessionInit=$sessionInitialized)")
+        stopPositionPolling()
+        stopSessionSync()
         val session = mediaSession
         if (session != null) {
-            // Remove the session from the service before releasing so Media3 clears the notification
-            playbackService?.removeSession(session)
+            // Guard removeSession — it throws if the session was already removed
+            // (e.g. during service onDestroy when Media3 cleans up internally)
+            try {
+                playbackService?.removeSession(session)
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "releaseAll: session already removed: ${e.message}")
+            }
             session.release()
             mediaSession = null
         }
         chapterPlayer = null
+        releaseEqualizer()
         exoPlayer?.let { player ->
             player.stop()
             player.release()
         }
         exoPlayer = null
+        sessionInitialized = false
+        stopPlaybackService()
+        Log.d(TAG, "releaseAll: complete")
     }
 
     fun release() {
-        stopPositionPolling()
-        stopSessionSync()
-        releasePlayer()
-        stopPlaybackService()
+        releaseAll()
         scope.cancel()
     }
 

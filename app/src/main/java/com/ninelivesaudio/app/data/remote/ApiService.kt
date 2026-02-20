@@ -353,6 +353,51 @@ class ApiService @Inject constructor(
         }
     }
 
+    /** Fetch ALL listening sessions across all books (for stats/dossier). */
+    suspend fun getAllListeningSessions(
+        itemsPerPage: Int = 50,
+    ): List<ListeningSession> = withContext(Dispatchers.IO) {
+        try {
+            val allSessions = mutableListOf<ListeningSession>()
+            var currentPage = 0
+            val maxPages = 20
+
+            while (currentPage < maxPages) {
+                val response = api.getListeningSessions(
+                    itemsPerPage = itemsPerPage,
+                    page = currentPage,
+                )
+                if (!response.isSuccessful) break
+
+                val body = response.body() ?: break
+                if (body.sessions.isEmpty()) break
+
+                allSessions.addAll(body.sessions.map { session ->
+                    val startedAtMillis = normalizeEpoch(session.startedAt)
+                    val updatedAtMillis = normalizeEpoch(session.updatedAt)
+
+                    ListeningSession(
+                        id = session.id,
+                        libraryItemId = session.libraryItemId,
+                        currentTime = session.currentTime.seconds,
+                        timeListening = session.timeListening.seconds,
+                        startedAt = startedAtMillis,
+                        updatedAt = updatedAtMillis,
+                        displayTitle = session.displayTitle,
+                    )
+                })
+
+                if (currentPage >= body.numPages - 1) break
+                currentPage++
+            }
+
+            allSessions.sortedByDescending { it.startedAt }
+        } catch (e: Exception) {
+            lastError = "Failed to load listening sessions: ${e.message}"
+            emptyList()
+        }
+    }
+
     /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
     private fun normalizeEpoch(value: Long): Long {
         return if (value in 1..999_999_999_999L) value * 1000 else value

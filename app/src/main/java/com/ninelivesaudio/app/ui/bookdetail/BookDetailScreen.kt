@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.bookdetail
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -23,6 +24,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Chapter
+import com.ninelivesaudio.app.domain.model.ListeningSession
+import com.ninelivesaudio.app.domain.util.toClockString
 import com.ninelivesaudio.app.domain.util.toHumanReadableString
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
@@ -95,6 +98,10 @@ fun BookDetailScreen(
                     onPlayBook = { viewModel.playBook(onReady = onNavigateToPlayer) },
                     onDownload = { viewModel.downloadBook() },
                     onDeleteDownload = { viewModel.deleteDownload() },
+                    onToggleHistory = { viewModel.toggleHistoryExpanded() },
+                    onJumpToSession = { session ->
+                        viewModel.jumpToSession(session, onReady = onNavigateToPlayer)
+                    },
                     modifier = Modifier.padding(innerPadding),
                 )
             }
@@ -108,6 +115,8 @@ private fun BookDetailContent(
     onPlayBook: () -> Unit,
     onDownload: () -> Unit,
     onDeleteDownload: () -> Unit,
+    onToggleHistory: () -> Unit,
+    onJumpToSession: (ListeningSession) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -407,6 +416,71 @@ private fun BookDetailContent(
                 )
             }
         }
+
+        // ─── Listening History (collapsible) ─────────────────────────
+        item {
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                color = ArchiveVoidElevated,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleHistory)
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Listening History",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = GoldFilament,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                if (uiState.isHistoryLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = GoldFilament,
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (uiState.isHistoryExpanded)
+                            Icons.Outlined.ExpandLess
+                        else
+                            Icons.Outlined.ExpandMore,
+                        contentDescription = if (uiState.isHistoryExpanded) "Collapse" else "Expand",
+                        tint = GoldFilament,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+        }
+
+        if (uiState.isHistoryExpanded) {
+            if (uiState.listeningSessions.isEmpty() && !uiState.isHistoryLoading) {
+                item {
+                    Text(
+                        text = "No listening sessions found",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                }
+            } else {
+                itemsIndexed(
+                    items = uiState.listeningSessions,
+                    key = { _, session -> session.id },
+                ) { _, session ->
+                    ListeningSessionRow(
+                        session = session,
+                        chapters = uiState.chapters,
+                        onClick = { onJumpToSession(session) },
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -626,7 +700,87 @@ private fun ChapterRow(
     }
 }
 
+// ─── Listening Session Row ───────────────────────────────────────────────
+
+@Composable
+private fun ListeningSessionRow(
+    session: ListeningSession,
+    chapters: List<Chapter>,
+    onClick: () -> Unit,
+) {
+    val chapterTitle = remember(session.currentTime, chapters) {
+        val posSeconds = session.currentTime.inWholeSeconds.toDouble()
+        chapters.firstOrNull { posSeconds >= it.start && posSeconds < it.end }?.title
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // Date
+        Text(
+            text = formatSessionDate(session.startedAt),
+            style = MaterialTheme.typography.labelSmall,
+            color = ArchiveTextSecondary,
+            modifier = Modifier.width(48.dp),
+        )
+
+        // Details
+        Column(modifier = Modifier.weight(1f)) {
+            if (chapterTitle != null) {
+                Text(
+                    text = chapterTitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "at ${session.currentTime.toClockString()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                )
+                Text(
+                    text = "\u00B7",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                )
+                Text(
+                    text = "${session.timeListening.toHumanReadableString()} listened",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                )
+            }
+        }
+
+        // Jump indicator
+        Icon(
+            Icons.Outlined.PlayArrow,
+            contentDescription = "Jump to position",
+            modifier = Modifier.size(16.dp),
+            tint = GoldFilamentDim,
+        )
+    }
+}
+
 // ─── Formatting Helpers ───────────────────────────────────────────────────
+
+private fun formatSessionDate(epochMillis: Long): String {
+    if (epochMillis <= 0) return ""
+    return try {
+        val formatter = DateTimeFormatter.ofPattern("MMM d", Locale.US)
+        val instant = Instant.ofEpochMilli(epochMillis)
+        instant.atZone(ZoneId.systemDefault()).format(formatter)
+    } catch (_: Exception) {
+        ""
+    }
+}
 
 private fun formatDate(epochMillis: Long): String {
     if (epochMillis <= 0) return ""

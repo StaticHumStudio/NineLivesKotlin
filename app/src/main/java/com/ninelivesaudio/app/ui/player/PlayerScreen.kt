@@ -10,12 +10,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,6 +45,19 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // EQ bottom sheet
+    if (uiState.showEqSheet) {
+        EqSheet(
+            eqEnabled = uiState.eqEnabled,
+            bandGains = uiState.eqBandGains,
+            bandFrequencies = uiState.eqBandFrequencies,
+            bandRange = uiState.eqBandRange,
+            onToggleEq = { viewModel.setEqEnabled(!uiState.eqEnabled) },
+            onBandGainChange = viewModel::setEqBandGain,
+            onDismiss = { viewModel.dismissEqSheet() },
+        )
+    }
 
     // Bookmark bottom sheet
     if (uiState.showBookmarks) {
@@ -388,9 +401,10 @@ fun PlayerScreen(
                 )
             }
 
-            VolumeButton(
-                volume = uiState.volume,
-                onVolumeChange = viewModel::setVolume,
+            EqButton(
+                eqEnabled = uiState.eqEnabled,
+                onToggleEq = { viewModel.setEqEnabled(!uiState.eqEnabled) },
+                onOpenEq = { viewModel.toggleEqSheet() },
             )
         }
 
@@ -528,59 +542,221 @@ private fun ChapterSelectorButton(
 }
 
 @Composable
-private fun VolumeButton(
-    volume: Float,
-    onVolumeChange: (Float) -> Unit,
+private fun EqButton(
+    eqEnabled: Boolean,
+    onToggleEq: () -> Unit,
+    onOpenEq: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable(onClick = onOpenEq),
+    ) {
+        Icon(
+            Icons.Outlined.Equalizer,
+            contentDescription = "Equalizer",
+            tint = if (eqEnabled) GoldFilament else ArchiveTextSecondary,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            text = if (eqEnabled) "EQ" else "EQ",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (eqEnabled) GoldFilament else ArchiveTextMuted,
+            fontSize = 10.sp,
+        )
+    }
+}
 
-    Box {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EqSheet(
+    eqEnabled: Boolean,
+    bandGains: List<Int>,
+    bandFrequencies: List<Int>,
+    bandRange: Pair<Int, Int>,
+    onToggleEq: () -> Unit,
+    onBandGainChange: (Int, Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val (minGain, maxGain) = bandRange
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ArchiveVoidSurface,
+        contentColor = ArchiveTextPrimary,
+    ) {
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.clickable { expanded = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
         ) {
-            Icon(
-                Icons.AutoMirrored.Outlined.VolumeUp,
-                contentDescription = "Volume",
-                tint = if (volume > 0f) ArchiveTextSecondary else ArchiveTextMuted,
-                modifier = Modifier.size(22.dp),
-            )
-            Text(
-                text = "${(volume * 100).toInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextMuted,
-                fontSize = 10.sp,
-            )
-        }
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            containerColor = ArchiveVoidSurface,
-        ) {
-            Column(
-                modifier = Modifier
-                    .width(200.dp)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            // Header with toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = "Volume",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = ArchiveTextPrimary,
+                    text = "Equalizer",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = GoldFilament,
+                    fontWeight = FontWeight.Bold,
                 )
-                Slider(
-                    value = volume,
-                    onValueChange = { onVolumeChange(it.coerceIn(0f, 1f)) },
-                    valueRange = 0f..1f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = GoldFilament,
-                        activeTrackColor = GoldFilament,
-                        inactiveTrackColor = ArchiveOutline,
+                Switch(
+                    checked = eqEnabled,
+                    onCheckedChange = { onToggleEq() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = GoldFilament,
+                        checkedTrackColor = GoldFilamentFaint,
+                        uncheckedThumbColor = ArchiveTextSecondary,
+                        uncheckedTrackColor = ArchiveVoidElevated,
                     ),
                 )
             }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // dB labels
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "+${maxGain / 100}dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+                Text(
+                    text = "0dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+                Text(
+                    text = "${minGain / 100}dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Band sliders — vertical sliders arranged horizontally
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                bandGains.forEachIndexed { index, gain ->
+                    val freq = bandFrequencies.getOrElse(index) { 0 }
+                    EqBandSlider(
+                        gain = gain,
+                        minGain = minGain,
+                        maxGain = maxGain,
+                        frequencyLabel = formatFrequency(freq),
+                        enabled = eqEnabled,
+                        onGainChange = { newGain -> onBandGainChange(index, newGain) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Reset button
+            OutlinedButton(
+                onClick = {
+                    bandGains.indices.forEach { i -> onBandGainChange(i, 0) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = eqEnabled,
+                shape = RoundedCornerShape(10.dp),
+                border = ButtonDefaults.outlinedButtonBorder(enabled = eqEnabled).copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
+                ),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = ArchiveTextSecondary,
+                    disabledContentColor = ArchiveTextMuted,
+                ),
+            ) {
+                Text("Reset EQ", fontWeight = FontWeight.SemiBold)
+            }
         }
     }
+}
+
+@Composable
+private fun EqBandSlider(
+    gain: Int,
+    minGain: Int,
+    maxGain: Int,
+    frequencyLabel: String,
+    enabled: Boolean,
+    onGainChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        // Gain value
+        Text(
+            text = "${if (gain >= 0) "+" else ""}${gain / 100}",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+
+        // Vertical slider (rotated horizontal slider)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Slider(
+                value = gain.toFloat(),
+                onValueChange = { onGainChange(it.toInt()) },
+                valueRange = minGain.toFloat()..maxGain.toFloat(),
+                enabled = enabled,
+                modifier = Modifier
+                    .width(160.dp)
+                    .graphicsLayer {
+                        rotationZ = -90f
+                    },
+                colors = SliderDefaults.colors(
+                    thumbColor = if (enabled) GoldFilament else ArchiveTextMuted,
+                    activeTrackColor = if (enabled) GoldFilament else ArchiveTextMuted,
+                    inactiveTrackColor = ArchiveOutline,
+                    disabledThumbColor = ArchiveTextMuted,
+                    disabledActiveTrackColor = ArchiveTextMuted.copy(alpha = 0.5f),
+                    disabledInactiveTrackColor = ArchiveOutline.copy(alpha = 0.5f),
+                ),
+            )
+        }
+
+        // Frequency label
+        Text(
+            text = frequencyLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+    }
+}
+
+private fun formatFrequency(hz: Int): String = when {
+    hz >= 1000 -> "${hz / 1000}k"
+    else -> "$hz"
 }
 
 // ─── Speed Picker Button ──────────────────────────────────────────────────

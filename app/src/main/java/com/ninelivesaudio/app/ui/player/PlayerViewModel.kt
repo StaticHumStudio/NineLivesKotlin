@@ -10,6 +10,7 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.PlaybackState
+import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.domain.util.toClockString
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
@@ -25,6 +26,7 @@ class PlayerViewModel @Inject constructor(
     private val playbackManager: PlaybackManager,
     private val connectivityMonitor: ConnectivityMonitor,
     private val bookmarkRepository: BookmarkRepository,
+    private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -54,6 +56,13 @@ class PlayerViewModel @Inject constructor(
         // Controls
         val speed: Float = 1.0f,
         val volume: Float = 0.8f,
+
+        // EQ
+        val eqEnabled: Boolean = false,
+        val eqBandGains: List<Int> = List(9) { 0 },
+        val eqBandFrequencies: List<Int> = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000),
+        val eqBandRange: Pair<Int, Int> = Pair(-1500, 1500),
+        val showEqSheet: Boolean = false,
 
         // Sleep timer
         val sleepTimerActive: Boolean = false,
@@ -197,6 +206,24 @@ class PlayerViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            playbackManager.eqEnabled.collect { enabled ->
+                _uiState.update { it.copy(eqEnabled = enabled) }
+            }
+        }
+
+        viewModelScope.launch {
+            playbackManager.eqBandGains.collect { gains ->
+                _uiState.update {
+                    it.copy(
+                        eqBandGains = gains,
+                        eqBandFrequencies = playbackManager.getEqBandFrequencies(),
+                        eqBandRange = playbackManager.getEqBandRange(),
+                    )
+                }
+            }
+        }
+
+        viewModelScope.launch {
             playbackManager.isLocalFile.collect { local ->
                 _uiState.update { it.copy(isLocalFile = local) }
             }
@@ -281,8 +308,32 @@ class PlayerViewModel @Inject constructor(
         playbackManager.setVolume(volume)
     }
 
+    fun setEqEnabled(enabled: Boolean) {
+        playbackManager.setEqEnabled(enabled)
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(eqEnabled = enabled) }
+        }
+    }
+
+    fun setEqBandGain(band: Int, gainMillibels: Int) {
+        playbackManager.setEqBandGain(band, gainMillibels)
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(eqBandGains = playbackManager.eqBandGains.value) }
+        }
+    }
+
     fun seekToChapter(index: Int) {
         playbackManager.seekToChapter(index)
+    }
+
+    // ─── EQ Sheet ──────────────────────────────────────────────────────────
+
+    fun toggleEqSheet() {
+        _uiState.update { it.copy(showEqSheet = !it.showEqSheet) }
+    }
+
+    fun dismissEqSheet() {
+        _uiState.update { it.copy(showEqSheet = false) }
     }
 
     // ─── Bookmarks ────────────────────────────────────────────────────────

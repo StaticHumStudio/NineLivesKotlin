@@ -69,11 +69,18 @@ class PlaybackService : MediaLibraryService() {
         setMediaNotificationProvider(notificationProvider)
 
         playbackManager.setPlaybackService(this)
-        Log.d(TAG, "onCreate: PlaybackService created")
+
+        // Create persistent MediaLibrarySession so Android Auto can browse
+        // even before any book is loaded from the phone
+        playbackManager.initSession()
+
+        Log.d(TAG, "onCreate: PlaybackService created, session=${playbackManager.getMediaSession() != null}")
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
-        return playbackManager.getMediaSession() as? MediaLibrarySession
+        val session = playbackManager.getMediaSession() as? MediaLibrarySession
+        Log.d(TAG, "onGetSession: pkg=${controllerInfo.packageName} hasSession=${session != null}")
+        return session
     }
 
     /**
@@ -97,6 +104,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        Log.d(TAG, "onDestroy: starting teardown")
+        playbackManager.releaseAll()
         playbackManager.setPlaybackService(null)
         serviceScope.cancel()
         Log.d(TAG, "onDestroy: PlaybackService destroyed")
@@ -122,11 +131,28 @@ class PlaybackService : MediaLibraryService() {
 
     private inner class LibraryCallback : MediaLibrarySession.Callback {
 
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            Log.d(TAG, "▶ onConnect: pkg=${controller.packageName} uid=${controller.uid}")
+            return super.onConnect(session, controller)
+        }
+
+        override fun onDisconnected(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ) {
+            Log.d(TAG, "◀ onDisconnected: pkg=${controller.packageName}")
+            super.onDisconnected(session, controller)
+        }
+
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            Log.d(TAG, "onGetLibraryRoot: pkg=${browser.packageName} params=$params")
             val rootItem = MediaItem.Builder()
                 .setMediaId(MediaBrowseTree.ROOT_ID)
                 .setMediaMetadata(
@@ -150,9 +176,11 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            Log.d(TAG, "onGetChildren: parentId=$parentId page=$page pageSize=$pageSize pkg=${browser.packageName}")
             return serviceScope.future(Dispatchers.IO) {
                 try {
                     val children = mediaBrowseTree.getChildren(parentId, page, pageSize)
+                    Log.d(TAG, "onGetChildren: parentId=$parentId → ${children.size} items")
                     LibraryResult.ofItemList(ImmutableList.copyOf(children), params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onGetChildren($parentId) failed: ${e.message}", e)
@@ -167,9 +195,11 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            Log.d(TAG, "onGetItem: mediaId=$mediaId pkg=${browser.packageName}")
             return serviceScope.future(Dispatchers.IO) {
                 try {
                     val item = mediaBrowseTree.getItem(mediaId)
+                    Log.d(TAG, "onGetItem: mediaId=$mediaId → found=${item != null}")
                     if (item != null) {
                         LibraryResult.ofItem(item, /* params= */ null)
                     } else {
@@ -189,10 +219,12 @@ class PlaybackService : MediaLibraryService() {
             query: String,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> {
+            Log.d(TAG, "onSearch: query='$query' pkg=${browser.packageName}")
             // Trigger async search; results delivered via onGetSearchResult
             serviceScope.launch(Dispatchers.IO) {
                 try {
                     val results = mediaBrowseTree.search(query)
+                    Log.d(TAG, "onSearch: query='$query' → ${results.size} results")
                     session.notifySearchResultChanged(browser, query, results.size, params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onSearch($query) failed: ${e.message}", e)
@@ -210,11 +242,13 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            Log.d(TAG, "onGetSearchResult: query='$query' page=$page pkg=${browser.packageName}")
             return serviceScope.future(Dispatchers.IO) {
                 try {
                     val results = mediaBrowseTree.search(query)
                         .drop(page * pageSize)
                         .take(pageSize)
+                    Log.d(TAG, "onGetSearchResult: query='$query' → ${results.size} results")
                     LibraryResult.ofItemList(ImmutableList.copyOf(results), params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onGetSearchResult($query) failed: ${e.message}", e)
@@ -225,7 +259,8 @@ class PlaybackService : MediaLibraryService() {
 
         /**
          * Called when Android Auto (or any controller) requests to play a media item.
-         * We intercept the request, extract the book ID, and load it via PlaybackManager.
+         * We intercept the request, extract the book ID, load it via PlaybackManager,
+         * and return the player's actual media items so Android Auto can display them.
          */
         override fun onSetMediaItems(
             mediaSession: MediaSession,
@@ -234,27 +269,43 @@ class PlaybackService : MediaLibraryService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            // Try to resolve the first item's media ID to a book
             val firstItem = mediaItems.firstOrNull()
             val mediaId = firstItem?.mediaId
+            Log.d(TAG, "onSetMediaItems: mediaId=$mediaId count=${mediaItems.size} startIdx=$startIndex pkg=${controller.packageName}")
 
             if (mediaId != null) {
                 val bookId = mediaBrowseTree.extractBookId(mediaId)
                 if (bookId != null) {
-                    // Load the book through PlaybackManager (it handles its own threading)
-                    serviceScope.launch {
+                    Log.d(TAG, "onSetMediaItems: resolved bookId=$bookId, loading async…")
+                    // Load the book asynchronously, then return the player's real media items
+                    return serviceScope.future(Dispatchers.Main) {
                         try {
-                            playbackManager.loadBookById(bookId)
+                            val success = playbackManager.loadBookById(bookId)
+                            Log.d(TAG, "onSetMediaItems: loadBookById=$success")
                         } catch (e: Exception) {
-                            Log.e(TAG, "onSetMediaItems: failed to load book $bookId: ${e.message}", e)
+                            Log.e(TAG, "onSetMediaItems: failed to load book $bookId", e)
+                        }
+                        // After loading, the player has the real tracks — return them
+                        // so Android Auto knows what's playing
+                        val player = playbackManager.getPlayer()
+                        val itemCount = player?.mediaItemCount ?: 0
+                        Log.d(TAG, "onSetMediaItems: returning $itemCount items to controller, pos=${player?.currentPosition}")
+                        if (player != null && itemCount > 0) {
+                            val items = (0 until itemCount).map {
+                                player.getMediaItemAt(it)
+                            }
+                            MediaSession.MediaItemsWithStartPosition(
+                                items, 0, player.currentPosition
+                            )
+                        } else {
+                            Log.w(TAG, "onSetMediaItems: player empty after load, falling back to original items")
+                            MediaSession.MediaItemsWithStartPosition(
+                                mediaItems, startIndex, startPositionMs
+                            )
                         }
                     }
-                    // Return empty to prevent default handling — we're handling playback ourselves
-                    return Futures.immediateFuture(
-                        MediaSession.MediaItemsWithStartPosition(
-                            emptyList(), startIndex, startPositionMs
-                        )
-                    )
+                } else {
+                    Log.d(TAG, "onSetMediaItems: mediaId=$mediaId is not a book, passing through")
                 }
             }
 

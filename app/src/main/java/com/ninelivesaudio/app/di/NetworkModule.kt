@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.di
 
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
 import com.ninelivesaudio.app.data.remote.AuthInterceptor
 import com.ninelivesaudio.app.data.remote.DynamicBaseUrlInterceptor
@@ -39,14 +40,19 @@ object NetworkModule {
         dynamicBaseUrlInterceptor: DynamicBaseUrlInterceptor,
         settingsManager: SettingsManager,
     ): OkHttpClient {
-        val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
-
-        return OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .addInterceptor(dynamicBaseUrlInterceptor)
             .addInterceptor(authInterceptor)
-            .addInterceptor(logging)
+
+        // Only log HTTP requests in debug builds to prevent token/URL leakage in production
+        if (BuildConfig.DEBUG) {
+            val logging = HttpLoggingInterceptor().apply {
+                level = HttpLoggingInterceptor.Level.BASIC
+            }
+            builder.addInterceptor(logging)
+        }
+
+        return builder
             .configureSelfSignedCerts(settingsManager)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)

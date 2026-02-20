@@ -232,3 +232,27 @@ data class CreateBookmarkRequest(
     val title: String,
     val time: Double,
 )
+
+// ─── Listening Sessions ─────────────────────────────────────────────────
+
+@Serializable
+data class ListeningSessionsResponse(
+    val sessions: List<ApiListeningSession> = emptyList(),
+    val total: Int = 0,
+    val numPages: Int = 0,
+    val page: Int = 0,
+    val itemsPerPage: Int = 0,
+)
+
+@Serializable
+data class ApiListeningSession(
+    val id: String = "",
+    val libraryItemId: String = "",
+    val currentTime: Double = 0.0,
+    val timeListening: Double = 0.0,
+    val startTime: Double = 0.0,
+    val startedAt: Long = 0,
+    val updatedAt: Long = 0,
+    val displayTitle: String? = null,
+    val dayOfWeek: String? = null,
+)

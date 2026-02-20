@@ -220,6 +220,20 @@ object CopyStyleGuide {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  Nightwatch Dossier (Stats)
+    // ═══════════════════════════════════════════════════════════════
+
+    object Dossier {
+        const val DOSSIER_NAV = "Nightwatch Dossier"
+        const val DOSSIER_NAV_RITUAL = "The record of your presence."
+        const val DOSSIER_NAV_UNHINGED = "Everything the watchers wrote down about you."
+
+        const val DOSSIER_DESC = "Listening stats, behavioral patterns, and temporal analysis"
+        const val DOSSIER_DESC_RITUAL = "A summary of your time in the archive."
+        const val DOSSIER_DESC_UNHINGED = "They've been keeping notes. This is what they're willing to show you."
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     //  Empty States
     // ═══════════════════════════════════════════════════════════════
 

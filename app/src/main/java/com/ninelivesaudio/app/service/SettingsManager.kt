@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,8 +23,9 @@ private const val TAG = "SettingsManager"
 /**
  * Manages application settings and secure token storage.
  *
- * Settings are stored as JSON in a file (matching the MAUI pattern).
- * Auth token is stored in EncryptedSharedPreferences for security.
+ * All sensitive data is stored in EncryptedSharedPreferences (AES-256-GCM).
+ * On first launch after the migration, any legacy plaintext `settings.json`
+ * is imported and deleted.
  */
 @Singleton
 class SettingsManager @Inject constructor(
@@ -35,14 +37,14 @@ class SettingsManager @Inject constructor(
         encodeDefaults = true
     }
 
-    // Settings file in app-private storage
-    private val settingsDir: File
-        get() = File(context.filesDir, "NineLivesAudio").also { it.mkdirs() }
+    // Legacy settings file — only used for one-time migration
+    private val legacySettingsDir: File
+        get() = File(context.filesDir, "NineLivesAudio")
 
-    private val settingsFile: File
-        get() = File(settingsDir, "settings.json")
+    private val legacySettingsFile: File
+        get() = File(legacySettingsDir, "settings.json")
 
-    // Encrypted SharedPreferences for auth token
+    // Encrypted SharedPreferences for all secure data
     private val masterKey by lazy {
         MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -68,17 +70,35 @@ class SettingsManager @Inject constructor(
     // ─── Settings ────────────────────────────────────────────────────────
 
     suspend fun loadSettings(): AppSettings = withContext(Dispatchers.IO) {
-        Log.d(TAG, "loadSettings: Loading from ${settingsFile.absolutePath}")
+        Log.d(TAG, "loadSettings: Loading from encrypted storage")
         try {
-            if (settingsFile.exists()) {
-                val text = settingsFile.readText()
-                val loaded = json.decodeFromString<AppSettings>(text)
+            // Check for legacy plaintext settings file and migrate if present
+            if (legacySettingsFile.exists()) {
+                Log.d(TAG, "loadSettings: Found legacy settings.json — migrating to encrypted storage")
+                try {
+                    val text = legacySettingsFile.readText()
+                    val migrated = json.decodeFromString<AppSettings>(text)
+                    // Save to encrypted prefs
+                    encryptedPrefs.edit()
+                        .putString(KEY_SETTINGS, json.encodeToString(migrated))
+                        .commit()
+                    // Delete the plaintext file
+                    legacySettingsFile.delete()
+                    Log.d(TAG, "loadSettings: Migration complete, legacy file deleted")
+                } catch (e: Exception) {
+                    Log.e(TAG, "loadSettings: Migration failed, will use defaults", e)
+                    // Delete the broken file anyway to avoid retrying every launch
+                    legacySettingsFile.delete()
+                }
+            }
+
+            val settingsJson = encryptedPrefs.getString(KEY_SETTINGS, null)
+            if (settingsJson != null) {
+                val loaded = json.decodeFromString<AppSettings>(settingsJson)
                 Log.d(TAG, "loadSettings: Loaded settings - unhingedThemeEnabled=${loaded.unhingedThemeEnabled}")
                 // Ensure download path has a default
                 val withDefaults = if (loaded.downloadPath.isEmpty()) {
-                    loaded.copy(
-                        downloadPath = defaultDownloadPath()
-                    )
+                    loaded.copy(downloadPath = defaultDownloadPath())
                 } else {
                     loaded
                 }
@@ -86,7 +106,7 @@ class SettingsManager @Inject constructor(
                 Log.d(TAG, "loadSettings: Settings applied to StateFlow")
                 withDefaults
             } else {
-                Log.d(TAG, "loadSettings: No settings file found, creating defaults")
+                Log.d(TAG, "loadSettings: No settings found, creating defaults")
                 val defaults = AppSettings(downloadPath = defaultDownloadPath())
                 _settings.value = defaults
                 saveSettings(defaults)
@@ -103,7 +123,9 @@ class SettingsManager @Inject constructor(
     suspend fun saveSettings(settings: AppSettings) = withContext(Dispatchers.IO) {
         Log.d(TAG, "saveSettings: Saving settings - unhingedThemeEnabled=${settings.unhingedThemeEnabled}")
         try {
-            settingsFile.writeText(json.encodeToString(settings))
+            encryptedPrefs.edit()
+                .putString(KEY_SETTINGS, json.encodeToString(settings))
+                .commit()
             _settings.value = settings
             Log.d(TAG, "saveSettings: Settings saved successfully and StateFlow updated")
         } catch (e: Exception) {
@@ -122,6 +144,8 @@ class SettingsManager @Inject constructor(
 
     companion object {
         private const val KEY_AUTH_TOKEN = "auth_token"
+        private const val KEY_SETTINGS = "app_settings"
+        private const val KEY_DEVICE_ID = "device_id"
     }
 
     suspend fun getAuthToken(): String? = withContext(Dispatchers.IO) {
@@ -131,14 +155,31 @@ class SettingsManager @Inject constructor(
     suspend fun saveAuthToken(token: String) = withContext(Dispatchers.IO) {
         val sanitized = token.trim()
         if (sanitized.isEmpty()) {
-            encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).apply()
+            encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).commit()
         } else {
-            encryptedPrefs.edit().putString(KEY_AUTH_TOKEN, sanitized).apply()
+            encryptedPrefs.edit().putString(KEY_AUTH_TOKEN, sanitized).commit()
         }
     }
 
     suspend fun clearAuthToken() = withContext(Dispatchers.IO) {
-        encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).apply()
+        encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).commit()
+    }
+
+    // ─── Device ID ────────────────────────────────────────────────────────
+
+    /**
+     * Returns a stable, unique device identifier.
+     * Generated as a random UUID on first call and persisted in encrypted storage.
+     * Used as `deviceId` in Audiobookshelf playback sessions instead of [android.os.Build.MODEL]
+     * which is not unique per device (e.g., all Pixel 8 phones share the same model string).
+     */
+    fun getDeviceId(): String {
+        val existing = encryptedPrefs.getString(KEY_DEVICE_ID, null)
+        if (existing != null) return existing
+
+        val newId = UUID.randomUUID().toString()
+        encryptedPrefs.edit().putString(KEY_DEVICE_ID, newId).commit()
+        return newId
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────
@@ -151,5 +192,5 @@ class SettingsManager @Inject constructor(
 
     /** Path to the settings file (for diagnostics). */
     val settingsFilePath: String
-        get() = settingsFile.absolutePath
+        get() = "encrypted://nine_lives_secure_prefs/app_settings"
 }

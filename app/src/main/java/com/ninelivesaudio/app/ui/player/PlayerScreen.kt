@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.player
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -9,12 +10,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -31,10 +32,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.Bookmark
+import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.ContainmentProgressRing
-import com.ninelivesaudio.app.ui.components.RingStyle
+import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.domain.util.toClockString
+import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -43,6 +45,19 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // EQ bottom sheet
+    if (uiState.showEqSheet) {
+        EqSheet(
+            eqEnabled = uiState.eqEnabled,
+            bandGains = uiState.eqBandGains,
+            bandFrequencies = uiState.eqBandFrequencies,
+            bandRange = uiState.eqBandRange,
+            onToggleEq = { viewModel.setEqEnabled(!uiState.eqEnabled) },
+            onBandGainChange = viewModel::setEqBandGain,
+            onDismiss = { viewModel.dismissEqSheet() },
+        )
+    }
 
     // Bookmark bottom sheet
     if (uiState.showBookmarks) {
@@ -72,12 +87,6 @@ fun PlayerScreen(
         (uiState.currentChapterPosition.inWholeMilliseconds.toFloat() /
          uiState.currentChapterDuration.inWholeMilliseconds.toFloat()).coerceIn(0f, 1f)
     } else 0f
-
-    val animatedChapterProgress by animateFloatAsState(
-        targetValue = chapterProgress,
-        animationSpec = tween(durationMillis = 400),
-        label = "chapter_progress",
-    )
 
     Column(
         modifier = Modifier
@@ -125,6 +134,7 @@ fun PlayerScreen(
                         contentDescription = uiState.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
                     )
                 }
             }
@@ -136,62 +146,30 @@ fun PlayerScreen(
                 cornerRadius = 12.dp,
             )
 
-            // Book progress ring — outer orbit
-            ContainmentProgressRing(
+            // Fluorescent square progress glow
+            FluorescentSquareProgress(
                 progress = animatedBookProgress,
                 modifier = Modifier.matchParentSize(),
-                style = RingStyle.PlayerLarge,
-                progressColor = GoldFilament,
-                trackColor = ArchiveOutline,
+                cornerRadius = 12.dp,
+                padding = 14.dp,
             )
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // ─── Title / Author / Chapter with Chapter Halo Ring ────────
-        if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
-            // Chapter halo ring wrapping title/author block
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .aspectRatio(2.5f),
-                contentAlignment = Alignment.Center,
-            ) {
-                // Chapter progress halo
-                ContainmentProgressRing(
-                    progress = animatedChapterProgress,
-                    modifier = Modifier.matchParentSize(),
-                    style = RingStyle.LibrarySmall.copy(
-                        usePartialTrack = false,  // Full ring for chapter halo
-                        glowAlpha = 0.25f
-                    ),
-                    progressColor = ImpossibleAccent,
-                    trackColor = ArchiveOutline,
-                )
+        // ─── Title / Author / Chapter (no giant halo rings) ─────────
+        TitleAuthorBlock(uiState)
 
-                // Title/Author content inside the halo
-                Column(
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    TitleAuthorBlock(uiState)
-                }
-            }
-        } else {
-            // No chapters — plain title/author
-            TitleAuthorBlock(uiState)
-        }
+        Spacer(modifier = Modifier.height(10.dp))
+        BookWhisperCard(uiState)
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // ─── Chapter Seek Bar (Interactive) ─────────────────────────
         if (uiState.chapters.isNotEmpty() && uiState.currentChapterIndex >= 0) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 val chapterLabel = buildString {
                     append("Chapter ${uiState.currentChapterIndex + 1} of ${uiState.chapters.size}")
-                    uiState.currentChapterTitle?.let { title ->
-                        append(": $title")
-                    }
                 }
 
                 Text(
@@ -385,6 +363,12 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            ChapterSelectorButton(
+                chapters = uiState.chapters,
+                currentChapterIndex = uiState.currentChapterIndex,
+                onChapterSelected = viewModel::seekToChapter,
+            )
+
             SpeedButton(
                 currentSpeed = uiState.speed,
                 options = viewModel.speedOptions,
@@ -417,22 +401,11 @@ fun PlayerScreen(
                 )
             }
 
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Outlined.VolumeUp,
-                    contentDescription = "Volume",
-                    tint = ArchiveTextSecondary,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    text = "${(uiState.volume * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
-                    fontSize = 10.sp,
-                )
-            }
+            EqButton(
+                eqEnabled = uiState.eqEnabled,
+                onToggleEq = { viewModel.setEqEnabled(!uiState.eqEnabled) },
+                onOpenEq = { viewModel.toggleEqSheet() },
+            )
         }
 
         // Sleep timer countdown
@@ -483,17 +456,307 @@ private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
         )
     }
 
-    uiState.currentChapterTitle?.let { chapter ->
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = chapter,
-            style = MaterialTheme.typography.bodyMedium,
-            color = ArchiveTextMuted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
+}
+
+@Composable
+private fun BookWhisperCard(uiState: PlayerViewModel.UiState) {
+    // Derive the whisper from book ID + listening position + finished state.
+    // Re-keyed on bookmarkItemId (book ID) so it stays stable while scrubbing.
+    val bookId = uiState.bookmarkItemId ?: uiState.title
+    val whisper = remember(bookId, uiState.duration) {
+        BookWhisperCatalog.getWhisper(
+            bookId = bookId,
+            position = uiState.position,
+            duration = uiState.duration,
+            isFinished = uiState.progress >= 1f,
         )
     }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = ArchiveVoidElevated,
+        border = BorderStroke(1.dp, ArchiveOutline),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = whisper,
+            style = MaterialTheme.typography.bodySmall,
+            color = ArchiveTextMuted,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+        )
+    }
+}
+
+@Composable
+private fun ChapterSelectorButton(
+    chapters: List<Chapter>,
+    currentChapterIndex: Int,
+    onChapterSelected: (Int) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    if (chapters.isEmpty()) return
+
+    Box {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.clickable { expanded = true },
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.MenuBook,
+                contentDescription = "Chapter selector",
+                tint = ArchiveTextSecondary,
+                modifier = Modifier.size(22.dp),
+            )
+            Text(
+                text = "Chapter",
+                style = MaterialTheme.typography.labelSmall,
+                color = ArchiveTextMuted,
+                fontSize = 10.sp,
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = ArchiveVoidSurface,
+        ) {
+            chapters.forEachIndexed { index, chapter ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = "${index + 1}. ${chapter.title}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (index == currentChapterIndex) GoldFilament else ArchiveTextPrimary,
+                        )
+                    },
+                    onClick = {
+                        onChapterSelected(index)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqButton(
+    eqEnabled: Boolean,
+    onToggleEq: () -> Unit,
+    onOpenEq: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable(onClick = onOpenEq),
+    ) {
+        Icon(
+            Icons.Outlined.Equalizer,
+            contentDescription = "Equalizer",
+            tint = if (eqEnabled) GoldFilament else ArchiveTextSecondary,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            text = if (eqEnabled) "EQ" else "EQ",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (eqEnabled) GoldFilament else ArchiveTextMuted,
+            fontSize = 10.sp,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EqSheet(
+    eqEnabled: Boolean,
+    bandGains: List<Int>,
+    bandFrequencies: List<Int>,
+    bandRange: Pair<Int, Int>,
+    onToggleEq: () -> Unit,
+    onBandGainChange: (Int, Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val (minGain, maxGain) = bandRange
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ArchiveVoidSurface,
+        contentColor = ArchiveTextPrimary,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+        ) {
+            // Header with toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Equalizer",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = GoldFilament,
+                    fontWeight = FontWeight.Bold,
+                )
+                Switch(
+                    checked = eqEnabled,
+                    onCheckedChange = { onToggleEq() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = GoldFilament,
+                        checkedTrackColor = GoldFilamentFaint,
+                        uncheckedThumbColor = ArchiveTextSecondary,
+                        uncheckedTrackColor = ArchiveVoidElevated,
+                    ),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // dB labels
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "+${maxGain / 100}dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+                Text(
+                    text = "0dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+                Text(
+                    text = "${minGain / 100}dB",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                    fontSize = 9.sp,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Band sliders — vertical sliders arranged horizontally
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                bandGains.forEachIndexed { index, gain ->
+                    val freq = bandFrequencies.getOrElse(index) { 0 }
+                    EqBandSlider(
+                        gain = gain,
+                        minGain = minGain,
+                        maxGain = maxGain,
+                        frequencyLabel = formatFrequency(freq),
+                        enabled = eqEnabled,
+                        onGainChange = { newGain -> onBandGainChange(index, newGain) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Reset button
+            OutlinedButton(
+                onClick = {
+                    bandGains.indices.forEach { i -> onBandGainChange(i, 0) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = eqEnabled,
+                shape = RoundedCornerShape(10.dp),
+                border = ButtonDefaults.outlinedButtonBorder(enabled = eqEnabled).copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
+                ),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = ArchiveTextSecondary,
+                    disabledContentColor = ArchiveTextMuted,
+                ),
+            ) {
+                Text("Reset EQ", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqBandSlider(
+    gain: Int,
+    minGain: Int,
+    maxGain: Int,
+    frequencyLabel: String,
+    enabled: Boolean,
+    onGainChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        // Gain value
+        Text(
+            text = "${if (gain >= 0) "+" else ""}${gain / 100}",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+
+        // Vertical slider (rotated horizontal slider)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Slider(
+                value = gain.toFloat(),
+                onValueChange = { onGainChange(it.toInt()) },
+                valueRange = minGain.toFloat()..maxGain.toFloat(),
+                enabled = enabled,
+                modifier = Modifier
+                    .width(160.dp)
+                    .graphicsLayer {
+                        rotationZ = -90f
+                    },
+                colors = SliderDefaults.colors(
+                    thumbColor = if (enabled) GoldFilament else ArchiveTextMuted,
+                    activeTrackColor = if (enabled) GoldFilament else ArchiveTextMuted,
+                    inactiveTrackColor = ArchiveOutline,
+                    disabledThumbColor = ArchiveTextMuted,
+                    disabledActiveTrackColor = ArchiveTextMuted.copy(alpha = 0.5f),
+                    disabledInactiveTrackColor = ArchiveOutline.copy(alpha = 0.5f),
+                ),
+            )
+        }
+
+        // Frequency label
+        Text(
+            text = frequencyLabel,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+    }
+}
+
+private fun formatFrequency(hz: Int): String = when {
+    hz >= 1000 -> "${hz / 1000}k"
+    else -> "$hz"
 }
 
 // ─── Speed Picker Button ──────────────────────────────────────────────────

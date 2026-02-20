@@ -26,6 +26,13 @@ interface AudiobookshelfApi {
     @GET("api/me/progress/{itemId}")
     suspend fun getUserProgress(@Path("itemId") itemId: String): Response<ApiUserProgress>
 
+    /** Get paginated listening sessions for the authenticated user. */
+    @GET("api/me/listening-sessions")
+    suspend fun getListeningSessions(
+        @Query("itemsPerPage") itemsPerPage: Int = 50,
+        @Query("page") page: Int = 0,
+    ): Response<ListeningSessionsResponse>
+
     /** Update progress for a specific item. */
     @PATCH("api/me/progress/{itemId}")
     suspend fun updateProgress(

@@ -37,12 +37,15 @@ import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerCont
 import com.ninelivesaudio.app.ui.animation.unhinged.sigil.SigilProgress
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Assessment
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
 fun HomeScreen(
     onNavigateToLibrary: () -> Unit = {},
     onNavigateToBookDetail: (String) -> Unit = {},
+    onNavigateToDossier: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -68,6 +71,9 @@ fun HomeScreen(
                 connectionStatus = uiState.connectionStatus,
                 onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
             )
+
+            // ─── The Dossier — Entry Banner ──────────────────────────────
+            DossierEntryBanner(onClick = onNavigateToDossier)
 
             // ─── Nine Lives 3×3 Vault Grid ─────────────────────────────────
             LazyVerticalGrid(
@@ -422,6 +428,67 @@ private fun EmptyHomeState(
             Text(
                 text = "Enter The Archive",
                 fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Dossier Entry Banner — Navigate to Nightwatch Dossier
+// ═════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun DossierEntryBanner(onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp)
+            .padding(bottom = 10.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = ArchiveVoidSurface,
+        tonalElevation = 1.dp,
+        border = BorderStroke(1.dp, ArchiveOutline.copy(alpha = 0.5f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Assessment,
+                    contentDescription = null,
+                    tint = GoldFilament,
+                    modifier = Modifier.size(18.dp),
+                )
+                Column {
+                    Text(
+                        text = "THE NIGHTWATCH DOSSIER",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = GoldFilament,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        text = "30-day listening intelligence",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+            Text(
+                text = "›",
+                color = GoldFilament,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Light,
             )
         }
     }

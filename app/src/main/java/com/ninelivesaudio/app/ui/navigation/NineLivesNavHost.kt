@@ -51,7 +51,12 @@ fun NineLivesNavHost(
                 },
                 onNavigateToBookDetail = { bookId ->
                     navController.navigate(Routes.bookDetail(bookId))
-                }
+                },
+                onNavigateToDossier = {
+                    navController.navigate(Routes.DOSSIER) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

@@ -12,12 +12,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Locale
 import java.util.TimeZone
 import javax.inject.Inject
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 @HiltViewModel
@@ -57,6 +62,13 @@ class NightwatchDossierViewModel @Inject constructor(
         val fraction: Float,
     )
 
+    data class AuthorStat(
+        val name: String,
+        val listeningTime: Duration,
+        val bookCount: Int,
+        val fraction: Float,
+    )
+
     data class DossierState(
         val isLoading: Boolean = true,
         val error: String? = null,
@@ -77,6 +89,15 @@ class NightwatchDossierViewModel @Inject constructor(
         // Genre breakdown
         val genreStats: List<GenreStat> = emptyList(),
 
+        // Author analysis
+        val authorStats: List<AuthorStat> = emptyList(),
+
+        // Derived stats
+        val booksFinished: Int = 0,
+        val dailyAverage: Duration = Duration.ZERO,
+        val bestDay: String? = null,
+        val bestDayTime: Duration = Duration.ZERO,
+
         // Temporal patterns
         val hourlyDistribution: Map<Int, Duration> = emptyMap(),
         val peakHour: Int? = null,
@@ -86,6 +107,7 @@ class NightwatchDossierViewModel @Inject constructor(
         val headerWhisper: String = "The Watchers Have Observed...",
         val overviewWhisper: String? = null,
         val narratorWhisper: String? = null,
+        val authorWhisper: String? = null,
         val genreWhisper: String? = null,
         val temporalWhisper: String? = null,
     )
@@ -123,10 +145,19 @@ class NightwatchDossierViewModel @Inject constructor(
                 val allBooks = audioBookRepository.getAll()
                 val bookMap = allBooks.associateBy { it.id }
 
+                // 30-day rolling window
+                val cutoffMillis = System.currentTimeMillis() - 30.days.inWholeMilliseconds
+                val recentSessions = allSessions.filter { it.startedAt >= cutoffMillis }
+
+                // Sanitize session durations: cap timeListening at wall-clock span
+                val sanitizedSessions = recentSessions.map { session ->
+                    session.copy(timeListening = sanitizeListeningTime(session))
+                }
+
                 // Filter noise: sessions under 60 seconds
                 val minThreshold = 60.seconds
-                val validSessions = allSessions.filter { it.timeListening >= minThreshold }
-                val noiseSessions = allSessions.size - validSessions.size
+                val validSessions = sanitizedSessions.filter { it.timeListening >= minThreshold }
+                val noiseSessions = sanitizedSessions.size - validSessions.size
 
                 // Aggregate
                 val totalTime = validSessions.fold(Duration.ZERO) { acc, s -> acc + s.timeListening }
@@ -165,6 +196,15 @@ class NightwatchDossierViewModel @Inject constructor(
                 // Genre stats
                 val genreStats = buildGenreStats(bookStats, bookMap, totalTime)
 
+                // Author stats
+                val authorStats = buildAuthorStats(bookStats)
+
+                // Derived stats
+                val booksFinished = bookStats.count { it.isFinished }
+                val dailyAverage = if (totalTime > Duration.ZERO)
+                    (totalTime.inWholeSeconds / 30).seconds else Duration.ZERO
+                val bestDayResult = findBestSpecificDay(validSessions)
+
                 // Temporal patterns
                 val (hourly, peakHour) = buildTemporalStats(validSessions)
                 val peakDay = findPeakDay(validSessions)
@@ -173,6 +213,7 @@ class NightwatchDossierViewModel @Inject constructor(
                 val headerWhisper = generateHeaderWhisper(totalTime, validSessions.size)
                 val overviewWhisper = generateOverviewWhisper(totalTime, bookStats.size)
                 val narratorWhisper = generateNarratorWhisper(narratorStats)
+                val authorWhisper = generateAuthorWhisper(authorStats)
                 val genreWhisper = generateGenreWhisper(genreStats)
                 val temporalWhisper = generateTemporalWhisper(peakHour, peakDay)
 
@@ -185,13 +226,19 @@ class NightwatchDossierViewModel @Inject constructor(
                         uniqueBooks = bookStats.size,
                         bookStats = bookStats,
                         narratorStats = narratorStats,
+                        authorStats = authorStats,
                         genreStats = genreStats,
+                        booksFinished = booksFinished,
+                        dailyAverage = dailyAverage,
+                        bestDay = bestDayResult?.first,
+                        bestDayTime = bestDayResult?.second ?: Duration.ZERO,
                         hourlyDistribution = hourly,
                         peakHour = peakHour,
                         peakDayOfWeek = peakDay,
                         headerWhisper = headerWhisper,
                         overviewWhisper = overviewWhisper,
                         narratorWhisper = narratorWhisper,
+                        authorWhisper = authorWhisper,
                         genreWhisper = genreWhisper,
                         temporalWhisper = temporalWhisper,
                     )
@@ -204,6 +251,31 @@ class NightwatchDossierViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    // ─── Session Sanitization ──────────────────────────────────────────────
+
+    /**
+     * Sanitize a session's timeListening by cross-referencing against the
+     * wall-clock span (updatedAt − startedAt). If timeListening exceeds the
+     * wall-clock duration (with a small tolerance), cap it.
+     *
+     * Fallback: if timestamps are missing or invalid, cap at 4 hours.
+     */
+    private fun sanitizeListeningTime(session: ListeningSession): Duration {
+        val reported = session.timeListening
+        val maxFallback = 4.hours
+
+        val wallClockMs = session.updatedAt - session.startedAt
+        return if (session.startedAt > 0 && session.updatedAt > session.startedAt && wallClockMs > 0) {
+            // Allow 10% tolerance + 5 min buffer for clock skew / pause gaps
+            val wallClock = wallClockMs.milliseconds
+            val ceiling = wallClock * 1.1 + 5.minutes
+            if (reported > ceiling) ceiling else reported
+        } else {
+            // No valid timestamps — hard cap
+            if (reported > maxFallback) maxFallback else reported
         }
     }
 
@@ -260,6 +332,51 @@ class NightwatchDossierViewModel @Inject constructor(
                 )
             }
             .sortedByDescending { it.listeningTime }
+    }
+
+    private fun buildAuthorStats(
+        bookStats: List<BookStat>,
+    ): List<AuthorStat> {
+        val byAuthor = mutableMapOf<String, Pair<Duration, MutableSet<String>>>()
+        for (bs in bookStats) {
+            val author = bs.author.takeIf { it.isNotBlank() && it != "Unknown" } ?: continue
+            val (time, books) = byAuthor.getOrPut(author) { Duration.ZERO to mutableSetOf() }
+            byAuthor[author] = (time + bs.listeningTime) to books.also { it.add(bs.bookId) }
+        }
+        val maxTime = byAuthor.values.maxOfOrNull { it.first } ?: Duration.ZERO
+        return byAuthor.entries
+            .map { (name, pair) ->
+                AuthorStat(
+                    name = name,
+                    listeningTime = pair.first,
+                    bookCount = pair.second.size,
+                    fraction = if (maxTime > Duration.ZERO)
+                        (pair.first.inWholeSeconds.toFloat() / maxTime.inWholeSeconds.toFloat())
+                    else 0f,
+                )
+            }
+            .sortedByDescending { it.listeningTime }
+    }
+
+    private fun findBestSpecificDay(
+        sessions: List<ListeningSession>,
+    ): Pair<String, Duration>? {
+        val dayTotals = mutableMapOf<String, Duration>()
+        val cal = Calendar.getInstance(TimeZone.getDefault())
+        val dateFormat = SimpleDateFormat("MMM d", Locale.getDefault())
+
+        for (session in sessions) {
+            if (session.startedAt <= 0) continue
+            cal.timeInMillis = session.startedAt
+            val dayKey = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.DAY_OF_YEAR)}"
+            dayTotals[dayKey] = (dayTotals[dayKey] ?: Duration.ZERO) + session.timeListening
+        }
+
+        val bestEntry = dayTotals.maxByOrNull { it.value } ?: return null
+        val parts = bestEntry.key.split("-")
+        cal.set(Calendar.YEAR, parts[0].toInt())
+        cal.set(Calendar.DAY_OF_YEAR, parts[1].toInt())
+        return dateFormat.format(cal.time) to bestEntry.value
     }
 
     private fun buildTemporalStats(
@@ -359,6 +476,17 @@ class NightwatchDossierViewModel @Inject constructor(
             top.fraction > 0.7f -> "${top.name} is the shape of your attention."
             top.fraction > 0.4f -> "You gravitate toward ${top.name}. Predictable."
             else -> "Your tastes are scattered across the shelves."
+        }
+    }
+
+    private fun generateAuthorWhisper(stats: List<AuthorStat>): String? {
+        if (stats.isEmpty()) return null
+        val top = stats.first()
+        return when {
+            stats.size == 1 -> "One author. The archive finds this devotional."
+            top.fraction > 0.7f -> "${top.name} is written into your habits."
+            top.fraction > 0.4f -> "You return to ${top.name}. The shelves remember."
+            else -> "Your authors are many. The archive catalogs them all."
         }
     }
 

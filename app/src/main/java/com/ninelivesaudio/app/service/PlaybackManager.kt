@@ -142,8 +142,7 @@ class PlaybackManager @Inject constructor(
     }
 
     /**
-     * Load and play a book by its ID. Used by Android Auto when the user
-     * selects a book from the browse tree.
+     * Load and play a book by its ID. Used by the phone UI.
      */
     suspend fun loadBookById(bookId: String): Boolean {
         val book = withContext(Dispatchers.IO) {
@@ -153,6 +152,23 @@ class PlaybackManager @Inject constructor(
 
         return withContext(Dispatchers.Main) {
             loadAudioBook(book)
+        }
+    }
+
+    /**
+     * Load and play a book by its ID for Android Auto.
+     * Skips startPlaybackService() since we are already inside the service's
+     * onSetMediaItems callback — creating a new MediaController back to the
+     * same service would deadlock.
+     */
+    suspend fun loadBookByIdForAuto(bookId: String): Boolean {
+        val book = withContext(Dispatchers.IO) {
+            audioBookRepository.getById(bookId)
+                ?: audioBookRepository.fetchFromServer(bookId)
+        } ?: return false
+
+        return withContext(Dispatchers.Main) {
+            loadAudioBook(book, skipServiceStart = true)
         }
     }
 
@@ -218,7 +234,7 @@ class PlaybackManager @Inject constructor(
     // ─── Load ─────────────────────────────────────────────────────────────
 
     @OptIn(UnstableApi::class)
-    suspend fun loadAudioBook(book: AudioBook): Boolean {
+    suspend fun loadAudioBook(book: AudioBook, skipServiceStart: Boolean = false): Boolean {
         // ExoPlayer must be created and accessed from the Main thread
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBook must be called from the Main thread"
@@ -349,12 +365,17 @@ class PlaybackManager @Inject constructor(
                 seekToPosition(startPosition)
             }
 
-            // Start the foreground service (MediaController connect triggers startForeground)
-            startPlaybackService()
+            // Start the foreground service (MediaController connect triggers startForeground).
+            // Skipped when called from Android Auto's onSetMediaItems callback to avoid
+            // re-entrant MediaController connection back to the same service.
+            if (!skipServiceStart) {
+                startPlaybackService()
+            }
 
-            // Prepare and play — the persistent MediaSession already wraps this player
-            player.playWhenReady = true
+            // Prepare and play — the persistent MediaSession already wraps this player.
+            // prepare() first so state listeners don't fire before media is loaded.
             player.prepare()
+            player.playWhenReady = true
 
             // Update duration
             _duration.value = calculateTotalDuration(effectiveBook)

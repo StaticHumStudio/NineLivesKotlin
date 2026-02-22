@@ -1,28 +1,44 @@
 package com.ninelivesaudio.app.ui.dossier
 
+import android.content.Intent
+import android.graphics.Bitmap
+import android.view.View
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.time.Duration
 
 @Composable
@@ -104,7 +120,7 @@ private fun DossierHeader(
     ) {
         IconButton(onClick = onNavigateBack) {
             Icon(
-                Icons.Outlined.ArrowBack,
+                Icons.AutoMirrored.Outlined.ArrowBack,
                 contentDescription = "Back",
                 tint = ArchiveTextSecondary,
             )
@@ -155,6 +171,11 @@ private fun DossierContent(
             NarratorSection(state.narratorStats, state.narratorWhisper, viewModel)
         }
 
+        // ─── Authors ───────────────────────────────────────────────
+        if (state.authorStats.isNotEmpty()) {
+            AuthorSection(state.authorStats, state.authorWhisper, viewModel)
+        }
+
         // ─── Genres ────────────────────────────────────────────────
         if (state.genreStats.isNotEmpty()) {
             GenreSection(state.genreStats, state.genreWhisper, viewModel)
@@ -164,6 +185,9 @@ private fun DossierContent(
         if (state.hourlyDistribution.isNotEmpty()) {
             TemporalSection(state, viewModel)
         }
+
+        // ─── Shareable Summary Card ────────────────────────────────
+        DossierShareSection(state, viewModel)
 
         // Bottom padding
         Spacer(modifier = Modifier.height(80.dp))
@@ -188,20 +212,41 @@ private fun OverviewSection(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "in the archive",
+            text = "in the last 30 days",
             style = MaterialTheme.typography.bodySmall,
             color = ArchiveTextMuted,
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Stats row
+        // Stats row 1
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             StatChip(value = state.totalSessions.toString(), label = "sessions")
             StatChip(value = state.uniqueBooks.toString(), label = "books")
+            StatChip(value = state.booksFinished.toString(), label = "finished")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Stats row 2
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            StatChip(
+                value = viewModel.formatDuration(state.dailyAverage),
+                label = "daily avg",
+            )
+            state.bestDay?.let { day ->
+                StatChip(
+                    value = day,
+                    label = viewModel.formatDuration(state.bestDayTime),
+                    highlight = true,
+                )
+            }
         }
 
         // Noise filter notice
@@ -224,12 +269,12 @@ private fun OverviewSection(
 }
 
 @Composable
-private fun StatChip(value: String, label: String) {
+private fun StatChip(value: String, label: String, highlight: Boolean = false) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             text = value,
             style = MaterialTheme.typography.titleLarge,
-            color = ArchiveTextPrimary,
+            color = if (highlight) GoldFilament else ArchiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
@@ -251,7 +296,10 @@ private fun BookStatsSection(
 ) {
     SectionHeader("Books")
 
-    bookStats.forEach { book ->
+    var expanded by remember { mutableStateOf(false) }
+    val visibleBooks = if (expanded || bookStats.size <= 5) bookStats else bookStats.take(5)
+
+    visibleBooks.forEach { book ->
         DossierCard {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -357,6 +405,19 @@ private fun BookStatsSection(
                 Spacer(modifier = Modifier.height(4.dp))
                 WhisperText(whisper)
             }
+        }
+    }
+
+    if (bookStats.size > 5) {
+        TextButton(
+            onClick = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = if (expanded) "Show less" else "Show all ${bookStats.size} books",
+                color = GoldFilamentDim,
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
     }
 }
@@ -474,6 +535,62 @@ private fun GenreSection(
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Author Section
+// ═══════════════════════════════════════════════════════════════
+
+@Composable
+private fun AuthorSection(
+    stats: List<AuthorStat>,
+    whisper: String?,
+    viewModel: NightwatchDossierViewModel,
+) {
+    SectionHeader("Authors")
+
+    DossierCard {
+        stats.take(5).forEach { author ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = author.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextPrimary,
+                    modifier = Modifier.width(100.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                LinearProgressIndicator(
+                    progress = { author.fraction.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = ImpossibleAccent,
+                    trackColor = ArchiveVoidElevated,
+                )
+
+                Text(
+                    text = viewModel.formatDuration(author.listeningTime),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextSecondary,
+                    modifier = Modifier.width(40.dp),
+                )
+            }
+        }
+
+        whisper?.let {
+            Spacer(modifier = Modifier.height(8.dp))
+            WhisperText(it)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Temporal Section
 // ═══════════════════════════════════════════════════════════════
 
@@ -556,7 +673,7 @@ private fun TemporalSection(
             }
         }
 
-        // Peak day
+        // Peak day of week
         state.peakDayOfWeek?.let { day ->
             Spacer(modifier = Modifier.height(8.dp))
             Row(
@@ -577,10 +694,303 @@ private fun TemporalSection(
             }
         }
 
+        // Best single day
+        state.bestDay?.let { day ->
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Best single day",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ArchiveTextMuted,
+                )
+                Text(
+                    text = "$day — ${viewModel.formatDuration(state.bestDayTime)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = GoldFilament,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+
         state.temporalWhisper?.let {
             Spacer(modifier = Modifier.height(8.dp))
             WhisperText(it)
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Shareable Summary Card
+// ═══════════════════════════════════════════════════════════════
+
+@Composable
+private fun DossierShareSection(
+    state: DossierState,
+    viewModel: NightwatchDossierViewModel,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var captureView by remember { mutableStateOf<View?>(null) }
+
+    SectionHeader("Share")
+
+    // The card that will be captured — find the View after composition
+    Box(modifier = Modifier.fillMaxWidth()) {
+        DossierSummaryCard(
+            state = state,
+            viewModel = viewModel,
+            onViewReady = { captureView = it },
+        )
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // Share button
+    Button(
+        onClick = {
+            val view = captureView ?: return@Button
+            scope.launch {
+                shareViewAsBitmap(context, view)
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = GoldFilamentFaint,
+            contentColor = GoldFilament,
+        ),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Icon(
+            Icons.Outlined.Share,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Share Dossier Summary")
+    }
+}
+
+@Composable
+private fun DossierSummaryCard(
+    state: DossierState,
+    viewModel: NightwatchDossierViewModel,
+    onViewReady: ((View) -> Unit)? = null,
+) {
+    // Capture the ComposeView backing this composable for bitmap sharing
+    val currentView = LocalView.current
+    LaunchedEffect(currentView) {
+        onViewReady?.invoke(currentView)
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = ArchiveVoidDeep,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // Header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Image(
+                    painter = painterResource(R.mipmap.ic_launcher_foreground),
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    contentScale = ContentScale.Crop,
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = "NIGHTWATCH DOSSIER",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = GoldFilament,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp,
+                    )
+                    Text(
+                        text = "30-Day Listening Report",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = ArchiveTextMuted,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Big number
+            Text(
+                text = viewModel.formatDurationLong(state.totalListeningTime),
+                style = MaterialTheme.typography.headlineMedium,
+                color = GoldFilament,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = "listened",
+                style = MaterialTheme.typography.bodySmall,
+                color = ArchiveTextMuted,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Stat grid — row 1
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                ShareStatCell(state.totalSessions.toString(), "sessions")
+                ShareStatCell(state.uniqueBooks.toString(), "books")
+                ShareStatCell(state.booksFinished.toString(), "finished")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Stat grid — row 2
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                ShareStatCell(
+                    viewModel.formatDuration(state.dailyAverage),
+                    "daily avg",
+                )
+                val topAuthor = state.authorStats.firstOrNull()?.name ?: "—"
+                ShareStatCell(topAuthor, "top author")
+                val topNarrator = state.narratorStats.firstOrNull()?.name ?: "—"
+                ShareStatCell(topNarrator, "top voice")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Info row: genre, best day, most active day
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                val topGenre = state.genreStats.firstOrNull()?.name
+                if (topGenre != null) {
+                    ShareStatCell(topGenre, "top genre")
+                }
+                state.bestDay?.let { day ->
+                    ShareStatCell(day, "best day")
+                }
+                state.peakDayOfWeek?.let { day ->
+                    ShareStatCell(day, "most active")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Book cover thumbnails (top 6)
+            if (state.bookStats.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    state.bookStats.take(6).forEach { book ->
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 3.dp)
+                                .size(width = 48.dp, height = 64.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(ArchiveVoidElevated),
+                        ) {
+                            if (!book.coverUrl.isNullOrEmpty()) {
+                                AsyncImage(
+                                    model = book.coverUrl,
+                                    contentDescription = book.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Footer whisper
+            Text(
+                text = state.headerWhisper,
+                style = MaterialTheme.typography.bodySmall,
+                color = ArchiveTextFlavor,
+                fontStyle = FontStyle.Italic,
+                textAlign = TextAlign.Center,
+                lineHeight = 16.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShareStatCell(value: String, label: String) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(90.dp),
+    ) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = ArchiveTextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = ArchiveTextMuted,
+            fontSize = 9.sp,
+        )
+    }
+}
+
+private suspend fun shareViewAsBitmap(
+    context: android.content.Context,
+    view: View,
+) {
+    try {
+        // Capture the view on the main thread
+        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+        view.draw(canvas)
+
+        // Save & share on IO thread
+        withContext(Dispatchers.IO) {
+            val dir = File(context.cacheDir, "shared_images")
+            dir.mkdirs()
+            val file = File(dir, "nightwatch_dossier.png")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file,
+            )
+
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share Dossier"))
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
 }
 

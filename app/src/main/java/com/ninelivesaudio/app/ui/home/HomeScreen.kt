@@ -7,10 +7,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -62,7 +61,8 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ArchiveVoidDeep),
+                .background(ArchiveVoidDeep)
+                .verticalScroll(rememberScrollState()),
         ) {
             // ─── Header ──────────────────────────────────────────────────────
             NineLivesAltar(
@@ -72,31 +72,17 @@ fun HomeScreen(
                 onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
             )
 
+            // ─── Nine Lives 3×3 Vault Grid ─────────────────────────────────
+            NineLivesGrid(
+                lives = uiState.lives,
+                onNavigateToBookDetail = onNavigateToBookDetail,
+            )
+
             // ─── The Dossier — Entry Banner ──────────────────────────────
             DossierEntryBanner(onClick = onNavigateToDossier)
 
-            // ─── Nine Lives 3×3 Vault Grid ─────────────────────────────────
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 18.dp),
-                contentPadding = PaddingValues(bottom = 80.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                userScrollEnabled = false,
-            ) {
-                itemsIndexed(
-                    items = uiState.lives,
-                    key = { _, item -> item.audioBookId },
-                ) { index, life ->
-                    HomeGridTile(
-                        item = life,
-                        index = index,
-                        onClick = { onNavigateToBookDetail(life.audioBookId) },
-                    )
-                }
-            }
+            // Breathing room before MiniPlayer
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
@@ -186,6 +172,47 @@ private fun HomeGridTile(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  3×3 Non-Lazy Grid — Rows of 3 tiles, scrolls with parent
+// ═════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun NineLivesGrid(
+    lives: List<HomeViewModel.NineLivesItem>,
+    onNavigateToBookDetail: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        lives.chunked(3).forEachIndexed { rowIndex, rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                rowItems.forEachIndexed { colIndex, life ->
+                    val index = rowIndex * 3 + colIndex
+                    Box(modifier = Modifier.weight(1f)) {
+                        HomeGridTile(
+                            item = life,
+                            index = index,
+                            onClick = { onNavigateToBookDetail(life.audioBookId) },
+                        )
+                    }
+                }
+                // Fill remaining cells in incomplete rows
+                repeat(3 - rowItems.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  Header — Logo + Title + Total Time + Status
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -225,7 +252,7 @@ private fun NineLivesAltar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = 18.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Status pill — top right
@@ -443,7 +470,6 @@ private fun DossierEntryBanner(onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 18.dp)
-            .padding(bottom = 10.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         color = ArchiveVoidSurface,

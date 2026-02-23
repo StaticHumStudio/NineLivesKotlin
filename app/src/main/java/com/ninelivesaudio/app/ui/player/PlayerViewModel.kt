@@ -62,6 +62,7 @@ class PlayerViewModel @Inject constructor(
         val eqBandGains: List<Int> = List(9) { 0 },
         val eqBandFrequencies: List<Int> = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000),
         val eqBandRange: Pair<Int, Int> = Pair(-1500, 1500),
+        val volumeBoost: Int = 0, // millibels, 0–1000
         val showEqSheet: Boolean = false,
 
         // Sleep timer
@@ -224,6 +225,12 @@ class PlayerViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            playbackManager.volumeBoost.collect { boost ->
+                _uiState.update { it.copy(volumeBoost = boost) }
+            }
+        }
+
+        viewModelScope.launch {
             playbackManager.isLocalFile.collect { local ->
                 _uiState.update { it.copy(isLocalFile = local) }
             }
@@ -319,6 +326,13 @@ class PlayerViewModel @Inject constructor(
         playbackManager.setEqBandGain(band, gainMillibels)
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(eqBandGains = playbackManager.eqBandGains.value) }
+        }
+    }
+
+    fun setVolumeBoost(gainMb: Int) {
+        playbackManager.setVolumeBoost(gainMb)
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(volumeBoostGain = playbackManager.volumeBoost.value) }
         }
     }
 

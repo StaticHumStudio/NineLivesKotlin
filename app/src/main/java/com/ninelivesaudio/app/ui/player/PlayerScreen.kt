@@ -53,8 +53,10 @@ fun PlayerScreen(
             bandGains = uiState.eqBandGains,
             bandFrequencies = uiState.eqBandFrequencies,
             bandRange = uiState.eqBandRange,
+            volumeBoost = uiState.volumeBoost,
             onToggleEq = { viewModel.setEqEnabled(!uiState.eqEnabled) },
             onBandGainChange = viewModel::setEqBandGain,
+            onVolumeBoostChange = viewModel::setVolumeBoost,
             onDismiss = { viewModel.dismissEqSheet() },
         )
     }
@@ -573,8 +575,10 @@ private fun EqSheet(
     bandGains: List<Int>,
     bandFrequencies: List<Int>,
     bandRange: Pair<Int, Int>,
+    volumeBoost: Int,
     onToggleEq: () -> Unit,
     onBandGainChange: (Int, Int) -> Unit,
+    onVolumeBoostChange: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -616,7 +620,39 @@ private fun EqSheet(
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Volume Boost slider
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Volume Boost",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ArchiveTextSecondary,
+                )
+                Text(
+                    text = "+${volumeBoost / 100}dB",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (volumeBoost > 0) GoldFilament else ArchiveTextMuted,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Slider(
+                value = volumeBoost.toFloat(),
+                onValueChange = { onVolumeBoostChange(it.toInt()) },
+                valueRange = 0f..1000f,
+                modifier = Modifier.fillMaxWidth(),
+                colors = SliderDefaults.colors(
+                    thumbColor = GoldFilament,
+                    activeTrackColor = GoldFilament,
+                    inactiveTrackColor = ArchiveOutline,
+                ),
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // dB labels
             Row(

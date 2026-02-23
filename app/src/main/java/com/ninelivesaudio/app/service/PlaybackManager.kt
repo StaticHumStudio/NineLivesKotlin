@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
@@ -100,28 +101,48 @@ class PlaybackManager @Inject constructor(
      */
     @OptIn(UnstableApi::class)
     fun initSession() {
-        if (sessionInitialized) {
+        // Check if we need to upgrade from plain MediaSession to MediaLibrarySession.
+        // This happens when initSession() was first called from loadAudioBook() before
+        // PlaybackService existed (creating a plain MediaSession), and now the service
+        // is available in its onCreate(). Without this upgrade, onGetSession() casts to
+        // MediaLibrarySession, gets null, and rejects the MediaController connection —
+        // which triggers a full teardown that kills the player.
+        val needsLibraryUpgrade = sessionInitialized
+                && playbackService != null
+                && mediaSession != null
+                && mediaSession !is MediaLibrarySession
+
+        if (sessionInitialized && !needsLibraryUpgrade) {
             Log.d(TAG, "initSession: already initialized, skipping")
             return
         }
-        Log.d(TAG, "initSession: creating persistent player + session (service=${playbackService != null})")
 
-        val audioAttributes = AudioAttributes.Builder()
-            .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
-            .setUsage(C.USAGE_MEDIA)
-            .build()
+        if (needsLibraryUpgrade) {
+            Log.d(TAG, "initSession: upgrading plain MediaSession → MediaLibrarySession")
+            mediaSession?.release()
+            mediaSession = null
+            // Player and chapterPlayer remain intact — only the session wrapper changes
+        } else {
+            Log.d(TAG, "initSession: creating persistent player + session (service=${playbackService != null})")
 
-        val player = ExoPlayer.Builder(context)
-            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
-            .setHandleAudioBecomingNoisy(true)
-            .build()
-        exoPlayer = player
-        player.addListener(createPlayerListener())
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
 
-        val wrapper = ChapterAwareForwardingPlayer(player)
-        wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
-        chapterPlayer = wrapper
+            val player = ExoPlayer.Builder(context)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+                .setHandleAudioBecomingNoisy(true)
+                .build()
+            exoPlayer = player
+            player.addListener(createPlayerListener())
 
+            val wrapper = ChapterAwareForwardingPlayer(player)
+            wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
+            chapterPlayer = wrapper
+        }
+
+        val wrapper = chapterPlayer!!
         val libraryCallback = playbackService?.createLibraryCallback()
         val isLibrarySession = libraryCallback != null
         mediaSession = if (isLibrarySession) {
@@ -213,6 +234,10 @@ class PlaybackManager @Inject constructor(
     val eqBandGains: StateFlow<List<Int>> = _eqBandGains.asStateFlow()
 
     private var equalizer: Equalizer? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+
+    private val _volumeBoost = MutableStateFlow(0) // millibels, 0–1000
+    val volumeBoost: StateFlow<Int> = _volumeBoost.asStateFlow()
 
     private val _isLocalFile = MutableStateFlow(false)
     val isLocalFile: StateFlow<Boolean> = _isLocalFile.asStateFlow()
@@ -263,8 +288,9 @@ class PlaybackManager @Inject constructor(
             chapterPlayer?.currentChapter = null
             chapterPlayer?.absolutePositionMs = 0L
 
-            // Release old equalizer (will re-attach after loading new items)
+            // Release old audio effects (will re-attach after loading new items)
             releaseEqualizer()
+            releaseLoudnessEnhancer()
 
             // Start server session (must complete before building stream URLs)
             currentSession = null
@@ -352,13 +378,15 @@ class PlaybackManager @Inject constructor(
             player.playbackParameters = PlaybackParameters(_speed.value)
             player.volume = _volume.value
 
-            // Load EQ settings
+            // Load EQ and volume boost settings
             val appSettings = settingsManager.currentSettings
             _eqEnabled.value = appSettings.eqEnabled
             _eqBandGains.value = appSettings.eqBandGains
+            _volumeBoost.value = appSettings.volumeBoostGain
 
-            // Attach equalizer effect
+            // Attach audio effects
             attachEqualizer()
+            attachLoudnessEnhancer()
 
             // Seek to saved position before prepare
             if (startPosition > Duration.ZERO) {
@@ -640,6 +668,31 @@ class PlaybackManager @Inject constructor(
         val eq = equalizer ?: return Pair(-1500, 1500)
         val range = eq.bandLevelRange
         return Pair(range[0].toInt(), range[1].toInt())
+    }
+
+    fun setVolumeBoost(gainMb: Int) {
+        _volumeBoost.value = gainMb.coerceIn(0, 1000)
+        loudnessEnhancer?.setTargetGain(_volumeBoost.value)
+    }
+
+    private fun attachLoudnessEnhancer() {
+        val player = exoPlayer ?: return
+        try {
+            loudnessEnhancer?.release()
+            val enhancer = LoudnessEnhancer(player.audioSessionId)
+            loudnessEnhancer = enhancer
+            enhancer.setTargetGain(_volumeBoost.value)
+            enhancer.enabled = true
+        } catch (e: Exception) {
+            Log.e(TAG, "attachLoudnessEnhancer: failed: ${e.message}", e)
+        }
+    }
+
+    private fun releaseLoudnessEnhancer() {
+        try {
+            loudnessEnhancer?.release()
+        } catch (_: Exception) {}
+        loudnessEnhancer = null
     }
 
     private fun attachEqualizer() {
@@ -947,6 +1000,7 @@ class PlaybackManager @Inject constructor(
         chapterPlayer?.currentChapter = null
         chapterPlayer?.absolutePositionMs = 0L
         releaseEqualizer()
+        releaseLoudnessEnhancer()
         exoPlayer?.stop()
         exoPlayer?.clearMediaItems()
     }
@@ -970,6 +1024,7 @@ class PlaybackManager @Inject constructor(
         }
         chapterPlayer = null
         releaseEqualizer()
+        releaseLoudnessEnhancer()
         exoPlayer?.let { player ->
             player.stop()
             player.release()

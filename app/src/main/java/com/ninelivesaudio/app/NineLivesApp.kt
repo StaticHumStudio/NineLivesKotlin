@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app
 
 import android.app.Application
+import android.content.Context
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
@@ -10,6 +11,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.acra.config.dialog
+import org.acra.config.mailSender
+import org.acra.data.StringFormat
+import org.acra.ktx.initAcra
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -28,6 +33,25 @@ class NineLivesApp : Application() {
     lateinit var apiService: ApiService
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(base)
+        initAcra {
+            buildConfigClass = BuildConfig::class.java
+            reportFormat = StringFormat.JSON
+
+            mailSender {
+                mailTo = "Hum@StaticHum.Studio"
+                reportAsFile = true
+                reportFileName = "NineLives_crash.txt"
+            }
+
+            dialog {
+                text = getString(R.string.crash_dialog_text)
+                commentPrompt = getString(R.string.crash_dialog_comment)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()

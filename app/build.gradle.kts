@@ -106,6 +106,10 @@ dependencies {
     // DataStore (Preferences)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // ACRA (Crash Reporting)
+    implementation("ch.acra:acra-mail:5.11.4")
+    implementation("ch.acra:acra-dialog:5.11.4")
+
     // Testing
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

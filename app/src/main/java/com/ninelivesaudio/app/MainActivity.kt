@@ -28,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
@@ -56,6 +57,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var settingsManager: SettingsManager
+
+    @Inject
+    lateinit var connectivityMonitor: ConnectivityMonitor
 
     @Inject
     lateinit var unhingedRepository: UnhingedSettingsRepository
@@ -170,6 +174,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // App is visible — evict stale connections and recover playback session
+        connectivityMonitor.onAppForegrounded()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // App going to background — record timestamp for debouncing
+        connectivityMonitor.onAppBackgrounded()
     }
 
     private fun requestNotificationPermission() {

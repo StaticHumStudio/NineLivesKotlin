@@ -62,15 +62,16 @@ class ShakeDetector(
             SensorManager.SENSOR_DELAY_UI,
         )
         isRegistered = true
-        hasResting = false
-        Log.d(TAG, "Registered accelerometer listener")
+        // Preserve resting calibration across register/unregister cycles
+        // so motion detection doesn't mis-calibrate if the user is holding the phone.
+        Log.d(TAG, "Registered accelerometer listener (hasResting=$hasResting)")
     }
 
     fun unregister() {
         if (!isRegistered) return
         sensorManager.unregisterListener(this)
         isRegistered = false
-        hasResting = false
+        // Keep hasResting/restingX/Y/Z intact for next register() cycle
         Log.d(TAG, "Unregistered accelerometer listener")
     }
 

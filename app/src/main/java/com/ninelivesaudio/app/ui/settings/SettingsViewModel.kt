@@ -90,15 +90,6 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
-        // App version — always Archive Beneath
-        viewModelScope.launch {
-            settingsManager.settings.collect { settings ->
-                _uiState.update {
-                    it.copy(appVersion = getAppVersion())
-                }
-            }
-        }
-
         // Observe unhinged settings for session count + feature preferences
         viewModelScope.launch {
             unhingedRepository.settingsFlow.collect { unhingedSettings ->

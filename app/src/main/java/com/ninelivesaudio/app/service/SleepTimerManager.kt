@@ -39,6 +39,7 @@ class SleepTimerManager @Inject constructor(
         val remaining: Duration = Duration.ZERO,
         val originalDuration: Duration = Duration.ZERO,
         val isInGracePeriod: Boolean = false,
+        val graceRemaining: Duration = Duration.ZERO,
         val motionDetected: Boolean = false,
     )
 
@@ -157,11 +158,17 @@ class SleepTimerManager @Inject constructor(
                 it.copy(
                     remaining = Duration.ZERO,
                     isInGracePeriod = true,
+                    graceRemaining = GRACE_WINDOW,
                 )
             }
-            // Start grace window countdown
+            // Start grace window countdown with visible timer
             graceJob = scope.launch {
-                delay(GRACE_WINDOW.inWholeMilliseconds)
+                var graceLeft = GRACE_WINDOW
+                while (isActive && graceLeft > Duration.ZERO) {
+                    delay(1_000)
+                    graceLeft -= 1.seconds
+                    _state.update { it.copy(graceRemaining = graceLeft.coerceAtLeast(Duration.ZERO)) }
+                }
                 // Grace expired with no motion → stop
                 Log.d(TAG, "Grace window expired, no motion → stopping")
                 onTimerExpired()

@@ -257,7 +257,10 @@ class PlayerViewModel @Inject constructor(
 
     private fun formatSleepTimer(state: SleepTimerManager.SleepTimerState): String {
         if (!state.isActive) return ""
-        if (state.isInGracePeriod) return "Checking motion..."
+        if (state.isInGracePeriod) {
+            val graceSecs = state.graceRemaining.inWholeSeconds.coerceAtLeast(0)
+            return "Checking motion... ${graceSecs}s"
+        }
         val remaining = state.remaining.inWholeMilliseconds.coerceAtLeast(0)
         val mins = remaining / 60_000
         val secs = (remaining % 60_000) / 1_000

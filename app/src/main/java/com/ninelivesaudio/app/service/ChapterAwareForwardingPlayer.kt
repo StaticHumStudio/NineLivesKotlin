@@ -49,6 +49,16 @@ class ChapterAwareForwardingPlayer(
 
     override fun getContentPosition(): Long = getCurrentPosition()
 
+    override fun getBufferedPosition(): Long {
+        val ch = currentChapter ?: return super.getBufferedPosition()
+        val chapterDurationMs = (ch.durationSeconds * 1000).toLong()
+        val currentPos = getCurrentPosition()
+        val bufferedAhead = (super.getBufferedPosition() - super.getCurrentPosition()).coerceAtLeast(0L)
+        return (currentPos + bufferedAhead).coerceIn(0L, chapterDurationMs)
+    }
+
+    override fun getContentBufferedPosition(): Long = getBufferedPosition()
+
     // ─── Seek Override ──────────────────────────────────────────────────
 
     override fun seekTo(positionMs: Long) {

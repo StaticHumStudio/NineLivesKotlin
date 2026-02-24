@@ -32,6 +32,8 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,6 +72,7 @@ class PlaybackManager @Inject constructor(
     private val audioBookRepository: AudioBookRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val okHttpClient: OkHttpClient,
 ) {
     companion object {
         private const val TAG = "PlaybackManager"
@@ -399,6 +402,25 @@ class PlaybackManager @Inject constructor(
             // Seek to saved position before prepare
             if (startPosition > Duration.ZERO) {
                 seekToPosition(startPosition)
+            }
+
+            // Eagerly set the initial chapter so ChapterAwareForwardingPlayer
+            // returns chapter-relative duration/position from the very first
+            // getDuration() call. Without this, currentChapter is null during
+            // prepare() and Android Auto sees the full book duration until the
+            // 500ms polling loop catches up.
+            if (cachedChapters.isNotEmpty()) {
+                val posSeconds = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
+                val initialChapterIndex = cachedChapters.indexOfFirst { ch ->
+                    posSeconds >= ch.start && posSeconds < ch.end
+                }.takeIf { it >= 0 }
+                    ?: if (posSeconds >= cachedChapters.last().end) cachedChapters.lastIndex else 0
+
+                val initialChapter = cachedChapters[initialChapterIndex]
+                _currentChapter.value = initialChapter
+                _currentChapterIndex.value = initialChapterIndex
+                chapterPlayer?.currentChapter = initialChapter
+                chapterPlayer?.absolutePositionMs = startPosition.inWholeMilliseconds
             }
 
             // Start the foreground service (MediaController connect triggers startForeground).
@@ -953,6 +975,14 @@ class PlaybackManager @Inject constructor(
             val chapter = if (newIndex >= 0) cachedChapters[newIndex] else null
             _currentChapter.value = chapter
             chapterPlayer?.currentChapter = chapter
+
+            // Force MediaSession to re-read duration/position from the ForwardingPlayer.
+            // A no-op seekTo triggers onPositionDiscontinuity, which causes MediaSession
+            // to push updated chapter duration and position to Android Auto.
+            if (chapter != null) {
+                val player = exoPlayer ?: return
+                player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+            }
         }
     }
 
@@ -1155,7 +1185,7 @@ class PlaybackManager @Inject constructor(
 
     // ─── Media Metadata ───────────────────────────────────────────────────────
 
-    private fun buildMediaMetadata(book: AudioBook): MediaMetadata {
+    private suspend fun buildMediaMetadata(book: AudioBook): MediaMetadata {
         val builder = MediaMetadata.Builder()
             .setTitle(book.title)
             .setArtist(book.author)
@@ -1166,6 +1196,23 @@ class PlaybackManager @Inject constructor(
         // Set cover art URI so the notification and lock screen show album art
         if (!book.coverPath.isNullOrEmpty()) {
             builder.setArtworkUri(Uri.parse(book.coverPath))
+
+            // Also embed cover bytes for Android Auto, which can't fetch
+            // authenticated URLs or self-signed cert servers.
+            val artworkBytes = withContext(Dispatchers.IO) {
+                try {
+                    val request = Request.Builder().url(book.coverPath).build()
+                    okHttpClient.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) response.body?.bytes() else null
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "buildMediaMetadata: cover download failed: ${e.message}")
+                    null
+                }
+            }
+            if (artworkBytes != null) {
+                builder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            }
         }
 
         return builder.build()

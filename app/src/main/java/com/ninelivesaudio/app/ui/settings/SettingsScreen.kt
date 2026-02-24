@@ -234,18 +234,21 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Test", fontWeight = FontWeight.SemiBold)
                     }
+                }
+            }
 
-                    Button(
-                        onClick = viewModel::disconnect,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ArchiveError.copy(alpha = 0.15f),
-                            contentColor = ArchiveError,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Text("Disconnect", fontWeight = FontWeight.SemiBold)
-                    }
+            // Disconnect button (own row when connected)
+            if (uiState.isConnected) {
+                Button(
+                    onClick = viewModel::disconnect,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ArchiveError.copy(alpha = 0.15f),
+                        contentColor = ArchiveError,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text("Disconnect", fontWeight = FontWeight.SemiBold)
                 }
             }
 

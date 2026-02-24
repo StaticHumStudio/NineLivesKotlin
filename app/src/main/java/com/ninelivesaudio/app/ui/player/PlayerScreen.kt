@@ -295,10 +295,13 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = {
-                val prevIndex = uiState.currentChapterIndex - 1
-                if (prevIndex >= 0) viewModel.seekToChapter(prevIndex)
-            }) {
+            IconButton(
+                onClick = {
+                    val prevIndex = uiState.currentChapterIndex - 1
+                    if (prevIndex >= 0) viewModel.seekToChapter(prevIndex)
+                },
+                enabled = uiState.currentChapterIndex > 0,
+            ) {
                 Icon(
                     Icons.Outlined.SkipPrevious,
                     contentDescription = "Previous Chapter",
@@ -348,10 +351,13 @@ fun PlayerScreen(
                 )
             }
 
-            IconButton(onClick = {
-                val nextIndex = uiState.currentChapterIndex + 1
-                if (nextIndex < uiState.chapters.size) viewModel.seekToChapter(nextIndex)
-            }) {
+            IconButton(
+                onClick = {
+                    val nextIndex = uiState.currentChapterIndex + 1
+                    if (nextIndex < uiState.chapters.size) viewModel.seekToChapter(nextIndex)
+                },
+                enabled = uiState.currentChapterIndex < uiState.chapters.size - 1,
+            ) {
                 Icon(
                     Icons.Outlined.SkipNext,
                     contentDescription = "Next Chapter",

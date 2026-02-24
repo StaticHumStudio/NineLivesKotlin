@@ -33,6 +33,8 @@ import com.google.common.util.concurrent.MoreExecutors
 import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -253,6 +255,7 @@ class PlaybackManager @Inject constructor(
     // ─── Internal State ───────────────────────────────────────────────────
 
     private var cachedChapters: List<Chapter> = emptyList()
+    private val sessionMutex = Mutex()
     private var currentSession: PlaybackSessionInfo? = null
     private var accumulatedListenTime: Double = 0.0
     private var lastSyncTimestamp: Long = 0L
@@ -298,12 +301,12 @@ class PlaybackManager @Inject constructor(
             releaseLoudnessEnhancer()
 
             // Start server session (must complete before building stream URLs)
-            currentSession = null
+            sessionMutex.withLock { currentSession = null }
             withContext(Dispatchers.IO) {
                 try {
                     val session = apiService.startPlaybackSession(book.id)
                     if (session != null) {
-                        currentSession = session
+                        sessionMutex.withLock { currentSession = session }
                         if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
                             cachedChapters = session.chapters.sortedBy { it.start }
                             _chapters.value = cachedChapters
@@ -315,7 +318,7 @@ class PlaybackManager @Inject constructor(
             }
 
             // If no session audio tracks AND no local audio files, fetch full book details
-            val sessionHasTracks = currentSession?.audioTracks?.isNotEmpty() == true
+            val sessionHasTracks = sessionMutex.withLock { currentSession?.audioTracks?.isNotEmpty() == true }
             if (!sessionHasTracks && effectiveBook.audioFiles.isEmpty() && !(effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty())) {
                 withContext(Dispatchers.IO) {
                     try {
@@ -338,7 +341,7 @@ class PlaybackManager @Inject constructor(
             var startPosition = effectiveBook.currentTime
             withContext(Dispatchers.IO) {
                 // Check server session for a more recent position
-                val sessionTime = (currentSession?.currentTime ?: 0.0).seconds
+                val sessionTime = sessionMutex.withLock { (currentSession?.currentTime ?: 0.0).seconds }
                 if (sessionTime > startPosition) {
                     startPosition = sessionTime
                 }
@@ -499,7 +502,7 @@ class PlaybackManager @Inject constructor(
 
     @OptIn(UnstableApi::class)
     private suspend fun loadStreamTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
-        val session = currentSession
+        val session = sessionMutex.withLock { currentSession }
         val serverUrl = settingsManager.currentSettings.serverUrl.trimEnd('/')
         val token = settingsManager.getAuthToken() ?: ""
 
@@ -710,7 +713,10 @@ class PlaybackManager @Inject constructor(
 
     fun setVolumeBoost(gainMb: Int) {
         _volumeBoost.value = gainMb.coerceIn(0, 1000)
-        loudnessEnhancer?.setTargetGain(_volumeBoost.value)
+        loudnessEnhancer?.let {
+            it.setTargetGain(_volumeBoost.value)
+            it.enabled = _volumeBoost.value > 0
+        }
     }
 
     private fun attachLoudnessEnhancer() {
@@ -720,7 +726,7 @@ class PlaybackManager @Inject constructor(
             val enhancer = LoudnessEnhancer(player.audioSessionId)
             loudnessEnhancer = enhancer
             enhancer.setTargetGain(_volumeBoost.value)
-            enhancer.enabled = true
+            enhancer.enabled = _volumeBoost.value > 0
         } catch (e: Exception) {
             Log.e(TAG, "attachLoudnessEnhancer: failed: ${e.message}", e)
         }
@@ -996,7 +1002,7 @@ class PlaybackManager @Inject constructor(
         } catch (_: Exception) {}
 
         // Sync to server session
-        val session = currentSession
+        val session = sessionMutex.withLock { currentSession }
         if (session != null) {
             try {
                 val now = System.currentTimeMillis()
@@ -1023,11 +1029,11 @@ class PlaybackManager @Inject constructor(
     }
 
     private suspend fun closeSession() {
-        val session = currentSession ?: return
+        val session = sessionMutex.withLock { currentSession } ?: return
         try {
             apiService.closeSession(session.id)
         } catch (_: Exception) {}
-        currentSession = null
+        sessionMutex.withLock { currentSession = null }
     }
 
     // ─── Foreground Recovery (stale session after sleep) ──────────────────
@@ -1048,13 +1054,13 @@ class PlaybackManager @Inject constructor(
      * so the 12s heartbeat and progress sync keep working.
      */
     private fun recoverIfSessionStale() {
-        val session = currentSession ?: return
         val book = _currentBook.value ?: return
         if (_playbackState.value == PlaybackState.STOPPED) return
 
-        Log.d(TAG, "recoverIfSessionStale: testing session ${session.id} for '${book.title}'")
-
         scope.launch(Dispatchers.IO) {
+            val session = sessionMutex.withLock { currentSession } ?: return@launch
+            Log.d(TAG, "recoverIfSessionStale: testing session ${session.id} for '${book.title}'")
+
             try {
                 val success = apiService.syncSessionProgress(
                     sessionId = session.id,
@@ -1083,17 +1089,19 @@ class PlaybackManager @Inject constructor(
         try {
             val newSession = apiService.startPlaybackSession(book.id)
             if (newSession != null) {
-                currentSession = newSession
-                accumulatedListenTime = 0.0
-                lastSyncTimestamp = System.currentTimeMillis()
+                sessionMutex.withLock {
+                    currentSession = newSession
+                    accumulatedListenTime = 0.0
+                    lastSyncTimestamp = System.currentTimeMillis()
+                }
                 Log.d(TAG, "recoverStaleSession: OK newSessionId=${newSession.id}")
             } else {
                 Log.w(TAG, "recoverStaleSession: server returned null — falling back to offline queue")
-                currentSession = null
+                sessionMutex.withLock { currentSession = null }
             }
         } catch (e: Exception) {
             Log.e(TAG, "recoverStaleSession: failed (${e.message}) — falling back to offline queue")
-            currentSession = null
+            sessionMutex.withLock { currentSession = null }
         }
     }
 

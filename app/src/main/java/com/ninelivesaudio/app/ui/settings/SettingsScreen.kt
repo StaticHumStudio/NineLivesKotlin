@@ -893,8 +893,8 @@ private fun PlaybackBehaviorSection(
                             Slider(
                                 value = autoRewindSeconds.toFloat(),
                                 onValueChange = { onAutoRewindSecondsChange((it / 5).toInt() * 5) },
-                                valueRange = 0f..600f,
-                                steps = 119, // (600 - 0) / 5 - 1
+                                valueRange = 0f..120f,
+                                steps = 23, // (120 - 0) / 5 - 1
                                 colors = SliderDefaults.colors(
                                     thumbColor = GoldFilament,
                                     activeTrackColor = GoldFilament,

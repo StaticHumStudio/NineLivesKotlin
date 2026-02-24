@@ -1,8 +1,14 @@
 package com.ninelivesaudio.app.ui.dossier
 
+import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.PixelCopy
 import android.view.View
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -18,6 +24,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -35,8 +43,10 @@ import coil.compose.AsyncImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -740,16 +750,29 @@ private fun DossierShareSection(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var captureView by remember { mutableStateOf<View?>(null) }
+    val rootView = LocalView.current
+    var cardBounds by remember { mutableStateOf<android.graphics.Rect?>(null) }
+    var isSharing by remember { mutableStateOf(false) }
 
     SectionHeader("Share")
 
-    // The card that will be captured — find the View after composition
-    Box(modifier = Modifier.fillMaxWidth()) {
+    // The card that will be captured via PixelCopy
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInWindow()
+                cardBounds = android.graphics.Rect(
+                    bounds.left.toInt(),
+                    bounds.top.toInt(),
+                    bounds.right.toInt(),
+                    bounds.bottom.toInt(),
+                )
+            },
+    ) {
         DossierSummaryCard(
             state = state,
             viewModel = viewModel,
-            onViewReady = { captureView = it },
         )
     }
 
@@ -758,25 +781,50 @@ private fun DossierShareSection(
     // Share button
     Button(
         onClick = {
-            val view = captureView ?: return@Button
+            val bounds = cardBounds
+            if (isSharing || bounds == null || bounds.isEmpty) return@Button
+            isSharing = true
             scope.launch {
-                shareViewAsBitmap(context, view)
+                try {
+                    val bitmap = captureWindowRegion(rootView, bounds)
+                    if (bitmap != null) {
+                        shareBitmap(context, bitmap)
+                    } else {
+                        Toast.makeText(context, "Capture failed – please try again", Toast.LENGTH_SHORT)
+                            .show()
+                    }
+                } catch (e: Exception) {
+                    Log.e("DossierShare", "Share failed", e)
+                    Toast.makeText(context, "Share failed – please try again", Toast.LENGTH_SHORT)
+                        .show()
+                } finally {
+                    isSharing = false
+                }
             }
         },
         modifier = Modifier.fillMaxWidth(),
+        enabled = !isSharing,
         colors = ButtonDefaults.buttonColors(
             containerColor = GoldFilamentFaint,
             contentColor = GoldFilament,
         ),
         shape = RoundedCornerShape(12.dp),
     ) {
-        Icon(
-            Icons.Outlined.Share,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
+        if (isSharing) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                color = GoldFilament,
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Icon(
+                Icons.Outlined.Share,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        }
         Spacer(modifier = Modifier.width(8.dp))
-        Text("Share Dossier Summary")
+        Text(if (isSharing) "Preparing..." else "Share Dossier Summary")
     }
 }
 
@@ -784,14 +832,7 @@ private fun DossierShareSection(
 private fun DossierSummaryCard(
     state: DossierState,
     viewModel: NightwatchDossierViewModel,
-    onViewReady: ((View) -> Unit)? = null,
 ) {
-    // Capture the ComposeView backing this composable for bitmap sharing
-    val currentView = LocalView.current
-    LaunchedEffect(currentView) {
-        onViewReady?.invoke(currentView)
-    }
-
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -969,44 +1010,66 @@ private fun ShareStatCell(
     }
 }
 
-private suspend fun shareViewAsBitmap(
-    context: android.content.Context,
+private suspend fun captureWindowRegion(
     view: View,
+    bounds: android.graphics.Rect,
+): Bitmap? = suspendCancellableCoroutine { cont ->
+    val window = (view.context as? Activity)?.window
+    if (window == null) {
+        cont.resume(null)
+        return@suspendCancellableCoroutine
+    }
+
+    val bitmap = Bitmap.createBitmap(
+        bounds.width(),
+        bounds.height(),
+        Bitmap.Config.ARGB_8888,
+    )
+
+    PixelCopy.request(
+        window,
+        bounds,
+        bitmap,
+        { result ->
+            if (result == PixelCopy.SUCCESS) {
+                cont.resume(bitmap)
+            } else {
+                Log.e("DossierShare", "PixelCopy failed with result: $result")
+                cont.resume(null)
+            }
+        },
+        Handler(Looper.getMainLooper()),
+    )
+}
+
+private suspend fun shareBitmap(
+    context: android.content.Context,
+    bitmap: Bitmap,
 ) {
-    try {
-        if (view.width == 0 || view.height == 0) return
-
-        // Capture the view on the main thread
-        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(bitmap)
-        view.draw(canvas)
-
-        // Save image on IO thread
-        val uri = withContext(Dispatchers.IO) {
-            val dir = File(context.cacheDir, "shared_images")
-            dir.mkdirs()
-            val file = File(dir, "nightwatch_dossier.png")
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            }
-
-            FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file,
-            )
+    // Save image on IO thread
+    val uri = withContext(Dispatchers.IO) {
+        val dir = File(context.cacheDir, "shared_images")
+        dir.mkdirs()
+        val file = File(dir, "nightwatch_dossier.png")
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
         }
 
-        withContext(Dispatchers.Main) {
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "image/png"
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(Intent.createChooser(intent, "Share Dossier"))
+        FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+    }
+
+    // Launch share chooser on main thread
+    withContext(Dispatchers.Main) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
+        context.startActivity(Intent.createChooser(intent, "Share Dossier"))
     }
 }
 

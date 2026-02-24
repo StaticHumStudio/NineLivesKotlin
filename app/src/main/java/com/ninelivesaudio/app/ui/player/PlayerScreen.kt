@@ -1,6 +1,10 @@
 package com.ninelivesaudio.app.ui.player
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -410,13 +414,29 @@ fun PlayerScreen(
             )
         }
 
-        // Sleep timer countdown
+        // Sleep timer countdown (with pulsing alpha during grace period)
         if (uiState.sleepTimerActive && uiState.sleepTimerText.isNotEmpty()) {
             Spacer(modifier = Modifier.height(8.dp))
+
+            val alpha = if (uiState.sleepTimerInGrace) {
+                val transition = rememberInfiniteTransition(label = "graceGlow")
+                transition.animateFloat(
+                    initialValue = 0.4f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(800),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "graceAlpha",
+                ).value
+            } else {
+                1f
+            }
+
             Text(
                 text = uiState.sleepTimerText,
                 style = MaterialTheme.typography.labelSmall,
-                color = GoldFilament,
+                color = GoldFilament.copy(alpha = alpha),
                 textAlign = TextAlign.Center,
             )
         }

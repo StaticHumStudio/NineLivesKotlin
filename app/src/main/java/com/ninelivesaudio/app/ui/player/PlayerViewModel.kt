@@ -11,14 +11,13 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.PlaybackState
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.SleepTimerManager
 import com.ninelivesaudio.app.domain.util.toClockString
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 @HiltViewModel
@@ -27,6 +26,7 @@ class PlayerViewModel @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val bookmarkRepository: BookmarkRepository,
     private val settingsManager: SettingsManager,
+    private val sleepTimerManager: SleepTimerManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -69,6 +69,7 @@ class PlayerViewModel @Inject constructor(
         val sleepTimerActive: Boolean = false,
         val sleepTimerText: String = "",
         val sleepTimerRemaining: Duration = Duration.ZERO,
+        val sleepTimerInGrace: Boolean = false,
 
         // Chapters
         val chapters: List<Chapter> = emptyList(),
@@ -90,10 +91,6 @@ class PlayerViewModel @Inject constructor(
 
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     val sleepTimerOptions = listOf<Int?>(null, 5, 10, 15, 30, 45, 60)
-
-    // Sleep timer
-    private var sleepTimerJob: Job? = null
-    private var sleepTimerEndTime: Long? = null
 
     init {
         // Observe playback state
@@ -236,12 +233,35 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
+        // Observe sleep timer
+        viewModelScope.launch {
+            sleepTimerManager.state.collect { timerState ->
+                _uiState.update {
+                    it.copy(
+                        sleepTimerActive = timerState.isActive,
+                        sleepTimerRemaining = timerState.remaining,
+                        sleepTimerText = formatSleepTimer(timerState),
+                        sleepTimerInGrace = timerState.isInGracePeriod,
+                    )
+                }
+            }
+        }
+
         // Observe connection
         viewModelScope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
                 _uiState.update { it.copy(connectionStatus = status) }
             }
         }
+    }
+
+    private fun formatSleepTimer(state: SleepTimerManager.SleepTimerState): String {
+        if (!state.isActive) return ""
+        if (state.isInGracePeriod) return "Checking motion..."
+        val remaining = state.remaining.inWholeMilliseconds.coerceAtLeast(0)
+        val mins = remaining / 60_000
+        val secs = (remaining % 60_000) / 1_000
+        return "Sleep in ${mins}:${secs.toString().padStart(2, '0')}"
     }
 
     private fun updateBookProperties(book: AudioBook?) {
@@ -402,65 +422,13 @@ class PlayerViewModel @Inject constructor(
     // ─── Sleep Timer ──────────────────────────────────────────────────────
 
     fun setSleepTimer(minutes: Int?) {
-        cancelSleepTimer()
-
         if (minutes == null || minutes <= 0) {
-            _uiState.update {
-                it.copy(sleepTimerActive = false, sleepTimerText = "")
-            }
-            return
-        }
-
-        sleepTimerEndTime = System.currentTimeMillis() + minutes * 60_000L
-        _uiState.update {
-            it.copy(
-                sleepTimerActive = true,
-                sleepTimerRemaining = minutes.minutes,
-            )
-        }
-        updateSleepTimerText()
-
-        sleepTimerJob = viewModelScope.launch {
-            while (isActive) {
-                delay(1_000)
-                val endTime = sleepTimerEndTime ?: break
-                val remaining = endTime - System.currentTimeMillis()
-
-                if (remaining <= 0) {
-                    playbackManager.pause()
-                    cancelSleepTimer()
-                    break
-                } else {
-                    _uiState.update {
-                        it.copy(sleepTimerRemaining = remaining.milliseconds)
-                    }
-                    updateSleepTimerText()
-                }
-            }
+            sleepTimerManager.cancel()
+        } else {
+            sleepTimerManager.start(minutes)
         }
     }
 
-    fun cancelSleepTimer() {
-        sleepTimerJob?.cancel()
-        sleepTimerJob = null
-        sleepTimerEndTime = null
-        _uiState.update {
-            it.copy(
-                sleepTimerActive = false,
-                sleepTimerText = "",
-                sleepTimerRemaining = Duration.ZERO,
-            )
-        }
-    }
-
-    private fun updateSleepTimerText() {
-        val endTime = sleepTimerEndTime ?: return
-        val remaining = (endTime - System.currentTimeMillis()).coerceAtLeast(0)
-        val mins = remaining / 60_000
-        val secs = (remaining % 60_000) / 1_000
-        _uiState.update {
-            it.copy(sleepTimerText = "Sleep in ${mins}:${secs.toString().padStart(2, '0')}")
-        }
-    }
+    fun cancelSleepTimer() = sleepTimerManager.cancel()
 
 }

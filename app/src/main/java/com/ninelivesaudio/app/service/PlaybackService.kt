@@ -50,7 +50,11 @@ class PlaybackService : MediaLibraryService() {
     @Inject
     lateinit var mediaBrowseTree: MediaBrowseTree
 
+    @Inject
+    lateinit var sleepTimerManager: SleepTimerManager
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var shakeDetector: ShakeDetector? = null
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -73,6 +77,24 @@ class PlaybackService : MediaLibraryService() {
         // Create persistent MediaLibrarySession so Android Auto can browse
         // even before any book is loaded from the phone
         playbackManager.initSession()
+
+        // Create shake detector and wire to SleepTimerManager
+        shakeDetector = ShakeDetector(
+            context = this,
+            onShake = { sleepTimerManager.onShakeDetected() },
+            onMotionUpdate = { moving -> sleepTimerManager.onMotionUpdate(moving) },
+        )
+
+        // Register/unregister accelerometer based on sleep timer state
+        serviceScope.launch {
+            sleepTimerManager.state.collect { state ->
+                if (state.isActive) {
+                    shakeDetector?.register()
+                } else {
+                    shakeDetector?.unregister()
+                }
+            }
+        }
 
         Log.d(TAG, "onCreate: PlaybackService created, session=${playbackManager.getMediaSession() != null}")
     }
@@ -105,6 +127,8 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy: starting teardown")
+        shakeDetector?.unregister()
+        shakeDetector = null
         playbackManager.releaseAll()
         playbackManager.setPlaybackService(null)
         serviceScope.cancel()

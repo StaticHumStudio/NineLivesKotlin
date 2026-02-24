@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.ui.settings
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +23,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -37,6 +40,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val uriHandler = LocalUriHandler.current
 
     Column(
         modifier = Modifier
@@ -195,6 +199,24 @@ fun SettingsScreen(
                         )
                     }
                 } else {
+                    Button(
+                        onClick = viewModel::refreshConnection,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ArchiveVoidSurface,
+                            contentColor = GoldFilament,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Refresh", fontWeight = FontWeight.SemiBold)
+                    }
+
                     Button(
                         onClick = viewModel::testConnection,
                         modifier = Modifier.weight(1f),
@@ -368,6 +390,30 @@ fun SettingsScreen(
                 ) {
                     DiagnosticRow("App Version", uiState.appVersion)
                     DiagnosticRow("Settings File", uiState.settingsFilePath.ifEmpty { "(default)" })
+
+                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Studio",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ArchiveTextMuted,
+                        )
+                        Text(
+                            text = "StaticHum.Studio",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                            color = GoldFilament,
+                            modifier = Modifier.clickable {
+                                uriHandler.openUri("https://statichum.studio")
+                            },
+                        )
+                    }
                 }
             }
 

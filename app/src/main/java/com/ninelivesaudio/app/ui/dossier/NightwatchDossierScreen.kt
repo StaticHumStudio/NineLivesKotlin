@@ -1,12 +1,10 @@
 package com.ninelivesaudio.app.ui.dossier
 
-import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
 import android.graphics.Bitmap
-import android.os.Handler
-import android.os.Looper
+import android.graphics.Canvas
 import android.util.Log
-import android.view.PixelCopy
 import android.view.View
 import android.widget.Toast
 import androidx.compose.foundation.Image
@@ -24,7 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -43,10 +41,8 @@ import coil.compose.AsyncImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
-import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -756,12 +752,12 @@ private fun DossierShareSection(
 
     SectionHeader("Share")
 
-    // The card that will be captured via PixelCopy
+    // The card that will be captured directly from the Compose host view.
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInWindow()
+                val bounds = coordinates.boundsInRoot()
                 cardBounds = android.graphics.Rect(
                     bounds.left.toInt(),
                     bounds.top.toInt(),
@@ -786,7 +782,7 @@ private fun DossierShareSection(
             isSharing = true
             scope.launch {
                 try {
-                    val bitmap = captureWindowRegion(rootView, bounds)
+                    val bitmap = captureViewRegion(rootView, bounds)
                     if (bitmap != null) {
                         shareBitmap(context, bitmap)
                     } else {
@@ -1010,37 +1006,26 @@ private fun ShareStatCell(
     }
 }
 
-private suspend fun captureWindowRegion(
+private fun captureViewRegion(
     view: View,
     bounds: android.graphics.Rect,
-): Bitmap? = suspendCancellableCoroutine { cont ->
-    val window = (view.context as? Activity)?.window
-    if (window == null) {
-        cont.resume(null)
-        return@suspendCancellableCoroutine
+): Bitmap? = runCatching {
+    val safeBounds = android.graphics.Rect(
+        bounds.left.coerceAtLeast(0),
+        bounds.top.coerceAtLeast(0),
+        bounds.right.coerceAtMost(view.width),
+        bounds.bottom.coerceAtMost(view.height),
+    )
+    if (safeBounds.isEmpty) return null
+
+    Bitmap.createBitmap(safeBounds.width(), safeBounds.height(), Bitmap.Config.ARGB_8888).also { bitmap ->
+        val canvas = Canvas(bitmap)
+        canvas.translate(-safeBounds.left.toFloat(), -safeBounds.top.toFloat())
+        view.draw(canvas)
     }
-
-    val bitmap = Bitmap.createBitmap(
-        bounds.width(),
-        bounds.height(),
-        Bitmap.Config.ARGB_8888,
-    )
-
-    PixelCopy.request(
-        window,
-        bounds,
-        bitmap,
-        { result ->
-            if (result == PixelCopy.SUCCESS) {
-                cont.resume(bitmap)
-            } else {
-                Log.e("DossierShare", "PixelCopy failed with result: $result")
-                cont.resume(null)
-            }
-        },
-        Handler(Looper.getMainLooper()),
-    )
-}
+}.onFailure { error ->
+    Log.e("DossierShare", "View capture failed", error)
+}.getOrNull()
 
 private suspend fun shareBitmap(
     context: android.content.Context,
@@ -1067,7 +1052,15 @@ private suspend fun shareBitmap(
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "image/png"
             putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri("Nightwatch Dossier", uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.packageManager.queryIntentActivities(intent, 0).forEach { resolveInfo ->
+            context.grantUriPermission(
+                resolveInfo.activityInfo.packageName,
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
         }
         context.startActivity(Intent.createChooser(intent, "Share Dossier"))
     }

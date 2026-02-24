@@ -7,10 +7,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,12 +36,15 @@ import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerCont
 import com.ninelivesaudio.app.ui.animation.unhinged.sigil.SigilProgress
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Assessment
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
 fun HomeScreen(
     onNavigateToLibrary: () -> Unit = {},
     onNavigateToBookDetail: (String) -> Unit = {},
+    onNavigateToDossier: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -59,7 +61,8 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ArchiveVoidDeep),
+                .background(ArchiveVoidDeep)
+                .verticalScroll(rememberScrollState()),
         ) {
             // ─── Header ──────────────────────────────────────────────────────
             NineLivesAltar(
@@ -70,27 +73,16 @@ fun HomeScreen(
             )
 
             // ─── Nine Lives 3×3 Vault Grid ─────────────────────────────────
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 18.dp),
-                contentPadding = PaddingValues(bottom = 80.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                userScrollEnabled = false,
-            ) {
-                itemsIndexed(
-                    items = uiState.lives,
-                    key = { _, item -> item.audioBookId },
-                ) { index, life ->
-                    HomeGridTile(
-                        item = life,
-                        index = index,
-                        onClick = { onNavigateToBookDetail(life.audioBookId) },
-                    )
-                }
-            }
+            NineLivesGrid(
+                lives = uiState.lives,
+                onNavigateToBookDetail = onNavigateToBookDetail,
+            )
+
+            // ─── The Dossier — Entry Banner ──────────────────────────────
+            DossierEntryBanner(onClick = onNavigateToDossier)
+
+            // Breathing room before MiniPlayer
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
@@ -180,6 +172,47 @@ private fun HomeGridTile(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  3×3 Non-Lazy Grid — Rows of 3 tiles, scrolls with parent
+// ═════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun NineLivesGrid(
+    lives: List<HomeViewModel.NineLivesItem>,
+    onNavigateToBookDetail: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        lives.chunked(3).forEachIndexed { rowIndex, rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                rowItems.forEachIndexed { colIndex, life ->
+                    val index = rowIndex * 3 + colIndex
+                    Box(modifier = Modifier.weight(1f)) {
+                        HomeGridTile(
+                            item = life,
+                            index = index,
+                            onClick = { onNavigateToBookDetail(life.audioBookId) },
+                        )
+                    }
+                }
+                // Fill remaining cells in incomplete rows
+                repeat(3 - rowItems.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  Header — Logo + Title + Total Time + Status
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -219,7 +252,7 @@ private fun NineLivesAltar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = 18.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Status pill — top right
@@ -422,6 +455,66 @@ private fun EmptyHomeState(
             Text(
                 text = "Enter The Archive",
                 fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Dossier Entry Banner — Navigate to Nightwatch Dossier
+// ═════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun DossierEntryBanner(onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = ArchiveVoidSurface,
+        tonalElevation = 1.dp,
+        border = BorderStroke(1.dp, ArchiveOutline.copy(alpha = 0.5f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Assessment,
+                    contentDescription = null,
+                    tint = GoldFilament,
+                    modifier = Modifier.size(18.dp),
+                )
+                Column {
+                    Text(
+                        text = "THE NIGHTWATCH DOSSIER",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = GoldFilament,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        text = "30-day listening intelligence",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+            Text(
+                text = "›",
+                color = GoldFilament,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Light,
             )
         }
     }

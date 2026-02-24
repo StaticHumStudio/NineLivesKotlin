@@ -65,6 +65,16 @@ class SettingsViewModel @Inject constructor(
         val eqBandGains: List<Int> = List(9) { 0 },
         val eqBandFrequencies: List<Int> = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000),
         val eqBandRange: Pair<Int, Int> = Pair(-1500, 1500),
+
+        // Auto-Rewind
+        val autoRewindEnabled: Boolean = true,
+        val autoRewindMode: String = "smart",
+        val autoRewindSeconds: Int = 15,
+
+        // Sleep Timer
+        val sleepTimerMotionEnabled: Boolean = true,
+        val sleepTimerShakeResetEnabled: Boolean = true,
+        val sleepTimerRewindSeconds: Int = 15,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -145,6 +155,12 @@ class SettingsViewModel @Inject constructor(
                 allowSelfSignedCertificates = settings.allowSelfSignedCertificates,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
+                autoRewindEnabled = settings.autoRewindEnabled,
+                autoRewindMode = settings.autoRewindMode,
+                autoRewindSeconds = settings.autoRewindSeconds,
+                sleepTimerMotionEnabled = settings.sleepTimerMotionEnabled,
+                sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
+                sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
             )
         }
 
@@ -191,6 +207,52 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(allowSelfSignedCertificates = value) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(allowSelfSignedCertificates = value) }
+        }
+    }
+
+    // ─── Auto-Rewind Settings ─────────────────────────────────────────────
+
+    fun setAutoRewindEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(autoRewindEnabled = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(autoRewindEnabled = enabled) }
+        }
+    }
+
+    fun setAutoRewindMode(mode: String) {
+        _uiState.update { it.copy(autoRewindMode = mode) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(autoRewindMode = mode) }
+        }
+    }
+
+    fun setAutoRewindSeconds(seconds: Int) {
+        _uiState.update { it.copy(autoRewindSeconds = seconds) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(autoRewindSeconds = seconds) }
+        }
+    }
+
+    // ─── Sleep Timer Settings ─────────────────────────────────────────────
+
+    fun setSleepTimerMotionEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(sleepTimerMotionEnabled = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(sleepTimerMotionEnabled = enabled) }
+        }
+    }
+
+    fun setSleepTimerShakeResetEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(sleepTimerShakeResetEnabled = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(sleepTimerShakeResetEnabled = enabled) }
+        }
+    }
+
+    fun setSleepTimerRewindSeconds(seconds: Int) {
+        _uiState.update { it.copy(sleepTimerRewindSeconds = seconds) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(sleepTimerRewindSeconds = seconds) }
         }
     }
 

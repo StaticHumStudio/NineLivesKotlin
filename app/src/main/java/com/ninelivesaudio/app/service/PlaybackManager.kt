@@ -199,6 +199,9 @@ class PlaybackManager @Inject constructor(
     private var positionPollingJob: Job? = null
     private var sessionSyncJob: Job? = null
 
+    // Auto-rewind: timestamp of last pause
+    private var pausedAtTimestamp: Long? = null
+
     // ─── State ────────────────────────────────────────────────────────────
 
     private val _playbackState = MutableStateFlow(PlaybackState.STOPPED)
@@ -275,6 +278,7 @@ class PlaybackManager @Inject constructor(
             _currentChapter.value = null
             _currentChapterIndex.value = -1
             accumulatedListenTime = 0.0
+            pausedAtTimestamp = null
 
             // Ensure persistent player and session exist
             initSession()
@@ -555,6 +559,27 @@ class PlaybackManager @Inject constructor(
 
     fun play() {
         exoPlayer?.let { player ->
+            // ── Auto-Rewind ───────────────────────────────────────────
+            val settings = settingsManager.currentSettings
+            if (settings.autoRewindEnabled) {
+                val pausedAt = pausedAtTimestamp
+                if (pausedAt != null) {
+                    val pausedMs = System.currentTimeMillis() - pausedAt
+                    val rewindSeconds = when (settings.autoRewindMode) {
+                        "flat" -> settings.autoRewindSeconds
+                        else -> smartRewindSeconds(pausedMs)
+                    }
+                    if (rewindSeconds > 0) {
+                        val current = _position.value
+                        val target = (current - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
+                        seekToPosition(target)
+                        _position.value = target
+                        updateCurrentChapter(target)
+                    }
+                }
+                pausedAtTimestamp = null
+            }
+            // ── Resume ────────────────────────────────────────────────
             player.playWhenReady = true
             // If already in STATE_READY, start immediately
             if (player.playbackState == Player.STATE_READY) {
@@ -566,10 +591,21 @@ class PlaybackManager @Inject constructor(
         }
     }
 
+    private fun smartRewindSeconds(pausedMs: Long): Int {
+        return when {
+            pausedMs < 30_000     -> 0
+            pausedMs < 120_000    -> 5
+            pausedMs < 600_000    -> 15
+            pausedMs < 3_600_000  -> 30
+            else                  -> 60
+        }
+    }
+
     fun pause() {
         exoPlayer?.let { player ->
             player.playWhenReady = false
             _playbackState.value = PlaybackState.PAUSED
+            pausedAtTimestamp = System.currentTimeMillis()
             stopPositionPolling()
             stopSessionSync()
             scope.launch(Dispatchers.IO) { syncProgressNow() }
@@ -578,6 +614,7 @@ class PlaybackManager @Inject constructor(
 
     fun stop() {
         Log.d(TAG, "stop: book=${_currentBook.value?.title} pos=${_position.value}")
+        pausedAtTimestamp = null
         stopPositionPolling()
         stopSessionSync()
 

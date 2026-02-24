@@ -274,6 +274,44 @@ fun SettingsScreen(
                 thickness = 1.dp,
             )
 
+            // ─── Playback Behavior ───────────────────────────────────
+            SectionHeader(text = "Playback Behavior")
+
+            PlaybackBehaviorSection(
+                autoRewindEnabled = uiState.autoRewindEnabled,
+                autoRewindMode = uiState.autoRewindMode,
+                autoRewindSeconds = uiState.autoRewindSeconds,
+                onAutoRewindEnabledChange = viewModel::setAutoRewindEnabled,
+                onAutoRewindModeChange = viewModel::setAutoRewindMode,
+                onAutoRewindSecondsChange = viewModel::setAutoRewindSeconds,
+            )
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = ArchiveVoidElevated,
+                thickness = 1.dp,
+            )
+
+            // ─── Sleep Timer ─────────────────────────────────────────
+            SectionHeader(text = "Sleep Timer")
+
+            SleepTimerSettingsSection(
+                motionEnabled = uiState.sleepTimerMotionEnabled,
+                shakeResetEnabled = uiState.sleepTimerShakeResetEnabled,
+                rewindSeconds = uiState.sleepTimerRewindSeconds,
+                onMotionEnabledChange = viewModel::setSleepTimerMotionEnabled,
+                onShakeResetEnabledChange = viewModel::setSleepTimerShakeResetEnabled,
+                onRewindSecondsChange = viewModel::setSleepTimerRewindSeconds,
+            )
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = ArchiveVoidElevated,
+                thickness = 1.dp,
+            )
+
             // ─── Sync ──────────────────────────────────────────────────
             SectionHeader(text = "Sync")
 
@@ -726,6 +764,180 @@ private fun ArchivePreferenceRow(
                 uncheckedTrackColor = ArchiveVoidElevated,
             ),
         )
+    }
+}
+
+// ─── Playback Behavior Section ──────────────────────────────────────────
+
+@Composable
+private fun PlaybackBehaviorSection(
+    autoRewindEnabled: Boolean,
+    autoRewindMode: String,
+    autoRewindSeconds: Int,
+    onAutoRewindEnabledChange: (Boolean) -> Unit,
+    onAutoRewindModeChange: (String) -> Unit,
+    onAutoRewindSecondsChange: (Int) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            // Toggle: Auto-Rewind on Resume
+            ArchivePreferenceRow(
+                title = "Auto-Rewind on Resume",
+                subtitle = "Rewind when playback resumes after a pause",
+                checked = autoRewindEnabled,
+                onCheckedChange = onAutoRewindEnabledChange,
+            )
+
+            // Mode selector + slider (visible when enabled)
+            AnimatedVisibility(visible = autoRewindEnabled) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                    // Mode: Smart / Fixed
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf("smart" to "Smart", "flat" to "Fixed").forEach { (value, label) ->
+                            FilterChip(
+                                selected = autoRewindMode == value,
+                                onClick = { onAutoRewindModeChange(value) },
+                                label = { Text(label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = GoldFilamentFaint,
+                                    selectedLabelColor = GoldFilament,
+                                    containerColor = ArchiveVoidElevated,
+                                    labelColor = ArchiveTextSecondary,
+                                ),
+                            )
+                        }
+                    }
+
+                    // Smart mode description
+                    if (autoRewindMode == "smart") {
+                        Text(
+                            text = "Rewind scales with pause duration — short pauses rewind less, long pauses rewind more",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ArchiveTextMuted,
+                        )
+                    }
+
+                    // Flat mode slider
+                    AnimatedVisibility(visible = autoRewindMode == "flat") {
+                        Column {
+                            Text(
+                                text = "Rewind: ${formatSeconds(autoRewindSeconds)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = GoldFilament,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Slider(
+                                value = autoRewindSeconds.toFloat(),
+                                onValueChange = { onAutoRewindSecondsChange((it / 5).toInt() * 5) },
+                                valueRange = 0f..600f,
+                                steps = 119, // (600 - 0) / 5 - 1
+                                colors = SliderDefaults.colors(
+                                    thumbColor = GoldFilament,
+                                    activeTrackColor = GoldFilament,
+                                    inactiveTrackColor = ArchiveVoidElevated,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── Sleep Timer Settings Section ───────────────────────────────────────
+
+@Composable
+private fun SleepTimerSettingsSection(
+    motionEnabled: Boolean,
+    shakeResetEnabled: Boolean,
+    rewindSeconds: Int,
+    onMotionEnabledChange: (Boolean) -> Unit,
+    onShakeResetEnabledChange: (Boolean) -> Unit,
+    onRewindSecondsChange: (Int) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            // Motion sensing toggle
+            ArchivePreferenceRow(
+                title = "Motion Sensing",
+                subtitle = "Keep playing if the phone is held when timer expires",
+                checked = motionEnabled,
+                onCheckedChange = onMotionEnabledChange,
+            )
+
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+            // Shake to reset toggle
+            ArchivePreferenceRow(
+                title = "Shake to Reset",
+                subtitle = "Shake the phone to restart the sleep timer",
+                checked = shakeResetEnabled,
+                onCheckedChange = onShakeResetEnabledChange,
+            )
+
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+            // Rewind on sleep slider
+            Column(
+                modifier = Modifier.padding(vertical = 8.dp),
+            ) {
+                Text(
+                    text = "Rewind on Sleep: ${formatSeconds(rewindSeconds)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ArchiveTextPrimary,
+                )
+                Text(
+                    text = "How far to rewind when the sleep timer stops playback",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Slider(
+                    value = rewindSeconds.toFloat(),
+                    onValueChange = { onRewindSecondsChange((it / 5).toInt() * 5) },
+                    valueRange = 0f..60f,
+                    steps = 11, // (60 - 0) / 5 - 1
+                    colors = SliderDefaults.colors(
+                        thumbColor = GoldFilament,
+                        activeTrackColor = GoldFilament,
+                        inactiveTrackColor = ArchiveVoidElevated,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+private fun formatSeconds(seconds: Int): String {
+    return when {
+        seconds == 0 -> "Off"
+        seconds < 60 -> "${seconds}s"
+        seconds % 60 == 0 -> "${seconds / 60}m"
+        else -> "${seconds / 60}m ${seconds % 60}s"
     }
 }
 

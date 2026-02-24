@@ -26,6 +26,14 @@ data class AppSettings(
     val anomaliesEnabled: Boolean = true,
     val whispersEnabled: Boolean = true,
     val copyMode: String = "Unhinged", // Normal, Ritual, or Unhinged
+    // Auto-Rewind on Resume
+    val autoRewindEnabled: Boolean = true,
+    val autoRewindMode: String = "smart",    // "smart" or "flat"
+    val autoRewindSeconds: Int = 15,         // flat mode: 0–600, step 5
+    // Sleep Timer enhancements
+    val sleepTimerMotionEnabled: Boolean = true,
+    val sleepTimerShakeResetEnabled: Boolean = true,
+    val sleepTimerRewindSeconds: Int = 15,   // rewind on timer stop: 0–60, step 5
 )
 
 @Serializable

@@ -5,12 +5,17 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.util.Log
 import com.ninelivesaudio.app.data.remote.ApiService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.OkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,7 +27,13 @@ import javax.inject.Singleton
 class ConnectivityMonitor @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val apiService: ApiService,
+    private val okHttpClient: OkHttpClient,
 ) {
+    companion object {
+        private const val TAG = "ConnectivityMonitor"
+        /** Minimum background duration (ms) before triggering recovery on foreground. */
+        private const val MIN_BACKGROUND_DURATION_MS = 5_000L
+    }
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -33,6 +44,13 @@ class ConnectivityMonitor @Inject constructor(
     // Guard against concurrent reachability checks during network flaps.
     // Each new request cancels any in-flight check so only the latest wins.
     private var reachabilityJob: Job? = null
+
+    // Track when the app went to background for debouncing foreground recovery
+    @Volatile private var backgroundedAt: Long = 0L
+
+    // Emitted when the app returns from a meaningful background period
+    private val _appResumedFromBackground = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val appResumedFromBackground: SharedFlow<Unit> = _appResumedFromBackground.asSharedFlow()
 
     // ─── State ────────────────────────────────────────────────────────────
 
@@ -170,6 +188,45 @@ class ConnectivityMonitor @Inject constructor(
     fun setSyncing(syncing: Boolean) {
         _isSyncing.value = syncing
         updateConnectionStatus()
+    }
+
+    // ─── App Lifecycle (foreground / background) ─────────────────────────
+
+    /**
+     * Called when the app moves to the background (Activity.onStop).
+     * Records the timestamp for debouncing foreground recovery.
+     */
+    fun onAppBackgrounded() {
+        backgroundedAt = System.currentTimeMillis()
+    }
+
+    /**
+     * Called when the app returns to the foreground (Activity.onStart).
+     *
+     * After device sleep or extended background, TCP connections in OkHttp's
+     * pool are often dead but not yet detected — making all API calls fail
+     * until the pool cycles. Fix: evict idle connections immediately, then
+     * force a server reachability check so the rest of the app knows the
+     * connection state within seconds instead of waiting up to 60s.
+     */
+    fun onAppForegrounded() {
+        val elapsed = System.currentTimeMillis() - backgroundedAt
+        if (backgroundedAt > 0 && elapsed < MIN_BACKGROUND_DURATION_MS) return
+
+        Log.d(TAG, "onAppForegrounded: background=${elapsed}ms — evicting stale connections")
+
+        // Kill stale TCP connections so the next request opens a fresh socket
+        try {
+            okHttpClient.connectionPool.evictAll()
+        } catch (e: Exception) {
+            Log.w(TAG, "onAppForegrounded: evictAll failed: ${e.message}")
+        }
+
+        // Force immediate server check (don't wait for the 60s timer)
+        launchReachabilityCheck()
+
+        // Notify observers (PlaybackManager) that we're back from background
+        _appResumedFromBackground.tryEmit(Unit)
     }
 
     // ─── Status Calculation ───────────────────────────────────────────────

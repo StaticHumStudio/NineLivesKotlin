@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
@@ -66,6 +67,7 @@ class PlaybackManager @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val audioBookRepository: AudioBookRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) {
     companion object {
         private const val TAG = "PlaybackManager"
@@ -100,28 +102,48 @@ class PlaybackManager @Inject constructor(
      */
     @OptIn(UnstableApi::class)
     fun initSession() {
-        if (sessionInitialized) {
+        // Check if we need to upgrade from plain MediaSession to MediaLibrarySession.
+        // This happens when initSession() was first called from loadAudioBook() before
+        // PlaybackService existed (creating a plain MediaSession), and now the service
+        // is available in its onCreate(). Without this upgrade, onGetSession() casts to
+        // MediaLibrarySession, gets null, and rejects the MediaController connection —
+        // which triggers a full teardown that kills the player.
+        val needsLibraryUpgrade = sessionInitialized
+                && playbackService != null
+                && mediaSession != null
+                && mediaSession !is MediaLibrarySession
+
+        if (sessionInitialized && !needsLibraryUpgrade) {
             Log.d(TAG, "initSession: already initialized, skipping")
             return
         }
-        Log.d(TAG, "initSession: creating persistent player + session (service=${playbackService != null})")
 
-        val audioAttributes = AudioAttributes.Builder()
-            .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
-            .setUsage(C.USAGE_MEDIA)
-            .build()
+        if (needsLibraryUpgrade) {
+            Log.d(TAG, "initSession: upgrading plain MediaSession → MediaLibrarySession")
+            mediaSession?.release()
+            mediaSession = null
+            // Player and chapterPlayer remain intact — only the session wrapper changes
+        } else {
+            Log.d(TAG, "initSession: creating persistent player + session (service=${playbackService != null})")
 
-        val player = ExoPlayer.Builder(context)
-            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
-            .setHandleAudioBecomingNoisy(true)
-            .build()
-        exoPlayer = player
-        player.addListener(createPlayerListener())
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
 
-        val wrapper = ChapterAwareForwardingPlayer(player)
-        wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
-        chapterPlayer = wrapper
+            val player = ExoPlayer.Builder(context)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+                .setHandleAudioBecomingNoisy(true)
+                .build()
+            exoPlayer = player
+            player.addListener(createPlayerListener())
 
+            val wrapper = ChapterAwareForwardingPlayer(player)
+            wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
+            chapterPlayer = wrapper
+        }
+
+        val wrapper = chapterPlayer!!
         val libraryCallback = playbackService?.createLibraryCallback()
         val isLibrarySession = libraryCallback != null
         mediaSession = if (isLibrarySession) {
@@ -142,8 +164,7 @@ class PlaybackManager @Inject constructor(
     }
 
     /**
-     * Load and play a book by its ID. Used by Android Auto when the user
-     * selects a book from the browse tree.
+     * Load and play a book by its ID. Used by the phone UI.
      */
     suspend fun loadBookById(bookId: String): Boolean {
         val book = withContext(Dispatchers.IO) {
@@ -153,6 +174,23 @@ class PlaybackManager @Inject constructor(
 
         return withContext(Dispatchers.Main) {
             loadAudioBook(book)
+        }
+    }
+
+    /**
+     * Load and play a book by its ID for Android Auto.
+     * Skips startPlaybackService() since we are already inside the service's
+     * onSetMediaItems callback — creating a new MediaController back to the
+     * same service would deadlock.
+     */
+    suspend fun loadBookByIdForAuto(bookId: String): Boolean {
+        val book = withContext(Dispatchers.IO) {
+            audioBookRepository.getById(bookId)
+                ?: audioBookRepository.fetchFromServer(bookId)
+        } ?: return false
+
+        return withContext(Dispatchers.Main) {
+            loadAudioBook(book, skipServiceStart = true)
         }
     }
 
@@ -197,6 +235,10 @@ class PlaybackManager @Inject constructor(
     val eqBandGains: StateFlow<List<Int>> = _eqBandGains.asStateFlow()
 
     private var equalizer: Equalizer? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+
+    private val _volumeBoost = MutableStateFlow(0) // millibels, 0–1000
+    val volumeBoost: StateFlow<Int> = _volumeBoost.asStateFlow()
 
     private val _isLocalFile = MutableStateFlow(false)
     val isLocalFile: StateFlow<Boolean> = _isLocalFile.asStateFlow()
@@ -218,7 +260,7 @@ class PlaybackManager @Inject constructor(
     // ─── Load ─────────────────────────────────────────────────────────────
 
     @OptIn(UnstableApi::class)
-    suspend fun loadAudioBook(book: AudioBook): Boolean {
+    suspend fun loadAudioBook(book: AudioBook, skipServiceStart: Boolean = false): Boolean {
         // ExoPlayer must be created and accessed from the Main thread
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBook must be called from the Main thread"
@@ -247,8 +289,9 @@ class PlaybackManager @Inject constructor(
             chapterPlayer?.currentChapter = null
             chapterPlayer?.absolutePositionMs = 0L
 
-            // Release old equalizer (will re-attach after loading new items)
+            // Release old audio effects (will re-attach after loading new items)
             releaseEqualizer()
+            releaseLoudnessEnhancer()
 
             // Start server session (must complete before building stream URLs)
             currentSession = null
@@ -336,25 +379,32 @@ class PlaybackManager @Inject constructor(
             player.playbackParameters = PlaybackParameters(_speed.value)
             player.volume = _volume.value
 
-            // Load EQ settings
+            // Load EQ and volume boost settings
             val appSettings = settingsManager.currentSettings
             _eqEnabled.value = appSettings.eqEnabled
             _eqBandGains.value = appSettings.eqBandGains
+            _volumeBoost.value = appSettings.volumeBoostGain
 
-            // Attach equalizer effect
+            // Attach audio effects
             attachEqualizer()
+            attachLoudnessEnhancer()
 
             // Seek to saved position before prepare
             if (startPosition > Duration.ZERO) {
                 seekToPosition(startPosition)
             }
 
-            // Start the foreground service (MediaController connect triggers startForeground)
-            startPlaybackService()
+            // Start the foreground service (MediaController connect triggers startForeground).
+            // Skipped when called from Android Auto's onSetMediaItems callback to avoid
+            // re-entrant MediaController connection back to the same service.
+            if (!skipServiceStart) {
+                startPlaybackService()
+            }
 
-            // Prepare and play — the persistent MediaSession already wraps this player
-            player.playWhenReady = true
+            // Prepare and play — the persistent MediaSession already wraps this player.
+            // prepare() first so state listeners don't fire before media is loaded.
             player.prepare()
+            player.playWhenReady = true
 
             // Update duration
             _duration.value = calculateTotalDuration(effectiveBook)
@@ -619,6 +669,31 @@ class PlaybackManager @Inject constructor(
         val eq = equalizer ?: return Pair(-1500, 1500)
         val range = eq.bandLevelRange
         return Pair(range[0].toInt(), range[1].toInt())
+    }
+
+    fun setVolumeBoost(gainMb: Int) {
+        _volumeBoost.value = gainMb.coerceIn(0, 1000)
+        loudnessEnhancer?.setTargetGain(_volumeBoost.value)
+    }
+
+    private fun attachLoudnessEnhancer() {
+        val player = exoPlayer ?: return
+        try {
+            loudnessEnhancer?.release()
+            val enhancer = LoudnessEnhancer(player.audioSessionId)
+            loudnessEnhancer = enhancer
+            enhancer.setTargetGain(_volumeBoost.value)
+            enhancer.enabled = true
+        } catch (e: Exception) {
+            Log.e(TAG, "attachLoudnessEnhancer: failed: ${e.message}", e)
+        }
+    }
+
+    private fun releaseLoudnessEnhancer() {
+        try {
+            loudnessEnhancer?.release()
+        } catch (_: Exception) {}
+        loudnessEnhancer = null
     }
 
     private fun attachEqualizer() {
@@ -918,6 +993,73 @@ class PlaybackManager @Inject constructor(
         currentSession = null
     }
 
+    // ─── Foreground Recovery (stale session after sleep) ──────────────────
+
+    init {
+        // When the app returns from background, check if the playback session is stale
+        scope.launch {
+            connectivityMonitor.appResumedFromBackground.collect {
+                recoverIfSessionStale()
+            }
+        }
+    }
+
+    /**
+     * Called when the app returns to the foreground after sleep/background.
+     * Tests whether the server-side playback session is still alive.
+     * If stale (server returns error), transparently creates a new session
+     * so the 12s heartbeat and progress sync keep working.
+     */
+    private fun recoverIfSessionStale() {
+        val session = currentSession ?: return
+        val book = _currentBook.value ?: return
+        if (_playbackState.value == PlaybackState.STOPPED) return
+
+        Log.d(TAG, "recoverIfSessionStale: testing session ${session.id} for '${book.title}'")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                val success = apiService.syncSessionProgress(
+                    sessionId = session.id,
+                    currentTime = _position.value.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    duration = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS),
+                )
+                if (success) {
+                    Log.d(TAG, "recoverIfSessionStale: session still valid")
+                } else {
+                    Log.w(TAG, "recoverIfSessionStale: session stale, recovering...")
+                    recoverStaleSession(book)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "recoverIfSessionStale: sync failed (${e.message}), recovering...")
+                recoverStaleSession(book)
+            }
+        }
+    }
+
+    /**
+     * Replace a dead server session with a fresh one.
+     * If the server is still unreachable, clear the session so progress
+     * falls back to the offline queue (SyncManager / PendingProgress).
+     */
+    private suspend fun recoverStaleSession(book: AudioBook) {
+        try {
+            val newSession = apiService.startPlaybackSession(book.id)
+            if (newSession != null) {
+                currentSession = newSession
+                accumulatedListenTime = 0.0
+                lastSyncTimestamp = System.currentTimeMillis()
+                Log.d(TAG, "recoverStaleSession: OK newSessionId=${newSession.id}")
+            } else {
+                Log.w(TAG, "recoverStaleSession: server returned null — falling back to offline queue")
+                currentSession = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "recoverStaleSession: failed (${e.message}) — falling back to offline queue")
+            currentSession = null
+        }
+    }
+
     // ─── Cleanup ──────────────────────────────────────────────────────────
 
     /** Soft-stop: clear content but keep player and session alive for Android Auto browsing. */
@@ -926,6 +1068,7 @@ class PlaybackManager @Inject constructor(
         chapterPlayer?.currentChapter = null
         chapterPlayer?.absolutePositionMs = 0L
         releaseEqualizer()
+        releaseLoudnessEnhancer()
         exoPlayer?.stop()
         exoPlayer?.clearMediaItems()
     }
@@ -949,6 +1092,7 @@ class PlaybackManager @Inject constructor(
         }
         chapterPlayer = null
         releaseEqualizer()
+        releaseLoudnessEnhancer()
         exoPlayer?.let { player ->
             player.stop()
             player.release()

@@ -67,6 +67,7 @@ class PlaybackManager @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val audioBookRepository: AudioBookRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) {
     companion object {
         private const val TAG = "PlaybackManager"
@@ -990,6 +991,73 @@ class PlaybackManager @Inject constructor(
             apiService.closeSession(session.id)
         } catch (_: Exception) {}
         currentSession = null
+    }
+
+    // ─── Foreground Recovery (stale session after sleep) ──────────────────
+
+    init {
+        // When the app returns from background, check if the playback session is stale
+        scope.launch {
+            connectivityMonitor.appResumedFromBackground.collect {
+                recoverIfSessionStale()
+            }
+        }
+    }
+
+    /**
+     * Called when the app returns to the foreground after sleep/background.
+     * Tests whether the server-side playback session is still alive.
+     * If stale (server returns error), transparently creates a new session
+     * so the 12s heartbeat and progress sync keep working.
+     */
+    private fun recoverIfSessionStale() {
+        val session = currentSession ?: return
+        val book = _currentBook.value ?: return
+        if (_playbackState.value == PlaybackState.STOPPED) return
+
+        Log.d(TAG, "recoverIfSessionStale: testing session ${session.id} for '${book.title}'")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                val success = apiService.syncSessionProgress(
+                    sessionId = session.id,
+                    currentTime = _position.value.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    duration = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS),
+                )
+                if (success) {
+                    Log.d(TAG, "recoverIfSessionStale: session still valid")
+                } else {
+                    Log.w(TAG, "recoverIfSessionStale: session stale, recovering...")
+                    recoverStaleSession(book)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "recoverIfSessionStale: sync failed (${e.message}), recovering...")
+                recoverStaleSession(book)
+            }
+        }
+    }
+
+    /**
+     * Replace a dead server session with a fresh one.
+     * If the server is still unreachable, clear the session so progress
+     * falls back to the offline queue (SyncManager / PendingProgress).
+     */
+    private suspend fun recoverStaleSession(book: AudioBook) {
+        try {
+            val newSession = apiService.startPlaybackSession(book.id)
+            if (newSession != null) {
+                currentSession = newSession
+                accumulatedListenTime = 0.0
+                lastSyncTimestamp = System.currentTimeMillis()
+                Log.d(TAG, "recoverStaleSession: OK newSessionId=${newSession.id}")
+            } else {
+                Log.w(TAG, "recoverStaleSession: server returned null — falling back to offline queue")
+                currentSession = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "recoverStaleSession: failed (${e.message}) — falling back to offline queue")
+            currentSession = null
+        }
     }
 
     // ─── Cleanup ──────────────────────────────────────────────────────────

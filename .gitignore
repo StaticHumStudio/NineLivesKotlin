@@ -16,3 +16,14 @@ local.properties
 .kotlin/
 phone_screenshot*.png
 screenshot.png
+
+# Dev utility scripts (contain local paths/PII)
+pair.bat
+pair_new.bat
+pair.ps1
+pair.py
+adb-proxy.ps1
+git_commit.ps1
+git_commit.py
+code.txt
+build_output.txt

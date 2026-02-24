@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -447,8 +448,10 @@ private fun NarratorSection(
                     text = narrator.name,
                     style = MaterialTheme.typography.bodySmall,
                     color = ArchiveTextPrimary,
-                    modifier = Modifier.width(100.dp),
-                    maxLines = 1,
+                    modifier = Modifier
+                        .weight(0.45f)
+                        .widthIn(min = 100.dp),
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
 
@@ -503,8 +506,10 @@ private fun GenreSection(
                     text = genre.name,
                     style = MaterialTheme.typography.bodySmall,
                     color = ArchiveTextPrimary,
-                    modifier = Modifier.width(100.dp),
-                    maxLines = 1,
+                    modifier = Modifier
+                        .weight(0.45f)
+                        .widthIn(min = 100.dp),
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
 
@@ -559,8 +564,10 @@ private fun AuthorSection(
                     text = author.name,
                     style = MaterialTheme.typography.bodySmall,
                     color = ArchiveTextPrimary,
-                    modifier = Modifier.width(100.dp),
-                    maxLines = 1,
+                    modifier = Modifier
+                        .weight(0.45f)
+                        .widthIn(min = 100.dp),
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
 
@@ -865,9 +872,9 @@ private fun DossierSummaryCard(
                     "daily avg",
                 )
                 val topAuthor = state.authorStats.firstOrNull()?.name ?: "—"
-                ShareStatCell(topAuthor, "top author")
+                ShareStatCell(topAuthor, "top author", valueMaxLines = 2)
                 val topNarrator = state.narratorStats.firstOrNull()?.name ?: "—"
-                ShareStatCell(topNarrator, "top voice")
+                ShareStatCell(topNarrator, "top voice", valueMaxLines = 2)
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -879,7 +886,7 @@ private fun DossierSummaryCard(
             ) {
                 val topGenre = state.genreStats.firstOrNull()?.name
                 if (topGenre != null) {
-                    ShareStatCell(topGenre, "top genre")
+                    ShareStatCell(topGenre, "top genre", valueMaxLines = 2)
                 }
                 state.bestDay?.let { day ->
                     ShareStatCell(day, "best day")
@@ -934,17 +941,22 @@ private fun DossierSummaryCard(
 }
 
 @Composable
-private fun ShareStatCell(value: String, label: String) {
+private fun ShareStatCell(
+    value: String,
+    label: String,
+    valueMaxLines: Int = 1,
+    cellWidth: Dp = 90.dp,
+) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(90.dp),
+        modifier = Modifier.width(cellWidth),
     ) {
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             color = ArchiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
+            maxLines = valueMaxLines,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
@@ -962,13 +974,15 @@ private suspend fun shareViewAsBitmap(
     view: View,
 ) {
     try {
+        if (view.width == 0 || view.height == 0) return
+
         // Capture the view on the main thread
         val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
         view.draw(canvas)
 
-        // Save & share on IO thread
-        withContext(Dispatchers.IO) {
+        // Save image on IO thread
+        val uri = withContext(Dispatchers.IO) {
             val dir = File(context.cacheDir, "shared_images")
             dir.mkdirs()
             val file = File(dir, "nightwatch_dossier.png")
@@ -976,12 +990,14 @@ private suspend fun shareViewAsBitmap(
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
 
-            val uri = FileProvider.getUriForFile(
+            FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
                 file,
             )
+        }
 
+        withContext(Dispatchers.Main) {
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "image/png"
                 putExtra(Intent.EXTRA_STREAM, uri)

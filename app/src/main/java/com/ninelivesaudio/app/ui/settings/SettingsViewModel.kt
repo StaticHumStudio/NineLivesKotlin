@@ -347,6 +347,48 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun refreshConnection() {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(errorMessage = null, successMessage = null, isConnecting = true)
+            }
+            try {
+                val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
+                if (!hasToken) {
+                    _uiState.update {
+                        it.copy(
+                            isConnecting = false,
+                            isConnected = false,
+                            connectionStatusText = "No auth token — please reconnect",
+                        )
+                    }
+                    return@launch
+                }
+                val valid = apiService.validateToken()
+                _uiState.update {
+                    it.copy(
+                        isConnecting = false,
+                        isConnected = valid,
+                        connectionStatusText = if (valid) {
+                            "Connected to ${settingsManager.currentSettings.serverUrl}"
+                        } else {
+                            "Session expired — please reconnect"
+                        },
+                        successMessage = if (valid) "Connection refreshed" else null,
+                        errorMessage = if (!valid) "Token expired — please reconnect" else null,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isConnecting = false,
+                        errorMessage = "Refresh failed: ${e.message}",
+                    )
+                }
+            }
+        }
+    }
+
     fun testConnection() {
         if (!_uiState.value.isConnected) {
             _uiState.update { it.copy(errorMessage = "Not connected. Please connect first.") }
@@ -466,6 +508,9 @@ class SettingsViewModel @Inject constructor(
 
     // ─── Helpers ──────────────────────────────────────────────────────────
 
-    private fun getAppVersion(): String =
-        "Į̷̙̑̚n̷̲̙͘f̷̰̎̄̂̚i̸̗͎̟̤͛̑̊͐͆̋͑͐̍̕n̶͍͂͊̃i̸̳͂́t̸̡̡̙̪̤̠̀͂͗͜ŷ̴̛̭̪͉̪͕̻̻͙̿̀̅̑͑͛̓͑͜"
+    private fun getAppVersion(): String {
+        val versionName = com.ninelivesaudio.app.BuildConfig.VERSION_NAME
+        val versionCode = com.ninelivesaudio.app.BuildConfig.VERSION_CODE
+        return "v$versionName ($versionCode)"
+    }
 }

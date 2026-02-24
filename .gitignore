@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+.kotlin/
+phone_screenshot*.png
+screenshot.png

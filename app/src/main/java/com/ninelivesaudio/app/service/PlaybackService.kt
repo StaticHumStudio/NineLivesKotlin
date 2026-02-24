@@ -136,7 +136,13 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
             Log.d(TAG, "▶ onConnect: pkg=${controller.packageName} uid=${controller.uid}")
-            return super.onConnect(session, controller)
+            // Explicitly grant all session + library browse commands so Android Auto
+            // can discover and browse the media tree (the default super.onConnect()
+            // does not include library-specific commands).
+            val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(sessionCommands)
+                .build()
         }
 
         override fun onDisconnected(
@@ -280,7 +286,7 @@ class PlaybackService : MediaLibraryService() {
                     // Load the book asynchronously, then return the player's real media items
                     return serviceScope.future(Dispatchers.Main) {
                         try {
-                            val success = playbackManager.loadBookById(bookId)
+                            val success = playbackManager.loadBookByIdForAuto(bookId)
                             Log.d(TAG, "onSetMediaItems: loadBookById=$success")
                         } catch (e: Exception) {
                             Log.e(TAG, "onSetMediaItems: failed to load book $bookId", e)

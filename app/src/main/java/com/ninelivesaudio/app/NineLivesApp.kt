@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.acra.ReportField
 import org.acra.config.dialog
 import org.acra.config.mailSender
 import org.acra.data.StringFormat
@@ -39,6 +40,26 @@ class NineLivesApp : Application() {
         initAcra {
             buildConfigClass = BuildConfig::class.java
             reportFormat = StringFormat.JSON
+
+            // Whitelist only safe fields to prevent leaking auth tokens,
+            // server URLs, or user data via crash reports. Deliberately
+            // excludes LOGCAT, SHARED_PREFERENCES, SETTINGS_*, and
+            // THREAD_DETAILS which could contain sensitive information.
+            reportContent = listOf(
+                ReportField.REPORT_ID,
+                ReportField.APP_VERSION_CODE,
+                ReportField.APP_VERSION_NAME,
+                ReportField.ANDROID_VERSION,
+                ReportField.PHONE_MODEL,
+                ReportField.BRAND,
+                ReportField.PRODUCT,
+                ReportField.BUILD,
+                ReportField.STACK_TRACE,
+                ReportField.CRASH_CONFIGURATION,
+                ReportField.TOTAL_MEM_SIZE,
+                ReportField.AVAILABLE_MEM_SIZE,
+                ReportField.USER_COMMENT,
+            )
 
             mailSender {
                 mailTo = "Hum@StaticHum.Studio"

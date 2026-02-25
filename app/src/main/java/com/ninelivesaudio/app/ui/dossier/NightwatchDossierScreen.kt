@@ -38,6 +38,7 @@ import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -829,6 +830,8 @@ private fun DossierSummaryCard(
     state: DossierState,
     viewModel: NightwatchDossierViewModel,
 ) {
+    val context = LocalContext.current
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -951,7 +954,10 @@ private fun DossierSummaryCard(
                         ) {
                             if (!book.coverUrl.isNullOrEmpty()) {
                                 AsyncImage(
-                                    model = book.coverUrl,
+                                    model = ImageRequest.Builder(context)
+                                        .data(book.coverUrl)
+                                        .allowHardware(false)
+                                        .build(),
                                     contentDescription = book.title,
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop,

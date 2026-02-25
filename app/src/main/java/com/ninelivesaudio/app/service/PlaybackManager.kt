@@ -297,6 +297,8 @@ class PlaybackManager @Inject constructor(
 
             // Reset chapter state on the wrapper
             chapterPlayer?.currentChapter = null
+            chapterPlayer?.chapters = emptyList()
+            chapterPlayer?.currentChapterIndex = -1
             chapterPlayer?.absolutePositionMs = 0L
 
             // Release old audio effects (will re-attach after loading new items)
@@ -419,7 +421,9 @@ class PlaybackManager @Inject constructor(
                 val initialChapter = cachedChapters[initialChapterIndex]
                 _currentChapter.value = initialChapter
                 _currentChapterIndex.value = initialChapterIndex
+                chapterPlayer?.chapters = cachedChapters
                 chapterPlayer?.currentChapter = initialChapter
+                chapterPlayer?.currentChapterIndex = initialChapterIndex
                 chapterPlayer?.absolutePositionMs = startPosition.inWholeMilliseconds
             }
 
@@ -791,6 +795,7 @@ class PlaybackManager @Inject constructor(
         _currentChapter.value = chapter
         _currentChapterIndex.value = chapterIndex
         chapterPlayer?.currentChapter = chapter
+        chapterPlayer?.currentChapterIndex = chapterIndex
     }
 
     // ─── Position Calculation (multi-track aware) ─────────────────────────
@@ -975,6 +980,7 @@ class PlaybackManager @Inject constructor(
             val chapter = if (newIndex >= 0) cachedChapters[newIndex] else null
             _currentChapter.value = chapter
             chapterPlayer?.currentChapter = chapter
+            chapterPlayer?.currentChapterIndex = newIndex
 
             // Force MediaSession to re-read duration/position from the ForwardingPlayer.
             // A no-op seekTo triggers onPositionDiscontinuity, which causes MediaSession

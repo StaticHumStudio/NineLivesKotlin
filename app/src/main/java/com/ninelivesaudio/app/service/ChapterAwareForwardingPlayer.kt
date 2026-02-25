@@ -22,6 +22,12 @@ class ChapterAwareForwardingPlayer(
     /** Updated by PlaybackManager whenever the chapter changes. */
     var currentChapter: Chapter? = null
 
+    /** Full chapter list, updated by PlaybackManager when a book is loaded. */
+    var chapters: List<Chapter> = emptyList()
+
+    /** Index into [chapters] for the current chapter, updated by PlaybackManager. */
+    var currentChapterIndex: Int = -1
+
     /** Updated by PlaybackManager during position polling (absolute book position in ms). */
     var absolutePositionMs: Long = 0L
 
@@ -94,17 +100,69 @@ class ChapterAwareForwardingPlayer(
         }
     }
 
+    // ─── Chapter Skip (Android Auto next/previous buttons) ─────────────
+
+    override fun seekToNext() {
+        val ch = currentChapter
+        val handler = seekHandler
+        if (ch == null || handler == null) {
+            super.seekToNext()
+            return
+        }
+        // Skip to end of current chapter (= start of next chapter)
+        handler((ch.end * 1000).toLong())
+    }
+
+    override fun seekToPrevious() {
+        val ch = currentChapter
+        val handler = seekHandler
+        if (ch == null || handler == null) {
+            super.seekToPrevious()
+            return
+        }
+        val chapterStartMs = (ch.start * 1000).toLong()
+        val posInChapterMs = absolutePositionMs - chapterStartMs
+
+        if (posInChapterMs > 3000 && currentChapterIndex >= 0) {
+            // More than 3s into chapter: jump to start of current chapter
+            handler(chapterStartMs)
+        } else if (currentChapterIndex > 0) {
+            // Near start: jump to start of previous chapter
+            val prevChapter = chapters[currentChapterIndex - 1]
+            handler((prevChapter.start * 1000).toLong())
+        } else {
+            // First chapter: jump to beginning of book
+            handler(0L)
+        }
+    }
+
+    override fun hasNextMediaItem(): Boolean {
+        if (chapters.isNotEmpty()) return true
+        return super.hasNextMediaItem()
+    }
+
+    override fun hasPreviousMediaItem(): Boolean {
+        if (chapters.isNotEmpty()) return true
+        return super.hasPreviousMediaItem()
+    }
+
     // ─── Command Availability ───────────────────────────────────────────
 
     override fun isCommandAvailable(command: Int): Boolean {
         if (command == Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) return true
+        if (command == Player.COMMAND_SEEK_TO_NEXT) return chapters.isNotEmpty()
+        if (command == Player.COMMAND_SEEK_TO_PREVIOUS) return chapters.isNotEmpty()
         return super.isCommandAvailable(command)
     }
 
     override fun getAvailableCommands(): Player.Commands {
-        return super.getAvailableCommands()
+        val builder = super.getAvailableCommands()
             .buildUpon()
             .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
-            .build()
+        if (chapters.isNotEmpty()) {
+            builder.add(Player.COMMAND_SEEK_TO_NEXT)
+            builder.add(Player.COMMAND_SEEK_TO_PREVIOUS)
+        }
+        return builder.build()
     }
 }

@@ -25,6 +25,91 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
+// ─── Dossier Time Period ────────────────────────────────────────────────────
+
+enum class DossierPeriod(
+    val label: String,
+    val subtitle: String,
+) {
+    THIRTY_DAYS("30 Days", "30-Day Listening Report"),
+    THREE_MONTHS("3 Months", "3-Month Listening Report"),
+    SIX_MONTHS("6 Months", "6-Month Listening Report"),
+    ONE_YEAR("1 Year", "1-Year Listening Report"),
+    THIS_YEAR("This Year", "Year-to-Date Listening Report"),
+    LAST_YEAR("Last Year", "Last Year Listening Report"),
+    ;
+
+    /** Start of the time window (epoch millis). */
+    fun cutoffMillis(): Long {
+        val now = System.currentTimeMillis()
+        val cal = Calendar.getInstance()
+        return when (this) {
+            THIRTY_DAYS   -> now - 30.days.inWholeMilliseconds
+            THREE_MONTHS  -> now - 90.days.inWholeMilliseconds
+            SIX_MONTHS    -> now - 180.days.inWholeMilliseconds
+            ONE_YEAR      -> now - 365.days.inWholeMilliseconds
+            THIS_YEAR     -> {
+                cal.set(Calendar.MONTH, Calendar.JANUARY)
+                cal.set(Calendar.DAY_OF_MONTH, 1)
+                cal.set(Calendar.HOUR_OF_DAY, 0)
+                cal.set(Calendar.MINUTE, 0)
+                cal.set(Calendar.SECOND, 0)
+                cal.set(Calendar.MILLISECOND, 0)
+                cal.timeInMillis
+            }
+            LAST_YEAR     -> {
+                cal.add(Calendar.YEAR, -1)
+                cal.set(Calendar.MONTH, Calendar.JANUARY)
+                cal.set(Calendar.DAY_OF_MONTH, 1)
+                cal.set(Calendar.HOUR_OF_DAY, 0)
+                cal.set(Calendar.MINUTE, 0)
+                cal.set(Calendar.SECOND, 0)
+                cal.set(Calendar.MILLISECOND, 0)
+                cal.timeInMillis
+            }
+        }
+    }
+
+    /** End of the time window (epoch millis). Only differs for LAST_YEAR. */
+    fun endMillis(): Long {
+        if (this != LAST_YEAR) return System.currentTimeMillis()
+        val cal = Calendar.getInstance()
+        // Jan 1 of current year = end boundary (exclusive-ish, but we use <=)
+        cal.set(Calendar.MONTH, Calendar.JANUARY)
+        cal.set(Calendar.DAY_OF_MONTH, 1)
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }
+
+    /** Number of days in the period (for daily average divisor). */
+    fun dayCount(): Int {
+        val cal = Calendar.getInstance()
+        return when (this) {
+            THIRTY_DAYS  -> 30
+            THREE_MONTHS -> 90
+            SIX_MONTHS   -> 180
+            ONE_YEAR     -> 365
+            THIS_YEAR    -> {
+                cal.get(Calendar.DAY_OF_YEAR).coerceAtLeast(1)
+            }
+            LAST_YEAR    -> {
+                cal.add(Calendar.YEAR, -1)
+                cal.getActualMaximum(Calendar.DAY_OF_YEAR) // 365 or 366
+            }
+        }
+    }
+
+    /** Subtitle phrase for the overview card (e.g. "in the last 30 Days"). */
+    fun overviewSubtitle(): String = when (this) {
+        THIS_YEAR -> "in ${label.lowercase()}"
+        LAST_YEAR -> "in ${label.lowercase()}"
+        else      -> "in the last ${label.lowercase()}"
+    }
+}
+
 @HiltViewModel
 class NightwatchDossierViewModel @Inject constructor(
     private val apiService: ApiService,
@@ -73,6 +158,7 @@ class NightwatchDossierViewModel @Inject constructor(
         val isLoading: Boolean = true,
         val error: String? = null,
         val isConnected: Boolean = true,
+        val selectedPeriod: DossierPeriod = DossierPeriod.THIRTY_DAYS,
 
         // Overview
         val totalListeningTime: Duration = Duration.ZERO,
@@ -125,6 +211,11 @@ class NightwatchDossierViewModel @Inject constructor(
         loadDossier()
     }
 
+    fun onPeriodChanged(period: DossierPeriod) {
+        _uiState.update { it.copy(selectedPeriod = period, isLoading = true) }
+        viewModelScope.launch { loadDossier() }
+    }
+
     private fun loadDossier() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
@@ -145,9 +236,11 @@ class NightwatchDossierViewModel @Inject constructor(
                 val allBooks = audioBookRepository.getAll()
                 val bookMap = allBooks.associateBy { it.id }
 
-                // 30-day rolling window
-                val cutoffMillis = System.currentTimeMillis() - 30.days.inWholeMilliseconds
-                val recentSessions = allSessions.filter { it.startedAt >= cutoffMillis }
+                // Time period window
+                val period = _uiState.value.selectedPeriod
+                val cutoffMillis = period.cutoffMillis()
+                val endMillis = period.endMillis()
+                val recentSessions = allSessions.filter { it.startedAt in cutoffMillis..endMillis }
 
                 // Sanitize session durations: cap timeListening at wall-clock span
                 val sanitizedSessions = recentSessions.map { session ->
@@ -202,7 +295,7 @@ class NightwatchDossierViewModel @Inject constructor(
                 // Derived stats
                 val booksFinished = bookStats.count { it.isFinished }
                 val dailyAverage = if (totalTime > Duration.ZERO)
-                    (totalTime.inWholeSeconds / 30).seconds else Duration.ZERO
+                    (totalTime.inWholeSeconds / period.dayCount()).seconds else Duration.ZERO
                 val bestDayResult = findBestSpecificDay(validSessions)
 
                 // Temporal patterns

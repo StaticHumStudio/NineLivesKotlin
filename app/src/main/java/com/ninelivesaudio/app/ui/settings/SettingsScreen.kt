@@ -23,6 +23,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.graphicsLayer
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -41,6 +44,7 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
@@ -453,6 +457,46 @@ fun SettingsScreen(
                 thickness = 1.dp,
             )
 
+            // ─── Feedback & Reports ─────────────────────────────────
+            SectionHeader(text = "Feedback & Reports")
+
+            FeedbackSection(
+                reportType = uiState.reportType,
+                includeLogs = uiState.includeLogsInReport,
+                isCollecting = uiState.isCollectingReport,
+                onReportTypeChanged = viewModel::onReportTypeChanged,
+                onIncludeLogsChanged = viewModel::onIncludeLogsChanged,
+                onSubmit = {
+                    viewModel.buildReport { subject, body ->
+                        val intent = Intent(Intent.ACTION_SENDTO).apply {
+                            data = Uri.parse("mailto:")
+                            putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
+                            putExtra(Intent.EXTRA_SUBJECT, subject)
+                            putExtra(Intent.EXTRA_TEXT, body)
+                        }
+                        if (intent.resolveActivity(context.packageManager) != null) {
+                            context.startActivity(intent)
+                        } else {
+                            // Fallback: try ACTION_SEND which more apps handle
+                            val fallback = Intent(Intent.ACTION_SEND).apply {
+                                type = "message/rfc822"
+                                putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
+                                putExtra(Intent.EXTRA_SUBJECT, subject)
+                                putExtra(Intent.EXTRA_TEXT, body)
+                            }
+                            context.startActivity(Intent.createChooser(fallback, "Send report via"))
+                        }
+                    }
+                },
+            )
+
+            // ─── Divider ──────────────────────────────────────────────
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 4.dp),
+                color = ArchiveVoidElevated,
+                thickness = 1.dp,
+            )
+
             // ─── Nightwatch Dossier ────────────────────────────────
             SectionHeader(text = "Nightwatch Dossier")
 
@@ -687,6 +731,136 @@ private fun DiagnosticRow(label: String, value: String) {
             color = ArchiveTextPrimary,
         )
     }
+}
+
+// ─── Feedback & Reports ──────────────────────────────────────────────────
+
+@Composable
+private fun FeedbackSection(
+    reportType: SettingsViewModel.ReportType,
+    includeLogs: Boolean,
+    isCollecting: Boolean,
+    onReportTypeChanged: (SettingsViewModel.ReportType) -> Unit,
+    onIncludeLogsChanged: (Boolean) -> Unit,
+    onSubmit: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // Report type selector
+            Text(
+                text = "Report Type",
+                style = MaterialTheme.typography.bodyMedium,
+                color = ArchiveTextPrimary,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SettingsViewModel.ReportType.entries.forEach { type ->
+                    FilterChip(
+                        selected = reportType == type,
+                        onClick = { onReportTypeChanged(type) },
+                        label = { Text(type.label) },
+                        leadingIcon = if (reportType == type) {
+                            {
+                                Icon(
+                                    imageVector = when (type) {
+                                        SettingsViewModel.ReportType.BUG -> Icons.Outlined.BugReport
+                                        SettingsViewModel.ReportType.UPGRADE -> Icons.Outlined.RocketLaunch
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        } else null,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = GoldFilamentFaint,
+                            selectedLabelColor = GoldFilament,
+                            selectedLeadingIconColor = GoldFilament,
+                            containerColor = ArchiveVoidElevated,
+                            labelColor = ArchiveTextSecondary,
+                        ),
+                    )
+                }
+            }
+
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+            // Include logs toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Attach Logs",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ArchiveTextPrimary,
+                    )
+                    Text(
+                        text = "Include recent app logs for debugging",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                    )
+                }
+                Switch(
+                    checked = includeLogs,
+                    onCheckedChange = onIncludeLogsChanged,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = GoldFilament,
+                        checkedTrackColor = GoldFilamentFaint,
+                        uncheckedThumbColor = ArchiveTextSecondary,
+                        uncheckedTrackColor = ArchiveVoidElevated,
+                    ),
+                )
+            }
+        }
+    }
+
+    // Submit button
+    Button(
+        onClick = onSubmit,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !isCollecting,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = GoldFilament,
+            contentColor = ArchiveVoidDeep,
+            disabledContainerColor = GoldFilamentDim,
+        ),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        if (isCollecting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                color = ArchiveVoidDeep,
+                strokeWidth = 2.dp,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Collecting info...", fontWeight = FontWeight.SemiBold)
+        } else {
+            Icon(
+                Icons.Outlined.Email,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Submit Report via Email", fontWeight = FontWeight.SemiBold)
+        }
+    }
+
+    Text(
+        text = "Opens your email app with device info pre-filled",
+        style = MaterialTheme.typography.bodySmall,
+        color = ArchiveTextMuted,
+    )
 }
 
 // ─── Archive Preferences ──────────────────────────────────────────────────

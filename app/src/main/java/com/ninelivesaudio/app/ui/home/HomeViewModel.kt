@@ -63,11 +63,20 @@ class HomeViewModel @Inject constructor(
             }
         }
 
-        // Observe recently played reactively — auto-updates when progress changes
+        // Observe selected library from settings and reload recently played
         viewModelScope.launch {
-            audioBookDao.observeRecentlyPlayed(9).collect { results ->
-                processRecentlyPlayed(results)
-            }
+            settingsManager.settings
+                .map { it.selectedLibraryId }
+                .distinctUntilChanged()
+                .collectLatest { libraryId ->
+                    if (libraryId != null) {
+                        audioBookDao.observeRecentlyPlayedByLibrary(libraryId, 9)
+                            .collect { results -> processRecentlyPlayed(results) }
+                    } else {
+                        audioBookDao.observeRecentlyPlayed(9)
+                            .collect { results -> processRecentlyPlayed(results) }
+                    }
+                }
         }
     }
 
@@ -76,7 +85,12 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             try {
-                val results = audioBookDao.getRecentlyPlayed(9)
+                val libraryId = settingsManager.currentSettings.selectedLibraryId
+                val results = if (libraryId != null) {
+                    audioBookDao.getRecentlyPlayedByLibrary(libraryId, 9)
+                } else {
+                    audioBookDao.getRecentlyPlayed(9)
+                }
                 processRecentlyPlayed(results)
             } catch (e: Exception) {
                 _uiState.update { it.copy(showEmptyState = true) }

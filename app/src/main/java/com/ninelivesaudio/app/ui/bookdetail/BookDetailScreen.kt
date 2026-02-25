@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
+import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.domain.util.toClockString
@@ -148,15 +148,12 @@ private fun BookDetailContent(
                             .clip(RoundedCornerShape(12.dp))
                             .background(ArchiveVoidElevated),
                     ) {
-                        if (!uiState.coverUrl.isNullOrEmpty()) {
-                            AsyncImage(
-                                model = uiState.coverUrl,
-                                contentDescription = uiState.title,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                                alignment = Alignment.TopCenter,
-                            )
-                        }
+                        BookCoverImage(
+                            coverUrl = uiState.coverUrl,
+                            contentDescription = uiState.title,
+                            modifier = Modifier.fillMaxSize(),
+                            title = uiState.title,
+                        )
                     }
 
                     // Containment frame overlay

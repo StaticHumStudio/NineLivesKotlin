@@ -20,7 +20,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.PlaybackState
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -82,15 +81,12 @@ fun MiniPlayer(
                     .clip(RoundedCornerShape(8.dp))
                     .background(ArchiveVoidElevated),
             ) {
-                if (!book.coverPath.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = book.coverPath,
-                        contentDescription = book.title,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                        alignment = Alignment.TopCenter,
-                    )
-                }
+                BookCoverImage(
+                    coverUrl = book.coverPath,
+                    contentDescription = book.title,
+                    modifier = Modifier.fillMaxSize(),
+                    bookId = book.id,
+                )
             }
 
             // Title + chapter

@@ -65,6 +65,37 @@ class ApiService @Inject constructor(
         }
     }
 
+    suspend fun loginWithToken(serverUrl: String, token: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val normalizedUrl = normalizeServerUrl(serverUrl)
+
+                // Set server URL so Retrofit uses it
+                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, useApiToken = true) }
+
+                // Set token and validate it
+                authInterceptor.setToken(token)
+                settingsManager.saveAuthToken(token)
+
+                val response = api.getMe()
+                if (!response.isSuccessful) {
+                    authInterceptor.setToken(null)
+                    settingsManager.clearAuthToken()
+                    lastError = "Invalid API token: ${response.code()}"
+                    return@withContext false
+                }
+
+                lastError = null
+                true
+            } catch (e: Exception) {
+                authInterceptor.setToken(null)
+                settingsManager.clearAuthToken()
+                lastError = "Connection failed: ${e.message}"
+                false
+            }
+        }
+    }
+
     suspend fun logout() {
         authInterceptor.setToken(null)
         settingsManager.clearAuthToken()

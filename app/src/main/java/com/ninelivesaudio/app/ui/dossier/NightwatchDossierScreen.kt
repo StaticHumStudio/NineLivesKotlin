@@ -42,8 +42,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -360,14 +360,13 @@ private fun BookStatsSection(
                         .clip(RoundedCornerShape(8.dp))
                         .background(ArchiveVoidElevated),
                 ) {
-                    if (!book.coverUrl.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = book.coverUrl,
-                            contentDescription = book.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
+                    BookCoverImage(
+                        coverUrl = book.coverUrl,
+                        contentDescription = book.title,
+                        modifier = Modifier.fillMaxSize(),
+                        title = book.title,
+                        bookId = book.bookId,
+                    )
                 }
 
                 Column(modifier = Modifier.weight(1f)) {
@@ -1134,17 +1133,19 @@ private fun ShareCoverItem(
                     ) else Modifier
                 ),
         ) {
-            if (!book.coverUrl.isNullOrEmpty()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
+            BookCoverImage(
+                coverUrl = book.coverUrl,
+                contentDescription = book.title,
+                modifier = Modifier.fillMaxSize(),
+                title = book.title,
+                bookId = book.bookId,
+                imageModel = if (!book.coverUrl.isNullOrEmpty()) {
+                    ImageRequest.Builder(context)
                         .data(book.coverUrl)
                         .allowHardware(false)
-                        .build(),
-                    contentDescription = book.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            }
+                        .build()
+                } else null,
+            )
         }
         Spacer(modifier = Modifier.height(4.dp))
         Text(

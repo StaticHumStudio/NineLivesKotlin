@@ -125,3 +125,28 @@ val StoneRelic = Color(0xFF181D26)
 
 /** Ash - for filament dividers */
 val StoneAsh = Color(0xFF2A2F38)
+
+// ═══════════════════════════════════════════════════════════════
+//  Vintage Book — Placeholder Cover Palette
+// ═══════════════════════════════════════════════════════════════
+
+/** Aged leather base — warm dark sienna */
+val VintageLeather = Color(0xFF3B2415)
+
+/** Darker leather for depth — shadow brown */
+val VintageLeatherDark = Color(0xFF261308)
+
+/** Spine accent — slightly lighter warm brown */
+val VintageSpine = Color(0xFF4D3221)
+
+/** Border/frame — aged bronze tone */
+val VintageBorder = Color(0xFF5C4030)
+
+/** Decorative line — faded gold */
+val VintageGoldFaded = Color(0xFF9B8455)
+
+/** Wear/aging overlay — semi-transparent dark */
+val VintageWear = Color(0xFF1A0E05)
+
+/** Text on cover — faded gold-cream for title text */
+val VintageTextGold = Color(0xFFC4A96A)

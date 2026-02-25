@@ -6,6 +6,8 @@ import kotlinx.serialization.Serializable
 data class AppSettings(
     val serverUrl: String = "",
     val username: String = "",
+    val useApiToken: Boolean = false, // true = API token login, false = username/password
+    val selectedLibraryId: String? = null, // persisted library selection
     val downloadPath: String = "",
     val autoDownloadCovers: Boolean = true,
     val playbackSpeed: Double = 1.0,

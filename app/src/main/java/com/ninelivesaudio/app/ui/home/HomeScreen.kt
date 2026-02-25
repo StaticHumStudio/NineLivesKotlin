@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -25,7 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.painterResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
+import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.CornerSigils
@@ -122,15 +121,13 @@ private fun HomeGridTile(
                 .clip(RoundedCornerShape(10.dp))
                 .background(ArchiveVoidElevated),
         ) {
-            if (!item.coverPath.isNullOrEmpty()) {
-                AsyncImage(
-                    model = item.coverPath,
-                    contentDescription = item.displayTitle,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    alignment = Alignment.TopCenter,
-                )
-            }
+            BookCoverImage(
+                coverUrl = item.coverPath,
+                contentDescription = item.displayTitle,
+                modifier = Modifier.fillMaxSize(),
+                title = item.displayTitle,
+                bookId = item.audioBookId,
+            )
         }
 
         // Containment frame overlay

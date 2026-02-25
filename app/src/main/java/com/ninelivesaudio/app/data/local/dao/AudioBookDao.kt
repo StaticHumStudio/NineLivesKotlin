@@ -61,6 +61,28 @@ interface AudioBookDao {
     """)
     fun observeRecentlyPlayed(limit: Int = 9): Flow<List<RecentlyPlayedResult>>
 
+    /** Nine Lives — recently played books filtered by library. */
+    @Query("""
+        SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
+        FROM AudioBooks ab
+        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.LibraryId = :libraryId
+        ORDER BY pp.UpdatedAt DESC
+        LIMIT :limit
+    """)
+    suspend fun getRecentlyPlayedByLibrary(libraryId: String, limit: Int = 9): List<RecentlyPlayedResult>
+
+    /** Nine Lives — observable recently played books filtered by library. */
+    @Query("""
+        SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
+        FROM AudioBooks ab
+        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.LibraryId = :libraryId
+        ORDER BY pp.UpdatedAt DESC
+        LIMIT :limit
+    """)
+    fun observeRecentlyPlayedByLibrary(libraryId: String, limit: Int = 9): Flow<List<RecentlyPlayedResult>>
+
     /** Get all audiobooks for a library with their last-played timestamp. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt

@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
@@ -115,26 +116,76 @@ fun SettingsScreen(
                 keyboardType = KeyboardType.Uri,
             )
 
-            // Username field
-            CosmicTextField(
-                value = uiState.username,
-                onValueChange = viewModel::onUsernameChanged,
-                label = "Username",
-                placeholder = "Enter username",
-                enabled = !uiState.isConnected,
-                leadingIcon = Icons.Outlined.Person,
-            )
+            // Auth mode toggle
+            Card(
+                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Use API Token",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ArchiveTextPrimary,
+                        )
+                        Text(
+                            text = "Login with a pre-generated API token",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ArchiveTextMuted,
+                        )
+                    }
+                    Switch(
+                        checked = uiState.useApiToken,
+                        onCheckedChange = viewModel::onUseApiTokenChanged,
+                        enabled = !uiState.isConnected,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = GoldFilament,
+                            checkedTrackColor = GoldFilamentFaint,
+                            uncheckedThumbColor = ArchiveTextSecondary,
+                            uncheckedTrackColor = ArchiveVoidElevated,
+                        ),
+                    )
+                }
+            }
 
-            // Password field
-            CosmicTextField(
-                value = uiState.password,
-                onValueChange = viewModel::onPasswordChanged,
-                label = "Password",
-                placeholder = "Enter password",
-                enabled = !uiState.isConnected,
-                leadingIcon = Icons.Outlined.Lock,
-                isPassword = true,
-            )
+            if (uiState.useApiToken) {
+                // API Token field
+                CosmicTextField(
+                    value = uiState.apiToken,
+                    onValueChange = viewModel::onApiTokenChanged,
+                    label = "API Token",
+                    placeholder = "Paste token from ABS settings",
+                    enabled = !uiState.isConnected,
+                    leadingIcon = Icons.Outlined.Key,
+                    isPassword = true,
+                )
+            } else {
+                // Username field
+                CosmicTextField(
+                    value = uiState.username,
+                    onValueChange = viewModel::onUsernameChanged,
+                    label = "Username",
+                    placeholder = "Enter username",
+                    enabled = !uiState.isConnected,
+                    leadingIcon = Icons.Outlined.Person,
+                )
+
+                // Password field
+                CosmicTextField(
+                    value = uiState.password,
+                    onValueChange = viewModel::onPasswordChanged,
+                    label = "Password",
+                    placeholder = "Enter password",
+                    enabled = !uiState.isConnected,
+                    leadingIcon = Icons.Outlined.Lock,
+                    isPassword = true,
+                )
+            }
 
             // Self-signed certificates toggle
             Card(
@@ -253,6 +304,89 @@ fun SettingsScreen(
                     shape = RoundedCornerShape(12.dp),
                 ) {
                     Text("Disconnect", fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // ─── Library Selector (when connected with multiple libraries) ─
+            if (uiState.isConnected && uiState.libraries.size > 1) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    color = ArchiveVoidElevated,
+                    thickness = 1.dp,
+                )
+
+                SectionHeader(text = "Library")
+
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    var libraryExpanded by remember { mutableStateOf(false) }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { libraryExpanded = true }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            @Suppress("DEPRECATION") Icons.Outlined.LibraryBooks,
+                            contentDescription = null,
+                            tint = GoldFilament,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = uiState.selectedLibrary?.name ?: "Select Library",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = ArchiveTextPrimary,
+                            )
+                            Text(
+                                text = "${uiState.libraries.size} libraries available",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ArchiveTextMuted,
+                            )
+                        }
+                        Icon(
+                            if (libraryExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                            contentDescription = null,
+                            tint = ArchiveTextSecondary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = libraryExpanded,
+                        onDismissRequest = { libraryExpanded = false },
+                        containerColor = ArchiveVoidSurface,
+                    ) {
+                        uiState.libraries.forEach { library ->
+                            val isSelected = library.id == uiState.selectedLibrary?.id
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = library.name,
+                                        color = if (isSelected) GoldFilament else ArchiveTextPrimary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    )
+                                },
+                                onClick = {
+                                    viewModel.onLibrarySelected(library)
+                                    libraryExpanded = false
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
+                                        contentDescription = null,
+                                        tint = if (isSelected) GoldFilament else ArchiveTextMuted,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                            )
+                        }
+                    }
                 }
             }
 

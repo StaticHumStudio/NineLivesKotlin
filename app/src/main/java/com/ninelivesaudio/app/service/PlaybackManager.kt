@@ -372,6 +372,14 @@ class PlaybackManager @Inject constructor(
                 } catch (_: Exception) {}
             }
 
+            // If the resolved position is at or beyond the book's duration (finished book),
+            // reset to the beginning so the player doesn't immediately trigger STATE_ENDED.
+            val bookDuration = effectiveBook.duration
+            if (bookDuration > Duration.ZERO && startPosition >= bookDuration) {
+                Log.d(TAG, "loadAudioBook: position at/past end ($startPosition >= $bookDuration), resetting to start")
+                startPosition = Duration.ZERO
+            }
+
             // Determine source and load
             val isLocal = effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty()
             _isLocalFile.value = isLocal
@@ -609,6 +617,11 @@ class PlaybackManager @Inject constructor(
                 pausedAtTimestamp = null
             }
             // ── Resume ────────────────────────────────────────────────
+            if (player.playbackState == Player.STATE_ENDED) {
+                // Player reached end-of-book — re-prepare to allow seeking/playing
+                player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                player.prepare()
+            }
             player.playWhenReady = true
             // If already in STATE_READY, start immediately
             if (player.playbackState == Player.STATE_READY) {
@@ -791,11 +804,22 @@ class PlaybackManager @Inject constructor(
     fun seekToChapter(chapterIndex: Int) {
         if (chapterIndex < 0 || chapterIndex >= cachedChapters.size) return
         val chapter = cachedChapters[chapterIndex]
+
+        // If the player is in STATE_ENDED (book finished), re-prepare before seeking
+        val wasEnded = exoPlayer?.playbackState == Player.STATE_ENDED
         seekTo(chapter.startTime)
         _currentChapter.value = chapter
         _currentChapterIndex.value = chapterIndex
         chapterPlayer?.currentChapter = chapter
         chapterPlayer?.currentChapterIndex = chapterIndex
+
+        if (wasEnded) {
+            exoPlayer?.prepare()
+            exoPlayer?.playWhenReady = true
+            _playbackState.value = PlaybackState.PLAYING
+            startPositionPolling()
+            startSessionSync()
+        }
     }
 
     // ─── Position Calculation (multi-track aware) ─────────────────────────

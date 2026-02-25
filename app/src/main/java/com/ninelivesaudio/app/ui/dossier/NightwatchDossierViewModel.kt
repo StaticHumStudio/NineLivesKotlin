@@ -6,6 +6,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.ListeningSession
+import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,6 +115,7 @@ enum class DossierPeriod(
 class NightwatchDossierViewModel @Inject constructor(
     private val apiService: ApiService,
     private val audioBookRepository: AudioBookRepository,
+    private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
     // ─── Data Models ──────────────────────────────────────────────────────
@@ -233,14 +235,26 @@ class NightwatchDossierViewModel @Inject constructor(
 
             try {
                 val allSessions = apiService.getAllListeningSessions()
-                val allBooks = audioBookRepository.getAll()
+                val selectedLibraryId = settingsManager.currentSettings.selectedLibraryId
+                val allBooks = audioBookRepository.getAll().let { books ->
+                    if (selectedLibraryId != null) books.filter { it.libraryId == selectedLibraryId }
+                    else books
+                }
                 val bookMap = allBooks.associateBy { it.id }
 
                 // Time period window
                 val period = _uiState.value.selectedPeriod
                 val cutoffMillis = period.cutoffMillis()
                 val endMillis = period.endMillis()
-                val recentSessions = allSessions.filter { it.startedAt in cutoffMillis..endMillis }
+                val recentSessions = allSessions
+                    .filter { it.startedAt in cutoffMillis..endMillis }
+                    .let { sessions ->
+                        // Scope sessions to the selected library's books
+                        if (selectedLibraryId != null) {
+                            val libraryBookIds = bookMap.keys
+                            sessions.filter { it.libraryItemId in libraryBookIds }
+                        } else sessions
+                    }
 
                 // Sanitize session durations: cap timeListening at wall-clock span
                 val sanitizedSessions = recentSessions.map { session ->

@@ -28,11 +28,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
@@ -57,7 +55,7 @@ fun BookListItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
+                .padding(8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -67,16 +65,13 @@ fun BookListItem(
                     .clip(RoundedCornerShape(10.dp))
                     .background(ArchiveVoidElevated),
             ) {
-                if (!book.coverPath.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = book.coverPath,
-                        contentDescription = book.title,
-                        modifier = Modifier
-                            .fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                        alignment = Alignment.TopCenter,
-                    )
-                }
+                BookCoverImage(
+                    coverUrl = book.coverPath,
+                    contentDescription = book.title,
+                    modifier = Modifier.fillMaxSize(),
+                    title = book.title,
+                    bookId = book.id,
+                )
             }
 
             Column(

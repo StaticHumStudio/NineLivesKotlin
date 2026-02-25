@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -191,7 +192,7 @@ private fun ArchiveControlDeck(
     onResetFilters: () -> Unit,
 ) {
     val outerHorizontalPadding = 2.dp // Minimal — LazyColumn contentPadding provides 18dp already
-    val sectionSpacing = 10.dp
+    val sectionSpacing = 8.dp
     val archiveSubtitle = CopyEngine.getSubtitle(
         ritualSubtitle = "Cataloged echoes, awaiting selection.",
         unhingedSubtitle = "Every spine twitches if you stare long enough.",
@@ -423,142 +424,144 @@ private fun LibraryFiltersRow(
 ) {
     var sortExpanded by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = 0.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        // Row 1: View mode chips + sort dropdown, horizontally scrollable
-        Row(
-            modifier = Modifier
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        Column(
+            modifier = modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(vertical = 0.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            FilterChip(
-                selected = uiState.viewMode == ViewMode.ALL,
-                onClick = { onViewModeChanged(ViewMode.ALL) },
-                label = { Text("All") },
-            )
-            FilterChip(
-                selected = uiState.viewMode == ViewMode.SERIES,
-                onClick = { onViewModeChanged(ViewMode.SERIES) },
-                label = { Text("Series") },
-            )
-            FilterChip(
-                selected = uiState.viewMode == ViewMode.AUTHOR,
-                onClick = { onViewModeChanged(ViewMode.AUTHOR) },
-                label = { Text("Author") },
-            )
-            FilterChip(
-                selected = uiState.viewMode == ViewMode.GENRE,
-                onClick = { onViewModeChanged(ViewMode.GENRE) },
-                label = { Text("Genre") },
-            )
+            // Row 1: View mode chips + sort dropdown, horizontally scrollable
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = uiState.viewMode == ViewMode.ALL,
+                    onClick = { onViewModeChanged(ViewMode.ALL) },
+                    label = { Text("All") },
+                )
+                FilterChip(
+                    selected = uiState.viewMode == ViewMode.SERIES,
+                    onClick = { onViewModeChanged(ViewMode.SERIES) },
+                    label = { Text("Series") },
+                )
+                FilterChip(
+                    selected = uiState.viewMode == ViewMode.AUTHOR,
+                    onClick = { onViewModeChanged(ViewMode.AUTHOR) },
+                    label = { Text("Author") },
+                )
+                FilterChip(
+                    selected = uiState.viewMode == ViewMode.GENRE,
+                    onClick = { onViewModeChanged(ViewMode.GENRE) },
+                    label = { Text("Genre") },
+                )
 
-            Box {
-                AssistChip(
-                    onClick = { sortExpanded = true },
-                    label = {
-                        Text(
-                            when (uiState.sortMode) {
-                                SortMode.RECENTLY_ADDED -> "Newest"
-                                SortMode.TITLE_AZ -> "Title A→Z"
-                                SortMode.TITLE_ZA -> "Title Z→A"
-                                SortMode.AUTHOR_AZ -> "Author A→Z"
-                                SortMode.AUTHOR_ZA -> "Author Z→A"
-                                SortMode.PROGRESS_HIGH -> "Progress ↑"
-                                SortMode.PROGRESS_LOW -> "Progress ↓"
-                                SortMode.DURATION_LONG -> "Longest"
-                                SortMode.DURATION_SHORT -> "Shortest"
-                                SortMode.RECENTLY_PLAYED -> "Recently played"
-                                SortMode.UNPLAYED_FIRST -> "Unplayed"
-                            }
-                        )
-                    },
+                Box {
+                    AssistChip(
+                        onClick = { sortExpanded = true },
+                        label = {
+                            Text(
+                                when (uiState.sortMode) {
+                                    SortMode.RECENTLY_ADDED -> "Newest"
+                                    SortMode.TITLE_AZ -> "Title A→Z"
+                                    SortMode.TITLE_ZA -> "Title Z→A"
+                                    SortMode.AUTHOR_AZ -> "Author A→Z"
+                                    SortMode.AUTHOR_ZA -> "Author Z→A"
+                                    SortMode.PROGRESS_HIGH -> "Progress ↑"
+                                    SortMode.PROGRESS_LOW -> "Progress ↓"
+                                    SortMode.DURATION_LONG -> "Longest"
+                                    SortMode.DURATION_SHORT -> "Shortest"
+                                    SortMode.RECENTLY_PLAYED -> "Recently played"
+                                    SortMode.UNPLAYED_FIRST -> "Unplayed"
+                                }
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.Sort,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        },
+                    )
+
+                    DropdownMenu(
+                        expanded = sortExpanded,
+                        onDismissRequest = { sortExpanded = false },
+                        containerColor = ArchiveVoidSurface,
+                    ) {
+                        SortMode.entries.forEach { mode ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = mode.name
+                                            .lowercase()
+                                            .replace('_', ' ')
+                                            .replaceFirstChar { it.uppercase() },
+                                        color = if (mode == uiState.sortMode) GoldFilament else ArchiveTextPrimary,
+                                        fontWeight = if (mode == uiState.sortMode) FontWeight.Bold else FontWeight.Normal,
+                                    )
+                                },
+                                onClick = {
+                                    onSortModeChanged(mode)
+                                    sortExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Row 2: Toggle chips + Reset, horizontally scrollable
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    selected = uiState.hideFinished,
+                    onClick = { onHideFinishedChanged(!uiState.hideFinished) },
+                    label = { Text("Hide finished") },
                     leadingIcon = {
                         Icon(
-                            Icons.Outlined.Sort,
+                            imageVector = Icons.Outlined.VisibilityOff,
+                            contentDescription = null,
+                            modifier = Modifier.size(FilterChipDefaults.IconSize),
+                        )
+                    },
+                )
+
+                FilterChip(
+                    selected = uiState.showDownloadedOnly,
+                    onClick = { onShowDownloadedOnlyChanged(!uiState.showDownloadedOnly) },
+                    label = { Text("Downloaded") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.DownloadDone,
+                            contentDescription = null,
+                            modifier = Modifier.size(FilterChipDefaults.IconSize),
+                        )
+                    },
+                )
+
+                AssistChip(
+                    onClick = onResetFilters,
+                    label = { Text("Reset") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.RestartAlt,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
                         )
                     },
                 )
-
-                DropdownMenu(
-                    expanded = sortExpanded,
-                    onDismissRequest = { sortExpanded = false },
-                    containerColor = ArchiveVoidSurface,
-                ) {
-                    SortMode.entries.forEach { mode ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = mode.name
-                                        .lowercase()
-                                        .replace('_', ' ')
-                                        .replaceFirstChar { it.uppercase() },
-                                    color = if (mode == uiState.sortMode) GoldFilament else ArchiveTextPrimary,
-                                    fontWeight = if (mode == uiState.sortMode) FontWeight.Bold else FontWeight.Normal,
-                                )
-                            },
-                            onClick = {
-                                onSortModeChanged(mode)
-                                sortExpanded = false
-                            },
-                        )
-                    }
-                }
             }
-        }
-
-        // Row 2: Toggle chips + Reset, horizontally scrollable
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FilterChip(
-                selected = uiState.hideFinished,
-                onClick = { onHideFinishedChanged(!uiState.hideFinished) },
-                label = { Text("Hide finished") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Outlined.VisibilityOff,
-                        contentDescription = null,
-                        modifier = Modifier.size(FilterChipDefaults.IconSize),
-                    )
-                },
-            )
-
-            FilterChip(
-                selected = uiState.showDownloadedOnly,
-                onClick = { onShowDownloadedOnlyChanged(!uiState.showDownloadedOnly) },
-                label = { Text("Downloaded") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Outlined.DownloadDone,
-                        contentDescription = null,
-                        modifier = Modifier.size(FilterChipDefaults.IconSize),
-                    )
-                },
-            )
-
-            AssistChip(
-                onClick = onResetFilters,
-                label = { Text("Reset") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Outlined.RestartAlt,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
         }
     }
 }

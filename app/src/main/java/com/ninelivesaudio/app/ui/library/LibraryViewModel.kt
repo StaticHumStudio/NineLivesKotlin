@@ -9,6 +9,7 @@ import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -70,6 +71,7 @@ class LibraryViewModel @Inject constructor(
     private val audioBookRepository: AudioBookRepository,
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -157,7 +159,10 @@ class LibraryViewModel @Inject constructor(
                 // Use cached
             }
 
+            // Restore persisted library selection, fall back to first available
+            val savedId = settingsManager.currentSettings.selectedLibraryId
             val selected = _uiState.value.selectedLibrary
+                ?: libs.firstOrNull { it.id == savedId }
                 ?: libs.firstOrNull()
 
             _uiState.update {
@@ -207,8 +212,20 @@ class LibraryViewModel @Inject constructor(
     // ─── User Actions ─────────────────────────────────────────────────────
 
     fun onLibrarySelected(library: Library) {
-        _uiState.update { it.copy(selectedLibrary = library, searchQuery = "") }
-        viewModelScope.launch { loadAudioBooks(library.id) }
+        _uiState.update {
+            it.copy(
+                selectedLibrary = library,
+                searchQuery = "",
+                isLoading = true,
+            )
+        }
+        viewModelScope.launch {
+            // Persist selection so the whole app picks it up
+            settingsManager.updateSettings { it.copy(selectedLibraryId = library.id) }
+            // Full resync for the newly selected library
+            loadAudioBooks(library.id)
+            _uiState.update { it.copy(isLoading = false) }
+        }
     }
 
     fun onSearchQueryChanged(query: String) {

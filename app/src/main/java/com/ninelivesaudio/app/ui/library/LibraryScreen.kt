@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
+import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.CornerSigils
@@ -78,18 +78,6 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .background(ArchiveVoidDeep)
         ) {
-            // ─── Unified Archive Control Deck (header + search + tabs + filters) ──
-            ArchiveControlDeck(
-                uiState = uiState,
-                onSearchQueryChanged = viewModel::onSearchQueryChanged,
-                onLibraryTabChanged = viewModel::onLibraryTabChanged,
-                onViewModeChanged = viewModel::onViewModeChanged,
-                onSortModeChanged = viewModel::onSortModeChanged,
-                onHideFinishedChanged = viewModel::onHideFinishedChanged,
-                onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
-                onResetFilters = viewModel::resetFilters,
-            )
-
             // ─── Content ──────────────────────────────────────────────────
             PullToRefreshBox(
                 isRefreshing = uiState.isRefreshing,
@@ -101,7 +89,19 @@ fun LibraryScreen(
                         LoadingState()
                     }
                     uiState.filteredBooks.isEmpty() -> {
-                        EmptyState(uiState)
+                        Column {
+                            ArchiveControlDeck(
+                                uiState = uiState,
+                                onSearchQueryChanged = viewModel::onSearchQueryChanged,
+                                onLibraryTabChanged = viewModel::onLibraryTabChanged,
+                                onViewModeChanged = viewModel::onViewModeChanged,
+                                onSortModeChanged = viewModel::onSortModeChanged,
+                                onHideFinishedChanged = viewModel::onHideFinishedChanged,
+                                onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
+                                onResetFilters = viewModel::resetFilters,
+                            )
+                            EmptyState(uiState)
+                        }
                     }
                     else -> {
                         LazyColumn(
@@ -109,11 +109,25 @@ fun LibraryScreen(
                             contentPadding = PaddingValues(
                                 start = 18.dp,
                                 end = 18.dp,
-                                top = 12.dp,
+                                top = 0.dp,
                                 bottom = 100.dp,
                             ),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            // ─── Scrollable Control Deck ────────────────────
+                            item(key = "archive-control-deck") {
+                                ArchiveControlDeck(
+                                    uiState = uiState,
+                                    onSearchQueryChanged = viewModel::onSearchQueryChanged,
+                                    onLibraryTabChanged = viewModel::onLibraryTabChanged,
+                                    onViewModeChanged = viewModel::onViewModeChanged,
+                                    onSortModeChanged = viewModel::onSortModeChanged,
+                                    onHideFinishedChanged = viewModel::onHideFinishedChanged,
+                                    onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
+                                    onResetFilters = viewModel::resetFilters,
+                                )
+                            }
+
                             if (uiState.viewMode == ViewMode.ALL) {
                                 // Flat list in ALL mode
                                 itemsIndexed(
@@ -164,6 +178,7 @@ fun LibraryScreen(
 
 // ─── Archive Control Deck ─────────────────────────────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ArchiveControlDeck(
     uiState: LibraryViewModel.UiState,
@@ -175,8 +190,8 @@ private fun ArchiveControlDeck(
     onShowDownloadedOnlyChanged: (Boolean) -> Unit,
     onResetFilters: () -> Unit,
 ) {
-    val outerHorizontalPadding = 20.dp
-    val sectionSpacing = 14.dp
+    val outerHorizontalPadding = 2.dp // Minimal — LazyColumn contentPadding provides 18dp already
+    val sectionSpacing = 10.dp
     val archiveSubtitle = CopyEngine.getSubtitle(
         ritualSubtitle = "Cataloged echoes, awaiting selection.",
         unhingedSubtitle = "Every spine twitches if you stare long enough.",
@@ -186,7 +201,7 @@ private fun ArchiveControlDeck(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = outerHorizontalPadding)
-            .padding(top = 16.dp, bottom = 8.dp),
+            .padding(top = 10.dp, bottom = 4.dp),
         verticalArrangement = Arrangement.spacedBy(sectionSpacing),
     ) {
         // Header card: "The Archive" title + subtitle flavor text
@@ -207,7 +222,7 @@ private fun ArchiveControlDeck(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
@@ -621,7 +636,7 @@ private fun ArchiveBookListItem(
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // Cover art with progress ring
@@ -639,15 +654,13 @@ private fun ArchiveBookListItem(
                         .clip(RoundedCornerShape(6.dp))
                         .background(ArchiveVoidElevated),
                 ) {
-                    if (!book.coverPath.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = book.coverPath,
-                            contentDescription = book.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                            alignment = Alignment.TopCenter,
-                        )
-                    }
+                    BookCoverImage(
+                        coverUrl = book.coverPath,
+                        contentDescription = book.title,
+                        modifier = Modifier.fillMaxSize(),
+                        title = book.title,
+                        bookId = book.id,
+                    )
                 }
 
                 // Fluorescent square progress glow
@@ -778,15 +791,13 @@ private fun ArchiveBookTile(
                     .clip(RoundedCornerShape(10.dp))
                     .background(ArchiveVoidElevated),
             ) {
-                if (!book.coverPath.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = book.coverPath,
-                        contentDescription = book.title,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                        alignment = Alignment.TopCenter,
-                    )
-                }
+                BookCoverImage(
+                    coverUrl = book.coverPath,
+                    contentDescription = book.title,
+                    modifier = Modifier.fillMaxSize(),
+                    title = book.title,
+                    bookId = book.id,
+                )
             }
 
             // Containment frame

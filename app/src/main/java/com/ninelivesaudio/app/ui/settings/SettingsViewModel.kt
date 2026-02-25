@@ -7,6 +7,8 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -27,6 +29,7 @@ class SettingsViewModel @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val audioBookDao: AudioBookDao,
     private val libraryDao: LibraryDao,
+    private val libraryRepository: LibraryRepository,
     private val unhingedRepository: UnhingedSettingsRepository,
     private val syncManager: SyncManager,
     private val playbackManager: PlaybackManager,
@@ -39,10 +42,16 @@ class SettingsViewModel @Inject constructor(
         val serverUrl: String = "",
         val username: String = "",
         val password: String = "",
+        val useApiToken: Boolean = false,
+        val apiToken: String = "",
         val isConnected: Boolean = false,
         val isConnecting: Boolean = false,
         val connectionStatusText: String = "Not connected",
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
+
+        // Libraries
+        val libraries: List<Library> = emptyList(),
+        val selectedLibrary: Library? = null,
 
         // Security
         val allowSelfSignedCertificates: Boolean = false,
@@ -157,6 +166,7 @@ class SettingsViewModel @Inject constructor(
             state.copy(
                 serverUrl = settings.serverUrl,
                 username = settings.username,
+                useApiToken = settings.useApiToken,
                 allowSelfSignedCertificates = settings.allowSelfSignedCertificates,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
@@ -180,7 +190,9 @@ class SettingsViewModel @Inject constructor(
                         connectionStatusText = if (valid) "Connected to ${settings.serverUrl}" else "Session expired — please reconnect",
                     )
                 }
-                if (!valid) {
+                if (valid) {
+                    loadLibraries()
+                } else {
                     apiService.logout()
                 }
             } catch (e: Exception) {
@@ -206,6 +218,14 @@ class SettingsViewModel @Inject constructor(
 
     fun onPasswordChanged(value: String) {
         _uiState.update { it.copy(password = value, errorMessage = null) }
+    }
+
+    fun onUseApiTokenChanged(value: Boolean) {
+        _uiState.update { it.copy(useApiToken = value, errorMessage = null) }
+    }
+
+    fun onApiTokenChanged(value: String) {
+        _uiState.update { it.copy(apiToken = value, errorMessage = null) }
     }
 
     fun onAllowSelfSignedChanged(value: Boolean) {
@@ -268,9 +288,16 @@ class SettingsViewModel @Inject constructor(
             _uiState.update { it.copy(errorMessage = "Please enter a server URL") }
             return
         }
-        if (state.username.isBlank() || state.password.isBlank()) {
-            _uiState.update { it.copy(errorMessage = "Please enter username and password") }
-            return
+        if (state.useApiToken) {
+            if (state.apiToken.isBlank()) {
+                _uiState.update { it.copy(errorMessage = "Please enter an API token") }
+                return
+            }
+        } else {
+            if (state.username.isBlank() || state.password.isBlank()) {
+                _uiState.update { it.copy(errorMessage = "Please enter username and password") }
+                return
+            }
         }
 
         viewModelScope.launch {
@@ -284,7 +311,11 @@ class SettingsViewModel @Inject constructor(
             }
 
             try {
-                val success = apiService.login(state.serverUrl, state.username, state.password)
+                val success = if (state.useApiToken) {
+                    apiService.loginWithToken(state.serverUrl, state.apiToken)
+                } else {
+                    apiService.login(state.serverUrl, state.username, state.password)
+                }
 
                 if (success) {
                     _uiState.update {
@@ -293,7 +324,8 @@ class SettingsViewModel @Inject constructor(
                             isConnecting = false,
                             connectionStatusText = "Connected to ${state.serverUrl}",
                             successMessage = "Successfully connected!",
-                            password = "", // Clear password after successful login
+                            password = "",
+                            apiToken = "", // Clear token after successful login
                         )
                     }
 
@@ -301,9 +333,13 @@ class SettingsViewModel @Inject constructor(
                     settingsManager.updateSettings {
                         it.copy(
                             serverUrl = state.serverUrl,
-                            username = state.username,
+                            username = if (state.useApiToken) "" else state.username,
+                            useApiToken = state.useApiToken,
                         )
                     }
+
+                    // Load libraries for the selector
+                    loadLibraries()
 
                     // Check server reachability
                     connectivityMonitor.checkServerReachable()
@@ -314,7 +350,8 @@ class SettingsViewModel @Inject constructor(
                             isConnecting = false,
                             connectionStatusText = "Connection failed",
                             errorMessage = apiService.lastError
-                                ?: "Login failed. Check your credentials and server URL.",
+                                ?: if (state.useApiToken) "Invalid API token."
+                                   else "Login failed. Check your credentials and server URL.",
                         )
                     }
                 }
@@ -575,6 +612,44 @@ class SettingsViewModel @Inject constructor(
             process.inputStream.bufferedReader().use { it.readText() }
         } catch (e: Exception) {
             "(Failed to collect logs: ${e.message})"
+        }
+    }
+
+    // ─── Library Selection ──────────────────────────────────────────────
+
+    private suspend fun loadLibraries() {
+        try {
+            // Load local first
+            var libs = libraryRepository.getAll()
+
+            // Sync from server if possible
+            try {
+                val serverLibs = libraryRepository.syncFromServer()
+                if (serverLibs.isNotEmpty()) libs = serverLibs
+            } catch (_: Exception) {
+                // Use cached
+            }
+
+            // Restore persisted selection, fall back to first available
+            val savedId = settingsManager.currentSettings.selectedLibraryId
+            val selected = libs.firstOrNull { it.id == savedId } ?: libs.firstOrNull()
+
+            _uiState.update {
+                it.copy(
+                    libraries = libs,
+                    selectedLibrary = selected,
+                )
+            }
+        } catch (_: Exception) {
+            // Non-critical — library selector just won't appear
+        }
+    }
+
+    fun onLibrarySelected(library: Library) {
+        _uiState.update { it.copy(selectedLibrary = library) }
+        viewModelScope.launch {
+            // Persist selection so the whole app picks it up
+            settingsManager.updateSettings { it.copy(selectedLibraryId = library.id) }
         }
     }
 

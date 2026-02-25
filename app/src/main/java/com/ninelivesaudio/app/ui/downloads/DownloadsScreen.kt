@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
+import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
 
@@ -209,14 +209,13 @@ private fun ActiveDownloadCard(
                         .clip(RoundedCornerShape(8.dp))
                         .background(ArchiveVoidElevated),
                 ) {
-                    if (!item.coverPath.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = item.coverPath,
-                            contentDescription = download.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
+                    BookCoverImage(
+                        coverUrl = item.coverPath,
+                        contentDescription = download.title,
+                        modifier = Modifier.fillMaxSize(),
+                        title = download.title,
+                        bookId = download.audioBookId,
+                    )
                 }
 
                 // Title + status
@@ -382,15 +381,13 @@ private fun CompletedDownloadCard(
                     .clip(RoundedCornerShape(8.dp))
                     .background(ArchiveVoidElevated),
             ) {
-                if (!item.coverPath.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = item.coverPath,
-                        contentDescription = download.title,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                        alignment = Alignment.TopCenter,
-                    )
-                }
+                BookCoverImage(
+                    coverUrl = item.coverPath,
+                    contentDescription = download.title,
+                    modifier = Modifier.fillMaxSize(),
+                    title = download.title,
+                    bookId = download.audioBookId,
+                )
             }
 
             // Title + completed info

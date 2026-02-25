@@ -421,6 +421,30 @@ fun SettingsScreen(
                             },
                         )
                     }
+
+                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Privacy Policy",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ArchiveTextMuted,
+                        )
+                        Text(
+                            text = "View",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                            color = GoldFilament,
+                            modifier = Modifier.clickable {
+                                uriHandler.openUri("https://statichum.studio/apps/nine-lives/privacy")
+                            },
+                        )
+                    }
                 }
             }
 

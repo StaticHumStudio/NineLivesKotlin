@@ -420,6 +420,9 @@ class SettingsViewModel @Inject constructor(
                         errorMessage = if (!valid) "Token expired — please reconnect" else null,
                     )
                 }
+                if (valid) {
+                    loadLibraries()
+                }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -633,6 +636,13 @@ class SettingsViewModel @Inject constructor(
             // Restore persisted selection, fall back to first available
             val savedId = settingsManager.currentSettings.selectedLibraryId
             val selected = libs.firstOrNull { it.id == savedId } ?: libs.firstOrNull()
+
+            // Keep persisted selection in sync with the effective default.
+            // Without this, UI can show a selected library while the rest of
+            // the app still behaves as "all libraries" (null selection).
+            if (selected != null && selected.id != savedId) {
+                settingsManager.updateSettings { it.copy(selectedLibraryId = selected.id) }
+            }
 
             _uiState.update {
                 it.copy(

@@ -1,7 +1,9 @@
 package com.ninelivesaudio.app.ui.settings
 
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
@@ -12,8 +14,10 @@ import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
@@ -75,7 +79,17 @@ class SettingsViewModel @Inject constructor(
         val sleepTimerMotionEnabled: Boolean = true,
         val sleepTimerShakeResetEnabled: Boolean = true,
         val sleepTimerRewindSeconds: Int = 15,
+
+        // Feedback Report
+        val reportType: ReportType = ReportType.BUG,
+        val includeLogsInReport: Boolean = true,
+        val isCollectingReport: Boolean = false,
     )
+
+    enum class ReportType(val label: String, val subjectPrefix: String) {
+        BUG("Bug Report", "[NineLives Bug]"),
+        UPGRADE("Upgrade Request", "[NineLives Request]"),
+    }
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -494,6 +508,73 @@ class SettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(eqBandGains = List(bandCount) { 0 }) }
+        }
+    }
+
+    // ─── Feedback Report ─────────────────────────────────────────────────
+
+    fun onReportTypeChanged(type: ReportType) {
+        _uiState.update { it.copy(reportType = type) }
+    }
+
+    fun onIncludeLogsChanged(include: Boolean) {
+        _uiState.update { it.copy(includeLogsInReport = include) }
+    }
+
+    /**
+     * Builds the full report body with device diagnostics and optionally logcat,
+     * then invokes [onReady] with (subject, body) on the main thread so the
+     * composable can launch the email intent.
+     */
+    fun buildReport(onReady: (subject: String, body: String) -> Unit) {
+        val state = _uiState.value
+        _uiState.update { it.copy(isCollectingReport = true) }
+
+        viewModelScope.launch {
+            val subject = "${state.reportType.subjectPrefix} ${getAppVersion()}"
+            val diagnostics = buildDiagnostics(state)
+            val logs = if (state.includeLogsInReport) collectLogcat() else null
+
+            val body = buildString {
+                appendLine("--- ${state.reportType.label} ---")
+                appendLine()
+                appendLine("[Describe the issue or request here]")
+                appendLine()
+                appendLine()
+                appendLine("─── Device & App Info ───")
+                append(diagnostics)
+                if (logs != null) {
+                    appendLine()
+                    appendLine()
+                    appendLine("─── Recent Logs (last 500 lines) ───")
+                    appendLine(logs)
+                }
+            }
+
+            _uiState.update { it.copy(isCollectingReport = false) }
+            onReady(subject, body)
+        }
+    }
+
+    private fun buildDiagnostics(state: UiState): String = buildString {
+        appendLine("App Version: ${getAppVersion()}")
+        appendLine("Build Type: ${BuildConfig.BUILD_TYPE}")
+        appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+        appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        appendLine("Connection: ${state.connectionStatusText}")
+        appendLine("EQ Enabled: ${state.eqEnabled}")
+        appendLine("Auto-Rewind: ${if (state.autoRewindEnabled) "${state.autoRewindMode} (${state.autoRewindSeconds}s)" else "Off"}")
+        appendLine("Sleep Motion: ${state.sleepTimerMotionEnabled}, Shake: ${state.sleepTimerShakeResetEnabled}")
+    }
+
+    private suspend fun collectLogcat(): String = withContext(Dispatchers.IO) {
+        try {
+            val process = Runtime.getRuntime().exec(
+                arrayOf("logcat", "-d", "-t", "500", "--pid=${android.os.Process.myPid()}")
+            )
+            process.inputStream.bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            "(Failed to collect logs: ${e.message})"
         }
     }
 

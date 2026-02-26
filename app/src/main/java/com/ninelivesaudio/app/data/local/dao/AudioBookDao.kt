@@ -26,6 +26,10 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     suspend fun getById(id: String): AudioBookEntity?
 
+    /** Batch lookup by IDs — used by syncLibraryItems to preserve download state. */
+    @Query("SELECT * FROM AudioBooks WHERE Id IN (:ids)")
+    suspend fun getByIds(ids: List<String>): List<AudioBookEntity>
+
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     fun observeById(id: String): Flow<AudioBookEntity?>
 

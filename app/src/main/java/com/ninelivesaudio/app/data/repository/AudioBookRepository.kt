@@ -78,8 +78,11 @@ class AudioBookRepository @Inject constructor(
     suspend fun syncLibraryItems(libraryId: String): List<AudioBook> {
         val remote = apiService.getLibraryItems(libraryId)
         if (remote.isNotEmpty()) {
-            // Preserve local download info when syncing
-            val localBooks = audioBookDao.getByLibrary(libraryId).associateBy { it.id }
+            // Preserve local download info when syncing.
+            // Query by book IDs (not by libraryId) so we find existing entries
+            // regardless of how they were originally saved — prevents full-row
+            // REPLACE from wiping isDownloaded/localPath on libraryId mismatch.
+            val localBooks = audioBookDao.getByIds(remote.map { it.id }).associateBy { it.id }
             val merged = remote.map { remoteBook ->
                 val local = localBooks[remoteBook.id]
                 if (local != null) {

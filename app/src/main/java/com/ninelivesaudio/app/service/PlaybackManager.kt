@@ -8,6 +8,8 @@ import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.annotation.OptIn
 import androidx.media3.common.*
 import androidx.media3.common.C
@@ -44,6 +46,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -76,6 +80,10 @@ class PlaybackManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "PlaybackManager"
+        private const val ARTWORK_MAX_DOWNLOAD_BYTES = 3L * 1024 * 1024 // 3MB
+        private const val ARTWORK_MAX_DIMENSION = 768
+        private const val ARTWORK_MAX_EMBED_BYTES = 300 * 1024
+        private const val ARTWORK_MIN_JPEG_QUALITY = 50
     }
 
     private val syncManager: SyncManager get() = syncManagerLazy.get()
@@ -1233,7 +1241,24 @@ class PlaybackManager @Inject constructor(
                 try {
                     val request = Request.Builder().url(book.coverPath).build()
                     okHttpClient.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) response.body?.bytes() else null
+                        if (!response.isSuccessful) {
+                            Log.w(TAG, "buildMediaMetadata: artwork skipped reason=http_${response.code}")
+                            null
+                        } else {
+                            val body = response.body
+                            if (body == null) {
+                                Log.w(TAG, "buildMediaMetadata: artwork skipped reason=empty_body")
+                                null
+                            } else if (body.contentLength() > ARTWORK_MAX_DOWNLOAD_BYTES) {
+                                Log.w(
+                                    TAG,
+                                    "buildMediaMetadata: artwork skipped reason=content_length contentLength=${body.contentLength()} maxBytes=$ARTWORK_MAX_DOWNLOAD_BYTES",
+                                )
+                                null
+                            } else {
+                                decodeAndCompressArtwork(body.byteStream(), body.contentLength())
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "buildMediaMetadata: cover download failed: ${e.message}")
@@ -1246,6 +1271,80 @@ class PlaybackManager @Inject constructor(
         }
 
         return builder.build()
+    }
+
+    private fun decodeAndCompressArtwork(inputStream: java.io.InputStream, contentLength: Long): ByteArray? {
+        val bufferedStream = BufferedInputStream(inputStream)
+        bufferedStream.mark((ARTWORK_MAX_DOWNLOAD_BYTES + 1).toInt())
+
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeStream(bufferedStream, null, boundsOptions)
+
+        try {
+            bufferedStream.reset()
+        } catch (e: Exception) {
+            Log.w(TAG, "buildMediaMetadata: artwork skipped reason=stream_reset contentLength=$contentLength")
+            return null
+        }
+
+        val width = boundsOptions.outWidth
+        val height = boundsOptions.outHeight
+        if (width <= 0 || height <= 0) {
+            Log.w(TAG, "buildMediaMetadata: artwork skipped reason=decode_bounds width=$width height=$height")
+            return null
+        }
+
+        val sampleSize = calculateInSampleSize(width, height, ARTWORK_MAX_DIMENSION)
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+
+        val bitmap = BitmapFactory.decodeStream(bufferedStream, null, decodeOptions)
+        if (bitmap == null) {
+            Log.w(
+                TAG,
+                "buildMediaMetadata: artwork skipped reason=decode_bitmap width=$width height=$height sampleSize=$sampleSize",
+            )
+            return null
+        }
+
+        val compressed = ByteArrayOutputStream()
+        var quality = 85
+        do {
+            compressed.reset()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, compressed)
+            quality -= 10
+        } while (compressed.size() > ARTWORK_MAX_EMBED_BYTES && quality >= ARTWORK_MIN_JPEG_QUALITY)
+        bitmap.recycle()
+
+        if (compressed.size() > ARTWORK_MAX_EMBED_BYTES) {
+            Log.w(
+                TAG,
+                "buildMediaMetadata: artwork skipped reason=compressed_too_large width=$width height=$height sampleSize=$sampleSize compressedBytes=${compressed.size()} maxBytes=$ARTWORK_MAX_EMBED_BYTES",
+            )
+            return null
+        }
+
+        Log.d(
+            TAG,
+            "buildMediaMetadata: artwork embedded contentLength=$contentLength width=$width height=$height sampleSize=$sampleSize compressedBytes=${compressed.size()}",
+        )
+        return compressed.toByteArray()
+    }
+
+    private fun calculateInSampleSize(width: Int, height: Int, maxDimension: Int): Int {
+        var sample = 1
+        var sampledWidth = width
+        var sampledHeight = height
+
+        while (sampledWidth > maxDimension || sampledHeight > maxDimension) {
+            sampledWidth /= 2
+            sampledHeight /= 2
+            sample *= 2
+        }
+
+        return sample
     }
 
     // ─── MediaSession / Playback Service Management ─────────────────────────

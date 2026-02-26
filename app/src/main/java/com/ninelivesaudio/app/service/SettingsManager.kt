@@ -146,6 +146,30 @@ class SettingsManager @Inject constructor(
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_SETTINGS = "app_settings"
         private const val KEY_DEVICE_ID = "device_id"
+        private const val KEY_TRUSTED_CERT_FINGERPRINT_PREFIX = "trusted_cert_fingerprint_"
+    }
+
+    fun getTrustedCertificateFingerprint(host: String): String? {
+        val normalizedHost = host.trim().lowercase()
+        if (normalizedHost.isEmpty()) return null
+        return encryptedPrefs.getString("$KEY_TRUSTED_CERT_FINGERPRINT_PREFIX$normalizedHost", null)
+    }
+
+    fun saveTrustedCertificateFingerprint(host: String, fingerprint: String) {
+        val normalizedHost = host.trim().lowercase()
+        val normalizedFingerprint = fingerprint.trim().uppercase()
+        if (normalizedHost.isEmpty() || normalizedFingerprint.isEmpty()) return
+        encryptedPrefs.edit()
+            .putString("$KEY_TRUSTED_CERT_FINGERPRINT_PREFIX$normalizedHost", normalizedFingerprint)
+            .commit()
+    }
+
+    fun clearTrustedCertificateFingerprint(host: String) {
+        val normalizedHost = host.trim().lowercase()
+        if (normalizedHost.isEmpty()) return
+        encryptedPrefs.edit()
+            .remove("$KEY_TRUSTED_CERT_FINGERPRINT_PREFIX$normalizedHost")
+            .commit()
     }
 
     suspend fun getAuthToken(): String? = withContext(Dispatchers.IO) {

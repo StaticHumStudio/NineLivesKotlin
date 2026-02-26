@@ -1,9 +1,12 @@
 package com.ninelivesaudio.app.data.remote
 
+import android.util.Log
 import com.ninelivesaudio.app.service.SettingsManager
 import okhttp3.OkHttpClient
 import java.net.URI
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -28,13 +31,23 @@ import javax.net.ssl.X509TrustManager
  * 3. **No MITM for third parties:** Only the configured Audiobookshelf server is affected.
  *    All other HTTPS connections (analytics, CDNs, etc.) use the system CA store.
  *
- * ## Limitation
+ * ## TOFU Protection
  *
- * This does NOT implement Trust On First Use (TOFU) / certificate pinning. A future
- * improvement could cache the server's certificate fingerprint on first connection and
- * reject changes, detecting MITM attacks even for self-signed certs.
+ * With self-signed cert opt-in enabled, the app stores a SHA-256 fingerprint for the
+ * configured host on first successful handshake and rejects future mismatches.
  */
 object SelfSignedCertTrustManager {
+    private const val TAG = "SelfSignedTrustManager"
+
+    class CertificateFingerprintMismatchException(
+        val host: String,
+        val expectedFingerprint: String,
+        val actualFingerprint: String,
+    ) : CertificateException(
+        "TLS certificate fingerprint mismatch for $host. " +
+            "Possible MITM attack or intentional server certificate rotation."
+    )
+
 
     /**
      * Configures the OkHttpClient.Builder to accept self-signed certificates
@@ -58,7 +71,44 @@ object SelfSignedCertTrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
 
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                // Accept self-signed certs — host restriction enforced by hostnameVerifier below
+                if (chain.isNullOrEmpty()) {
+                    throw CertificateException("Server certificate chain is empty")
+                }
+
+                chain.forEach { cert -> cert.checkValidity() }
+
+                val serverUrl = settingsManager.currentSettings.serverUrl
+                val configuredHost = try {
+                    URI(serverUrl).host?.lowercase()
+                } catch (_: Exception) {
+                    null
+                }
+
+                if (configuredHost.isNullOrEmpty()) {
+                    throw CertificateException("Configured server host is invalid")
+                }
+
+                val leafCert = chain.first()
+                val fingerprint = leafCert.sha256Fingerprint()
+                val trustedFingerprint = settingsManager.getTrustedCertificateFingerprint(configuredHost)
+
+                if (trustedFingerprint == null) {
+                    settingsManager.saveTrustedCertificateFingerprint(configuredHost, fingerprint)
+                    Log.i(TAG, "TOFU enrolled certificate fingerprint for host=$configuredHost")
+                    return
+                }
+
+                if (!fingerprint.equals(trustedFingerprint, ignoreCase = true)) {
+                    Log.e(
+                        TAG,
+                        "TLS fingerprint mismatch for host=$configuredHost expected=$trustedFingerprint actual=$fingerprint"
+                    )
+                    throw CertificateFingerprintMismatchException(
+                        host = configuredHost,
+                        expectedFingerprint = trustedFingerprint,
+                        actualFingerprint = fingerprint,
+                    )
+                }
             }
 
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
@@ -83,5 +133,10 @@ object SelfSignedCertTrustManager {
         }
 
         return this
+    }
+
+    private fun X509Certificate.sha256Fingerprint(): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(encoded)
+        return digest.joinToString(separator = ":") { "%02X".format(it) }
     }
 }

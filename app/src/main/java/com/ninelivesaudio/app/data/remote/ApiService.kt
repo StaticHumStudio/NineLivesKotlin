@@ -5,6 +5,8 @@ import com.ninelivesaudio.app.data.remote.dto.*
 import com.ninelivesaudio.app.domain.model.*
 import com.ninelivesaudio.app.service.SettingsManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -20,8 +22,17 @@ class ApiService @Inject constructor(
     private val authInterceptor: AuthInterceptor,
     private val settingsManager: SettingsManager,
 ) {
+    companion object {
+        private const val TOKEN_VALIDATION_DEBOUNCE_MS = 15_000L
+    }
+
     var lastError: String? = null
         private set
+
+    private val tokenValidationMutex = Mutex()
+    @Volatile private var lastValidatedToken: String? = null
+    @Volatile private var lastValidationAtMs: Long = 0L
+    @Volatile private var lastValidationResult: Boolean? = null
 
     val isAuthenticated: Boolean
         get() = authInterceptor.hasToken() && settingsManager.currentSettings.serverUrl.isNotEmpty()
@@ -77,11 +88,11 @@ class ApiService @Inject constructor(
                 authInterceptor.setToken(token)
                 settingsManager.saveAuthToken(token)
 
-                val response = api.getMe()
-                if (!response.isSuccessful) {
+                val isValid = validateToken(forceRefresh = true, tokenOverride = token)
+                if (!isValid) {
                     authInterceptor.setToken(null)
                     settingsManager.clearAuthToken()
-                    lastError = "Invalid API token: ${response.code()}"
+                    lastError = "Invalid API token"
                     return@withContext false
                 }
 
@@ -101,21 +112,67 @@ class ApiService @Inject constructor(
         settingsManager.clearAuthToken()
     }
 
-    suspend fun validateToken(): Boolean {
+    suspend fun validateToken(forceRefresh: Boolean = false, tokenOverride: String? = null): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 // Try to restore token from secure storage
-                val token = settingsManager.getAuthToken()
+                val token = tokenOverride ?: settingsManager.getAuthToken()
                 if (token.isNullOrEmpty()) return@withContext false
 
                 authInterceptor.setToken(token)
 
-                val response = api.getMe()
-                response.isSuccessful
+                tokenValidationMutex.withLock {
+                    getCachedValidation(token, forceRefresh)?.let { return@withContext it }
+
+                    val result = validateTokenWithLightweightEndpoint()
+                    cacheValidation(token, result)
+                    result
+                }
             } catch (e: Exception) {
                 false
             }
         }
+    }
+
+    private suspend fun validateTokenWithLightweightEndpoint(): Boolean {
+        val response = try {
+            api.authorize()
+        } catch (e: Exception) {
+            return false
+        }
+
+        if (response.isSuccessful) return true
+
+        // Some Audiobookshelf servers may not expose /api/authorize.
+        // Fall back to /api/me (heavier payload), but cached/debounced above.
+        if (response.code() == 404 || response.code() == 405) {
+            return fallbackValidateTokenViaProfileSync()
+        }
+
+        return false
+    }
+
+    private suspend fun fallbackValidateTokenViaProfileSync(): Boolean {
+        val response = try {
+            api.getMe()
+        } catch (e: Exception) {
+            return false
+        }
+        return response.isSuccessful
+    }
+
+    private fun getCachedValidation(token: String, forceRefresh: Boolean): Boolean? {
+        if (forceRefresh) return null
+        val cachedResult = lastValidationResult ?: return null
+        val isSameToken = token == lastValidatedToken
+        val isFresh = (System.currentTimeMillis() - lastValidationAtMs) < TOKEN_VALIDATION_DEBOUNCE_MS
+        return if (isSameToken && isFresh) cachedResult else null
+    }
+
+    private fun cacheValidation(token: String, result: Boolean) {
+        lastValidatedToken = token
+        lastValidationResult = result
+        lastValidationAtMs = System.currentTimeMillis()
     }
 
     /** Restore token from secure storage on app startup. */

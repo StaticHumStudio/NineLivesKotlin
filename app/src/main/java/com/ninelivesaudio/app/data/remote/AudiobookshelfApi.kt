@@ -16,6 +16,10 @@ interface AudiobookshelfApi {
     @POST("login")
     suspend fun login(@Body request: LoginRequest): Response<LoginResponse>
 
+    /** Lightweight authenticated check for token validity (no profile payload). */
+    @GET("api/authorize")
+    suspend fun authorize(): Response<Unit>
+
     // ─── User / Me ───────────────────────────────────────────────────────
 
     /** Validate token + get user info, all progress, and bookmarks. */

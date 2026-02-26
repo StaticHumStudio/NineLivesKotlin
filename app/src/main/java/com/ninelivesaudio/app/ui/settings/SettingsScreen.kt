@@ -193,34 +193,60 @@ fun SettingsScreen(
                 colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
                 shape = RoundedCornerShape(12.dp),
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Allow Self-Signed Certificates",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = ArchiveTextPrimary,
-                        )
-                        Text(
-                            text = "Enable for local/development servers",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Allow Self-Signed Certificates",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = ArchiveTextPrimary,
+                            )
+                            Text(
+                                text = "Required for TOFU on self-hosted servers",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ArchiveTextMuted,
+                            )
+                        }
+                        Switch(
+                            checked = uiState.allowSelfSignedCertificates,
+                            onCheckedChange = viewModel::onAllowSelfSignedChanged,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = GoldFilament,
+                                checkedTrackColor = GoldFilamentFaint,
+                                uncheckedThumbColor = ArchiveTextSecondary,
+                                uncheckedTrackColor = ArchiveVoidElevated,
+                            ),
                         )
                     }
-                    Switch(
-                        checked = uiState.allowSelfSignedCertificates,
-                        onCheckedChange = viewModel::onAllowSelfSignedChanged,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = GoldFilament,
-                            checkedTrackColor = GoldFilamentFaint,
-                            uncheckedThumbColor = ArchiveTextSecondary,
-                            uncheckedTrackColor = ArchiveVoidElevated,
-                        ),
+
+                    val trustStateText = if (uiState.hasTrustedFingerprint) {
+                        "Trusted fingerprint saved for ${uiState.trustedFingerprintHost}."
+                    } else {
+                        "No trusted fingerprint stored yet for this host."
+                    }
+
+                    Text(
+                        text = trustStateText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
                     )
+
+                    TextButton(
+                        onClick = viewModel::resetTrustedCertificateFingerprint,
+                        enabled = uiState.allowSelfSignedCertificates && uiState.trustedFingerprintHost != null,
+                    ) {
+                        Icon(Icons.Outlined.RestartAlt, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Reset trusted fingerprint")
+                    }
                 }
             }
 

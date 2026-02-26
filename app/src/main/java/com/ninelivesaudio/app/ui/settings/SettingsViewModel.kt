@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.URI
 import javax.inject.Inject
 
 @HiltViewModel
@@ -55,6 +56,8 @@ class SettingsViewModel @Inject constructor(
 
         // Security
         val allowSelfSignedCertificates: Boolean = false,
+        val trustedFingerprintHost: String? = null,
+        val hasTrustedFingerprint: Boolean = false,
 
         // Sync
         val isSyncing: Boolean = false,
@@ -163,11 +166,16 @@ class SettingsViewModel @Inject constructor(
         val settings = settingsManager.currentSettings
 
         _uiState.update { state ->
+            val configuredHost = extractHost(settings.serverUrl)
             state.copy(
                 serverUrl = settings.serverUrl,
                 username = settings.username,
                 useApiToken = settings.useApiToken,
                 allowSelfSignedCertificates = settings.allowSelfSignedCertificates,
+                trustedFingerprintHost = configuredHost,
+                hasTrustedFingerprint = configuredHost?.let {
+                    settingsManager.getTrustedCertificateFingerprint(it) != null
+                } == true,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
                 autoRewindEnabled = settings.autoRewindEnabled,
@@ -209,7 +217,18 @@ class SettingsViewModel @Inject constructor(
     // ─── User Actions ─────────────────────────────────────────────────────
 
     fun onServerUrlChanged(value: String) {
-        _uiState.update { it.copy(serverUrl = value.trim(), errorMessage = null) }
+        val serverUrl = value.trim()
+        val host = extractHost(serverUrl)
+        _uiState.update {
+            it.copy(
+                serverUrl = serverUrl,
+                errorMessage = null,
+                trustedFingerprintHost = host,
+                hasTrustedFingerprint = host?.let { configuredHost ->
+                    settingsManager.getTrustedCertificateFingerprint(configuredHost) != null
+                } == true,
+            )
+        }
     }
 
     fun onUsernameChanged(value: String) {
@@ -232,6 +251,23 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(allowSelfSignedCertificates = value) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(allowSelfSignedCertificates = value) }
+        }
+    }
+
+    fun resetTrustedCertificateFingerprint() {
+        val host = _uiState.value.trustedFingerprintHost
+        if (host.isNullOrBlank()) {
+            _uiState.update { it.copy(errorMessage = "Set a valid server URL before resetting trust") }
+            return
+        }
+
+        settingsManager.clearTrustedCertificateFingerprint(host)
+        _uiState.update {
+            it.copy(
+                hasTrustedFingerprint = false,
+                successMessage = "Trusted certificate fingerprint reset for $host",
+                errorMessage = null,
+            )
         }
     }
 
@@ -615,6 +651,15 @@ class SettingsViewModel @Inject constructor(
             process.inputStream.bufferedReader().use { it.readText() }
         } catch (e: Exception) {
             "(Failed to collect logs: ${e.message})"
+        }
+    }
+
+    private fun extractHost(serverUrl: String): String? {
+        if (serverUrl.isBlank()) return null
+        return try {
+            URI(serverUrl).host?.lowercase()
+        } catch (_: Exception) {
+            null
         }
     }
 

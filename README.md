@@ -253,7 +253,9 @@ cd NineLivesKotlin
 
 ## License
 
-MIT
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
+
+Third-party dependency licenses are listed in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
 
 ---
 

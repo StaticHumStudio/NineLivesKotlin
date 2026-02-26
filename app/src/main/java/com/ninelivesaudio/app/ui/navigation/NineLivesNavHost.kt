@@ -15,6 +15,7 @@ import com.ninelivesaudio.app.ui.downloads.DownloadsScreen
 import com.ninelivesaudio.app.ui.home.HomeScreen
 import com.ninelivesaudio.app.ui.library.LibraryScreen
 import com.ninelivesaudio.app.ui.player.PlayerScreen
+import com.ninelivesaudio.app.ui.settings.LicensesScreen
 import com.ninelivesaudio.app.ui.settings.SettingsScreen
 
 /**
@@ -27,6 +28,7 @@ object Routes {
     const val DOWNLOADS = "downloads"
     const val SETTINGS = "settings"
     const val DOSSIER = "dossier"
+    const val LICENSES = "licenses"
     const val BOOK_DETAIL = "book_detail/{bookId}"
 
     fun bookDetail(bookId: String) = "book_detail/${Uri.encode(bookId)}"
@@ -82,7 +84,18 @@ fun NineLivesNavHost(
                     navController.navigate(Routes.DOSSIER) {
                         launchSingleTop = true
                     }
-                }
+                },
+                onNavigateToLicenses = {
+                    navController.navigate(Routes.LICENSES) {
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+
+        composable(Routes.LICENSES) {
+            LicensesScreen(
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

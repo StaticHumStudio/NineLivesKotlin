@@ -41,6 +41,7 @@ import com.ninelivesaudio.app.ui.theme.unhinged.*
 @Composable
 fun SettingsScreen(
     onNavigateToDossier: () -> Unit = {},
+    onNavigateToLicenses: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -577,6 +578,29 @@ fun SettingsScreen(
                             modifier = Modifier.clickable {
                                 uriHandler.openUri("https://statichum.studio/apps/nine-lives/privacy")
                             },
+                        )
+                    }
+
+                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNavigateToLicenses() },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Open Source Licenses",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ArchiveTextMuted,
+                        )
+                        Text(
+                            text = "View",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                            color = GoldFilament,
                         )
                     }
                 }

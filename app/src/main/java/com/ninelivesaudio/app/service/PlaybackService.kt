@@ -2,7 +2,9 @@ package com.ninelivesaudio.app.service
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.os.Process
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
@@ -42,6 +44,29 @@ class PlaybackService : MediaLibraryService() {
         private const val TAG = "PlaybackService"
         const val CHANNEL_ID = "nine_lives_playback"
         const val NOTIFICATION_ID = 1
+        private val ANDROID_AUTO_PACKAGES = setOf(
+            "com.google.android.projection.gearhead", // Android Auto on phones
+            "com.google.android.apps.automotive.media", // Android Automotive media host
+        )
+
+        @VisibleForTesting
+        internal fun isTrustedController(
+            appPackageName: String,
+            controllerPackageName: String,
+            controllerUid: Int,
+            packageUidVerifier: (packageName: String, uid: Int) -> Boolean,
+        ): Boolean {
+            if (!packageUidVerifier(controllerPackageName, controllerUid)) {
+                return false
+            }
+
+            if (controllerUid == Process.SYSTEM_UID) {
+                return true
+            }
+
+            return controllerPackageName == appPackageName ||
+                controllerPackageName in ANDROID_AUTO_PACKAGES
+        }
     }
 
     @Inject
@@ -113,6 +138,16 @@ class PlaybackService : MediaLibraryService() {
         return LibraryCallback()
     }
 
+    private fun isTrustedController(controller: MediaSession.ControllerInfo): Boolean {
+        return isTrustedController(
+            appPackageName = packageName,
+            controllerPackageName = controller.packageName,
+            controllerUid = controller.uid,
+        ) { pkg, uid ->
+            packageManager.getPackagesForUid(uid)?.contains(pkg) == true
+        }
+    }
+
     /**
      * Called by PlaybackManager after a new MediaSession is created.
      * Forces Media3 to re-associate the session and refresh the notification.
@@ -160,6 +195,11 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
             Log.d(TAG, "▶ onConnect: pkg=${controller.packageName} uid=${controller.uid}")
+            if (!isTrustedController(controller)) {
+                Log.w(TAG, "onConnect: rejected untrusted controller pkg=${controller.packageName} uid=${controller.uid}")
+                return MediaSession.ConnectionResult.RejectedResultBuilder(session).build()
+            }
+
             // Explicitly grant all session + library browse commands so Android Auto
             // can discover and browse the media tree (the default super.onConnect()
             // does not include library-specific commands).
@@ -207,6 +247,10 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
             Log.d(TAG, "onGetChildren: parentId=$parentId page=$page pageSize=$pageSize pkg=${browser.packageName}")
+            if (!isTrustedController(browser)) {
+                Log.w(TAG, "onGetChildren: denied untrusted browser pkg=${browser.packageName} uid=${browser.uid}")
+                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+            }
             return serviceScope.future(Dispatchers.IO) {
                 try {
                     val children = mediaBrowseTree.getChildren(parentId, page, pageSize)
@@ -302,6 +346,11 @@ class PlaybackService : MediaLibraryService() {
             val firstItem = mediaItems.firstOrNull()
             val mediaId = firstItem?.mediaId
             Log.d(TAG, "onSetMediaItems: mediaId=$mediaId count=${mediaItems.size} startIdx=$startIndex pkg=${controller.packageName}")
+
+            if (!isTrustedController(controller)) {
+                Log.w(TAG, "onSetMediaItems: denied untrusted controller pkg=${controller.packageName} uid=${controller.uid}")
+                return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+            }
 
             if (mediaId != null) {
                 val bookId = mediaBrowseTree.extractBookId(mediaId)

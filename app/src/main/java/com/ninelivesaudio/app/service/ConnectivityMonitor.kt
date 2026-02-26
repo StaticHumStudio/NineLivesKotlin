@@ -172,6 +172,7 @@ class ConnectivityMonitor @Inject constructor(
         }
 
         return try {
+            // Uses ApiService's lightweight auth check (with fallback debounce) to keep the 60s cadence cheap.
             val reachable = apiService.validateToken()
             _isServerReachable.value = reachable
             updateConnectionStatus()

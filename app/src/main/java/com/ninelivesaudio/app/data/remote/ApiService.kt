@@ -59,7 +59,7 @@ class ApiService @Inject constructor(
                 lastError = null
                 true
             } catch (e: Exception) {
-                lastError = "Connection failed: ${e.message}"
+                lastError = formatConnectionError(e)
                 false
             }
         }
@@ -90,10 +90,32 @@ class ApiService @Inject constructor(
             } catch (e: Exception) {
                 authInterceptor.setToken(null)
                 settingsManager.clearAuthToken()
-                lastError = "Connection failed: ${e.message}"
+                lastError = formatConnectionError(e)
                 false
             }
         }
+    }
+
+    private fun formatConnectionError(error: Exception): String {
+        val mismatch = error.findFingerprintMismatch()
+        return if (mismatch != null) {
+            "Certificate fingerprint mismatch for ${mismatch.host}. " +
+                "Possible MITM attack or server certificate rotation. " +
+                "Review server certificate and reset trusted fingerprint if intentional."
+        } else {
+            "Connection failed: ${error.message}"
+        }
+    }
+
+    private fun Throwable.findFingerprintMismatch(): SelfSignedCertTrustManager.CertificateFingerprintMismatchException? {
+        var current: Throwable? = this
+        while (current != null) {
+            if (current is SelfSignedCertTrustManager.CertificateFingerprintMismatchException) {
+                return current
+            }
+            current = current.cause
+        }
+        return null
     }
 
     suspend fun logout() {

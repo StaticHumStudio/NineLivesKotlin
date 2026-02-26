@@ -259,4 +259,9 @@ Third-party dependency licenses are listed in [THIRD_PARTY_LICENSES](THIRD_PARTY
 
 ---
 
-Built by **StaticHum Studio** — [@StaticHumStudio](https://github.com/StaticHumStudio)
+## Legal
+
+Nine Lives Audio is a trademark of Static Hum Studio. All rights reserved.
+See [TRADEMARK.md](./TRADEMARK.md) for full trademark notice.
+
+© Static Hum Studio — [statichum.studio](https://statichum.studio)

@@ -48,6 +48,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.FilterInputStream
+import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -1249,14 +1251,20 @@ class PlaybackManager @Inject constructor(
                             if (body == null) {
                                 Log.w(TAG, "buildMediaMetadata: artwork skipped reason=empty_body")
                                 null
-                            } else if (body.contentLength() > ARTWORK_MAX_DOWNLOAD_BYTES) {
-                                Log.w(
-                                    TAG,
-                                    "buildMediaMetadata: artwork skipped reason=content_length contentLength=${body.contentLength()} maxBytes=$ARTWORK_MAX_DOWNLOAD_BYTES",
-                                )
-                                null
                             } else {
-                                decodeAndCompressArtwork(body.byteStream(), body.contentLength())
+                                val contentLength = body.contentLength()
+                                if (contentLength > ARTWORK_MAX_DOWNLOAD_BYTES) {
+                                    Log.w(
+                                        TAG,
+                                        "buildMediaMetadata: artwork skipped reason=content_length contentLength=$contentLength maxBytes=$ARTWORK_MAX_DOWNLOAD_BYTES",
+                                    )
+                                    null
+                                } else {
+                                    // Wrap in BoundedInputStream to enforce the byte cap even when
+                                    // Content-Length is unknown (-1) e.g. chunked transfer encoding.
+                                    val boundedStream = BoundedInputStream(body.byteStream(), ARTWORK_MAX_DOWNLOAD_BYTES)
+                                    decodeAndCompressArtwork(boundedStream, contentLength)
+                                }
                             }
                         }
                     }
@@ -1412,6 +1420,37 @@ class PlaybackManager @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop PlaybackService: ${e.message}", e)
         }
+    }
+}
+
+// ─── Bounded InputStream ──────────────────────────────────────────────────
+
+/**
+ * Wraps an [InputStream] and enforces a hard byte limit.
+ * After [maxBytes] have been read, further reads return EOF (-1).
+ * Prevents unbounded memory allocation when Content-Length is unknown
+ * (e.g. chunked transfer encoding).
+ */
+private class BoundedInputStream(
+    stream: InputStream,
+    private val maxBytes: Long,
+) : FilterInputStream(stream) {
+    private var bytesRead: Long = 0
+
+    override fun read(): Int {
+        if (bytesRead >= maxBytes) return -1
+        val b = super.read()
+        if (b != -1) bytesRead++
+        return b
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        if (bytesRead >= maxBytes) return -1
+        val allowed = len.toLong().coerceAtMost(maxBytes - bytesRead).toInt()
+        if (allowed <= 0) return -1
+        val n = super.read(b, off, allowed)
+        if (n > 0) bytesRead += n
+        return n
     }
 }
 

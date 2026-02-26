@@ -39,6 +39,15 @@ import javax.net.ssl.X509TrustManager
 object SelfSignedCertTrustManager {
     private const val TAG = "SelfSignedTrustManager"
 
+    /**
+     * Fingerprint staged during [checkServerTrusted] but not yet persisted.
+     * Only committed to storage in the [hostnameVerifier] callback after the
+     * actual peer hostname has been confirmed to match the configured server.
+     * This prevents redirect/interception from poisoning the TOFU trust store.
+     */
+    @Volatile
+    private var pendingTofuFingerprint: Pair<String, String>? = null // (host, fingerprint)
+
     class CertificateFingerprintMismatchException(
         val host: String,
         val expectedFingerprint: String,
@@ -93,8 +102,11 @@ object SelfSignedCertTrustManager {
                 val trustedFingerprint = settingsManager.getTrustedCertificateFingerprint(configuredHost)
 
                 if (trustedFingerprint == null) {
-                    settingsManager.saveTrustedCertificateFingerprint(configuredHost, fingerprint)
-                    Log.i(TAG, "TOFU enrolled certificate fingerprint for host=$configuredHost")
+                    // Stage for enrollment — actual persistence happens in hostnameVerifier
+                    // after the peer hostname is confirmed. This prevents a redirect or
+                    // interception to a different host from poisoning the stored fingerprint.
+                    pendingTofuFingerprint = configuredHost to fingerprint
+                    Log.i(TAG, "TOFU staged fingerprint for host=$configuredHost (awaiting hostname verification)")
                     return
                 }
 
@@ -126,8 +138,25 @@ object SelfSignedCertTrustManager {
 
             try {
                 val configuredHost = URI(serverUrl).host
-                hostname.equals(configuredHost, ignoreCase = true)
+                val matches = hostname.equals(configuredHost, ignoreCase = true)
+
+                // Commit the staged TOFU fingerprint now that hostname is confirmed.
+                // If the hostname doesn't match, the pending fingerprint is discarded
+                // so a redirect/interception can't poison the trust store.
+                val pending = pendingTofuFingerprint
+                if (pending != null) {
+                    if (matches && pending.first.equals(configuredHost, ignoreCase = true)) {
+                        settingsManager.saveTrustedCertificateFingerprint(pending.first, pending.second)
+                        Log.i(TAG, "TOFU enrolled fingerprint for host=${pending.first} after hostname verification")
+                    } else {
+                        Log.w(TAG, "TOFU enrollment discarded: hostname mismatch (peer=$hostname, configured=$configuredHost)")
+                    }
+                    pendingTofuFingerprint = null
+                }
+
+                matches
             } catch (_: Exception) {
+                pendingTofuFingerprint = null
                 false
             }
         }

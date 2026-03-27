@@ -12,7 +12,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -25,6 +24,7 @@ import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
 
+import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -41,7 +41,13 @@ fun DownloadsScreen(
             .background(ArchiveVoidDeep),
     ) {
         // ─── Header ──────────────────────────────────────────────────────
-        DownloadsHeader()
+        ArchiveScreenHeader(
+            title = CopyStyleGuide.Downloads.DOWNLOADS_NAV,
+            subtitle = CopyEngine.getSubtitle(
+                CopyStyleGuide.Downloads.DOWNLOADS_NAV_RITUAL,
+                CopyStyleGuide.Downloads.DOWNLOADS_NAV_UNHINGED,
+            ),
+        )
 
         if (uiState.showEmptyState) {
             EmptyDownloadsState()
@@ -109,55 +115,7 @@ fun DownloadsScreen(
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  Header
-// ═════════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun DownloadsHeader() {
-    val subtitle = CopyEngine.getSubtitle(
-        CopyStyleGuide.Downloads.DOWNLOADS_NAV_RITUAL,
-        CopyStyleGuide.Downloads.DOWNLOADS_NAV_UNHINGED,
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        ArchiveVoidElevated,
-                        ArchiveVoidBase,
-                        ArchiveVoidSurface,
-                    )
-                )
-            ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                text = CopyStyleGuide.Downloads.DOWNLOADS_NAV,
-                color = GoldFilament,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Light,
-                letterSpacing = 4.sp,
-            )
-            if (subtitle != null) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextSecondary,
-                )
-            }
-        }
-    }
-}
+// (DownloadsHeader removed — now uses shared ArchiveScreenHeader)
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Section Header

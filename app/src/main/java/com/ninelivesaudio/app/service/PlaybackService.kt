@@ -197,7 +197,7 @@ class PlaybackService : MediaLibraryService() {
             Log.d(TAG, "▶ onConnect: pkg=${controller.packageName} uid=${controller.uid}")
             if (!isTrustedController(controller)) {
                 Log.w(TAG, "onConnect: rejected untrusted controller pkg=${controller.packageName} uid=${controller.uid}")
-                return MediaSession.ConnectionResult.RejectedResultBuilder(session).build()
+                return MediaSession.ConnectionResult.reject()
             }
 
             // Explicitly grant all session + library browse commands so Android Auto

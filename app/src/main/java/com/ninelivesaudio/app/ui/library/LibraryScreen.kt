@@ -1,8 +1,11 @@
 package com.ninelivesaudio.app.ui.library
 
 // Force rebuild v3 — merged PR14+PR15+PR16
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,12 +23,14 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
@@ -37,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
@@ -70,6 +76,17 @@ fun LibraryScreen(
         flattenGroupedItems(uiState.groupedSections, uiState.expandedGroups)
     }
 
+    val archiveSubtitle = CopyEngine.getSubtitle(
+        ritualSubtitle = "Cataloged echoes, awaiting selection.",
+        unhingedSubtitle = "Every spine twitches if you stare long enough.",
+    )
+    var filtersExpanded by rememberSaveable { mutableStateOf(false) }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (filtersExpanded) 180f else 0f,
+        animationSpec = tween(250),
+        label = "chevron",
+    )
+
     AnomalyHost(
         currentContext = AnomalyTriggerContext.LIBRARY,
         modifier = Modifier.fillMaxSize(),
@@ -79,6 +96,72 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .background(ArchiveVoidDeep)
         ) {
+            // ─── Pinned Header ────────────────────────────────────────────
+            ArchiveScreenHeader(
+                title = CopyStyleGuide.Library.LIBRARY_NAV,
+                subtitle = archiveSubtitle,
+            )
+
+            // ─── Pinned Search + Filter Toggle ────────────────────────────
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RelicSearchBar(
+                        query = uiState.searchQuery,
+                        onQueryChange = viewModel::onSearchQueryChanged,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = { filtersExpanded = !filtersExpanded },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Tune,
+                            contentDescription = if (filtersExpanded) "Hide filters" else "Show filters",
+                            tint = if (filtersExpanded) GoldFilament else ArchiveTextSecondary,
+                            modifier = Modifier.graphicsLayer {
+                                rotationZ = chevronRotation
+                            },
+                        )
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = filtersExpanded,
+                    enter = expandVertically(),
+                    exit = shrinkVertically(),
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        StoneTabsRow(
+                            selectedTab = uiState.selectedTab,
+                            onTabSelected = viewModel::onLibraryTabChanged,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        LibraryFiltersRow(
+                            uiState = uiState,
+                            onViewModeChanged = viewModel::onViewModeChanged,
+                            onSortModeChanged = viewModel::onSortModeChanged,
+                            onHideFinishedChanged = viewModel::onHideFinishedChanged,
+                            onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
+                            onResetFilters = viewModel::resetFilters,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
             // ─── Content ──────────────────────────────────────────────────
             PullToRefreshBox(
                 isRefreshing = uiState.isRefreshing,
@@ -90,19 +173,7 @@ fun LibraryScreen(
                         LoadingState()
                     }
                     uiState.filteredBooks.isEmpty() -> {
-                        Column {
-                            ArchiveControlDeck(
-                                uiState = uiState,
-                                onSearchQueryChanged = viewModel::onSearchQueryChanged,
-                                onLibraryTabChanged = viewModel::onLibraryTabChanged,
-                                onViewModeChanged = viewModel::onViewModeChanged,
-                                onSortModeChanged = viewModel::onSortModeChanged,
-                                onHideFinishedChanged = viewModel::onHideFinishedChanged,
-                                onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
-                                onResetFilters = viewModel::resetFilters,
-                            )
-                            EmptyState(uiState)
-                        }
+                        EmptyState(uiState)
                     }
                     else -> {
                         LazyColumn(
@@ -115,20 +186,6 @@ fun LibraryScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            // ─── Scrollable Control Deck ────────────────────
-                            item(key = "archive-control-deck") {
-                                ArchiveControlDeck(
-                                    uiState = uiState,
-                                    onSearchQueryChanged = viewModel::onSearchQueryChanged,
-                                    onLibraryTabChanged = viewModel::onLibraryTabChanged,
-                                    onViewModeChanged = viewModel::onViewModeChanged,
-                                    onSortModeChanged = viewModel::onSortModeChanged,
-                                    onHideFinishedChanged = viewModel::onHideFinishedChanged,
-                                    onShowDownloadedOnlyChanged = viewModel::onShowDownloadedOnlyChanged,
-                                    onResetFilters = viewModel::resetFilters,
-                                )
-                            }
-
                             if (uiState.viewMode == ViewMode.ALL) {
                                 // Flat list in ALL mode
                                 itemsIndexed(
@@ -177,95 +234,7 @@ fun LibraryScreen(
     }
 }
 
-// ─── Archive Control Deck ─────────────────────────────────────────────────
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ArchiveControlDeck(
-    uiState: LibraryViewModel.UiState,
-    onSearchQueryChanged: (String) -> Unit,
-    onLibraryTabChanged: (LibraryTab) -> Unit,
-    onViewModeChanged: (ViewMode) -> Unit,
-    onSortModeChanged: (SortMode) -> Unit,
-    onHideFinishedChanged: (Boolean) -> Unit,
-    onShowDownloadedOnlyChanged: (Boolean) -> Unit,
-    onResetFilters: () -> Unit,
-) {
-    val outerHorizontalPadding = 2.dp // Minimal — LazyColumn contentPadding provides 18dp already
-    val sectionSpacing = 8.dp
-    val archiveSubtitle = CopyEngine.getSubtitle(
-        ritualSubtitle = "Cataloged echoes, awaiting selection.",
-        unhingedSubtitle = "Every spine twitches if you stare long enough.",
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = outerHorizontalPadding)
-            .padding(top = 10.dp, bottom = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(sectionSpacing),
-    ) {
-        // Header card: "The Archive" title + subtitle flavor text
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            ArchiveVoidElevated,
-                            ArchiveVoidBase,
-                            ArchiveVoidSurface,
-                        )
-                    )
-                ),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = "The Archive",
-                    color = GoldFilament,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Light,
-                    letterSpacing = 4.sp,
-                )
-                archiveSubtitle?.let { subtitle ->
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextSecondary,
-                    )
-                }
-            }
-        }
-
-        RelicSearchBar(
-            query = uiState.searchQuery,
-            onQueryChange = onSearchQueryChanged,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        StoneTabsRow(
-            selectedTab = uiState.selectedTab,
-            onTabSelected = onLibraryTabChanged,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        LibraryFiltersRow(
-            uiState = uiState,
-            onViewModeChanged = onViewModeChanged,
-            onSortModeChanged = onSortModeChanged,
-            onHideFinishedChanged = onHideFinishedChanged,
-            onShowDownloadedOnlyChanged = onShowDownloadedOnlyChanged,
-            onResetFilters = onResetFilters,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
+// (ArchiveControlDeck removed — header + search + filters are now pinned above the list)
 
 // ─── Relic Search Bar ────────────────────────────────────────────────────
 
@@ -613,7 +582,6 @@ private fun ArchiveBookListItem(
     whisperEpoch: Int = 0,
     onClick: () -> Unit,
 ) {
-    // progressPercent is normalized to 0–100 regardless of API format; divide back to 0–1 for the ring.
     val progress = (book.progressPercent / 100.0).toFloat().coerceIn(0f, 1f)
     val animatedProgress by animateFloatAsState(
         targetValue = progress,
@@ -621,7 +589,6 @@ private fun ArchiveBookListItem(
         label = "lib_progress_$index",
     )
 
-    // 50% of books show a whisper; re-rolls each time Library is entered
     val showWhisper = remember(book.id, whisperEpoch) {
         BookWhisperCatalog.shouldShowWhisper(book.id, whisperEpoch)
     }
@@ -629,33 +596,31 @@ private fun ArchiveBookListItem(
         if (showWhisper) BookWhisperCatalog.getWhisper(book, whisperEpoch) else null
     }
 
-    Surface(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = ArchiveVoidSurface,
-        shadowElevation = 1.dp,
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             // Cover art with progress ring
             Box(
                 modifier = Modifier
-                    .size(72.dp)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(4.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                // Cover image
                 Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .padding(4.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(ArchiveVoidElevated),
+                        .padding(3.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(ArchiveVoidBase),
                 ) {
                     BookCoverImage(
                         coverUrl = book.coverPath,
@@ -666,16 +631,14 @@ private fun ArchiveBookListItem(
                     )
                 }
 
-                // Fluorescent square progress glow
                 FluorescentSquareProgress(
                     progress = animatedProgress,
                     modifier = Modifier.matchParentSize(),
-                    cornerRadius = 8.dp,
-                    padding = 4.dp,
+                    cornerRadius = 4.dp,
+                    padding = 3.dp,
                     strokeScale = 0.6f,
                 )
 
-                // Corner sigils
                 CornerSigils(
                     downloaded = book.isDownloaded,
                     bookmarked = false,
@@ -685,50 +648,43 @@ private fun ArchiveBookListItem(
 
             // Book info
             Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(vertical = 2.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                // Title
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.bodyMedium,
                     color = ArchiveTextPrimary,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     lineHeight = 18.sp,
                 )
 
-                // Author
                 Text(
                     text = book.author,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextSecondary,
+                    color = ArchiveTextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontSize = 12.sp,
                 )
 
-                // Book whisper — time-aware atmospheric phrase (shown on ~50% of books)
                 if (whisper != null) {
                     Text(
                         text = whisper,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted.copy(alpha = 0.8f),
+                        color = ArchiveTextMuted.copy(alpha = 0.6f),
                         fontWeight = FontWeight.Light,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 2.dp),
                     )
                 }
 
-                // Progress info
                 if (book.hasProgress) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
@@ -753,6 +709,15 @@ private fun ArchiveBookListItem(
                 }
             }
         }
+
+        // Thin separator between items
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 92.dp, end = 16.dp)
+                .height(0.5.dp)
+                .background(ArchiveOutline.copy(alpha = 0.5f)),
+        )
     }
 }
 

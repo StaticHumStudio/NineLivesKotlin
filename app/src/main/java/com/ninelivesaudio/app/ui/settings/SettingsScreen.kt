@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
@@ -53,16 +54,23 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(ArchiveVoidDeep)
     ) {
-        // ─── Page Header ──────────────────────────────────────────────
-        SettingsHeader(uiState)
+        // ─── Unified Header ───────────────────────────────────────────
+        ArchiveScreenHeader(
+            title = CopyStyleGuide.Settings.SETTINGS_NAV,
+            subtitle = CopyEngine.getSubtitle(
+                CopyStyleGuide.Settings.SETTINGS_NAV_RITUAL,
+                CopyStyleGuide.Settings.SETTINGS_NAV_UNHINGED,
+            ),
+            trailing = { StatusPill(connectionStatus = uiState.connectionStatus) },
+        )
 
         // ─── Scrollable Content ───────────────────────────────────────
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // ─── Messages ─────────────────────────────────────────────
             AnimatedVisibility(visible = uiState.errorMessage != null) {
@@ -81,18 +89,15 @@ fun SettingsScreen(
                 )
             }
 
-            // ─── Server Connection ────────────────────────────────────
-            SectionHeader(text = "Server Connection")
-
-            // Connection status card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-                shape = RoundedCornerShape(12.dp),
-            ) {
+            // ═════════════════════════════════════════════════════════════
+            //  Group 1: Connection
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Connection") {
+                // Connection status
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
+                        .padding(bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -104,28 +109,25 @@ fun SettingsScreen(
                         color = ArchiveTextSecondary,
                     )
                 }
-            }
 
-            // Server URL field
-            CosmicTextField(
-                value = uiState.serverUrl,
-                onValueChange = viewModel::onServerUrlChanged,
-                label = "Server URL",
-                placeholder = "https://your-server.com",
-                enabled = !uiState.isConnected,
-                leadingIcon = Icons.Outlined.Dns,
-                keyboardType = KeyboardType.Uri,
-            )
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
 
-            // Auth mode toggle
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-                shape = RoundedCornerShape(12.dp),
-            ) {
+                // Server URL field
+                CosmicTextField(
+                    value = uiState.serverUrl,
+                    onValueChange = viewModel::onServerUrlChanged,
+                    label = "Server URL",
+                    placeholder = "https://your-server.com",
+                    enabled = !uiState.isConnected,
+                    leadingIcon = Icons.Outlined.Dns,
+                    keyboardType = KeyboardType.Uri,
+                )
+
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                // Auth mode toggle
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -152,209 +154,184 @@ fun SettingsScreen(
                         ),
                     )
                 }
-            }
 
-            if (uiState.useApiToken) {
-                // API Token field
-                CosmicTextField(
-                    value = uiState.apiToken,
-                    onValueChange = viewModel::onApiTokenChanged,
-                    label = "API Token",
-                    placeholder = "Paste token from ABS settings",
-                    enabled = !uiState.isConnected,
-                    leadingIcon = Icons.Outlined.Key,
-                    isPassword = true,
-                )
-            } else {
-                // Username field
-                CosmicTextField(
-                    value = uiState.username,
-                    onValueChange = viewModel::onUsernameChanged,
-                    label = "Username",
-                    placeholder = "Enter username",
-                    enabled = !uiState.isConnected,
-                    leadingIcon = Icons.Outlined.Person,
-                )
+                if (uiState.useApiToken) {
+                    CosmicTextField(
+                        value = uiState.apiToken,
+                        onValueChange = viewModel::onApiTokenChanged,
+                        label = "API Token",
+                        placeholder = "Paste token from ABS settings",
+                        enabled = !uiState.isConnected,
+                        leadingIcon = Icons.Outlined.Key,
+                        isPassword = true,
+                    )
+                } else {
+                    CosmicTextField(
+                        value = uiState.username,
+                        onValueChange = viewModel::onUsernameChanged,
+                        label = "Username",
+                        placeholder = "Enter username",
+                        enabled = !uiState.isConnected,
+                        leadingIcon = Icons.Outlined.Person,
+                    )
+                    CosmicTextField(
+                        value = uiState.password,
+                        onValueChange = viewModel::onPasswordChanged,
+                        label = "Password",
+                        placeholder = "Enter password",
+                        enabled = !uiState.isConnected,
+                        leadingIcon = Icons.Outlined.Lock,
+                        isPassword = true,
+                    )
+                }
 
-                // Password field
-                CosmicTextField(
-                    value = uiState.password,
-                    onValueChange = viewModel::onPasswordChanged,
-                    label = "Password",
-                    placeholder = "Enter password",
-                    enabled = !uiState.isConnected,
-                    leadingIcon = Icons.Outlined.Lock,
-                    isPassword = true,
-                )
-            }
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
 
-            // Self-signed certificates toggle
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                // Self-signed certificates
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Allow Self-Signed Certificates",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = ArchiveTextPrimary,
-                            )
-                            Text(
-                                text = "Required for TOFU on self-hosted servers",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = ArchiveTextMuted,
-                            )
-                        }
-                        Switch(
-                            checked = uiState.allowSelfSignedCertificates,
-                            onCheckedChange = viewModel::onAllowSelfSignedChanged,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = GoldFilament,
-                                checkedTrackColor = GoldFilamentFaint,
-                                uncheckedThumbColor = ArchiveTextSecondary,
-                                uncheckedTrackColor = ArchiveVoidElevated,
-                            ),
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Allow Self-Signed Certificates",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ArchiveTextPrimary,
+                        )
+                        Text(
+                            text = "Required for TOFU on self-hosted servers",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ArchiveTextMuted,
                         )
                     }
+                    Switch(
+                        checked = uiState.allowSelfSignedCertificates,
+                        onCheckedChange = viewModel::onAllowSelfSignedChanged,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = GoldFilament,
+                            checkedTrackColor = GoldFilamentFaint,
+                            uncheckedThumbColor = ArchiveTextSecondary,
+                            uncheckedTrackColor = ArchiveVoidElevated,
+                        ),
+                    )
+                }
 
-                    val trustStateText = if (uiState.hasTrustedFingerprint) {
+                Text(
+                    text = if (uiState.hasTrustedFingerprint) {
                         "Trusted fingerprint saved for ${uiState.trustedFingerprintHost}."
                     } else {
                         "No trusted fingerprint stored yet for this host."
-                    }
-
-                    Text(
-                        text = trustStateText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
-                    )
-
-                    TextButton(
-                        onClick = viewModel::resetTrustedCertificateFingerprint,
-                        enabled = uiState.allowSelfSignedCertificates && uiState.trustedFingerprintHost != null,
-                    ) {
-                        Icon(Icons.Outlined.RestartAlt, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Reset trusted fingerprint")
-                    }
-                }
-            }
-
-            // Connect / Disconnect buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (!uiState.isConnected) {
-                    Button(
-                        onClick = viewModel::connect,
-                        modifier = Modifier.weight(1f),
-                        enabled = !uiState.isConnecting,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = GoldFilament,
-                            contentColor = ArchiveVoidDeep,
-                            disabledContainerColor = GoldFilamentDim,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        if (uiState.isConnecting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                color = ArchiveVoidDeep,
-                                strokeWidth = 2.dp,
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                        }
-                        Text(
-                            text = if (uiState.isConnecting) "Connecting..." else "Connect",
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                } else {
-                    Button(
-                        onClick = viewModel::refreshConnection,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ArchiveVoidSurface,
-                            contentColor = GoldFilament,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Icon(
-                            Icons.Outlined.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Refresh", fontWeight = FontWeight.SemiBold)
-                    }
-
-                    Button(
-                        onClick = viewModel::testConnection,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ArchiveVoidSurface,
-                            contentColor = GoldFilament,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Icon(
-                            Icons.Outlined.NetworkCheck,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Test", fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-
-            // Disconnect button (own row when connected)
-            if (uiState.isConnected) {
-                Button(
-                    onClick = viewModel::disconnect,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ArchiveError.copy(alpha = 0.15f),
-                        contentColor = ArchiveError,
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Text("Disconnect", fontWeight = FontWeight.SemiBold)
-                }
-            }
-
-            // ─── Library Selector (when connected with multiple libraries) ─
-            if (uiState.isConnected && uiState.libraries.size > 1) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 4.dp),
-                    color = ArchiveVoidElevated,
-                    thickness = 1.dp,
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
                 )
 
-                SectionHeader(text = "Library")
-
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-                    shape = RoundedCornerShape(12.dp),
+                TextButton(
+                    onClick = viewModel::resetTrustedCertificateFingerprint,
+                    enabled = uiState.allowSelfSignedCertificates && uiState.trustedFingerprintHost != null,
                 ) {
+                    Icon(Icons.Outlined.RestartAlt, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Reset trusted fingerprint")
+                }
+
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                // Connect / Disconnect buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (!uiState.isConnected) {
+                        Button(
+                            onClick = viewModel::connect,
+                            modifier = Modifier.weight(1f),
+                            enabled = !uiState.isConnecting,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = GoldFilament,
+                                contentColor = ArchiveVoidDeep,
+                                disabledContainerColor = GoldFilamentDim,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            if (uiState.isConnecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = ArchiveVoidDeep,
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text(
+                                text = if (uiState.isConnecting) "Connecting..." else "Connect",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    } else {
+                        Button(
+                            onClick = viewModel::refreshConnection,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ArchiveVoidSurface,
+                                contentColor = GoldFilament,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Refresh", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        Button(
+                            onClick = viewModel::testConnection,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ArchiveVoidSurface,
+                                contentColor = GoldFilament,
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.NetworkCheck,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Test", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+
+                if (uiState.isConnected) {
+                    Button(
+                        onClick = viewModel::disconnect,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ArchiveError.copy(alpha = 0.15f),
+                            contentColor = ArchiveError,
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("Disconnect", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                // Library Selector (when connected with multiple libraries)
+                if (uiState.isConnected && uiState.libraries.size > 1) {
+                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
                     var libraryExpanded by remember { mutableStateOf(false) }
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
                             .clickable { libraryExpanded = true }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
@@ -417,229 +394,104 @@ fun SettingsScreen(
                 }
             }
 
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
-
-            // ─── Archive Preferences ─────────────────────────────────
-            SectionHeader(text = "Archive Preferences")
-
-            ArchivePreferencesSection(
-                anomaliesEnabled = uiState.anomaliesEnabled,
-                whispersEnabled = uiState.whispersEnabled,
-                reduceMotionRequested = uiState.reduceMotionRequested,
-                sessionCount = uiState.sessionCount,
-                onToggleAnomalies = viewModel::toggleAnomalies,
-                onToggleWhispers = viewModel::toggleWhispers,
-                onToggleReduceMotion = viewModel::toggleReduceMotion,
-            )
-
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
-
-            // ─── Equalizer ──────────────────────────────────────────
-            SectionHeader(text = "Equalizer")
-
-            EqualizerSection(
-                eqEnabled = uiState.eqEnabled,
-                bandGains = uiState.eqBandGains,
-                bandFrequencies = uiState.eqBandFrequencies,
-                bandRange = uiState.eqBandRange,
-                onToggleEq = viewModel::toggleEq,
-                onBandGainChange = viewModel::setEqBandGain,
-                onResetEq = viewModel::resetEq,
-            )
-
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
-
-            // ─── Playback Behavior ───────────────────────────────────
-            SectionHeader(text = "Playback Behavior")
-
-            PlaybackBehaviorSection(
-                autoRewindEnabled = uiState.autoRewindEnabled,
-                autoRewindMode = uiState.autoRewindMode,
-                autoRewindSeconds = uiState.autoRewindSeconds,
-                onAutoRewindEnabledChange = viewModel::setAutoRewindEnabled,
-                onAutoRewindModeChange = viewModel::setAutoRewindMode,
-                onAutoRewindSecondsChange = viewModel::setAutoRewindSeconds,
-            )
-
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
-
-            // ─── Sleep Timer ─────────────────────────────────────────
-            SectionHeader(text = "Sleep Timer")
-
-            SleepTimerSettingsSection(
-                motionEnabled = uiState.sleepTimerMotionEnabled,
-                shakeResetEnabled = uiState.sleepTimerShakeResetEnabled,
-                rewindSeconds = uiState.sleepTimerRewindSeconds,
-                onMotionEnabledChange = viewModel::setSleepTimerMotionEnabled,
-                onShakeResetEnabledChange = viewModel::setSleepTimerShakeResetEnabled,
-                onRewindSecondsChange = viewModel::setSleepTimerRewindSeconds,
-            )
-
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
-
-            // ─── Sync ──────────────────────────────────────────────────
-            SectionHeader(text = "Sync")
-
-            Button(
-                onClick = viewModel::syncNow,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = uiState.isConnected && !uiState.isSyncing,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ArchiveVoidSurface,
-                    contentColor = GoldFilament,
-                    disabledContainerColor = ArchiveVoidSurface.copy(alpha = 0.5f),
-                    disabledContentColor = ArchiveTextMuted,
-                ),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                if (uiState.isSyncing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        color = GoldFilament,
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Syncing...", fontWeight = FontWeight.SemiBold)
-                } else {
-                    Icon(
-                        Icons.Outlined.Sync,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Sync Now", fontWeight = FontWeight.SemiBold)
-                }
+            // ═════════════════════════════════════════════════════════════
+            //  Group 2: Experience
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Experience") {
+                ArchivePreferencesSection(
+                    anomaliesEnabled = uiState.anomaliesEnabled,
+                    whispersEnabled = uiState.whispersEnabled,
+                    reduceMotionRequested = uiState.reduceMotionRequested,
+                    sessionCount = uiState.sessionCount,
+                    onToggleAnomalies = viewModel::toggleAnomalies,
+                    onToggleWhispers = viewModel::toggleWhispers,
+                    onToggleReduceMotion = viewModel::toggleReduceMotion,
+                )
             }
 
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
+            // ═════════════════════════════════════════════════════════════
+            //  Group 3: Audio
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Audio") {
+                SectionLabel("Equalizer")
 
-            // ─── Diagnostics ──────────────────────────────────────────
-            SectionHeader(text = "Diagnostics")
+                EqualizerSection(
+                    eqEnabled = uiState.eqEnabled,
+                    bandGains = uiState.eqBandGains,
+                    bandFrequencies = uiState.eqBandFrequencies,
+                    bandRange = uiState.eqBandRange,
+                    onToggleEq = viewModel::toggleEq,
+                    onBandGainChange = viewModel::setEqBandGain,
+                    onResetEq = viewModel::resetEq,
+                )
 
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                SectionLabel("Playback Behavior")
+
+                PlaybackBehaviorSection(
+                    autoRewindEnabled = uiState.autoRewindEnabled,
+                    autoRewindMode = uiState.autoRewindMode,
+                    autoRewindSeconds = uiState.autoRewindSeconds,
+                    onAutoRewindEnabledChange = viewModel::setAutoRewindEnabled,
+                    onAutoRewindModeChange = viewModel::setAutoRewindMode,
+                    onAutoRewindSecondsChange = viewModel::setAutoRewindSeconds,
+                )
+
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                SectionLabel("Sleep Timer")
+
+                SleepTimerSettingsSection(
+                    motionEnabled = uiState.sleepTimerMotionEnabled,
+                    shakeResetEnabled = uiState.sleepTimerShakeResetEnabled,
+                    rewindSeconds = uiState.sleepTimerRewindSeconds,
+                    onMotionEnabledChange = viewModel::setSleepTimerMotionEnabled,
+                    onShakeResetEnabledChange = viewModel::setSleepTimerShakeResetEnabled,
+                    onRewindSecondsChange = viewModel::setSleepTimerRewindSeconds,
+                )
+            }
+
+            // ═════════════════════════════════════════════════════════════
+            //  Group 4: Data
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Data") {
+                Button(
+                    onClick = viewModel::syncNow,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = uiState.isConnected && !uiState.isSyncing,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ArchiveVoidElevated,
+                        contentColor = GoldFilament,
+                        disabledContainerColor = ArchiveVoidElevated.copy(alpha = 0.5f),
+                        disabledContentColor = ArchiveTextMuted,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
                 ) {
-                    DiagnosticRow("App Version", uiState.appVersion)
-                    DiagnosticRow("Settings File", uiState.settingsFilePath.ifEmpty { "(default)" })
-
-                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Studio",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
-                        )
-                        Text(
-                            text = "StaticHum.Studio",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                textDecoration = TextDecoration.Underline,
-                            ),
+                    if (uiState.isSyncing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
                             color = GoldFilament,
-                            modifier = Modifier.clickable {
-                                uriHandler.openUri("https://statichum.studio")
-                            },
+                            strokeWidth = 2.dp,
                         )
-                    }
-
-                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Privacy Policy",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Syncing...", fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Icon(
+                            Icons.Outlined.Sync,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
                         )
-                        Text(
-                            text = "View",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                textDecoration = TextDecoration.Underline,
-                            ),
-                            color = GoldFilament,
-                            modifier = Modifier.clickable {
-                                uriHandler.openUri("https://statichum.studio/apps/nine-lives/privacy")
-                            },
-                        )
-                    }
-
-                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onNavigateToLicenses() },
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Open Source Licenses",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
-                        )
-                        Text(
-                            text = "View",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                textDecoration = TextDecoration.Underline,
-                            ),
-                            color = GoldFilament,
-                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Sync Now", fontWeight = FontWeight.SemiBold)
                     }
                 }
-            }
 
-            // Diagnostic action buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
                 OutlinedButton(
                     onClick = viewModel::clearCache,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
                         brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
@@ -658,78 +510,142 @@ fun SettingsScreen(
                 }
             }
 
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
+            // ═════════════════════════════════════════════════════════════
+            //  Group 5: About
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "About") {
+                DiagnosticRow("App Version", uiState.appVersion)
+                DiagnosticRow("Settings File", uiState.settingsFilePath.ifEmpty { "(default)" })
 
-            // ─── Feedback & Reports ─────────────────────────────────
-            SectionHeader(text = "Feedback & Reports")
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
 
-            FeedbackSection(
-                reportType = uiState.reportType,
-                includeLogs = uiState.includeLogsInReport,
-                isCollecting = uiState.isCollectingReport,
-                onReportTypeChanged = viewModel::onReportTypeChanged,
-                onIncludeLogsChanged = viewModel::onIncludeLogsChanged,
-                onSubmit = {
-                    viewModel.buildReport { subject, body ->
-                        val intent = Intent(Intent.ACTION_SENDTO).apply {
-                            data = Uri.parse("mailto:")
-                            putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
-                            putExtra(Intent.EXTRA_SUBJECT, subject)
-                            putExtra(Intent.EXTRA_TEXT, body)
-                        }
-                        if (intent.resolveActivity(context.packageManager) != null) {
-                            context.startActivity(intent)
-                        } else {
-                            // Fallback: try ACTION_SEND which more apps handle
-                            val fallback = Intent(Intent.ACTION_SEND).apply {
-                                type = "message/rfc822"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Studio",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                    )
+                    Text(
+                        text = "StaticHum.Studio",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                        color = GoldFilament,
+                        modifier = Modifier.clickable {
+                            uriHandler.openUri("https://statichum.studio")
+                        },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Privacy Policy",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                    )
+                    Text(
+                        text = "View",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                        color = GoldFilament,
+                        modifier = Modifier.clickable {
+                            uriHandler.openUri("https://statichum.studio/apps/nine-lives/privacy")
+                        },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNavigateToLicenses() },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Open Source Licenses",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                    )
+                    Text(
+                        text = "View",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                        color = GoldFilament,
+                    )
+                }
+
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                // Feedback
+                SectionLabel("Feedback & Reports")
+
+                FeedbackSection(
+                    reportType = uiState.reportType,
+                    includeLogs = uiState.includeLogsInReport,
+                    isCollecting = uiState.isCollectingReport,
+                    onReportTypeChanged = viewModel::onReportTypeChanged,
+                    onIncludeLogsChanged = viewModel::onIncludeLogsChanged,
+                    onSubmit = {
+                        viewModel.buildReport { subject, body ->
+                            val intent = Intent(Intent.ACTION_SENDTO).apply {
+                                data = Uri.parse("mailto:")
                                 putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
                                 putExtra(Intent.EXTRA_SUBJECT, subject)
                                 putExtra(Intent.EXTRA_TEXT, body)
                             }
-                            context.startActivity(Intent.createChooser(fallback, "Send report via"))
+                            if (intent.resolveActivity(context.packageManager) != null) {
+                                context.startActivity(intent)
+                            } else {
+                                val fallback = Intent(Intent.ACTION_SEND).apply {
+                                    type = "message/rfc822"
+                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
+                                    putExtra(Intent.EXTRA_SUBJECT, subject)
+                                    putExtra(Intent.EXTRA_TEXT, body)
+                                }
+                                context.startActivity(Intent.createChooser(fallback, "Send report via"))
+                            }
                         }
-                    }
-                },
-            )
-
-            // ─── Divider ──────────────────────────────────────────────
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 4.dp),
-                color = ArchiveVoidElevated,
-                thickness = 1.dp,
-            )
-
-            // ─── Nightwatch Dossier ────────────────────────────────
-            SectionHeader(text = "Nightwatch Dossier")
-
-            Button(
-                onClick = onNavigateToDossier,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ArchiveVoidSurface,
-                    contentColor = GoldFilament,
-                ),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Icon(
-                    Icons.Outlined.Analytics,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    },
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Open Dossier", fontWeight = FontWeight.SemiBold)
+
+                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+                // Nightwatch Dossier
+                SectionLabel("Nightwatch Dossier")
+
+                Button(
+                    onClick = onNavigateToDossier,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ArchiveVoidElevated,
+                        contentColor = GoldFilament,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.Analytics,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open Dossier", fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    text = "Listening stats, behavioral patterns, and temporal analysis",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                )
             }
-            Text(
-                text = "Listening stats, behavioral patterns, and temporal analysis",
-                style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextMuted,
-            )
 
             // Bottom padding for mini player space
             Spacer(modifier = Modifier.height(80.dp))
@@ -737,53 +653,49 @@ fun SettingsScreen(
     }
 }
 
-// ─── Header ───────────────────────────────────────────────────────────────
+// ─── Settings Group Card ──────────────────────────────────────────────────
 
 @Composable
-private fun SettingsHeader(uiState: SettingsViewModel.UiState) {
-    val subtitle = CopyEngine.getSubtitle(
-        CopyStyleGuide.Settings.SETTINGS_NAV_RITUAL,
-        CopyStyleGuide.Settings.SETTINGS_NAV_UNHINGED,
-    )
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(ArchiveVoidDeep)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun SettingsGroup(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        Column {
-            Text(
-                text = CopyStyleGuide.Settings.SETTINGS_NAV,
-                style = MaterialTheme.typography.headlineMedium,
-                color = ArchiveTextPrimary,
-                fontWeight = FontWeight.Bold,
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = GoldFilament,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.sp,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = content,
             )
-            if (subtitle != null) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
-                )
-            }
         }
-        Spacer(modifier = Modifier.weight(1f))
-        StatusPill(connectionStatus = uiState.connectionStatus)
     }
 }
 
-// ─── Section Header ───────────────────────────────────────────────────────
+// ─── Section Label (inside a group) ──────────────────────────────────────
 
 @Composable
-private fun SectionHeader(text: String) {
+private fun SectionLabel(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.titleSmall,
-        color = GoldFilament,
+        style = MaterialTheme.typography.labelMedium,
+        color = ArchiveTextSecondary,
         fontWeight = FontWeight.SemiBold,
-        letterSpacing = 1.sp,
-        modifier = Modifier.padding(top = 4.dp),
+        letterSpacing = 0.5.sp,
     )
 }
 
@@ -952,84 +864,77 @@ private fun FeedbackSection(
     onIncludeLogsChanged: (Boolean) -> Unit,
     onSubmit: () -> Unit,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-        shape = RoundedCornerShape(12.dp),
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        // Report type selector
+        Text(
+            text = "Report Type",
+            style = MaterialTheme.typography.bodyMedium,
+            color = ArchiveTextPrimary,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Report type selector
-            Text(
-                text = "Report Type",
-                style = MaterialTheme.typography.bodyMedium,
-                color = ArchiveTextPrimary,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SettingsViewModel.ReportType.entries.forEach { type ->
-                    FilterChip(
-                        selected = reportType == type,
-                        onClick = { onReportTypeChanged(type) },
-                        label = { Text(type.label) },
-                        leadingIcon = if (reportType == type) {
-                            {
-                                Icon(
-                                    imageVector = when (type) {
-                                        SettingsViewModel.ReportType.BUG -> Icons.Outlined.BugReport
-                                        SettingsViewModel.ReportType.UPGRADE -> Icons.Outlined.RocketLaunch
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
-                        } else null,
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = GoldFilamentFaint,
-                            selectedLabelColor = GoldFilament,
-                            selectedLeadingIconColor = GoldFilament,
-                            containerColor = ArchiveVoidElevated,
-                            labelColor = ArchiveTextSecondary,
-                        ),
-                    )
-                }
-            }
-
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-            // Include logs toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Attach Logs",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = ArchiveTextPrimary,
-                    )
-                    Text(
-                        text = "Include recent app logs for debugging",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
-                    )
-                }
-                Switch(
-                    checked = includeLogs,
-                    onCheckedChange = onIncludeLogsChanged,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = GoldFilament,
-                        checkedTrackColor = GoldFilamentFaint,
-                        uncheckedThumbColor = ArchiveTextSecondary,
-                        uncheckedTrackColor = ArchiveVoidElevated,
+            SettingsViewModel.ReportType.entries.forEach { type ->
+                FilterChip(
+                    selected = reportType == type,
+                    onClick = { onReportTypeChanged(type) },
+                    label = { Text(type.label) },
+                    leadingIcon = if (reportType == type) {
+                        {
+                            Icon(
+                                imageVector = when (type) {
+                                    SettingsViewModel.ReportType.BUG -> Icons.Outlined.BugReport
+                                    SettingsViewModel.ReportType.UPGRADE -> Icons.Outlined.RocketLaunch
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    } else null,
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = GoldFilamentFaint,
+                        selectedLabelColor = GoldFilament,
+                        selectedLeadingIconColor = GoldFilament,
+                        containerColor = ArchiveVoidElevated,
+                        labelColor = ArchiveTextSecondary,
                     ),
                 )
             }
+        }
+
+        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+        // Include logs toggle
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Attach Logs",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ArchiveTextPrimary,
+                )
+                Text(
+                    text = "Include recent app logs for debugging",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
+                )
+            }
+            Switch(
+                checked = includeLogs,
+                onCheckedChange = onIncludeLogsChanged,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = GoldFilament,
+                    checkedTrackColor = GoldFilamentFaint,
+                    uncheckedThumbColor = ArchiveTextSecondary,
+                    uncheckedTrackColor = ArchiveVoidElevated,
+                ),
+            )
         }
     }
 
@@ -1083,79 +988,72 @@ private fun ArchivePreferencesSection(
     onToggleWhispers: () -> Unit,
     onToggleReduceMotion: () -> Unit,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-        shape = RoundedCornerShape(12.dp),
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(
+        // Anomalies toggle
+        ArchivePreferenceRow(
+            title = CopyStyleGuide.Settings.ANOMALIES_TOGGLE,
+            subtitle = CopyEngine.getSubtitle(
+                CopyStyleGuide.Settings.ANOMALIES_TOGGLE_DESC_RITUAL,
+                CopyStyleGuide.Settings.ANOMALIES_TOGGLE_DESC_UNHINGED,
+            ) ?: "Screen tears, ink bleed, crack whispers",
+            checked = anomaliesEnabled,
+            onCheckedChange = { onToggleAnomalies() },
+        )
+
+        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+        // Whispers toggle
+        ArchivePreferenceRow(
+            title = CopyStyleGuide.Settings.WHISPERS_TOGGLE,
+            subtitle = CopyEngine.getSubtitle(
+                CopyStyleGuide.Settings.WHISPERS_TOGGLE_DESC_RITUAL,
+                CopyStyleGuide.Settings.WHISPERS_TOGGLE_DESC_UNHINGED,
+            ) ?: "Atmospheric contextual text fragments",
+            checked = whispersEnabled,
+            onCheckedChange = { onToggleWhispers() },
+        )
+
+        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+        // Reduced Motion toggle
+        ArchivePreferenceRow(
+            title = "Reduced Motion",
+            subtitle = "Disables all animations and effects",
+            checked = reduceMotionRequested,
+            onCheckedChange = { onToggleReduceMotion() },
+        )
+
+        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+        // Session Counter
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Anomalies toggle
-            ArchivePreferenceRow(
-                title = CopyStyleGuide.Settings.ANOMALIES_TOGGLE,
-                subtitle = CopyEngine.getSubtitle(
-                    CopyStyleGuide.Settings.ANOMALIES_TOGGLE_DESC_RITUAL,
-                    CopyStyleGuide.Settings.ANOMALIES_TOGGLE_DESC_UNHINGED,
-                ) ?: "Screen tears, ink bleed, crack whispers",
-                checked = anomaliesEnabled,
-                onCheckedChange = { onToggleAnomalies() },
-            )
-
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-            // Whispers toggle
-            ArchivePreferenceRow(
-                title = CopyStyleGuide.Settings.WHISPERS_TOGGLE,
-                subtitle = CopyEngine.getSubtitle(
-                    CopyStyleGuide.Settings.WHISPERS_TOGGLE_DESC_RITUAL,
-                    CopyStyleGuide.Settings.WHISPERS_TOGGLE_DESC_UNHINGED,
-                ) ?: "Atmospheric contextual text fragments",
-                checked = whispersEnabled,
-                onCheckedChange = { onToggleWhispers() },
-            )
-
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-            // Reduced Motion toggle
-            ArchivePreferenceRow(
-                title = "Reduced Motion",
-                subtitle = "Disables all animations and effects",
-                checked = reduceMotionRequested,
-                onCheckedChange = { onToggleReduceMotion() },
-            )
-
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
-
-            // Session Counter
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text(
-                        text = "Sessions Recorded",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = ArchiveTextSecondary,
-                    )
-                    Text(
-                        text = "The Archive remembers every visit",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
-                    )
-                }
+            Column {
                 Text(
-                    text = sessionCount.toString(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = GoldFilament,
-                    fontWeight = FontWeight.Bold,
+                    text = "Sessions Recorded",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ArchiveTextSecondary,
+                )
+                Text(
+                    text = "The Archive remembers every visit",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ArchiveTextMuted,
                 )
             }
+            Text(
+                text = sessionCount.toString(),
+                style = MaterialTheme.typography.headlineSmall,
+                color = GoldFilament,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 }
@@ -1209,16 +1107,10 @@ private fun PlaybackBehaviorSection(
     onAutoRewindModeChange: (String) -> Unit,
     onAutoRewindSecondsChange: (Int) -> Unit,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-        shape = RoundedCornerShape(12.dp),
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
             // Toggle: Auto-Rewind on Resume
             ArchivePreferenceRow(
                 title = "Auto-Rewind on Resume",
@@ -1288,7 +1180,6 @@ private fun PlaybackBehaviorSection(
                 }
             }
         }
-    }
 }
 
 // ─── Sleep Timer Settings Section ───────────────────────────────────────
@@ -1302,16 +1193,10 @@ private fun SleepTimerSettingsSection(
     onShakeResetEnabledChange: (Boolean) -> Unit,
     onRewindSecondsChange: (Int) -> Unit,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-        shape = RoundedCornerShape(12.dp),
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
             // Motion sensing toggle
             ArchivePreferenceRow(
                 title = "Motion Sensing",
@@ -1360,7 +1245,6 @@ private fun SleepTimerSettingsSection(
                 )
             }
         }
-    }
 }
 
 private fun formatSeconds(seconds: Int): String {
@@ -1386,17 +1270,11 @@ private fun EqualizerSection(
 ) {
     val (minGain, maxGain) = bandRange
 
-    Card(
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
-        shape = RoundedCornerShape(12.dp),
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // Enable toggle
+        // Enable toggle
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1492,7 +1370,6 @@ private fun EqualizerSection(
                 Text("Reset EQ")
             }
         }
-    }
 }
 
 @Composable

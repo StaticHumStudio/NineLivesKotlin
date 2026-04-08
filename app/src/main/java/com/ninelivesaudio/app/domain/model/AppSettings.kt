@@ -15,7 +15,7 @@ data class AppSettings(
     val syncIntervalMinutes: Int = 5,
     val volume: Double = 0.8,
     val eqEnabled: Boolean = false,
-    // 9-band EQ gains in millibels (-1500 to +1500), indexed by band 0–8.
+    // 5-band EQ gains in millibels (-1500 to +1500), indexed by band 0–4.
     // Default frequencies (Hz): 60, 230, 910, 3.6k, 14k
     // (actual count depends on device; resized at runtime)
     val eqBandGains: List<Int> = List(5) { 0 },

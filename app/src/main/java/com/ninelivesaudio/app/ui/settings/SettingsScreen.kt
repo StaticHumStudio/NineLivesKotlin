@@ -1282,7 +1282,7 @@ private fun EqualizerSection(
             ) {
                 Column {
                     Text(
-                        text = "9-Band Equalizer",
+                        text = "5-Band Equalizer",
                         style = MaterialTheme.typography.bodyMedium,
                         color = ArchiveTextPrimary,
                     )

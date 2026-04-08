@@ -18,7 +18,7 @@ PLAYBACK
 Background audio that keeps playing with the screen off. Full media notification with play/pause, skip, seek bar, and cover art. Lock screen controls, Android Auto support, and audio focus handling that pauses for calls and other media. Adjustable playback speed (0.5x–3.0x), volume boost for quiet recordings, and a 5-band equalizer.
 
 CHAPTERS & PROGRESS
-Navigate by chapter with skip controls and a chapter-level seek bar with markers. Dual progress rings show both book and chapter progress at a glance. Playback progress syncs bidirectionally with your Audiobookshelf server, with an offline queue that flushes automatically when connectivity returns.
+Navigate by chapter with skip controls and a chapter-level seek bar with markers. Fluorescent square progress glow shows book progress at a glance. Playback progress syncs bidirectionally with your Audiobookshelf server, with an offline queue that flushes automatically when connectivity returns.
 
 SLEEP TIMER
 Configurable countdown with motion-sensing grace window — if you're still awake when the timer expires, it detects movement and extends automatically. Shake to reset. Optional auto-rewind so you don't lose your place.
@@ -58,7 +58,7 @@ Your Audiobookshelf library, in your pocket.
 - 5-band equalizer and volume boost
 - Bidirectional progress sync with offline queue
 - Listening analytics with shareable summary cards
-- Chapter navigation with dual progress rings
+- Chapter navigation with fluorescent square progress glow
 - 11 sorting options, tab filters, and series/author/genre grouping
 - Bookmarks synced with your server
 - No tracking, no ads, no analytics — your data stays yours

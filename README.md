@@ -21,7 +21,7 @@ There is no "normal mode." The vault is the app. The app is the vault.
 - **Multi-track playlist** support via ExoPlayer concatenation
 - **Playback speed** adjustable from 0.5x to 3.0x with real-time control
 - **Volume boost** slider (0 to 10 dB) for quiet audiobooks that whisper too softly
-- **9-band equalizer** (31 Hz to 8 kHz) with per-band gain adjustment and preset reset
+- **5-band equalizer** (60 Hz to 14 kHz) with per-band gain adjustment and preset reset
 - **Chapter navigation** — skip to previous/next chapter, chapter-level seek bar with chapter markers, works even on finished books
 - **Dual progress rings** — outer gold ring for book progress, inner halo for chapter progress
 - **Mini player** persistent bar across all screens with quick controls
@@ -120,7 +120,7 @@ A full listening analytics dashboard with shareable summary cards. The Nightwatc
 - **Auto sync** with configurable interval (5 to 60 minutes)
 - **Auto-rewind on resume** — Smart or Flat mode, configurable from 0 to 120 seconds
 - **Sleep timer configuration** — motion sensing, shake-to-reset, and rewind on expiration toggles
-- **9-band equalizer** with volume boost
+- **5-band equalizer** with volume boost
 - **Theme controls** — toggle anomalies, whispers, and reduced motion independently
 - **Targeted cache clearing** — clears library data only, never touches progress or downloads
 - **Diagnostics display** — app version, device model, Android version, API level, build type

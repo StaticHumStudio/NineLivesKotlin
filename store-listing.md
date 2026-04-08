@@ -15,7 +15,7 @@ Audiobook player for Audiobookshelf — offline playback, sleep timer, Android A
 Nine Lives Audio is a feature-rich audiobook player for your Audiobookshelf server. Connect to your self-hosted library, download books for offline listening, and enjoy a polished playback experience designed for audiobook lovers.
 
 PLAYBACK
-Background audio that keeps playing with the screen off. Full media notification with play/pause, skip, seek bar, and cover art. Lock screen controls, Android Auto support, and audio focus handling that pauses for calls and other media. Adjustable playback speed (0.5x–3.0x), volume boost for quiet recordings, and a 9-band equalizer.
+Background audio that keeps playing with the screen off. Full media notification with play/pause, skip, seek bar, and cover art. Lock screen controls, Android Auto support, and audio focus handling that pauses for calls and other media. Adjustable playback speed (0.5x–3.0x), volume boost for quiet recordings, and a 5-band equalizer.
 
 CHAPTERS & PROGRESS
 Navigate by chapter with skip controls and a chapter-level seek bar with markers. Dual progress rings show both book and chapter progress at a glance. Playback progress syncs bidirectionally with your Audiobookshelf server, with an offline queue that flushes automatically when connectivity returns.
@@ -55,7 +55,7 @@ Your Audiobookshelf library, in your pocket.
 - Android Auto support with browsing, search, and chapter skip
 - Offline downloads with concurrent queue and automatic retry
 - Sleep timer with motion sensing, shake-to-reset, and auto-rewind
-- 9-band equalizer and volume boost
+- 5-band equalizer and volume boost
 - Bidirectional progress sync with offline queue
 - Listening analytics with shareable summary cards
 - Chapter navigation with dual progress rings

@@ -116,9 +116,6 @@ class LibraryViewModel @Inject constructor(
     // Search debounce
     private var searchJob: Job? = null
 
-    // Keep one in-memory source list to avoid duplicating full collections in UiState.
-    private var cachedBooks: List<AudioBook> = emptyList()
-
     init {
         // Observe connectivity and auto-filter to downloaded when offline
         viewModelScope.launch {
@@ -186,22 +183,15 @@ class LibraryViewModel @Inject constructor(
 
     private suspend fun loadAudioBooks(libraryId: String) {
         try {
-            // Load local first
-            var books = audioBookRepository.getByLibraryWithLastPlayed(libraryId)
-
-            // Sync from server
+            // Sync from server if possible
             try {
-                val serverBooks = audioBookRepository.syncLibraryItems(libraryId)
-                if (serverBooks.isNotEmpty()) {
-                    books = audioBookRepository.getByLibraryWithLastPlayed(libraryId)
-                }
+                audioBookRepository.syncLibraryItems(libraryId)
             } catch (_: Exception) {
                 // Use cached
             }
 
-            cachedBooks = books
-            updateAvailableGroups()
-            applyFilter()
+            updateAvailableGroups(libraryId)
+            applyFilterSuspend()
         } catch (e: Exception) {
             _uiState.update {
                 it.copy(errorMessage = "Failed to load audiobooks: ${e.message}")
@@ -234,13 +224,13 @@ class LibraryViewModel @Inject constructor(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(300)
-            applyFilter()
+            applyFilterSuspend()
         }
     }
 
     fun onViewModeChanged(mode: ViewMode) {
         _uiState.update { it.copy(viewMode = mode, selectedGroupFilter = null) }
-        updateAvailableGroups()
+        viewModelScope.launch { updateAvailableGroups() }
         applyFilter()
     }
 
@@ -290,7 +280,7 @@ class LibraryViewModel @Inject constructor(
                 sortMode = SortMode.RECENTLY_PLAYED,
             )
         }
-        updateAvailableGroups()
+        viewModelScope.launch { updateAvailableGroups() }
         applyFilter()
     }
 
@@ -308,77 +298,39 @@ class LibraryViewModel @Inject constructor(
 
     // ─── Filter/Sort Logic ────────────────────────────────────────────────
 
-    private fun updateAvailableGroups() {
+    private suspend fun updateAvailableGroups(libraryId: String? = null) {
+        val libId = libraryId ?: _uiState.value.selectedLibrary?.id ?: return
         val state = _uiState.value
         val groups = when (state.viewMode) {
-            ViewMode.SERIES -> cachedBooks
-                .mapNotNull { it.seriesName }
-                .filter { it.isNotEmpty() }
-                .distinct()
-                .sorted()
-
-            ViewMode.AUTHOR -> cachedBooks
-                .map { it.author }
-                .filter { it.isNotEmpty() }
-                .distinct()
-                .sorted()
-
-            ViewMode.GENRE -> cachedBooks
-                .flatMap { it.genres }
-                .filter { it.isNotEmpty() }
-                .distinct()
-                .sorted()
-
+            ViewMode.SERIES -> audioBookRepository.getDistinctSeries(libId)
+            ViewMode.AUTHOR -> audioBookRepository.getDistinctAuthors(libId)
+            ViewMode.GENRE -> audioBookRepository.getDistinctGenres(libId)
             ViewMode.ALL -> emptyList()
         }
         _uiState.update { it.copy(availableGroups = groups) }
     }
 
-    private fun applyFilter() {
+    private suspend fun applyFilterSuspend() {
         val state = _uiState.value
-        var filtered = cachedBooks.asSequence()
+        val libraryId = state.selectedLibrary?.id ?: return
 
-        // Library filter
-        val libraryId = state.selectedLibrary?.id
-        if (libraryId != null) {
-            filtered = filtered.filter { it.libraryId == libraryId }
+        // Push filters to SQL — only load the books that match
+        val tab = when (state.selectedTab) {
+            LibraryTab.All -> 0
+            LibraryTab.InProgress -> 1
+            LibraryTab.Completed -> 2
+            LibraryTab.Downloaded -> 3
         }
+        val books = audioBookRepository.getFilteredBooks(
+            libraryId = libraryId,
+            tab = tab,
+            hideFinished = state.hideFinished,
+            downloadedOnly = state.showDownloadedOnly,
+            searchQuery = state.searchQuery.trim(),
+        )
 
-        // Tab-based filtering
-        filtered = when (state.selectedTab) {
-            LibraryTab.All -> filtered
-            LibraryTab.InProgress -> filtered.filter {
-                it.hasProgress && !it.isFinished && it.progressPercent < 99.5
-            }
-            LibraryTab.Completed -> filtered.filter {
-                it.isFinished || it.progress >= 1.0 || it.progressPercent >= 99.5
-            }
-            LibraryTab.Downloaded -> filtered.filter { it.isDownloaded }
-        }
-
-        // Hide finished
-        if (state.hideFinished) {
-            filtered = filtered.filter { !it.isFinished && it.progress < 1.0 && it.progressPercent < 99.5 }
-        }
-
-        // Downloaded only
-        if (state.showDownloadedOnly) {
-            filtered = filtered.filter { it.isDownloaded }
-        }
-
-        // Search
-        if (state.searchQuery.isNotBlank()) {
-            val query = state.searchQuery.lowercase()
-            filtered = filtered.filter { book ->
-                book.title.lowercase().contains(query) ||
-                        book.author.lowercase().contains(query) ||
-                        book.seriesName?.lowercase()?.contains(query) == true ||
-                        book.narrator?.lowercase()?.contains(query) == true
-            }
-        }
-
-        // Sort and group
-        val sortedBooks = sortBooks(filtered.toList(), state.sortMode)
+        // Sort and group in-memory (complex logic stays in Kotlin)
+        val sortedBooks = sortBooks(books, state.sortMode)
         val groupedSections = buildGroupedSections(
             books = sortedBooks,
             viewMode = state.viewMode,
@@ -392,14 +344,22 @@ class LibraryViewModel @Inject constructor(
             .filterTo(mutableSetOf()) { it in groupKeys }
             .apply { addAll(groupKeys - previousKeys) }
 
+        // Get total count from DB (not from filtered set)
+        val totalCount = audioBookRepository.countByLibrary(libraryId)
+
         _uiState.update {
             it.copy(
                 filteredBooks = sortedBooks,
                 groupedSections = groupedSections,
                 expandedGroups = expandedGroups,
-                totalBookCount = cachedBooks.size,
+                totalBookCount = totalCount,
             )
         }
+    }
+
+    /** Fire-and-forget filter for non-suspend callers. */
+    private fun applyFilter() {
+        viewModelScope.launch { applyFilterSuspend() }
     }
 }
 

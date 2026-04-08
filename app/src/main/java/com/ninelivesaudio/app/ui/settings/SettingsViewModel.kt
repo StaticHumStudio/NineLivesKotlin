@@ -78,8 +78,8 @@ class SettingsViewModel @Inject constructor(
 
         // Equalizer
         val eqEnabled: Boolean = false,
-        val eqBandGains: List<Int> = List(9) { 0 },
-        val eqBandFrequencies: List<Int> = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000),
+        val eqBandGains: List<Int> = List(5) { 0 },
+        val eqBandFrequencies: List<Int> = listOf(60, 230, 910, 3600, 14000),
         val eqBandRange: Pair<Int, Int> = Pair(-1500, 1500),
 
         // Auto-Rewind

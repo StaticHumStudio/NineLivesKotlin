@@ -4,7 +4,7 @@ A feature-rich Android audiobook player for [Audiobookshelf](https://www.audiobo
 
 There is no "normal mode." The vault is the app. The app is the vault.
 
-**v0.95 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
+**v1.0 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
 
 ---
 
@@ -213,7 +213,6 @@ All colors tuned for WCAG AA contrast (4.5:1 body text, 3:1 large text).
 | Image Loading | Coil 2.7.0, SubcomposeAsyncImage with fallback states |
 | Crypto | EncryptedSharedPreferences (AES-256-GCM) |
 | Async | Kotlin Coroutines 1.10.2, SupervisorJob, Dispatchers |
-| Background | WorkManager 2.10.0 |
 | Build | AGP 9.0.0, KSP 2.2.10, Compose BOM 2025.06.00 |
 
 ---
@@ -233,11 +232,14 @@ All colors tuned for WCAG AA contrast (4.5:1 body text, 3:1 large text).
 git clone https://github.com/StaticHumStudio/NineLivesKotlin.git
 cd NineLivesKotlin
 
-# Build
+# Debug build
 ./gradlew assembleDebug
 
-# Install on connected device
+# Install debug on connected device
 ./gradlew installDebug
+
+# Release bundle (AAB for Google Play)
+./gradlew bundleRelease
 ```
 
 ### Connect to Your Server

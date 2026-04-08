@@ -599,7 +599,7 @@ fun SettingsScreen(
                         viewModel.buildReport { subject, body ->
                             val intent = Intent(Intent.ACTION_SENDTO).apply {
                                 data = Uri.parse("mailto:")
-                                putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
+                                putExtra(Intent.EXTRA_EMAIL, arrayOf("Static@StaticHum.Studio"))
                                 putExtra(Intent.EXTRA_SUBJECT, subject)
                                 putExtra(Intent.EXTRA_TEXT, body)
                             }
@@ -608,7 +608,7 @@ fun SettingsScreen(
                             } else {
                                 val fallback = Intent(Intent.ACTION_SEND).apply {
                                     type = "message/rfc822"
-                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("Hum@StaticHum.Studio"))
+                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("Static@StaticHum.Studio"))
                                     putExtra(Intent.EXTRA_SUBJECT, subject)
                                     putExtra(Intent.EXTRA_TEXT, body)
                                 }

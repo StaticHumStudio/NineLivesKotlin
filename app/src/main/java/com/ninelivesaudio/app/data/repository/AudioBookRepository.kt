@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.data.repository
 
+import androidx.sqlite.db.SimpleSQLiteQuery
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -8,6 +9,7 @@ import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -73,6 +75,104 @@ class AudioBookRepository @Inject constructor(
                 book to lastPlayed
             }
         }
+
+    /**
+     * Get filtered books for a library, pushing WHERE clauses to SQL.
+     * Eliminates the need to hold all books in memory for filtering.
+     *
+     * @param tab 0=All, 1=InProgress, 2=Completed, 3=Downloaded
+     * @param hideFinished whether to exclude finished books
+     * @param downloadedOnly whether to show only downloaded books
+     * @param searchQuery optional search text (matches title, author, series, narrator)
+     */
+    suspend fun getFilteredBooks(
+        libraryId: String,
+        tab: Int = 0,
+        hideFinished: Boolean = false,
+        downloadedOnly: Boolean = false,
+        searchQuery: String = "",
+    ): List<AudioBook> {
+        val sql = buildString {
+            append("SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab")
+            append(" LEFT JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId")
+            append(" WHERE ab.LibraryId = ?")
+
+            // Tab filters — progressPercent: if Progress <= 1.0 then Progress*100 else Progress
+            when (tab) {
+                1 -> { // InProgress
+                    append(" AND ab.Progress > 0")
+                    append(" AND ab.IsFinished = 0")
+                    append(" AND (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) < 99.5")
+                }
+                2 -> { // Completed
+                    append(" AND (ab.IsFinished = 1 OR ab.Progress >= 1.0")
+                    append(" OR (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) >= 99.5)")
+                }
+                3 -> { // Downloaded
+                    append(" AND ab.IsDownloaded = 1")
+                }
+            }
+
+            // Hide finished
+            if (hideFinished) {
+                append(" AND ab.IsFinished = 0 AND ab.Progress < 1.0")
+                append(" AND (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) < 99.5")
+            }
+
+            // Downloaded only
+            if (downloadedOnly) {
+                append(" AND ab.IsDownloaded = 1")
+            }
+
+            // Search
+            if (searchQuery.isNotBlank()) {
+                append(" AND (ab.Title LIKE ? OR ab.Author LIKE ? OR ab.SeriesName LIKE ? OR ab.Narrator LIKE ?)")
+            }
+
+            append(" ORDER BY ab.Title")
+        }
+
+        val args = mutableListOf<Any>(libraryId)
+        if (searchQuery.isNotBlank()) {
+            val pattern = "%${searchQuery}%"
+            args.addAll(listOf(pattern, pattern, pattern, pattern))
+        }
+
+        val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args.toTypedArray()))
+        return results.map { result ->
+            result.audioBook.toDomain().copy(
+                lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
+            )
+        }
+    }
+
+    /** Count all audiobooks in a library. */
+    suspend fun countByLibrary(libraryId: String): Int =
+        audioBookDao.countByLibrary(libraryId)
+
+    /** Get distinct series names for a library. */
+    suspend fun getDistinctSeries(libraryId: String): List<String> =
+        audioBookDao.getDistinctSeries(libraryId)
+
+    /** Get distinct authors for a library. */
+    suspend fun getDistinctAuthors(libraryId: String): List<String> =
+        audioBookDao.getDistinctAuthors(libraryId)
+
+    /** Get distinct genres for a library (parsed from JSON arrays). */
+    suspend fun getDistinctGenres(libraryId: String): List<String> {
+        val jsonStrings = audioBookDao.getDistinctGenresJson(libraryId)
+        return jsonStrings
+            .flatMap { json ->
+                try {
+                    Json.decodeFromString<List<String>>(json)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
 
     /** Fetch all items for a library from server and save to local DB. */
     suspend fun syncLibraryItems(libraryId: String): List<AudioBook> {

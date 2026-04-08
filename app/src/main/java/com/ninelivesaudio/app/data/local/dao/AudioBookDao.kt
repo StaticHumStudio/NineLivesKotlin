@@ -4,7 +4,10 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
+import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import kotlinx.coroutines.flow.Flow
 
@@ -109,4 +112,24 @@ interface AudioBookDao {
     /** Update just the progress fields on an audiobook. */
     @Query("UPDATE AudioBooks SET CurrentTimeSeconds = :currentTimeSeconds, Progress = :progress, IsFinished = :isFinished WHERE Id = :id")
     suspend fun updateProgress(id: String, currentTimeSeconds: Double, progress: Double, isFinished: Int)
+
+    /** Dynamic filtered query — built by AudioBookRepository.getFilteredBooks(). */
+    @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
+    suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<RecentlyPlayedResult>
+
+    /** Count all audiobooks in a library. */
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId")
+    suspend fun countByLibrary(libraryId: String): Int
+
+    /** Distinct series names for a library. */
+    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
+    suspend fun getDistinctSeries(libraryId: String): List<String>
+
+    /** Distinct authors for a library. */
+    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND Author IS NOT NULL AND Author != '' ORDER BY Author")
+    suspend fun getDistinctAuthors(libraryId: String): List<String>
+
+    /** Distinct genres for a library (genres stored as JSON array). */
+    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
+    suspend fun getDistinctGenresJson(libraryId: String): List<String>
 }

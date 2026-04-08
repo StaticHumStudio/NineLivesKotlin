@@ -249,7 +249,7 @@ class PlaybackManager @Inject constructor(
     private val _eqEnabled = MutableStateFlow(false)
     val eqEnabled: StateFlow<Boolean> = _eqEnabled.asStateFlow()
 
-    private val _eqBandGains = MutableStateFlow(List(9) { 0 })
+    private val _eqBandGains = MutableStateFlow(List(5) { 0 })
     val eqBandGains: StateFlow<List<Int>> = _eqBandGains.asStateFlow()
 
     private var equalizer: Equalizer? = null
@@ -745,10 +745,10 @@ class PlaybackManager @Inject constructor(
         }
     }
 
-    fun getEqBandCount(): Int = equalizer?.numberOfBands?.toInt() ?: 9
+    fun getEqBandCount(): Int = equalizer?.numberOfBands?.toInt() ?: 5
 
     fun getEqBandFrequencies(): List<Int> {
-        val eq = equalizer ?: return listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000)
+        val eq = equalizer ?: return listOf(60, 230, 910, 3600, 14000)
         return (0 until eq.numberOfBands).map { band ->
             eq.getCenterFreq(band.toShort()) / 1000 // milliHz → Hz
         }
@@ -795,9 +795,13 @@ class PlaybackManager @Inject constructor(
             val eq = Equalizer(0, player.audioSessionId)
             equalizer = eq
             eq.enabled = _eqEnabled.value
+            val bandCount = eq.numberOfBands.toInt()
+            // Resize gains list to match actual hardware band count
             val gains = _eqBandGains.value
-            for (band in 0 until eq.numberOfBands.toInt().coerceAtMost(gains.size)) {
-                eq.setBandLevel(band.toShort(), gains[band].toShort())
+            val resizedGains = List(bandCount) { i -> gains.getOrElse(i) { 0 } }
+            _eqBandGains.value = resizedGains
+            for (band in 0 until bandCount) {
+                eq.setBandLevel(band.toShort(), resizedGains[band].toShort())
             }
         } catch (e: Exception) {
             Log.e(TAG, "attachEqualizer: failed: ${e.message}", e)

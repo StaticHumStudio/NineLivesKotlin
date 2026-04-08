@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.dao.*
+import com.ninelivesaudio.app.data.local.migration.ALL_MIGRATIONS
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,8 +24,8 @@ object AppModule {
             AppDatabase::class.java,
             AppDatabase.DATABASE_NAME,
         )
-        // Do NOT use fallbackToDestructiveMigration — it silently destroys all user data
-        // on schema changes. Add explicit Migration objects as the schema evolves.
+        .addMigrations(*ALL_MIGRATIONS)
+        .fallbackToDestructiveMigrationOnDowngrade()
         .build()
     }
 

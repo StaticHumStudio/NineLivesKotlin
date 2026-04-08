@@ -16,9 +16,9 @@ data class AppSettings(
     val volume: Double = 0.8,
     val eqEnabled: Boolean = false,
     // 9-band EQ gains in millibels (-1500 to +1500), indexed by band 0–8.
-    // Default frequencies (Hz): 31, 62, 125, 250, 500, 1k, 2k, 4k, 8k
-    // (actual count depends on device; we persist 9 bands)
-    val eqBandGains: List<Int> = List(9) { 0 },
+    // Default frequencies (Hz): 60, 230, 910, 3.6k, 14k
+    // (actual count depends on device; resized at runtime)
+    val eqBandGains: List<Int> = List(5) { 0 },
     val volumeBoostGain: Int = 0, // millibels, 0–1000 (0–10 dB)
     val allowSelfSignedCertificates: Boolean = false,
     val diagnosticsMode: Boolean = false,

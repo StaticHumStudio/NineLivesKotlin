@@ -62,7 +62,7 @@ class NineLivesApp : Application() {
             )
 
             mailSender {
-                mailTo = "Hum@StaticHum.Studio"
+                mailTo = "Static@StaticHum.Studio"
                 reportAsFile = true
                 reportFileName = "NineLives_crash.txt"
             }

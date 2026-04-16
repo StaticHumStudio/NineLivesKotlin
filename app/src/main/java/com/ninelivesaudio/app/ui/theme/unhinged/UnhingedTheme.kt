@@ -103,8 +103,6 @@ fun UnhingedTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = ArchiveVoidDeep.toArgb()
-            window.navigationBarColor = ArchiveVoidBase.toArgb()
 
             val insetsController = WindowCompat.getInsetsController(window, view)
             insetsController.isAppearanceLightStatusBars = false

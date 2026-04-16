@@ -2,11 +2,6 @@
 <resources>
 
     <style name="Theme.NineLivesAudio" parent="android:Theme.Material.Light.NoActionBar">
-        <!-- Edge-to-edge: cosmic dark status bar and nav bar -->
-        <item name="android:statusBarColor">@color/void_deep</item>
-        <item name="android:navigationBarColor">@color/void_surface</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
         <!-- Window background for splash/startup -->
         <item name="android:windowBackground">@color/void_deep</item>
     </style>

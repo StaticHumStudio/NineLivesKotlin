@@ -768,6 +768,7 @@ class PlaybackManager @Inject constructor(
         }
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun attachLoudnessEnhancer() {
         val player = exoPlayer ?: return
         try {
@@ -788,6 +789,7 @@ class PlaybackManager @Inject constructor(
         loudnessEnhancer = null
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun attachEqualizer() {
         val player = exoPlayer ?: return
         try {

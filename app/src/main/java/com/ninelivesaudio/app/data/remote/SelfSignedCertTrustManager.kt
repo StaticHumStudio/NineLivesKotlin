@@ -77,7 +77,9 @@ object SelfSignedCertTrustManager {
         }
 
         val trustManager = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+                throw CertificateException("Client certificates not supported")
+            }
 
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
                 if (chain.isNullOrEmpty()) {

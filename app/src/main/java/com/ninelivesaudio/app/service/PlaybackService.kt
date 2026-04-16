@@ -12,6 +12,7 @@ import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionError
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -190,6 +191,7 @@ class PlaybackService : MediaLibraryService() {
 
     private inner class LibraryCallback : MediaLibrarySession.Callback {
 
+        @OptIn(UnstableApi::class)
         override fun onConnect(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -249,7 +251,7 @@ class PlaybackService : MediaLibraryService() {
             Log.d(TAG, "onGetChildren: parentId=$parentId page=$page pageSize=$pageSize pkg=${browser.packageName}")
             if (!isTrustedController(browser)) {
                 Log.w(TAG, "onGetChildren: denied untrusted browser pkg=${browser.packageName} uid=${browser.uid}")
-                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_PERMISSION_DENIED))
+                return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_PERMISSION_DENIED))
             }
             return serviceScope.future(Dispatchers.IO) {
                 try {
@@ -258,7 +260,7 @@ class PlaybackService : MediaLibraryService() {
                     LibraryResult.ofItemList(ImmutableList.copyOf(children), params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onGetChildren($parentId) failed: ${e.message}", e)
-                    LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN)
+                    LibraryResult.ofError(SessionError.ERROR_UNKNOWN)
                 }
             }
         }
@@ -277,11 +279,11 @@ class PlaybackService : MediaLibraryService() {
                     if (item != null) {
                         LibraryResult.ofItem(item, /* params= */ null)
                     } else {
-                        LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                        LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "onGetItem($mediaId) failed: ${e.message}", e)
-                    LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN)
+                    LibraryResult.ofError(SessionError.ERROR_UNKNOWN)
                 }
             }
         }
@@ -326,7 +328,7 @@ class PlaybackService : MediaLibraryService() {
                     LibraryResult.ofItemList(ImmutableList.copyOf(results), params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onGetSearchResult($query) failed: ${e.message}", e)
-                    LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN)
+                    LibraryResult.ofError(SessionError.ERROR_UNKNOWN)
                 }
             }
         }
@@ -336,6 +338,7 @@ class PlaybackService : MediaLibraryService() {
          * We intercept the request, extract the book ID, load it via PlaybackManager,
          * and return the player's actual media items so Android Auto can display them.
          */
+        @OptIn(UnstableApi::class)
         override fun onSetMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,

@@ -4,7 +4,7 @@ A feature-rich Android audiobook player for [Audiobookshelf](https://www.audiobo
 
 There is no "normal mode." The vault is the app. The app is the vault.
 
-**v1.0 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
+**v1.0.1 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
 
 ---
 

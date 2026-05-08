@@ -17,6 +17,9 @@ data class AudioBookEntity(
     @ColumnInfo(name = "LibraryId")
     val libraryId: String? = null,
 
+    @ColumnInfo(name = "IsLocal", defaultValue = "0")
+    val isLocal: Int = 0,
+
     @ColumnInfo(name = "Title")
     val title: String,
 

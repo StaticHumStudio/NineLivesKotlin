@@ -7,6 +7,7 @@ import kotlin.time.Duration.Companion.seconds
 data class AudioBook(
     val id: String = "",
     val libraryId: String? = null,
+    val isLocal: Boolean = false,
     val title: String = "",
     val author: String = "",
     val narrator: String? = null,

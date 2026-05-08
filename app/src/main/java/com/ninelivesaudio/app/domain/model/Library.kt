@@ -3,6 +3,8 @@ package com.ninelivesaudio.app.domain.model
 data class Library(
     val id: String = "",
     val name: String = "",
+    val isLocal: Boolean = false,
+    val folderUri: String? = null,
     val folders: List<Folder> = emptyList(),
     val displayOrder: Int = 0,
     val icon: String = "audiobook",

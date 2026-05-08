@@ -13,7 +13,7 @@ import com.ninelivesaudio.app.data.local.entity.*
         PlaybackProgressEntity::class,
         PendingProgressEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -25,13 +25,17 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.graphicsLayer
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.StatusPill
@@ -48,6 +52,19 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+
+    // SAF folder picker launcher
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            // Take persistable permission so the URI survives reboots
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            context.contentResolver.takePersistableUriPermission(uri, flags)
+            viewModel.onLocalFolderPicked(uri.toString())
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -89,9 +106,33 @@ fun SettingsScreen(
                 )
             }
 
-            // ═════════════════════════════════════════════════════════════
-            //  Group 1: Connection
-            // ═════════════════════════════════════════════════════════════
+            // ═════════════════════════════════════════════════════════════════
+            //  Group 0: Source Mode
+            // ═════════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Source") {
+                SourceModeToggle(
+                    currentMode = uiState.appMode,
+                    onModeSelected = viewModel::switchMode,
+                )
+            }
+
+            // ═════════════════════════════════════════════════════════════════
+            //  Group 1: Connection (ABS mode) or Local Folders (LOCAL mode)
+            // ═════════════════════════════════════════════════════════════════
+            if (uiState.appMode == AppMode.LOCAL) {
+                SettingsGroup(title = "Local Folders") {
+                    LocalFoldersSection(
+                        localLibraries = uiState.localLibraries,
+                        selectedLocalLibrary = uiState.selectedLocalLibrary,
+                        isScanning = uiState.isScanning,
+                        lastScanMessage = uiState.lastScanMessage,
+                        onAddFolder = { folderPickerLauncher.launch(null) },
+                        onRescan = viewModel::rescanLocalLibrary,
+                        onRemove = viewModel::removeLocalLibrary,
+                        onSelect = viewModel::onLocalLibrarySelected,
+                    )
+                }
+            } else {
             SettingsGroup(title = "Connection") {
                 // Connection status
                 Row(
@@ -392,7 +433,7 @@ fun SettingsScreen(
                         }
                     }
                 }
-            }
+            } // end else (ABS mode)
 
             // ═════════════════════════════════════════════════════════════
             //  Group 2: Experience
@@ -453,8 +494,10 @@ fun SettingsScreen(
             }
 
             // ═════════════════════════════════════════════════════════════
-            //  Group 4: Data
             // ═════════════════════════════════════════════════════════════
+            //  Group 4: Data (ABS mode only)
+            // ═════════════════════════════════════════════════════════════
+            if (uiState.appMode == AppMode.AUDIOBOOKSHELF) {
             SettingsGroup(title = "Data") {
                 Button(
                     onClick = viewModel::syncNow,
@@ -508,6 +551,7 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Clear Cache")
                 }
+            }
             }
 
             // ═════════════════════════════════════════════════════════════
@@ -682,6 +726,251 @@ private fun SettingsGroup(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 content = content,
             )
+        }
+    }
+}
+
+// ─── Source Mode Toggle ───────────────────────────────────────────────────
+
+@Composable
+private fun SourceModeToggle(
+    currentMode: AppMode,
+    onModeSelected: (AppMode) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "Library Source",
+            style = MaterialTheme.typography.bodyMedium,
+            color = ArchiveTextPrimary,
+        )
+        Text(
+            text = "Where your audiobooks live",
+            style = MaterialTheme.typography.bodySmall,
+            color = ArchiveTextMuted,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            data class ModeOption(
+                val mode: AppMode,
+                val label: String,
+                val icon: ImageVector,
+            )
+            val options = listOf(
+                ModeOption(AppMode.AUDIOBOOKSHELF, "Server", Icons.Outlined.Dns),
+                ModeOption(AppMode.LOCAL, "Local Files", Icons.Outlined.FolderOpen),
+            )
+
+            options.forEach { option ->
+                val isSelected = currentMode == option.mode
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onModeSelected(option.mode) },
+                    label = {
+                        Text(
+                            option.label,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            option.icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = GoldFilamentFaint,
+                        selectedLabelColor = GoldFilament,
+                        selectedLeadingIconColor = GoldFilament,
+                        containerColor = ArchiveVoidElevated,
+                        labelColor = ArchiveTextSecondary,
+                        iconColor = ArchiveTextMuted,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+// ─── Local Folders Section ────────────────────────────────────────────────
+
+@Composable
+private fun LocalFoldersSection(
+    localLibraries: List<Library>,
+    selectedLocalLibrary: Library?,
+    isScanning: Boolean,
+    lastScanMessage: String?,
+    onAddFolder: () -> Unit,
+    onRescan: (Library) -> Unit,
+    onRemove: (Library) -> Unit,
+    onSelect: (Library) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "Pick folders containing your audiobooks. Each subfolder becomes one book.",
+            style = MaterialTheme.typography.bodySmall,
+            color = ArchiveTextMuted,
+        )
+
+        // Scanning indicator
+        AnimatedVisibility(visible = isScanning) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(GoldFilamentFaint.copy(alpha = 0.15f))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = GoldFilament,
+                    strokeWidth = 2.dp,
+                )
+                Text(
+                    text = "Scanning folder...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = GoldFilament,
+                )
+            }
+        }
+
+        // Scan result message
+        AnimatedVisibility(visible = lastScanMessage != null && !isScanning) {
+            Text(
+                text = lastScanMessage ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                color = ArchiveTextSecondary,
+            )
+        }
+
+        // Added folders list
+        if (localLibraries.isNotEmpty()) {
+            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+
+            localLibraries.forEach { library ->
+                val isSelected = library.id == selectedLocalLibrary?.id
+                var showConfirmRemove by remember { mutableStateOf(false) }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (isSelected) GoldFilamentFaint.copy(alpha = 0.08f)
+                            else androidx.compose.ui.graphics.Color.Transparent
+                        )
+                        .clickable { onSelect(library) }
+                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        if (isSelected) Icons.Outlined.FolderSpecial else Icons.Outlined.Folder,
+                        contentDescription = null,
+                        tint = if (isSelected) GoldFilament else ArchiveTextSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = library.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isSelected) GoldFilament else ArchiveTextPrimary,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        library.folderUri?.let { uri ->
+                            Text(
+                                text = Uri.parse(uri).lastPathSegment
+                                    ?.substringAfterLast(':') ?: uri,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ArchiveTextMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+
+                    // Rescan button
+                    IconButton(
+                        onClick = { onRescan(library) },
+                        enabled = !isScanning,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Refresh,
+                            contentDescription = "Rescan",
+                            tint = ArchiveTextSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+
+                    // Remove button (with confirmation)
+                    if (showConfirmRemove) {
+                        IconButton(
+                            onClick = {
+                                showConfirmRemove = false
+                                onRemove(library)
+                            },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.DeleteForever,
+                                contentDescription = "Confirm remove",
+                                tint = ArchiveError,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    } else {
+                        IconButton(
+                            onClick = { showConfirmRemove = true },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.Close,
+                                contentDescription = "Remove",
+                                tint = ArchiveTextMuted,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add folder button
+        Button(
+            onClick = onAddFolder,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isScanning,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = GoldFilament,
+                contentColor = ArchiveVoidDeep,
+                disabledContainerColor = GoldFilamentDim,
+            ),
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Icon(
+                Icons.Outlined.CreateNewFolder,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Add Folder", fontWeight = FontWeight.SemiBold)
         }
     }
 }

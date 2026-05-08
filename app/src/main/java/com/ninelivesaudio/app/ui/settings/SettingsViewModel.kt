@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.settings
 
+import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -7,13 +8,17 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
+import com.ninelivesaudio.app.service.local.LocalLibraryScanner
+import com.ninelivesaudio.app.service.local.toAudioBook
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -31,14 +36,19 @@ class SettingsViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val libraryDao: LibraryDao,
     private val libraryRepository: LibraryRepository,
+    private val audioBookRepository: AudioBookRepository,
     private val unhingedRepository: UnhingedSettingsRepository,
     private val syncManager: SyncManager,
     private val playbackManager: PlaybackManager,
+    private val localScanner: LocalLibraryScanner,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
 
     data class UiState(
+        // Mode
+        val appMode: AppMode = AppMode.AUDIOBOOKSHELF,
+
         // Connection
         val serverUrl: String = "",
         val username: String = "",
@@ -50,9 +60,15 @@ class SettingsViewModel @Inject constructor(
         val connectionStatusText: String = "Not connected",
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
 
-        // Libraries
+        // Libraries (ABS)
         val libraries: List<Library> = emptyList(),
         val selectedLibrary: Library? = null,
+
+        // Local Libraries
+        val localLibraries: List<Library> = emptyList(),
+        val selectedLocalLibrary: Library? = null,
+        val isScanning: Boolean = false,
+        val lastScanMessage: String? = null,
 
         // Security
         val allowSelfSignedCertificates: Boolean = false,
@@ -155,6 +171,20 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
+        // Observe local libraries
+        viewModelScope.launch {
+            libraryRepository.observeLocalLibraries().collect { locals ->
+                val savedLocalId = settingsManager.currentSettings.selectedLocalLibraryId
+                val selected = locals.firstOrNull { it.id == savedLocalId } ?: locals.firstOrNull()
+                _uiState.update {
+                    it.copy(
+                        localLibraries = locals,
+                        selectedLocalLibrary = selected,
+                    )
+                }
+            }
+        }
+
         // Load settings on init
         viewModelScope.launch {
             initialize()
@@ -168,6 +198,7 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { state ->
             val configuredHost = extractHost(settings.serverUrl)
             state.copy(
+                appMode = settings.appMode,
                 serverUrl = settings.serverUrl,
                 username = settings.username,
                 useApiToken = settings.useApiToken,
@@ -211,6 +242,146 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    // ─── Mode Switching ───────────────────────────────────────────────────
+
+    fun switchMode(mode: AppMode) {
+        if (mode == _uiState.value.appMode) return
+        // Stop playback to avoid cross-mode player state
+        playbackManager.stop()
+        _uiState.update { it.copy(appMode = mode) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(appMode = mode) }
+        }
+    }
+
+    // ─── Local Library Actions ────────────────────────────────────────────
+
+    /**
+     * Called by SettingsScreen after the SAF folder picker returns a URI.
+     * The composable must call contentResolver.takePersistableUriPermission
+     * before passing the URI string here.
+     */
+    fun onLocalFolderPicked(uriString: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isScanning = true, lastScanMessage = null, errorMessage = null) }
+            try {
+                // Derive a display name from the URI path
+                val uri = Uri.parse(uriString)
+                val displayName = uri.lastPathSegment
+                    ?.substringAfterLast(':')
+                    ?.substringAfterLast('/')
+                    ?.ifBlank { null }
+                    ?: "Local Library"
+
+                // Create or reuse the local library row
+                val library = libraryRepository.createLocalLibrary(displayName, uriString)
+
+                // Scan and import
+                val scanResult = withContext(Dispatchers.IO) {
+                    localScanner.scan(uri)
+                }
+
+                val books = scanResult.books.map { it.toAudioBook(library.id) }
+                audioBookRepository.importLocalBooks(library.id, books)
+                audioBookRepository.removeMissingLocalBooks(
+                    library.id,
+                    scanResult.books.map { it.id },
+                )
+
+                // Select this library
+                settingsManager.updateSettings {
+                    it.copy(selectedLocalLibraryId = library.id)
+                }
+
+                val msg = "${scanResult.books.size} books imported" +
+                    if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
+
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        lastScanMessage = msg,
+                        selectedLocalLibrary = library,
+                        successMessage = msg,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        errorMessage = "Scan failed: ${e.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun rescanLocalLibrary(library: Library) {
+        val folderUri = library.folderUri ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isScanning = true, lastScanMessage = null, errorMessage = null) }
+            try {
+                val scanResult = withContext(Dispatchers.IO) {
+                    localScanner.scan(Uri.parse(folderUri))
+                }
+
+                val books = scanResult.books.map { it.toAudioBook(library.id) }
+                audioBookRepository.importLocalBooks(library.id, books)
+                audioBookRepository.removeMissingLocalBooks(
+                    library.id,
+                    scanResult.books.map { it.id },
+                )
+
+                val msg = "${scanResult.books.size} books found" +
+                    if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
+
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        lastScanMessage = msg,
+                        successMessage = "Rescan complete: $msg",
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isScanning = false,
+                        errorMessage = "Rescan failed: ${e.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeLocalLibrary(library: Library) {
+        viewModelScope.launch {
+            try {
+                audioBookRepository.removeMissingLocalBooks(library.id, emptyList())
+                libraryRepository.removeLocalLibrary(library.id)
+
+                // Clear selection if this was the selected local library
+                if (_uiState.value.selectedLocalLibrary?.id == library.id) {
+                    settingsManager.updateSettings { it.copy(selectedLocalLibraryId = null) }
+                    _uiState.update { it.copy(selectedLocalLibrary = null) }
+                }
+
+                _uiState.update {
+                    it.copy(successMessage = "Removed '${library.name}'")
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(errorMessage = "Failed to remove library: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun onLocalLibrarySelected(library: Library) {
+        _uiState.update { it.copy(selectedLocalLibrary = library) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(selectedLocalLibraryId = library.id) }
         }
     }
 

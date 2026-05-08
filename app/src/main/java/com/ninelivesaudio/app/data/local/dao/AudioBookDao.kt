@@ -23,8 +23,14 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId ORDER BY Title")
     fun observeByLibrary(libraryId: String): Flow<List<AudioBookEntity>>
 
+    @Query("SELECT * FROM AudioBooks WHERE IsLocal = :isLocal ORDER BY Title")
+    fun observeBySource(isLocal: Int): Flow<List<AudioBookEntity>>
+
     @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId ORDER BY Title")
     suspend fun getByLibrary(libraryId: String): List<AudioBookEntity>
+
+    @Query("SELECT * FROM AudioBooks WHERE IsLocal = :isLocal ORDER BY Title")
+    suspend fun getBySource(isLocal: Int): List<AudioBookEntity>
 
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     suspend fun getById(id: String): AudioBookEntity?
@@ -44,6 +50,15 @@ interface AudioBookDao {
 
     @Query("DELETE FROM AudioBooks WHERE Id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId")
+    suspend fun deleteByLibrary(libraryId: String)
+
+    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
+    suspend fun deleteLocalByLibrary(libraryId: String)
+
+    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND Id NOT IN (:scannedIds)")
+    suspend fun deleteMissingLocalBooks(libraryId: String, scannedIds: List<String>)
 
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()

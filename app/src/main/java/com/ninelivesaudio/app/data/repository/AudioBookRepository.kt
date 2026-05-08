@@ -27,6 +27,10 @@ class AudioBookRepository @Inject constructor(
     fun observeByLibrary(libraryId: String): Flow<List<AudioBook>> =
         audioBookDao.observeByLibrary(libraryId).map { entities -> entities.map { it.toDomain() } }
 
+    /** Observe all local-source audiobooks. */
+    fun observeLocalBooks(): Flow<List<AudioBook>> =
+        audioBookDao.observeBySource(isLocal = 1).map { entities -> entities.map { it.toDomain() } }
+
     /** Observe a single audiobook. */
     fun observeById(id: String): Flow<AudioBook?> =
         audioBookDao.observeById(id).map { it?.toDomain() }
@@ -38,6 +42,10 @@ class AudioBookRepository @Inject constructor(
     /** Get audiobooks by library (one-shot). */
     suspend fun getByLibrary(libraryId: String): List<AudioBook> =
         audioBookDao.getByLibrary(libraryId).map { it.toDomain() }
+
+    /** Get all local-source audiobooks (one-shot). */
+    suspend fun getLocalBooks(): List<AudioBook> =
+        audioBookDao.getBySource(isLocal = 1).map { it.toDomain() }
 
     /** Get audiobooks by library with last-played timestamps enriched. */
     suspend fun getByLibraryWithLastPlayed(libraryId: String): List<AudioBook> =
@@ -224,6 +232,29 @@ class AudioBookRepository @Inject constructor(
     /** Save multiple audiobooks to local DB. */
     suspend fun saveAll(audioBooks: List<AudioBook>) {
         audioBookDao.upsertAll(audioBooks.map { it.toEntity() })
+    }
+
+    /** Import scanned Local Library books into one local library. */
+    suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
+        if (books.isEmpty()) return
+        audioBookDao.upsertAll(
+            books.map { book ->
+                book.copy(
+                    libraryId = libraryId,
+                    isLocal = true,
+                    isDownloaded = true,
+                ).toEntity()
+            }
+        )
+    }
+
+    /** Remove local books from a library that were not present in the latest scan. */
+    suspend fun removeMissingLocalBooks(libraryId: String, scannedIds: List<String>) {
+        if (scannedIds.isEmpty()) {
+            audioBookDao.deleteLocalByLibrary(libraryId)
+        } else {
+            audioBookDao.deleteMissingLocalBooks(libraryId, scannedIds)
+        }
     }
 
     /** Delete all audiobooks from local DB. */

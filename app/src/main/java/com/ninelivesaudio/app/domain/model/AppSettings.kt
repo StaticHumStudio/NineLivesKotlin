@@ -4,10 +4,12 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class AppSettings(
+    val appMode: AppMode = AppMode.AUDIOBOOKSHELF,
     val serverUrl: String = "",
     val username: String = "",
     val useApiToken: Boolean = false, // true = API token login, false = username/password
     val selectedLibraryId: String? = null, // persisted library selection
+    val selectedLocalLibraryId: String? = null, // persisted local library selection
     val downloadPath: String = "",
     val autoDownloadCovers: Boolean = true,
     val playbackSpeed: Double = 1.0,

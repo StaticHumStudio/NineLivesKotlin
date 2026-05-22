@@ -209,6 +209,9 @@ class SettingsViewModel @Inject constructor(
                 } == true,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
+                selectedLocalLibrary = state.localLibraries
+                    .firstOrNull { it.id == settings.selectedLocalLibraryId }
+                    ?: state.localLibraries.firstOrNull(),
                 autoRewindEnabled = settings.autoRewindEnabled,
                 autoRewindMode = settings.autoRewindMode,
                 autoRewindSeconds = settings.autoRewindSeconds,
@@ -276,20 +279,25 @@ class SettingsViewModel @Inject constructor(
                     ?.ifBlank { null }
                     ?: "Local Library"
 
-                // Create or reuse the local library row
-                val library = libraryRepository.createLocalLibrary(displayName, uriString)
-
-                // Scan and import
                 val scanResult = withContext(Dispatchers.IO) {
                     localScanner.scan(uri)
                 }
+                if (scanResult.errorMessages.isNotEmpty() && scanResult.books.isEmpty()) {
+                    throw IllegalStateException(scanResult.errorMessages.joinToString("; "))
+                }
 
+                // Create or reuse the local library row after confirming the folder is readable.
+                val library = libraryRepository.createLocalLibrary(displayName, uriString)
+
+                // Import discovered books, but only delete missing books after a clean scan.
                 val books = scanResult.books.map { it.toAudioBook(library.id) }
                 audioBookRepository.importLocalBooks(library.id, books)
-                audioBookRepository.removeMissingLocalBooks(
-                    library.id,
-                    scanResult.books.map { it.id },
-                )
+                if (scanResult.errorMessages.isEmpty()) {
+                    audioBookRepository.removeMissingLocalBooks(
+                        library.id,
+                        scanResult.books.map { it.id },
+                    )
+                }
 
                 // Select this library
                 settingsManager.updateSettings {
@@ -326,13 +334,19 @@ class SettingsViewModel @Inject constructor(
                 val scanResult = withContext(Dispatchers.IO) {
                     localScanner.scan(Uri.parse(folderUri))
                 }
+                if (scanResult.errorMessages.isNotEmpty() && scanResult.books.isEmpty()) {
+                    throw IllegalStateException(scanResult.errorMessages.joinToString("; "))
+                }
 
+                // Import discovered books, but only delete missing books after a clean scan.
                 val books = scanResult.books.map { it.toAudioBook(library.id) }
                 audioBookRepository.importLocalBooks(library.id, books)
-                audioBookRepository.removeMissingLocalBooks(
-                    library.id,
-                    scanResult.books.map { it.id },
-                )
+                if (scanResult.errorMessages.isEmpty()) {
+                    audioBookRepository.removeMissingLocalBooks(
+                        library.id,
+                        scanResult.books.map { it.id },
+                    )
+                }
 
                 val msg = "${scanResult.books.size} books found" +
                     if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""

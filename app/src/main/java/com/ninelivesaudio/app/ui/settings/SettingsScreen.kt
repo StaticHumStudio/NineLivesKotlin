@@ -434,6 +434,7 @@ fun SettingsScreen(
                     }
                 }
             } // end else (ABS mode)
+            }
 
             // ═════════════════════════════════════════════════════════════
             //  Group 2: Experience

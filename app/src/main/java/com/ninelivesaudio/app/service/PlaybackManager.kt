@@ -477,6 +477,13 @@ class PlaybackManager @Inject constructor(
 
     @OptIn(UnstableApi::class)
     private fun loadLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
+        // Scanned local-library books store SAF content:// URIs, not filesystem paths.
+        // They must be parsed as URIs; File()/Uri.fromFile() would produce invalid file:///content:/... URIs.
+        if (book.isLocal) {
+            loadScannedLocalTracks(player, book, metadata)
+            return
+        }
+
         val localPath = book.localPath ?: return
         val localFile = File(localPath)
 
@@ -538,6 +545,40 @@ class PlaybackManager @Inject constructor(
                     .setMediaMetadata(metadata)
                     .build()
             )
+        }
+
+        trackDurations = durations
+        player.setMediaItems(mediaItems)
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun loadScannedLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
+        val mediaItems = mutableListOf<MediaItem>()
+        val durations = mutableListOf<Double>()
+        var cumulative = 0.0
+
+        for (af in book.audioFiles.sortedBy { it.index }) {
+            val path = af.localPath ?: continue
+            mediaItems.add(
+                MediaItem.Builder()
+                    .setUri(Uri.parse(path))
+                    .setMediaMetadata(metadata)
+                    .build()
+            )
+            cumulative += af.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
+            durations.add(cumulative)
+        }
+
+        if (mediaItems.isEmpty()) {
+            val fallback = book.localPath
+            if (!fallback.isNullOrEmpty()) {
+                mediaItems.add(
+                    MediaItem.Builder()
+                        .setUri(Uri.parse(fallback))
+                        .setMediaMetadata(metadata)
+                        .build()
+                )
+            }
         }
 
         trackDurations = durations

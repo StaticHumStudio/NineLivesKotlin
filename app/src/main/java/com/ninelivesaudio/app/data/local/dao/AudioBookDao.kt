@@ -63,6 +63,9 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 
+    @Query("DELETE FROM AudioBooks WHERE IsLocal = 0")
+    suspend fun deleteAudiobookshelf()
+
     /** Nine Lives — recently played books with their last-played timestamp. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt

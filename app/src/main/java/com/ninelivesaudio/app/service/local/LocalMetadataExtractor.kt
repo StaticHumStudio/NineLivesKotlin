@@ -71,8 +71,9 @@ class LocalMetadataExtractor @Inject constructor(
 
     /**
      * Extract embedded artwork from an audio file and save it as a cover file
-     * in app-private storage. Returns the absolute path to the saved cover,
-     * or null if no embedded artwork exists.
+     * in app-private storage. Returns a file:// URI string (so Coil and other
+     * image loaders recognize it without scheme guessing), or null if no
+     * embedded artwork exists.
      */
     fun extractEmbeddedCover(fileUri: Uri, bookId: String): String? {
         val retriever = MediaMetadataRetriever()
@@ -85,7 +86,7 @@ class LocalMetadataExtractor @Inject constructor(
             val coverFile = File(coverDir, "$bookId.jpg")
             FileOutputStream(coverFile).use { it.write(artBytes) }
 
-            coverFile.absolutePath
+            Uri.fromFile(coverFile).toString()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to extract embedded cover from $fileUri: ${e.message}")
             null

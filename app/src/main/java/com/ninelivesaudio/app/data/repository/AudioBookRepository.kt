@@ -237,12 +237,17 @@ class AudioBookRepository @Inject constructor(
     /** Import scanned Local Library books into one local library. */
     suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
         if (books.isEmpty()) return
+        val existingById = audioBookDao.getByIds(books.map { it.id }).associateBy { it.id }
         audioBookDao.upsertAll(
             books.map { book ->
+                val existing = existingById[book.id]
                 book.copy(
                     libraryId = libraryId,
                     isLocal = true,
                     isDownloaded = true,
+                    currentTime = existing?.currentTimeSeconds?.seconds ?: book.currentTime,
+                    progress = existing?.progress ?: book.progress,
+                    isFinished = existing?.isFinished?.let { it == 1 } ?: book.isFinished,
                 ).toEntity()
             }
         )

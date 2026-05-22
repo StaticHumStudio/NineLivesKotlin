@@ -15,20 +15,18 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * Schema JSON files are exported to app/schemas/ for validation.
  */
 
-/**
- * Migration stub for version 1 → 2.
- * Uncomment and implement when the first schema change is needed.
- */
-// val MIGRATION_1_2 = object : Migration(1, 2) {
-//     override fun migrate(db: SupportSQLiteDatabase) {
-//         // Example: db.execSQL("ALTER TABLE AudioBooks ADD COLUMN NewColumn TEXT DEFAULT NULL")
-//     }
-// }
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE AudioBooks ADD COLUMN IsLocal INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE Libraries ADD COLUMN IsLocal INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE Libraries ADD COLUMN FolderUri TEXT")
+    }
+}
 
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
  */
 val ALL_MIGRATIONS: Array<Migration> = arrayOf(
-    // MIGRATION_1_2,
+    MIGRATION_1_2,
 )

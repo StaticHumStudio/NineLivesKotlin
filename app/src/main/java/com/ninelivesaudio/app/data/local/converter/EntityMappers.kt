@@ -21,6 +21,7 @@ private inline fun <reified T> decodeJsonList(jsonString: String?): List<T> =
 fun AudioBookEntity.toDomain(): AudioBook = AudioBook(
     id = id,
     libraryId = libraryId,
+    isLocal = isLocal == 1,
     title = title,
     author = author ?: "",
     narrator = narrator,
@@ -44,6 +45,7 @@ fun AudioBookEntity.toDomain(): AudioBook = AudioBook(
 fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
     id = id,
     libraryId = libraryId,
+    isLocal = if (isLocal) 1 else 0,
     title = title,
     author = author,
     narrator = narrator,
@@ -69,6 +71,8 @@ fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
 fun LibraryEntity.toDomain(): Library = Library(
     id = id,
     name = name,
+    isLocal = isLocal == 1,
+    folderUri = folderUri,
     folders = decodeJsonList<FolderJson>(foldersJson).map { it.toDomain() },
     displayOrder = displayOrder,
     icon = icon,
@@ -78,6 +82,8 @@ fun LibraryEntity.toDomain(): Library = Library(
 fun Library.toEntity(): LibraryEntity = LibraryEntity(
     id = id,
     name = name,
+    isLocal = if (isLocal) 1 else 0,
+    folderUri = folderUri,
     displayOrder = displayOrder,
     icon = icon,
     mediaType = mediaType,
@@ -188,4 +194,3 @@ internal fun Folder.toJson(): FolderJson = FolderJson(
     FullPath = fullPath,
     LibraryId = libraryId,
 )
-

@@ -13,6 +13,12 @@ data class LibraryEntity(
     @ColumnInfo(name = "Name")
     val name: String,
 
+    @ColumnInfo(name = "IsLocal", defaultValue = "0")
+    val isLocal: Int = 0,
+
+    @ColumnInfo(name = "FolderUri")
+    val folderUri: String? = null,
+
     @ColumnInfo(name = "DisplayOrder", defaultValue = "0")
     val displayOrder: Int = 0,
 

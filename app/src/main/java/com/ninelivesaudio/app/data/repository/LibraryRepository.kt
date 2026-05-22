@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.data.repository
 
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
+import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.Library
@@ -14,6 +15,7 @@ import javax.inject.Singleton
 @Singleton
 class LibraryRepository @Inject constructor(
     private val libraryDao: LibraryDao,
+    private val audioBookDao: AudioBookDao,
     private val apiService: ApiService,
 ) {
     /** Observe all libraries from local DB (reactive). */
@@ -86,6 +88,7 @@ class LibraryRepository @Inject constructor(
 
     /** Delete a Local Library row by ID without affecting ABS libraries. */
     suspend fun removeLocalLibrary(id: String) {
+        audioBookDao.deleteLocalByLibrary(id)
         libraryDao.deleteLocalById(id)
     }
 

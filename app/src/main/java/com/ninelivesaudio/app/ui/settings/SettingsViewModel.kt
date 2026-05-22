@@ -1,7 +1,10 @@
 package com.ninelivesaudio.app.ui.settings
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.BuildConfig
@@ -21,6 +24,7 @@ import com.ninelivesaudio.app.service.local.LocalLibraryScanner
 import com.ninelivesaudio.app.service.local.toAudioBook
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -30,6 +34,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val settingsManager: SettingsManager,
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
@@ -374,6 +379,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 audioBookRepository.removeMissingLocalBooks(library.id, emptyList())
                 libraryRepository.removeLocalLibrary(library.id)
+                releaseSafPermission(library.folderUri)
 
                 // Clear selection if this was the selected local library
                 if (_uiState.value.selectedLocalLibrary?.id == library.id) {
@@ -389,6 +395,18 @@ class SettingsViewModel @Inject constructor(
                     it.copy(errorMessage = "Failed to remove library: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun releaseSafPermission(folderUri: String?) {
+        if (folderUri.isNullOrBlank()) return
+        try {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            context.contentResolver.releasePersistableUriPermission(Uri.parse(folderUri), flags)
+        } catch (e: SecurityException) {
+            // Permission was already released or never held — safe to ignore.
+            Log.d("SettingsViewModel", "releasePersistableUriPermission: $e")
         }
     }
 
@@ -707,11 +725,12 @@ class SettingsViewModel @Inject constructor(
             _uiState.update { it.copy(errorMessage = null, successMessage = null) }
 
             try {
-                // Only clear library/audiobook cache — NOT progress, downloads, or pending syncs.
-                // clearAllTables() would wipe playback positions, download records, and the
-                // offline queue, causing silent data loss.
-                audioBookDao.deleteAll()
-                libraryDao.deleteAll()
+                // Only clear ABS-source library/audiobook cache — NOT progress, downloads,
+                // pending syncs, or Local Library configuration. clearAllTables() would wipe
+                // playback positions, download records, the offline queue, and any folders
+                // the user added in Local mode, causing silent data loss.
+                audioBookDao.deleteAudiobookshelf()
+                libraryDao.deleteAudiobookshelf()
                 _uiState.update { it.copy(successMessage = "Cache cleared successfully") }
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = "Failed to clear cache: ${e.message}") }

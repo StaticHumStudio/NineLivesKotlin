@@ -43,6 +43,31 @@ class LocalLibraryScanner @Inject constructor(
             "cover.jpg", "cover.jpeg", "cover.png",
             "folder.jpg", "folder.jpeg", "folder.png",
         )
+
+        // Natural-order comparator: splits on digit runs so "2.mp3" < "10.mp3".
+        private val DIGIT_RUN = Regex("\\d+|\\D+")
+        internal val NATURAL_FILENAME_COMPARATOR: Comparator<String> = Comparator { a, b ->
+            val ap = DIGIT_RUN.findAll(a.lowercase()).map { it.value }.toList()
+            val bp = DIGIT_RUN.findAll(b.lowercase()).map { it.value }.toList()
+            val n = minOf(ap.size, bp.size)
+            var i = 0
+            var result = 0
+            while (i < n) {
+                val x = ap[i]
+                val y = bp[i]
+                val cmp = if (x.first().isDigit() && y.first().isDigit()) {
+                    // Compare as numbers; fall back to string compare on overflow.
+                    val xn = x.toLongOrNull()
+                    val yn = y.toLongOrNull()
+                    if (xn != null && yn != null) xn.compareTo(yn) else x.compareTo(y)
+                } else {
+                    x.compareTo(y)
+                }
+                if (cmp != 0) { result = cmp; break }
+                i++
+            }
+            if (result != 0) result else ap.size.compareTo(bp.size)
+        }
     }
 
     /**
@@ -141,10 +166,11 @@ class LocalLibraryScanner @Inject constructor(
             TrackWithMeta(file, metadataExtractor.extract(file.uri))
         }
 
-        // Sort: by track number if available, otherwise by natural filename
+        // Sort: by track number if available, otherwise by natural filename order
+        // (so "2.mp3" sorts before "10.mp3" instead of after).
         val sorted = tracksWithMeta.sortedWith(
             compareBy<TrackWithMeta> { it.meta?.trackNumber ?: Int.MAX_VALUE }
-                .thenBy { it.file.name?.lowercase() ?: "" }
+                .then(compareBy(NATURAL_FILENAME_COMPARATOR) { it.file.name ?: "" })
         )
 
         // Build track list

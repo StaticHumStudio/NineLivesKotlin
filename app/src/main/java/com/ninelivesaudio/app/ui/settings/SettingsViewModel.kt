@@ -310,7 +310,11 @@ class SettingsViewModel @Inject constructor(
                 settingsManager.updateSettings {
                     it.copy(
                         selectedLocalLibraryId = library.id,
-                        selectedLibraryId = library.id,
+                        selectedLibraryId = if (it.appMode == AppMode.LOCAL) {
+                            library.id
+                        } else {
+                            it.selectedLibraryId
+                        },
                     )
                 }
 

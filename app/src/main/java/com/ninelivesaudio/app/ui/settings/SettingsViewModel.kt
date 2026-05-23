@@ -180,7 +180,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             libraryRepository.observeLocalLibraries().collect { locals ->
                 val savedLocalId = settingsManager.currentSettings.selectedLocalLibraryId
-                val selected = locals.firstOrNull { it.id == savedLocalId } ?: locals.firstOrNull()
+                val selected = resolveSelectedLocalLibrary(locals, savedLocalId)
                 _uiState.update {
                     it.copy(
                         localLibraries = locals,
@@ -214,9 +214,10 @@ class SettingsViewModel @Inject constructor(
                 } == true,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
-                selectedLocalLibrary = state.localLibraries
-                    .firstOrNull { it.id == settings.selectedLocalLibraryId }
-                    ?: state.localLibraries.firstOrNull(),
+                selectedLocalLibrary = resolveSelectedLocalLibrary(
+                    state.localLibraries,
+                    settings.selectedLocalLibraryId,
+                ),
                 autoRewindEnabled = settings.autoRewindEnabled,
                 autoRewindMode = settings.autoRewindMode,
                 autoRewindSeconds = settings.autoRewindSeconds,
@@ -297,12 +298,7 @@ class SettingsViewModel @Inject constructor(
                 // Import discovered books, but only delete missing books after a clean scan.
                 val books = scanResult.books.map { it.toAudioBook(library.id) }
                 audioBookRepository.importLocalBooks(library.id, books)
-                if (scanResult.errorMessages.isEmpty()) {
-                    audioBookRepository.removeMissingLocalBooks(
-                        library.id,
-                        scanResult.books.map { it.id },
-                    )
-                }
+                removeMissingBooksAfterSuccessfulScan(library.id, scanResult)
 
                 // Select this library
                 settingsManager.updateSettings {
@@ -346,12 +342,7 @@ class SettingsViewModel @Inject constructor(
                 // Import discovered books, but only delete missing books after a clean scan.
                 val books = scanResult.books.map { it.toAudioBook(library.id) }
                 audioBookRepository.importLocalBooks(library.id, books)
-                if (scanResult.errorMessages.isEmpty()) {
-                    audioBookRepository.removeMissingLocalBooks(
-                        library.id,
-                        scanResult.books.map { it.id },
-                    )
-                }
+                removeMissingBooksAfterSuccessfulScan(library.id, scanResult)
 
                 val msg = "${scanResult.books.size} books found" +
                     if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
@@ -410,10 +401,38 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun onLocalFolderPermissionFailed(message: String) {
+        _uiState.update {
+            it.copy(
+                isScanning = false,
+                errorMessage = "Folder permission failed: $message",
+            )
+        }
+    }
+
     fun onLocalLibrarySelected(library: Library) {
         _uiState.update { it.copy(selectedLocalLibrary = library) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(selectedLocalLibraryId = library.id) }
+        }
+    }
+
+    private fun resolveSelectedLocalLibrary(
+        localLibraries: List<Library>,
+        savedLocalId: String?,
+    ): Library? {
+        return localLibraries.firstOrNull { it.id == savedLocalId } ?: localLibraries.firstOrNull()
+    }
+
+    private suspend fun removeMissingBooksAfterSuccessfulScan(
+        libraryId: String,
+        scanResult: LocalLibraryScanner.ScanResult,
+    ) {
+        if (scanResult.errorMessages.isEmpty()) {
+            audioBookRepository.removeMissingLocalBooks(
+                libraryId,
+                scanResult.books.map { it.id },
+            )
         }
     }
 

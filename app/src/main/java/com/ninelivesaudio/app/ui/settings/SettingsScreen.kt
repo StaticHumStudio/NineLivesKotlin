@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.settings
 
+import android.app.Activity
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -55,14 +56,25 @@ fun SettingsScreen(
 
     // SAF folder picker launcher
     val folderPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            // Take persistable permission so the URI survives reboots
-            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            context.contentResolver.takePersistableUriPermission(uri, flags)
-            viewModel.onLocalFolderPicked(uri.toString())
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = result.data?.data
+            if (uri != null) {
+                val persistableFlags = (result.data?.flags ?: 0) and
+                    (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+
+                if (persistableFlags == 0) {
+                    viewModel.onLocalFolderPermissionFailed("The selected folder did not grant persistent access.")
+                } else {
+                    try {
+                        context.contentResolver.takePersistableUriPermission(uri, persistableFlags)
+                        viewModel.onLocalFolderPicked(uri.toString())
+                    } catch (e: SecurityException) {
+                        viewModel.onLocalFolderPermissionFailed(e.message ?: "Folder permission could not be saved.")
+                    }
+                }
+            }
         }
     }
 
@@ -126,7 +138,15 @@ fun SettingsScreen(
                         selectedLocalLibrary = uiState.selectedLocalLibrary,
                         isScanning = uiState.isScanning,
                         lastScanMessage = uiState.lastScanMessage,
-                        onAddFolder = { folderPickerLauncher.launch(null) },
+                        onAddFolder = {
+                            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                                addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                                addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+                            }
+                            folderPickerLauncher.launch(intent)
+                        },
                         onRescan = viewModel::rescanLocalLibrary,
                         onRemove = viewModel::removeLocalLibrary,
                         onSelect = viewModel::onLocalLibrarySelected,
@@ -433,8 +453,8 @@ fun SettingsScreen(
                         }
                     }
                 }
+                }
             } // end else (ABS mode)
-            }
 
             // ═════════════════════════════════════════════════════════════
             //  Group 2: Experience

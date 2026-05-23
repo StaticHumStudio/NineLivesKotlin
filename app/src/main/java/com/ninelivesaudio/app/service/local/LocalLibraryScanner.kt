@@ -218,18 +218,18 @@ class LocalLibraryScanner @Inject constructor(
      */
     private fun scanSingleFileBook(file: DocumentFile, rootUri: String): ScannedLocalBook? {
         val fileUri = file.uri
-        val meta = metadataExtractor.extract(fileUri) ?: return null
+        val meta = metadataExtractor.extract(fileUri)
 
         val filename = file.name ?: return null
         val bookId = "local_book_${sha256("$rootUri/$filename")}"
 
         // Title: embedded title or album, then filename without extension
-        val title = meta.title?.takeIf { it.isNotBlank() }
-            ?: meta.album?.takeIf { it.isNotBlank() }
+        val title = meta?.title?.takeIf { it.isNotBlank() }
+            ?: meta?.album?.takeIf { it.isNotBlank() }
             ?: filename.substringBeforeLast(".")
 
-        val author = meta.albumArtist?.takeIf { it.isNotBlank() }
-            ?: meta.artist?.takeIf { it.isNotBlank() }
+        val author = meta?.albumArtist?.takeIf { it.isNotBlank() }
+            ?: meta?.artist?.takeIf { it.isNotBlank() }
             ?: "Unknown Author"
 
         val coverUri = metadataExtractor.extractEmbeddedCover(fileUri, bookId)
@@ -239,8 +239,8 @@ class LocalLibraryScanner @Inject constructor(
             uri = fileUri.toString(),
             filename = filename,
             index = 0,
-            duration = meta.duration,
-            mimeType = meta.mimeType ?: file.type,
+            duration = meta?.duration ?: Duration.ZERO,
+            mimeType = meta?.mimeType ?: file.type,
             size = file.length(),
         )
 
@@ -249,7 +249,7 @@ class LocalLibraryScanner @Inject constructor(
             title = title,
             author = author,
             coverUri = coverUri,
-            duration = meta.duration,
+            duration = meta?.duration ?: Duration.ZERO,
             tracks = listOf(track),
         )
     }

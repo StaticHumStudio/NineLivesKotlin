@@ -485,18 +485,18 @@ class PlaybackManager @Inject constructor(
         }
 
         val localPath = book.localPath ?: return
-        val localFile = File(localPath)
+        val localFile = fileFromLocalPath(localPath)
 
         val mediaItems = mutableListOf<MediaItem>()
         val durations = mutableListOf<Double>()
         var cumulative = 0.0
 
         // Determine the download directory
-        val localDir = if (localFile.isDirectory) localFile else localFile.parentFile
+        val localDir = localFile?.let { if (it.isDirectory) it else it.parentFile }
 
         if (book.audioFiles.isNotEmpty()) {
             // We have audio file metadata — use it for ordered multi-track loading
-            if (book.audioFiles.size == 1 && localFile.isFile) {
+            if (book.audioFiles.size == 1 && localFile?.isFile == true) {
                 // Single file pointed to directly
                 mediaItems.add(
                     MediaItem.Builder()
@@ -512,7 +512,7 @@ class PlaybackManager @Inject constructor(
 
                     mediaItems.add(
                         MediaItem.Builder()
-                            .setUri(Uri.fromFile(File(path)))
+                            .setUri(uriFromLocalPath(path))
                             .setMediaMetadata(metadata)
                             .build()
                     )
@@ -537,7 +537,7 @@ class PlaybackManager @Inject constructor(
                 )
                 // No duration metadata available — ExoPlayer will determine it
             }
-        } else if (localFile.isFile) {
+        } else if (localFile?.isFile == true) {
             // localPath is a single file
             mediaItems.add(
                 MediaItem.Builder()
@@ -549,6 +549,24 @@ class PlaybackManager @Inject constructor(
 
         trackDurations = durations
         player.setMediaItems(mediaItems)
+    }
+
+    private fun uriFromLocalPath(path: String): Uri {
+        val parsed = Uri.parse(path)
+        return if (parsed.scheme.isNullOrBlank()) {
+            Uri.fromFile(File(path))
+        } else {
+            parsed
+        }
+    }
+
+    private fun fileFromLocalPath(path: String): File? {
+        val parsed = Uri.parse(path)
+        return when (parsed.scheme?.lowercase()) {
+            null, "" -> File(path)
+            "file" -> parsed.path?.let(::File)
+            else -> null
+        }
     }
 
     @OptIn(UnstableApi::class)

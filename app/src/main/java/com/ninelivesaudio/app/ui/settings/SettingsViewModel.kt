@@ -262,7 +262,13 @@ class SettingsViewModel @Inject constructor(
         playbackManager.stop()
         _uiState.update { it.copy(appMode = mode) }
         viewModelScope.launch {
-            settingsManager.updateSettings { it.copy(appMode = mode) }
+            val selectedLibraryId = selectedLibraryIdForMode(mode)
+            settingsManager.updateSettings {
+                it.copy(
+                    appMode = mode,
+                    selectedLibraryId = selectedLibraryId,
+                )
+            }
         }
     }
 
@@ -302,7 +308,10 @@ class SettingsViewModel @Inject constructor(
 
                 // Select this library
                 settingsManager.updateSettings {
-                    it.copy(selectedLocalLibraryId = library.id)
+                    it.copy(
+                        selectedLocalLibraryId = library.id,
+                        selectedLibraryId = library.id,
+                    )
                 }
 
                 val msg = "${scanResult.books.size} books imported" +
@@ -374,7 +383,23 @@ class SettingsViewModel @Inject constructor(
 
                 // Clear selection if this was the selected local library
                 if (_uiState.value.selectedLocalLibrary?.id == library.id) {
-                    settingsManager.updateSettings { it.copy(selectedLocalLibraryId = null) }
+                    val fallbackLocal = _uiState.value.localLibraries.firstOrNull { local ->
+                        local.id != library.id
+                    }
+                    val fallbackSelectedLibraryId = selectedLibraryIdForMode(
+                        settingsManager.currentSettings.appMode,
+                        fallbackLocal,
+                    )
+                    settingsManager.updateSettings {
+                        it.copy(
+                            selectedLocalLibraryId = fallbackLocal?.id,
+                            selectedLibraryId = if (it.selectedLibraryId == library.id) {
+                                fallbackSelectedLibraryId
+                            } else {
+                                it.selectedLibraryId
+                            },
+                        )
+                    }
                     _uiState.update { it.copy(selectedLocalLibrary = null) }
                 }
 
@@ -391,10 +416,16 @@ class SettingsViewModel @Inject constructor(
 
     private fun releaseSafPermission(folderUri: String?) {
         if (folderUri.isNullOrBlank()) return
+        val uri = Uri.parse(folderUri)
+        val persisted = context.contentResolver.persistedUriPermissions
+            .firstOrNull { it.uri == uri }
+            ?: return
+        val flags = (if (persisted.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
+            (if (persisted.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+        if (flags == 0) return
+
         try {
-            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            context.contentResolver.releasePersistableUriPermission(Uri.parse(folderUri), flags)
+            context.contentResolver.releasePersistableUriPermission(uri, flags)
         } catch (e: SecurityException) {
             // Permission was already released or never held — safe to ignore.
             Log.d("SettingsViewModel", "releasePersistableUriPermission: $e")
@@ -413,7 +444,26 @@ class SettingsViewModel @Inject constructor(
     fun onLocalLibrarySelected(library: Library) {
         _uiState.update { it.copy(selectedLocalLibrary = library) }
         viewModelScope.launch {
-            settingsManager.updateSettings { it.copy(selectedLocalLibraryId = library.id) }
+            settingsManager.updateSettings {
+                it.copy(
+                    selectedLocalLibraryId = library.id,
+                    selectedLibraryId = library.id,
+                )
+            }
+        }
+    }
+
+    private suspend fun selectedLibraryIdForMode(
+        mode: AppMode,
+        fallbackLocal: Library? = null,
+    ): String? {
+        return when (mode) {
+            AppMode.LOCAL -> fallbackLocal?.id
+                ?: _uiState.value.selectedLocalLibrary?.id
+                ?: settingsManager.currentSettings.selectedLocalLibraryId
+
+            AppMode.AUDIOBOOKSHELF -> _uiState.value.selectedLibrary?.id
+                ?: libraryRepository.getAudiobookshelf().firstOrNull()?.id
         }
     }
 

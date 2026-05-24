@@ -88,17 +88,22 @@ class SyncManager @Inject constructor(
             }
         }
 
-        // Also flush offline queue when connectivity returns
+        // Flush offline queue on the rising edge of (connected AND not LOCAL).
+        // Triggers on both connectivity returns and mode switches back to AUDIOBOOKSHELF
+        // while already connected, so progress queued during LOCAL mode doesn't sit indefinitely.
         connectivityJob?.cancel()
         connectivityJob = scope.launch {
-            connectivityMonitor.connectionStatus.collect { status ->
-                if (
-                    status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
-                    settingsManager.currentSettings.appMode != AppMode.LOCAL
-                ) {
-                    flushOfflineQueue()
-                }
+            combine(
+                connectivityMonitor.connectionStatus,
+                settingsManager.settings,
+            ) { status, settings ->
+                status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
+                        settings.appMode != AppMode.LOCAL
             }
+                .distinctUntilChanged()
+                .collect { canFlush ->
+                    if (canFlush) flushOfflineQueue()
+                }
         }
     }
 

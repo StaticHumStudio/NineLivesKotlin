@@ -101,30 +101,31 @@ class ProgressRepository @Inject constructor(
         val entries = pendingProgressDao.getAll()
         if (entries.isEmpty()) return true
 
-        // Capture the IDs we fetched — only these will be deleted after sync.
-        // Any entries inserted by the playback service during the flush window
-        // will have newer IDs and won't be touched.
-        val fetchedIds = entries.map { it.id }
+        // Group by item, push only the latest entry per item. On success, delete
+        // ALL fetched rows for that item so superseded older rows don't linger.
+        val entriesByItem = entries.groupBy { it.itemId }
+        val latestByItem = entriesByItem.mapValues { (_, rows) -> rows.maxByOrNull { it.timestamp } }
 
-        // Group by item and take the latest entry for each
-        val latest = entries.groupBy { it.itemId }
-            .mapValues { (_, entries) -> entries.maxByOrNull { it.timestamp } }
-
+        val deletableRowIds = mutableListOf<Long>()
         var allSuccess = true
-        for ((itemId, entry) in latest) {
-            if (entry == null) continue
+        for ((itemId, latest) in latestByItem) {
+            if (latest == null) continue
             val success = apiService.updateProgress(
                 itemId,
-                entry.currentTime,
-                entry.isFinished == 1,
+                latest.currentTime,
+                latest.isFinished == 1,
             )
-            if (!success) allSuccess = false
+            if (success) {
+                entriesByItem[itemId]?.forEach { row -> deletableRowIds.add(row.id) }
+            } else {
+                allSuccess = false
+            }
         }
 
-        if (allSuccess) {
-            // Delete only the entries we fetched and synced — not newer ones
-            // that may have been inserted during the network round-trips.
-            pendingProgressDao.deleteByIds(fetchedIds)
+        if (deletableRowIds.isNotEmpty()) {
+            // Delete only successful items. Failed items stay queued for retry,
+            // and rows inserted during the network round-trips are untouched.
+            pendingProgressDao.deleteByIds(deletableRowIds)
         }
 
         return allSuccess

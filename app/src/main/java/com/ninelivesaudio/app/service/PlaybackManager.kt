@@ -282,6 +282,17 @@ class PlaybackManager @Inject constructor(
     // Cap to ignore long gaps (background, doze) between heartbeats. 60s ≫ the 12s normal interval.
     private val localSessionMaxTickSec: Double = 60.0
 
+    /**
+     * Elapsed seconds since the last heartbeat tick, capped. Used at session-close
+     * moments (book switch, end-of-book) to add the tail interval that the 12s
+     * heartbeat hasn't folded into [localSessionAccumSec] yet.
+     */
+    private fun finalLocalSessionTickSec(): Double {
+        val now = System.currentTimeMillis()
+        val raw = (now - lastSyncTimestamp).coerceAtLeast(0L) / 1000.0
+        return raw.coerceAtMost(localSessionMaxTickSec)
+    }
+
     // Track durations for position calculation
     private var trackDurations: List<Double> = emptyList() // cumulative seconds
 
@@ -315,21 +326,27 @@ class PlaybackManager @Inject constructor(
             exoPlayer!!.clearMediaItems()
 
             // Persist a final state for any prior local listening session, then drop the id.
+            // Add the tail elapsed-since-last-heartbeat to the accumulator so book-switches
+            // don't undercount the partial interval between the last heartbeat and now.
             val priorLocalSessionId = currentLocalSessionId
             if (priorLocalSessionId != null) {
                 val priorPosSec = _position.value.toDouble(kotlin.time.DurationUnit.SECONDS)
-                val priorAccum = localSessionAccumSec
+                val priorAccum = localSessionAccumSec + finalLocalSessionTickSec()
+                val priorUpdatedAt = System.currentTimeMillis()
                 scope.launch(Dispatchers.IO) {
                     try {
                         sessionRepository.updateLocalSession(
                             id = priorLocalSessionId,
                             timeListeningSec = priorAccum,
                             currentTimeSec = priorPosSec,
+                            updatedAt = priorUpdatedAt,
                         )
                     } catch (_: Exception) {}
                 }
                 currentLocalSessionId = null
                 localSessionAccumSec = 0.0
+                // Reset the heartbeat baseline so the next session doesn't reuse this delta.
+                lastSyncTimestamp = priorUpdatedAt
             }
 
             // Reset chapter state on the wrapper
@@ -1043,7 +1060,11 @@ class PlaybackManager @Inject constructor(
 
                     val book = _currentBook.value
                     val finalLocalSessionId = currentLocalSessionId
-                    val finalLocalAccum = localSessionAccumSec
+                    // Include the partial interval since the last heartbeat so end-of-book
+                    // doesn't drop up to one tick worth of listen time.
+                    val finalLocalAccum = localSessionAccumSec + finalLocalSessionTickSec()
+                    val finalLocalUpdatedAt = System.currentTimeMillis()
+                    lastSyncTimestamp = finalLocalUpdatedAt
                     if (book != null) {
                         val durSecs = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS)
                         scope.launch(Dispatchers.IO) {
@@ -1062,6 +1083,7 @@ class PlaybackManager @Inject constructor(
                                         id = finalLocalSessionId,
                                         timeListeningSec = finalLocalAccum,
                                         currentTimeSec = durSecs,
+                                        updatedAt = finalLocalUpdatedAt,
                                     )
                                 } catch (_: Exception) {}
                             }

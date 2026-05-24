@@ -315,26 +315,31 @@ class PlaybackManager @Inject constructor(
             releaseEqualizer()
             releaseLoudnessEnhancer()
 
-            // Start server session (must complete before building stream URLs)
+            val isScannedLocalBook = book.isLocal
+
+            // Start server session for Audiobookshelf books. Scanned local-library
+            // books must stay fully local and never ask the server for a session.
             sessionMutex.withLock { currentSession = null }
-            withContext(Dispatchers.IO) {
-                try {
-                    val session = apiService.startPlaybackSession(book.id)
-                    if (session != null) {
-                        sessionMutex.withLock { currentSession = session }
-                        if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
-                            cachedChapters = session.chapters.sortedBy { it.start }
-                            _chapters.value = cachedChapters
+            if (!isScannedLocalBook) {
+                withContext(Dispatchers.IO) {
+                    try {
+                        val session = apiService.startPlaybackSession(book.id)
+                        if (session != null) {
+                            sessionMutex.withLock { currentSession = session }
+                            if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
+                                cachedChapters = session.chapters.sortedBy { it.start }
+                                _chapters.value = cachedChapters
+                            }
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "loadAudioBook: session error: ${e.message}", e)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "loadAudioBook: session error: ${e.message}", e)
                 }
             }
 
             // If no session audio tracks AND no local audio files, fetch full book details
             val sessionHasTracks = sessionMutex.withLock { currentSession?.audioTracks?.isNotEmpty() == true }
-            if (!sessionHasTracks && effectiveBook.audioFiles.isEmpty() && !(effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty())) {
+            if (!isScannedLocalBook && !sessionHasTracks && effectiveBook.audioFiles.isEmpty() && !(effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty())) {
                 withContext(Dispatchers.IO) {
                     try {
                         val fullBook = apiService.getAudioBook(book.id)
@@ -1135,6 +1140,8 @@ class PlaybackManager @Inject constructor(
                 isFinished = 0,
             )
         } catch (_: Exception) {}
+
+        if (book.isLocal) return
 
         // Sync to server session
         val session = sessionMutex.withLock { currentSession }

@@ -288,6 +288,9 @@ class SyncManager @Inject constructor(
             // Non-fatal: progress already saved to PlaybackProgress table
         }
 
+        // LOCAL mode: progress is saved locally above; never push to the Audiobookshelf server.
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
+
         // Throttle network pushes
         val now = System.currentTimeMillis()
         val timeSinceLastSync = now - lastSyncTimestamp
@@ -330,6 +333,15 @@ class SyncManager @Inject constructor(
             position = safeCurrentTime.seconds,
             isFinished = computedFinished,
         )
+
+        // LOCAL mode: local save above is the source of truth. Skip server push and
+        // do NOT enqueue. Local item IDs would 404 against the server and poison the queue.
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
+            if (activeItemId == itemId) {
+                activeItemId = null
+            }
+            return
+        }
 
         if (connectivityMonitor.isOnline.value) {
             try {

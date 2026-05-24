@@ -334,6 +334,8 @@ class NightwatchDossierViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
+                        isConnected = true,
+                        error = null,
                         totalListeningTime = totalTime,
                         totalSessions = validSessions.size,
                         filteredNoiseSessions = noiseSessions,

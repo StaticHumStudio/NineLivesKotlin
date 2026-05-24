@@ -113,6 +113,9 @@ val ArchiveWarning = Color(0xFFFBBF24)
 val ArchiveError = Color(0xFFF87171)
 val ArchiveInfo = Color(0xFF60A5FA)
 
+/** Light violet for the LOCAL source-mode pill — distinct from CONNECTED green and SERVER_UNREACHABLE amber. */
+val ArchiveLocalAccent = Color(0xFFA78BFA)
+
 // ═══════════════════════════════════════════════════════════════
 //  Stone Texture Tones (for surface composables)
 // ═══════════════════════════════════════════════════════════════

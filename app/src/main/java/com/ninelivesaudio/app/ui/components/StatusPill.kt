@@ -26,18 +26,23 @@ import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
  * Connection status indicator pill, matching the Windows app's status dot + label.
- * Shows: Connected (green), Syncing (gold), Server Unreachable (warning), Offline (gray).
+ * Shows: Local (violet) when in LOCAL source mode, regardless of network state.
+ * Otherwise: Connected (green), Syncing (gold), Server Unreachable (warning), Offline (gray).
  */
 @Composable
 fun StatusPill(
     connectionStatus: ConnectionStatus,
     modifier: Modifier = Modifier,
+    isLocalMode: Boolean = false,
 ) {
-    val (label, dotColor) = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> "Connected" to ArchiveSuccess
-        ConnectionStatus.SYNCING -> "Syncing" to GoldFilament
-        ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to ArchiveWarning
-        ConnectionStatus.OFFLINE -> "Offline" to ArchiveTextMuted
+    val (label, dotColor) = when {
+        isLocalMode -> "Local" to ArchiveLocalAccent
+        else -> when (connectionStatus) {
+            ConnectionStatus.CONNECTED -> "Connected" to ArchiveSuccess
+            ConnectionStatus.SYNCING -> "Syncing" to GoldFilament
+            ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to ArchiveWarning
+            ConnectionStatus.OFFLINE -> "Offline" to ArchiveTextMuted
+        }
     }
 
     val animatedDotColor by animateColorAsState(

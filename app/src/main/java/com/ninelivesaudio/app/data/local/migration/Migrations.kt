@@ -23,10 +23,33 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `LocalListeningSessions` (
+                `Id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `AudioBookId` TEXT NOT NULL,
+                `LibraryId` TEXT NOT NULL,
+                `StartedAt` INTEGER NOT NULL,
+                `UpdatedAt` INTEGER NOT NULL,
+                `TimeListening` REAL NOT NULL DEFAULT 0,
+                `CurrentTime` REAL NOT NULL DEFAULT 0,
+                `DisplayTitle` TEXT
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `idx_local_session_book` ON `LocalListeningSessions` (`AudioBookId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `idx_local_session_library` ON `LocalListeningSessions` (`LibraryId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `idx_local_session_started` ON `LocalListeningSessions` (`StartedAt`)")
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
  */
 val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_1_2,
+    MIGRATION_2_3,
 )

@@ -43,4 +43,8 @@ object AppModule {
 
     @Provides
     fun providePendingProgressDao(db: AppDatabase): PendingProgressDao = db.pendingProgressDao()
+
+    @Provides
+    fun provideLocalListeningSessionDao(db: AppDatabase): LocalListeningSessionDao =
+        db.localListeningSessionDao()
 }

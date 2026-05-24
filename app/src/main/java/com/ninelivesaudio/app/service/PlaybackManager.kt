@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
@@ -76,6 +77,7 @@ class PlaybackManager @Inject constructor(
     private val progressRepository: ProgressRepository,
     private val audioBookDao: AudioBookDao,
     private val audioBookRepository: AudioBookRepository,
+    private val sessionRepository: ListeningSessionRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
     private val connectivityMonitor: ConnectivityMonitor,
     private val okHttpClient: OkHttpClient,
@@ -273,6 +275,13 @@ class PlaybackManager @Inject constructor(
     private var accumulatedListenTime: Double = 0.0
     private var lastSyncTimestamp: Long = 0L
 
+    // Local listening session (LOCAL mode) — mirrors the server-session bookkeeping
+    // above so the Nightwatch Dossier can read local sessions through the same model.
+    private var currentLocalSessionId: Long? = null
+    private var localSessionAccumSec: Double = 0.0
+    // Cap to ignore long gaps (background, doze) between heartbeats. 60s ≫ the 12s normal interval.
+    private val localSessionMaxTickSec: Double = 60.0
+
     // Track durations for position calculation
     private var trackDurations: List<Double> = emptyList() // cumulative seconds
 
@@ -304,6 +313,24 @@ class PlaybackManager @Inject constructor(
             stopSessionSync()
             exoPlayer!!.stop()
             exoPlayer!!.clearMediaItems()
+
+            // Persist a final state for any prior local listening session, then drop the id.
+            val priorLocalSessionId = currentLocalSessionId
+            if (priorLocalSessionId != null) {
+                val priorPosSec = _position.value.toDouble(kotlin.time.DurationUnit.SECONDS)
+                val priorAccum = localSessionAccumSec
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        sessionRepository.updateLocalSession(
+                            id = priorLocalSessionId,
+                            timeListeningSec = priorAccum,
+                            currentTimeSec = priorPosSec,
+                        )
+                    } catch (_: Exception) {}
+                }
+                currentLocalSessionId = null
+                localSessionAccumSec = 0.0
+            }
 
             // Reset chapter state on the wrapper
             chapterPlayer?.currentChapter = null
@@ -469,6 +496,28 @@ class PlaybackManager @Inject constructor(
 
             // Notify SyncManager of active playback item (prevents sync overwriting position)
             syncManager.setActivePlaybackItem(effectiveBook.id)
+
+            // Open a local listening session for scanned local-library books so the
+            // Nightwatch Dossier has rows to aggregate. Heartbeats in syncProgressNow
+            // accumulate timeListening; loadAudioBook itself just creates the row.
+            if (isScannedLocalBook) {
+                val startSec = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
+                val newSessionId = withContext(Dispatchers.IO) {
+                    try {
+                        sessionRepository.startLocalSession(
+                            audioBookId = effectiveBook.id,
+                            libraryId = effectiveBook.libraryId.orEmpty(),
+                            displayTitle = effectiveBook.title,
+                            startPositionSec = startSec,
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "loadAudioBook: failed to open local session: ${e.message}")
+                        null
+                    }
+                }
+                currentLocalSessionId = newSessionId
+                localSessionAccumSec = 0.0
+            }
 
             Log.d(TAG, "loadAudioBook: OK local=$isLocal pos=$startPosition dur=${_duration.value} tracks=${player.mediaItemCount}")
             return true
@@ -761,6 +810,12 @@ class PlaybackManager @Inject constructor(
                 closeSession()
             }
         }
+
+        // Close the open local listening session, if any. syncProgressNow above
+        // already wrote the final accumulated time; just drop the id so future
+        // playback won't append to the wrong session row.
+        currentLocalSessionId = null
+        localSessionAccumSec = 0.0
     }
 
     fun seekTo(position: Duration) {
@@ -984,6 +1039,8 @@ class PlaybackManager @Inject constructor(
                     stopPlaybackService()
 
                     val book = _currentBook.value
+                    val finalLocalSessionId = currentLocalSessionId
+                    val finalLocalAccum = localSessionAccumSec
                     if (book != null) {
                         val durSecs = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS)
                         scope.launch(Dispatchers.IO) {
@@ -995,8 +1052,21 @@ class PlaybackManager @Inject constructor(
                                 duration = durSecs,
                             )
                             closeSession()
+                            // Persist a final state for the local session, if any.
+                            if (finalLocalSessionId != null) {
+                                try {
+                                    sessionRepository.updateLocalSession(
+                                        id = finalLocalSessionId,
+                                        timeListeningSec = finalLocalAccum,
+                                        currentTimeSec = durSecs,
+                                    )
+                                } catch (_: Exception) {}
+                            }
                         }
                     }
+                    // Drop the active local session id so subsequent playback opens a fresh row.
+                    currentLocalSessionId = null
+                    localSessionAccumSec = 0.0
                     _events.tryEmit(PlaybackEvent.BookFinished)
                 }
             }
@@ -1140,6 +1210,27 @@ class PlaybackManager @Inject constructor(
                 isFinished = 0,
             )
         } catch (_: Exception) {}
+
+        // Local-mode session heartbeat: accumulate listen time on the open local session row.
+        // Same elapsed-since-last-tick math as the server path below; uses the shared
+        // lastSyncTimestamp so we never double-count when switching between server and local.
+        val localSessionId = currentLocalSessionId
+        if (book.isLocal && localSessionId != null) {
+            try {
+                val now = System.currentTimeMillis()
+                val rawElapsed = (now - lastSyncTimestamp).coerceAtLeast(0) / 1000.0
+                // Cap individual ticks to ignore background gaps / doze sleep.
+                val elapsed = rawElapsed.coerceAtMost(localSessionMaxTickSec)
+                lastSyncTimestamp = now
+                localSessionAccumSec += elapsed
+                sessionRepository.updateLocalSession(
+                    id = localSessionId,
+                    timeListeningSec = localSessionAccumSec,
+                    currentTimeSec = posSec,
+                    updatedAt = now,
+                )
+            } catch (_: Exception) {}
+        }
 
         if (book.isLocal) return
 

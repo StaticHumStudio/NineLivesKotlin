@@ -794,6 +794,9 @@ class PlaybackManager @Inject constructor(
 
         // Flush progress in the background AFTER releasing the player.
         // All values were captured above so no player access is needed.
+        // The local session id is cleared INSIDE the coroutine so the final
+        // syncProgressNow heartbeat can still read it and write the last tick;
+        // clearing before the launch races and drops the closing accumulation.
         if (book != null) {
             val isFinished = dur > Duration.ZERO && pos >= (dur - 1.seconds).coerceAtLeast(Duration.ZERO)
             scope.launch(Dispatchers.IO) {
@@ -808,14 +811,14 @@ class PlaybackManager @Inject constructor(
                     duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                 )
                 closeSession()
+                currentLocalSessionId = null
+                localSessionAccumSec = 0.0
             }
+        } else {
+            // No active book means no open session; safe to clear synchronously.
+            currentLocalSessionId = null
+            localSessionAccumSec = 0.0
         }
-
-        // Close the open local listening session, if any. syncProgressNow above
-        // already wrote the final accumulated time; just drop the id so future
-        // playback won't append to the wrong session row.
-        currentLocalSessionId = null
-        localSessionAccumSec = 0.0
     }
 
     fun seekTo(position: Duration) {

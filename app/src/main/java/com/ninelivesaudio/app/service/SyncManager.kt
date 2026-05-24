@@ -8,6 +8,7 @@ import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -87,14 +88,22 @@ class SyncManager @Inject constructor(
             }
         }
 
-        // Also flush offline queue when connectivity returns
+        // Flush offline queue on the rising edge of (connected AND not LOCAL).
+        // Triggers on both connectivity returns and mode switches back to AUDIOBOOKSHELF
+        // while already connected, so progress queued during LOCAL mode doesn't sit indefinitely.
         connectivityJob?.cancel()
         connectivityJob = scope.launch {
-            connectivityMonitor.connectionStatus.collect { status ->
-                if (status == ConnectivityMonitor.ConnectionStatus.CONNECTED) {
-                    flushOfflineQueue()
-                }
+            combine(
+                connectivityMonitor.connectionStatus,
+                settingsManager.settings,
+            ) { status, settings ->
+                status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
+                        settings.appMode != AppMode.LOCAL
             }
+                .distinctUntilChanged()
+                .collect { canFlush ->
+                    if (canFlush) flushOfflineQueue()
+                }
         }
     }
 
@@ -114,6 +123,7 @@ class SyncManager @Inject constructor(
      */
     suspend fun syncNow() {
         if (!hasAuthToken()) return
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
 
         // Prevent concurrent syncs
         if (!syncMutex.tryLock()) return
@@ -278,6 +288,9 @@ class SyncManager @Inject constructor(
             // Non-fatal: progress already saved to PlaybackProgress table
         }
 
+        // LOCAL mode: progress is saved locally above; never push to the Audiobookshelf server.
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
+
         // Throttle network pushes
         val now = System.currentTimeMillis()
         val timeSinceLastSync = now - lastSyncTimestamp
@@ -320,6 +333,15 @@ class SyncManager @Inject constructor(
             position = safeCurrentTime.seconds,
             isFinished = computedFinished,
         )
+
+        // LOCAL mode: local save above is the source of truth. Skip server push and
+        // do NOT enqueue. Local item IDs would 404 against the server and poison the queue.
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
+            if (activeItemId == itemId) {
+                activeItemId = null
+            }
+            return
+        }
 
         if (connectivityMonitor.isOnline.value) {
             try {

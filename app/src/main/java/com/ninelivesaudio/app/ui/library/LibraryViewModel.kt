@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.service.ConnectivityMonitor
@@ -145,22 +146,19 @@ class LibraryViewModel @Inject constructor(
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         try {
-            // Load local first
-            var libs = libraryRepository.getAll()
-
-            // Sync from server if possible
-            try {
-                val serverLibs = libraryRepository.syncFromServer()
-                if (serverLibs.isNotEmpty()) libs = serverLibs
-            } catch (_: Exception) {
-                // Use cached
+            val settings = settingsManager.currentSettings
+            val libs = if (settings.appMode == AppMode.LOCAL) {
+                libraryRepository.getLocalLibraries()
+            } else {
+                loadAudiobookshelfLibraries()
             }
 
-            // Restore persisted library selection, fall back to first available
-            val savedId = settingsManager.currentSettings.selectedLibraryId
-            val selected = _uiState.value.selectedLibrary
-                ?: libs.firstOrNull { it.id == savedId }
-                ?: libs.firstOrNull()
+            val savedId = if (settings.appMode == AppMode.LOCAL) {
+                settings.selectedLocalLibraryId ?: settings.selectedLibraryId
+            } else {
+                settings.selectedLibraryId
+            }
+            val selected = libs.firstOrNull { it.id == savedId } ?: libs.firstOrNull()
 
             _uiState.update {
                 it.copy(
@@ -183,11 +181,13 @@ class LibraryViewModel @Inject constructor(
 
     private suspend fun loadAudioBooks(libraryId: String) {
         try {
-            // Sync from server if possible
-            try {
-                audioBookRepository.syncLibraryItems(libraryId)
-            } catch (_: Exception) {
-                // Use cached
+            val selected = _uiState.value.selectedLibrary
+            if (selected?.isLocal != true) {
+                try {
+                    audioBookRepository.syncLibraryItems(libraryId)
+                } catch (_: Exception) {
+                    // Use cached
+                }
             }
 
             updateAvailableGroups(libraryId)
@@ -211,7 +211,16 @@ class LibraryViewModel @Inject constructor(
         }
         viewModelScope.launch {
             // Persist selection so the whole app picks it up
-            settingsManager.updateSettings { it.copy(selectedLibraryId = library.id) }
+            settingsManager.updateSettings {
+                if (library.isLocal) {
+                    it.copy(
+                        selectedLibraryId = library.id,
+                        selectedLocalLibraryId = library.id,
+                    )
+                } else {
+                    it.copy(selectedLibraryId = library.id)
+                }
+            }
             // Full resync for the newly selected library
             loadAudioBooks(library.id)
             _uiState.update { it.copy(isLoading = false) }
@@ -360,6 +369,17 @@ class LibraryViewModel @Inject constructor(
     /** Fire-and-forget filter for non-suspend callers. */
     private fun applyFilter() {
         viewModelScope.launch { applyFilterSuspend() }
+    }
+
+    private suspend fun loadAudiobookshelfLibraries(): List<Library> {
+        var libs = libraryRepository.getAudiobookshelf()
+        try {
+            val serverLibs = libraryRepository.syncFromServer()
+            if (serverLibs.isNotEmpty()) libs = serverLibs
+        } catch (_: Exception) {
+            // Use cached
+        }
+        return libs
     }
 }
 

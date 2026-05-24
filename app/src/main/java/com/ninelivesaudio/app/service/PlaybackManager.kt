@@ -286,8 +286,13 @@ class PlaybackManager @Inject constructor(
      * Elapsed seconds since the last heartbeat tick, capped. Used at session-close
      * moments (book switch, end-of-book) to add the tail interval that the 12s
      * heartbeat hasn't folded into [localSessionAccumSec] yet.
+     *
+     * Returns 0 when no heartbeat baseline has been set yet — without this guard,
+     * a session closed before its first heartbeat would compute `now - 0` and add
+     * a capped 60s phantom to TimeListening.
      */
     private fun finalLocalSessionTickSec(): Double {
+        if (lastSyncTimestamp == 0L) return 0.0
         val now = System.currentTimeMillis()
         val raw = (now - lastSyncTimestamp).coerceAtLeast(0L) / 1000.0
         return raw.coerceAtMost(localSessionMaxTickSec)
@@ -526,7 +531,7 @@ class PlaybackManager @Inject constructor(
                             libraryId = effectiveBook.libraryId.orEmpty(),
                             displayTitle = effectiveBook.title,
                             startPositionSec = startSec,
-                        )
+                        ).takeIf { it > 0L }
                     } catch (e: Exception) {
                         Log.w(TAG, "loadAudioBook: failed to open local session: ${e.message}")
                         null
@@ -534,6 +539,12 @@ class PlaybackManager @Inject constructor(
                 }
                 currentLocalSessionId = newSessionId
                 localSessionAccumSec = 0.0
+                // Seed the heartbeat baseline at session-open time so a close before
+                // the first sync tick computes a real tail (~0s) instead of inheriting
+                // a stale or zero baseline that would inflate TimeListening.
+                if (newSessionId != null) {
+                    lastSyncTimestamp = System.currentTimeMillis()
+                }
             }
 
             Log.d(TAG, "loadAudioBook: OK local=$isLocal pos=$startPosition dur=${_duration.value} tracks=${player.mediaItemCount}")

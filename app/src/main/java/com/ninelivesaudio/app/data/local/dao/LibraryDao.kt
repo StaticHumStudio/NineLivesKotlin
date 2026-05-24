@@ -48,4 +48,7 @@ interface LibraryDao {
 
     @Query("DELETE FROM Libraries")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM Libraries WHERE IsLocal = 0")
+    suspend fun deleteAudiobookshelf()
 }

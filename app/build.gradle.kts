@@ -120,6 +120,9 @@ dependencies {
     // Security (Encrypted Storage)
     implementation(libs.security.crypto)
 
+    // DocumentFile (SAF tree traversal for local library scanner)
+    implementation(libs.androidx.documentfile)
+
     // DataStore (Preferences)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 

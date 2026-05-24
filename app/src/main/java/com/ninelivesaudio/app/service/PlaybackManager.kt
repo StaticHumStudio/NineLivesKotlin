@@ -809,11 +809,19 @@ class PlaybackManager @Inject constructor(
         stopPlaybackService()
         _playbackState.value = PlaybackState.STOPPED
 
+        // Capture local-session state synchronously and clear before launching the
+        // background flush. A fast stop -> start sequence opens a new session in
+        // loadAudioBook; if we cleared inside the coroutine, that stale coroutine
+        // would wipe the NEW session's id and silently break its heartbeat.
+        val capturedLocalSessionId = currentLocalSessionId
+        val capturedLocalAccum = localSessionAccumSec + finalLocalSessionTickSec()
+        val capturedLocalUpdatedAt = System.currentTimeMillis()
+        currentLocalSessionId = null
+        localSessionAccumSec = 0.0
+        lastSyncTimestamp = capturedLocalUpdatedAt
+
         // Flush progress in the background AFTER releasing the player.
         // All values were captured above so no player access is needed.
-        // The local session id is cleared INSIDE the coroutine so the final
-        // syncProgressNow heartbeat can still read it and write the last tick;
-        // clearing before the launch races and drops the closing accumulation.
         if (book != null) {
             val isFinished = dur > Duration.ZERO && pos >= (dur - 1.seconds).coerceAtLeast(Duration.ZERO)
             scope.launch(Dispatchers.IO) {
@@ -828,13 +836,19 @@ class PlaybackManager @Inject constructor(
                     duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                 )
                 closeSession()
-                currentLocalSessionId = null
-                localSessionAccumSec = 0.0
+                // Explicit final write for the captured local session (syncProgressNow
+                // above no longer touches it because currentLocalSessionId is null).
+                if (capturedLocalSessionId != null) {
+                    try {
+                        sessionRepository.updateLocalSession(
+                            id = capturedLocalSessionId,
+                            timeListeningSec = capturedLocalAccum,
+                            currentTimeSec = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            updatedAt = capturedLocalUpdatedAt,
+                        )
+                    } catch (_: Exception) {}
+                }
             }
-        } else {
-            // No active book means no open session; safe to clear synchronously.
-            currentLocalSessionId = null
-            localSessionAccumSec = 0.0
         }
     }
 

@@ -8,6 +8,7 @@ import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -91,7 +92,10 @@ class SyncManager @Inject constructor(
         connectivityJob?.cancel()
         connectivityJob = scope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
-                if (status == ConnectivityMonitor.ConnectionStatus.CONNECTED) {
+                if (
+                    status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
+                    settingsManager.currentSettings.appMode != AppMode.LOCAL
+                ) {
                     flushOfflineQueue()
                 }
             }
@@ -114,6 +118,7 @@ class SyncManager @Inject constructor(
      */
     suspend fun syncNow() {
         if (!hasAuthToken()) return
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
 
         // Prevent concurrent syncs
         if (!syncMutex.tryLock()) return

@@ -477,19 +477,26 @@ class PlaybackManager @Inject constructor(
 
     @OptIn(UnstableApi::class)
     private fun loadLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
+        // Scanned local-library books store SAF content:// URIs, not filesystem paths.
+        // They must be parsed as URIs; File()/Uri.fromFile() would produce invalid file:///content:/... URIs.
+        if (book.isLocal) {
+            loadScannedLocalTracks(player, book, metadata)
+            return
+        }
+
         val localPath = book.localPath ?: return
-        val localFile = File(localPath)
+        val localFile = fileFromLocalPath(localPath)
 
         val mediaItems = mutableListOf<MediaItem>()
         val durations = mutableListOf<Double>()
         var cumulative = 0.0
 
         // Determine the download directory
-        val localDir = if (localFile.isDirectory) localFile else localFile.parentFile
+        val localDir = localFile?.let { if (it.isDirectory) it else it.parentFile }
 
         if (book.audioFiles.isNotEmpty()) {
             // We have audio file metadata — use it for ordered multi-track loading
-            if (book.audioFiles.size == 1 && localFile.isFile) {
+            if (book.audioFiles.size == 1 && localFile?.isFile == true) {
                 // Single file pointed to directly
                 mediaItems.add(
                     MediaItem.Builder()
@@ -505,7 +512,7 @@ class PlaybackManager @Inject constructor(
 
                     mediaItems.add(
                         MediaItem.Builder()
-                            .setUri(Uri.fromFile(File(path)))
+                            .setUri(uriFromLocalPath(path))
                             .setMediaMetadata(metadata)
                             .build()
                     )
@@ -530,7 +537,7 @@ class PlaybackManager @Inject constructor(
                 )
                 // No duration metadata available — ExoPlayer will determine it
             }
-        } else if (localFile.isFile) {
+        } else if (localFile?.isFile == true) {
             // localPath is a single file
             mediaItems.add(
                 MediaItem.Builder()
@@ -538,6 +545,58 @@ class PlaybackManager @Inject constructor(
                     .setMediaMetadata(metadata)
                     .build()
             )
+        }
+
+        trackDurations = durations
+        player.setMediaItems(mediaItems)
+    }
+
+    private fun uriFromLocalPath(path: String): Uri {
+        val parsed = Uri.parse(path)
+        return if (parsed.scheme.isNullOrBlank()) {
+            Uri.fromFile(File(path))
+        } else {
+            parsed
+        }
+    }
+
+    private fun fileFromLocalPath(path: String): File? {
+        val parsed = Uri.parse(path)
+        return when (parsed.scheme?.lowercase()) {
+            null, "" -> File(path)
+            "file" -> parsed.path?.let(::File)
+            else -> null
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun loadScannedLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
+        val mediaItems = mutableListOf<MediaItem>()
+        val durations = mutableListOf<Double>()
+        var cumulative = 0.0
+
+        for (af in book.audioFiles.sortedBy { it.index }) {
+            val path = af.localPath ?: continue
+            mediaItems.add(
+                MediaItem.Builder()
+                    .setUri(Uri.parse(path))
+                    .setMediaMetadata(metadata)
+                    .build()
+            )
+            cumulative += af.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
+            durations.add(cumulative)
+        }
+
+        if (mediaItems.isEmpty()) {
+            val fallback = book.localPath
+            if (!fallback.isNullOrEmpty()) {
+                mediaItems.add(
+                    MediaItem.Builder()
+                        .setUri(Uri.parse(fallback))
+                        .setMediaMetadata(metadata)
+                        .build()
+                )
+            }
         }
 
         trackDurations = durations

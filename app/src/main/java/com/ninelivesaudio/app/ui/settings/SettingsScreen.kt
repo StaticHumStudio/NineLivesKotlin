@@ -90,7 +90,12 @@ fun SettingsScreen(
                 CopyStyleGuide.Settings.SETTINGS_NAV_RITUAL,
                 CopyStyleGuide.Settings.SETTINGS_NAV_UNHINGED,
             ),
-            trailing = { StatusPill(connectionStatus = uiState.connectionStatus) },
+            trailing = {
+                StatusPill(
+                    connectionStatus = uiState.connectionStatus,
+                    isLocalMode = uiState.appMode == AppMode.LOCAL,
+                )
+            },
         )
 
         // ─── Scrollable Content ───────────────────────────────────────
@@ -162,7 +167,10 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    StatusPill(connectionStatus = uiState.connectionStatus)
+                    StatusPill(
+                        connectionStatus = uiState.connectionStatus,
+                        isLocalMode = uiState.appMode == AppMode.LOCAL,
+                    )
                     Spacer(modifier = Modifier.weight(1f))
                     Text(
                         text = uiState.connectionStatusText,

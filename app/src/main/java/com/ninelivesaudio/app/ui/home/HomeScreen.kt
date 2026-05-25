@@ -68,6 +68,7 @@ fun HomeScreen(
                 totalListeningTime = uiState.totalListeningTimeText,
                 totalListeningSeconds = uiState.totalListeningSeconds,
                 connectionStatus = uiState.connectionStatus,
+                isLocalMode = uiState.isLocalMode,
                 onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
             )
 
@@ -218,6 +219,7 @@ private fun NineLivesAltar(
     totalListeningTime: String,
     totalListeningSeconds: Double,
     connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
+    isLocalMode: Boolean,
     onSecretUnlocked: () -> Unit = {},
 ) {
     var tapCount by remember { mutableStateOf(0) }
@@ -257,7 +259,7 @@ private fun NineLivesAltar(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
         ) {
-            StatusPill(connectionStatus = connectionStatus)
+            StatusPill(connectionStatus = connectionStatus, isLocalMode = isLocalMode)
         }
 
         Spacer(modifier = Modifier.height(10.dp))

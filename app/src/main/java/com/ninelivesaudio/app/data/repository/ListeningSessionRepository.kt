@@ -36,6 +36,19 @@ class ListeningSessionRepository @Inject constructor(
     }
 
     /**
+     * Sessions scoped to a single book — backs the Book Detail "Listening history"
+     * panel. LOCAL mode reads from Room; AUDIOBOOKSHELF mode hits the paginated
+     * server endpoint that filters by libraryItemId.
+     */
+    suspend fun getSessionsForBook(audioBookId: String): List<ListeningSession> {
+        return if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
+            sessionDao.getByAudioBookId(audioBookId).map { it.toDomain() }
+        } else {
+            apiService.getListeningSessions(audioBookId)
+        }
+    }
+
+    /**
      * Insert a new local-mode session row. Returns the row id so callers can
      * accumulate timeListening / currentTime against it on each playback heartbeat.
      */

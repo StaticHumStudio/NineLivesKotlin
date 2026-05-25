@@ -5,8 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
-import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.DownloadStatus
@@ -27,7 +27,7 @@ class BookDetailViewModel @Inject constructor(
     private val playbackManager: PlaybackManager,
     private val downloadManager: DownloadManager,
     private val downloadItemDao: DownloadItemDao,
-    private val apiService: ApiService,
+    private val listeningSessionRepository: ListeningSessionRepository,
 ) : ViewModel() {
 
     private val bookId: String = savedStateHandle["bookId"] ?: ""
@@ -56,6 +56,7 @@ class BookDetailViewModel @Inject constructor(
         val hasProgress: Boolean = false,
         val isFinished: Boolean = false,
         val isDownloaded: Boolean = false,
+        val isLocal: Boolean = false,
         val chapters: List<Chapter> = emptyList(),
         val addedAt: Long? = null,
         val errorMessage: String? = null,
@@ -134,6 +135,7 @@ class BookDetailViewModel @Inject constructor(
                 hasProgress = book.hasProgress,
                 isFinished = book.isFinished,
                 isDownloaded = book.isDownloaded,
+                isLocal = book.isLocal,
                 chapters = book.chapters.sortedBy { c -> c.start },
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
@@ -215,9 +217,10 @@ class BookDetailViewModel @Inject constructor(
         }
     }
 
-    /** Queue this book for download. */
+    /** Queue this book for download. No-op for scanned-local books. */
     fun downloadBook() {
         val book = _uiState.value.book ?: return
+        if (book.isLocal) return
         viewModelScope.launch {
             _uiState.update { it.copy(downloadState = DownloadButtonState.QUEUED, downloadProgress = 0) }
             downloadManager.queueDownload(book)
@@ -252,7 +255,7 @@ class BookDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isHistoryLoading = true) }
             try {
-                val sessions = apiService.getListeningSessions(bookId)
+                val sessions = listeningSessionRepository.getSessionsForBook(bookId)
                 _uiState.update {
                     it.copy(listeningSessions = sessions, isHistoryLoading = false)
                 }

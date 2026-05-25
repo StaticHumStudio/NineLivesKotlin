@@ -17,6 +17,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.theme.AccentGold
 import com.ninelivesaudio.app.ui.theme.MistFaint
 import com.ninelivesaudio.app.ui.theme.NavRailBackground
@@ -32,7 +33,8 @@ data class NavItem(
 @Composable
 fun LeftNavRail(
     navController: NavController,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    appMode: AppMode = AppMode.AUDIOBOOKSHELF,
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
@@ -45,7 +47,7 @@ fun LeftNavRail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        bottomNavItems.forEach { item ->
+        bottomNavItemsFor(appMode).forEach { item ->
             val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
 
             LeftNavItem(

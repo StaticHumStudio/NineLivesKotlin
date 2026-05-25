@@ -44,12 +44,17 @@ fun HomeScreen(
     onNavigateToLibrary: () -> Unit = {},
     onNavigateToBookDetail: (String) -> Unit = {},
     onNavigateToDossier: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     if (uiState.showEmptyState && !uiState.isLoading) {
-        EmptyHomeState(onNavigateToLibrary = onNavigateToLibrary)
+        EmptyHomeState(
+            isLocalMode = uiState.isLocalMode,
+            onNavigateToLibrary = onNavigateToLibrary,
+            onNavigateToSettings = onNavigateToSettings,
+        )
         return
     }
 
@@ -393,7 +398,9 @@ private fun NineLivesAltar(
 
 @Composable
 private fun EmptyHomeState(
+    isLocalMode: Boolean,
     onNavigateToLibrary: () -> Unit,
+    onNavigateToSettings: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -422,7 +429,7 @@ private fun EmptyHomeState(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "The Archive stands empty",
+            text = if (isLocalMode) "No local audio yet" else "The Archive stands empty",
             style = MaterialTheme.typography.titleMedium,
             color = ArchiveTextSecondary,
             textAlign = TextAlign.Center,
@@ -431,10 +438,14 @@ private fun EmptyHomeState(
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = CopyEngine.getEmptyStateFlavor(
-                CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
-                CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
-            ) ?: "Begin listening to fill these halls with your progress",
+            text = if (isLocalMode) {
+                "Add a folder of audiobooks in Settings to begin"
+            } else {
+                CopyEngine.getEmptyStateFlavor(
+                    CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
+                    CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
+                ) ?: "Begin listening to fill these halls with your progress"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = ArchiveTextMuted,
             textAlign = TextAlign.Center,
@@ -444,7 +455,7 @@ private fun EmptyHomeState(
         Spacer(modifier = Modifier.height(32.dp))
 
         Button(
-            onClick = onNavigateToLibrary,
+            onClick = if (isLocalMode) onNavigateToSettings else onNavigateToLibrary,
             colors = ButtonDefaults.buttonColors(
                 containerColor = GoldFilament,
                 contentColor = ArchiveVoidDeep,
@@ -452,7 +463,7 @@ private fun EmptyHomeState(
             shape = RoundedCornerShape(12.dp),
         ) {
             Text(
-                text = "Enter The Archive",
+                text = if (isLocalMode) "Open Settings" else "Enter The Archive",
                 fontWeight = FontWeight.SemiBold,
             )
         }

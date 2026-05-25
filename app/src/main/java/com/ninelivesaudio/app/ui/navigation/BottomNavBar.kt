@@ -24,6 +24,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.theme.SigilGold
 import com.ninelivesaudio.app.ui.theme.MistFaint
 import com.ninelivesaudio.app.ui.theme.VoidBase
@@ -35,41 +36,53 @@ data class BottomNavItem(
     val unselectedIcon: ImageVector
 )
 
-val bottomNavItems = listOf(
-    BottomNavItem(
-        route = Routes.HOME,
-        label = "Home",
-        selectedIcon = Icons.Filled.Home,
-        unselectedIcon = Icons.Outlined.Home
-    ),
-    BottomNavItem(
-        route = Routes.LIBRARY,
-        label = "Library",
-        selectedIcon = Icons.Filled.LibraryMusic,
-        unselectedIcon = Icons.Outlined.LibraryMusic
-    ),
-    BottomNavItem(
-        route = Routes.PLAYER,
-        label = "Player",
-        selectedIcon = Icons.Filled.PlayCircle,
-        unselectedIcon = Icons.Outlined.PlayCircle
-    ),
-    BottomNavItem(
-        route = Routes.DOWNLOADS,
-        label = "Downloads",
-        selectedIcon = Icons.Filled.Download,
-        unselectedIcon = Icons.Outlined.Download
-    ),
-    BottomNavItem(
-        route = Routes.SETTINGS,
-        label = "Settings",
-        selectedIcon = Icons.Filled.Settings,
-        unselectedIcon = Icons.Outlined.Settings
-    )
+private val homeItem = BottomNavItem(
+    route = Routes.HOME,
+    label = "Home",
+    selectedIcon = Icons.Filled.Home,
+    unselectedIcon = Icons.Outlined.Home,
+)
+private val libraryItem = BottomNavItem(
+    route = Routes.LIBRARY,
+    label = "Library",
+    selectedIcon = Icons.Filled.LibraryMusic,
+    unselectedIcon = Icons.Outlined.LibraryMusic,
+)
+private val playerItem = BottomNavItem(
+    route = Routes.PLAYER,
+    label = "Player",
+    selectedIcon = Icons.Filled.PlayCircle,
+    unselectedIcon = Icons.Outlined.PlayCircle,
+)
+private val downloadsItem = BottomNavItem(
+    route = Routes.DOWNLOADS,
+    label = "Downloads",
+    selectedIcon = Icons.Filled.Download,
+    unselectedIcon = Icons.Outlined.Download,
+)
+private val settingsItem = BottomNavItem(
+    route = Routes.SETTINGS,
+    label = "Settings",
+    selectedIcon = Icons.Filled.Settings,
+    unselectedIcon = Icons.Outlined.Settings,
 )
 
+/**
+ * Nav items for the current mode. LOCAL mode omits Downloads — scanned-local
+ * audio is already on-device and the Downloads queue is ABS-only.
+ */
+fun bottomNavItemsFor(appMode: AppMode): List<BottomNavItem> =
+    if (appMode == AppMode.LOCAL) {
+        listOf(homeItem, libraryItem, playerItem, settingsItem)
+    } else {
+        listOf(homeItem, libraryItem, playerItem, downloadsItem, settingsItem)
+    }
+
 @Composable
-fun BottomNavBar(navController: NavController) {
+fun BottomNavBar(
+    navController: NavController,
+    appMode: AppMode = AppMode.AUDIOBOOKSHELF,
+) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
@@ -77,7 +90,7 @@ fun BottomNavBar(navController: NavController) {
         containerColor = VoidBase,
         contentColor = SigilGold
     ) {
-        bottomNavItems.forEach { item ->
+        bottomNavItemsFor(appMode).forEach { item ->
             val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
 
             NavigationBarItem(

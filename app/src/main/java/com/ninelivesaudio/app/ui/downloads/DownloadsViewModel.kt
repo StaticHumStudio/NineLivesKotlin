@@ -5,12 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.DownloadManager
+import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -22,6 +24,7 @@ class DownloadsViewModel @Inject constructor(
     private val downloadItemDao: DownloadItemDao,
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
     // ─── UI State ────────────────────────────────────────────────────────────
@@ -36,6 +39,7 @@ class DownloadsViewModel @Inject constructor(
         val completedDownloads: List<DownloadUiItem> = emptyList(),
         val showEmptyState: Boolean = true,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
+        val isLocalMode: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -110,6 +114,14 @@ class DownloadsViewModel @Inject constructor(
         viewModelScope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
                 _uiState.update { it.copy(connectionStatus = status) }
+            }
+        }
+
+        // Observe app mode so the empty state can explain why downloads
+        // are unavailable in LOCAL mode.
+        viewModelScope.launch {
+            settingsManager.settings.collect { settings ->
+                _uiState.update { it.copy(isLocalMode = settings.appMode == AppMode.LOCAL) }
             }
         }
     }

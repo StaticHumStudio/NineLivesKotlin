@@ -59,6 +59,11 @@ fun NineLivesNavHost(
                         launchSingleTop = true
                     }
                 },
+                onNavigateToSettings = {
+                    navController.navigate(Routes.SETTINGS) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

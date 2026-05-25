@@ -126,7 +126,10 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         bottomBar = {
                             if (!useRailNavigation) {
-                                BottomNavBar(navController = navController)
+                                BottomNavBar(
+                                    navController = navController,
+                                    appMode = appSettings.appMode,
+                                )
                             }
                         }
                     ) { innerPadding ->
@@ -138,7 +141,8 @@ class MainActivity : ComponentActivity() {
                             if (useRailNavigation) {
                                 LeftNavRail(
                                     navController = navController,
-                                    modifier = Modifier.width(72.dp)
+                                    modifier = Modifier.width(72.dp),
+                                    appMode = appSettings.appMode,
                                 )
                             }
 

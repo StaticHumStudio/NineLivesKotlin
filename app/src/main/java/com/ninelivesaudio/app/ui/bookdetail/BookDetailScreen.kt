@@ -340,13 +340,16 @@ private fun BookDetailContent(
                     )
                 }
 
-                // Download button
-                DownloadButton(
-                    downloadState = uiState.downloadState,
-                    downloadProgress = uiState.downloadProgress,
-                    onDownload = onDownload,
-                    onDeleteDownload = onDeleteDownload,
-                )
+                // Download button (hidden for scanned-local books — they're
+                // already on-device and the server doesn't know their ids).
+                if (!uiState.isLocal) {
+                    DownloadButton(
+                        downloadState = uiState.downloadState,
+                        downloadProgress = uiState.downloadProgress,
+                        onDownload = onDownload,
+                        onDeleteDownload = onDeleteDownload,
+                    )
+                }
             }
         }
 

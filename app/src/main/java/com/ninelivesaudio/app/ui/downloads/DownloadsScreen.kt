@@ -50,7 +50,7 @@ fun DownloadsScreen(
         )
 
         if (uiState.showEmptyState) {
-            EmptyDownloadsState()
+            EmptyDownloadsState(isLocalMode = uiState.isLocalMode)
         } else {
             LazyColumn(
                 modifier = Modifier
@@ -405,7 +405,7 @@ private fun CompletedDownloadCard(
 // ═════════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun EmptyDownloadsState() {
+private fun EmptyDownloadsState(isLocalMode: Boolean) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -432,10 +432,14 @@ private fun EmptyDownloadsState() {
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = CopyEngine.getEmptyStateFlavor(
-                CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_RITUAL,
-                CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_UNHINGED,
-            ) ?: CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_NORMAL,
+            text = if (isLocalMode) {
+                "Downloads aren't available in Local Mode. Your scanned audio is already on-device."
+            } else {
+                CopyEngine.getEmptyStateFlavor(
+                    CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_RITUAL,
+                    CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_UNHINGED,
+                ) ?: CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_NORMAL
+            },
             style = MaterialTheme.typography.bodySmall,
             color = ArchiveTextMuted,
             textAlign = TextAlign.Center,

@@ -78,8 +78,16 @@ class DownloadManager @Inject constructor(
     /**
      * Queue an audiobook for download.
      * Creates a DownloadItem, persists it, and starts the download process.
+     *
+     * Scanned-local books carry a synthetic id the server doesn't know, so they
+     * are short-circuited here (returns null) rather than attempting a fetch
+     * that would 404 against ABS.
      */
-    suspend fun queueDownload(audioBook: AudioBook): DownloadItem {
+    suspend fun queueDownload(audioBook: AudioBook): DownloadItem? {
+        if (audioBook.isLocal) {
+            Log.d(TAG, "Skipping download for local book ${audioBook.id} (${audioBook.title})")
+            return null
+        }
         val downloadId = UUID.randomUUID().toString()
 
         // Ensure we have file metadata before queuing.

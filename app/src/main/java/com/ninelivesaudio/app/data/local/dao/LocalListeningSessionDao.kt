@@ -30,6 +30,13 @@ interface LocalListeningSessionDao {
 
     @Query(
         """SELECT * FROM LocalListeningSessions
+           WHERE AudioBookId = :audioBookId
+           ORDER BY StartedAt DESC"""
+    )
+    suspend fun getByAudioBookId(audioBookId: String): List<LocalListeningSessionEntity>
+
+    @Query(
+        """SELECT * FROM LocalListeningSessions
            WHERE LibraryId = :libraryId
            ORDER BY StartedAt DESC"""
     )

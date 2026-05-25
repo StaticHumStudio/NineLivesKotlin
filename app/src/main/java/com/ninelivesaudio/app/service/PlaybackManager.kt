@@ -350,8 +350,8 @@ class PlaybackManager @Inject constructor(
                 }
                 currentLocalSessionId = null
                 localSessionAccumSec = 0.0
-                // Reset the heartbeat baseline so the next session doesn't reuse this delta.
-                lastSyncTimestamp = priorUpdatedAt
+                // Do not reset lastSyncTimestamp here. The next session's open path
+                // (local) or startSessionSync (server) will seed it correctly.
             }
 
             // Reset chapter state on the wrapper
@@ -824,12 +824,13 @@ class PlaybackManager @Inject constructor(
         // background flush. A fast stop -> start sequence opens a new session in
         // loadAudioBook; if we cleared inside the coroutine, that stale coroutine
         // would wipe the NEW session's id and silently break its heartbeat.
+        // Do NOT touch lastSyncTimestamp here — the launched syncProgressNow
+        // below still uses it to compute the server session's final elapsed tick.
         val capturedLocalSessionId = currentLocalSessionId
         val capturedLocalAccum = localSessionAccumSec + finalLocalSessionTickSec()
         val capturedLocalUpdatedAt = System.currentTimeMillis()
         currentLocalSessionId = null
         localSessionAccumSec = 0.0
-        lastSyncTimestamp = capturedLocalUpdatedAt
 
         // Flush progress in the background AFTER releasing the player.
         // All values were captured above so no player access is needed.
@@ -1089,7 +1090,6 @@ class PlaybackManager @Inject constructor(
                     // doesn't drop up to one tick worth of listen time.
                     val finalLocalAccum = localSessionAccumSec + finalLocalSessionTickSec()
                     val finalLocalUpdatedAt = System.currentTimeMillis()
-                    lastSyncTimestamp = finalLocalUpdatedAt
                     if (book != null) {
                         val durSecs = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS)
                         scope.launch(Dispatchers.IO) {

@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.service.SettingsManager
@@ -115,6 +117,7 @@ enum class DossierPeriod(
 class NightwatchDossierViewModel @Inject constructor(
     private val apiService: ApiService,
     private val audioBookRepository: AudioBookRepository,
+    private val sessionRepository: ListeningSessionRepository,
     private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
@@ -222,7 +225,11 @@ class NightwatchDossierViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
 
-            if (!apiService.isAuthenticated) {
+            val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL
+
+            // In AUDIOBOOKSHELF mode the Dossier needs a server session; in LOCAL mode
+            // the data comes from on-device session rows and no auth is required.
+            if (!isLocalMode && !apiService.isAuthenticated) {
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -234,7 +241,7 @@ class NightwatchDossierViewModel @Inject constructor(
             }
 
             try {
-                val allSessions = apiService.getAllListeningSessions()
+                val allSessions = sessionRepository.getAllSessions()
                 val selectedLibraryId = settingsManager.currentSettings.selectedLibraryId
                 val allBooks = audioBookRepository.getAll().let { books ->
                     if (selectedLibraryId != null) books.filter { it.libraryId == selectedLibraryId }
@@ -327,6 +334,8 @@ class NightwatchDossierViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
+                        isConnected = true,
+                        error = null,
                         totalListeningTime = totalTime,
                         totalSessions = validSessions.size,
                         filteredNoiseSessions = noiseSessions,

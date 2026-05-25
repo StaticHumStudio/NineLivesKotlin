@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
@@ -50,6 +51,7 @@ class HomeViewModel @Inject constructor(
         val totalListeningTimeText: String = "",
         val totalListeningSeconds: Double = 0.0,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
+        val isLocalMode: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -61,6 +63,16 @@ class HomeViewModel @Inject constructor(
             connectivityMonitor.connectionStatus.collect { status ->
                 _uiState.update { it.copy(connectionStatus = status) }
             }
+        }
+
+        // Observe source mode so the status pill can switch to its LOCAL appearance
+        viewModelScope.launch {
+            settingsManager.settings
+                .map { it.appMode == AppMode.LOCAL }
+                .distinctUntilChanged()
+                .collect { isLocal ->
+                    _uiState.update { it.copy(isLocalMode = isLocal) }
+                }
         }
 
         // Observe selected library from settings and reload recently played

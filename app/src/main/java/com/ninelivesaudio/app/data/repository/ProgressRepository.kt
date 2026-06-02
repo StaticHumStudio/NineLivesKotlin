@@ -104,7 +104,13 @@ class ProgressRepository @Inject constructor(
         // Group by item, push only the latest entry per item. On success, delete
         // ALL fetched rows for that item so superseded older rows don't linger.
         val entriesByItem = entries.groupBy { it.itemId }
-        val latestByItem = entriesByItem.mapValues { (_, rows) -> rows.maxByOrNull { it.timestamp } }
+        // Pick the latest row by parsed instant, not by lexicographic string
+        // order. Sorting the raw ISO string would pick the wrong "latest" if the
+        // timestamp format ever varied, causing stale progress to be pushed and
+        // the newer rows to be deleted (losing the user's real position).
+        val latestByItem = entriesByItem.mapValues { (_, rows) ->
+            rows.maxByOrNull { it.timestamp.toEpochMillis() ?: 0L }
+        }
 
         val deletableRowIds = mutableListOf<Long>()
         var allSuccess = true

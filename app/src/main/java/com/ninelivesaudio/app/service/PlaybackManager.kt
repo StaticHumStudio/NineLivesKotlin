@@ -772,6 +772,11 @@ class PlaybackManager @Inject constructor(
                 // Player reached end-of-book — re-prepare to allow seeking/playing
                 player.seekTo(player.currentMediaItemIndex, player.currentPosition)
                 player.prepare()
+                // prepare() moves the player to BUFFERING, so the STATE_READY
+                // branch below is skipped and the listener takes over. Reflect the
+                // resume immediately so the UI does not stay showing STOPPED while
+                // it buffers.
+                _playbackState.value = PlaybackState.BUFFERING
             }
             player.playWhenReady = true
             // If already in STATE_READY, start immediately
@@ -936,6 +941,11 @@ class PlaybackManager @Inject constructor(
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun attachLoudnessEnhancer() {
         val player = exoPlayer ?: return
+        // The audio session id is UNSET until the audio sink initializes during
+        // prepare()/render. Constructing a LoudnessEnhancer against session 0 is
+        // deprecated and throws on modern Android. Skip now; onAudioSessionIdChanged
+        // re-attaches once a real id is available.
+        if (player.audioSessionId == C.AUDIO_SESSION_ID_UNSET) return
         try {
             loudnessEnhancer?.release()
             val enhancer = LoudnessEnhancer(player.audioSessionId)
@@ -957,6 +967,9 @@ class PlaybackManager @Inject constructor(
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun attachEqualizer() {
         val player = exoPlayer ?: return
+        // See attachLoudnessEnhancer: skip while the session id is UNSET (before
+        // the audio sink is ready). onAudioSessionIdChanged re-attaches later.
+        if (player.audioSessionId == C.AUDIO_SESSION_ID_UNSET) return
         try {
             equalizer?.release()
             val eq = Equalizer(0, player.audioSessionId)
@@ -1055,6 +1068,16 @@ class PlaybackManager @Inject constructor(
     // ─── Player Listener ──────────────────────────────────────────────────
 
     private fun createPlayerListener() = object : Player.Listener {
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            // The audio sink just produced a usable session id (it is UNSET
+            // before prepare()). Attach the EQ and loudness enhancer now — the
+            // attach during loadAudioBook is a no-op while the id is unset.
+            if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
+                attachEqualizer()
+                attachLoudnessEnhancer()
+            }
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             val stateName = when (playbackState) {
                 Player.STATE_IDLE -> "IDLE"
@@ -1284,19 +1307,32 @@ class PlaybackManager @Inject constructor(
 
         if (book.isLocal) return
 
-        // Sync to server session
-        val session = sessionMutex.withLock { currentSession }
-        if (session != null) {
-            try {
+        // Sync to server session. Read currentSession AND advance the
+        // listen-time accumulator under the same lock, because recoverStaleSession
+        // resets accumulatedListenTime/lastSyncTimestamp under this lock. Doing
+        // the read-modify-write outside it let a concurrent recovery reset get
+        // clobbered (phantom/duplicated listen time on the wrong session). The
+        // network call stays outside the lock so it is held only briefly.
+        data class ServerSyncTick(val sessionId: String, val timeListened: Double)
+        val tick: ServerSyncTick? = sessionMutex.withLock {
+            val session = currentSession
+            if (session == null) {
+                null
+            } else {
                 val now = System.currentTimeMillis()
                 val elapsed = (now - lastSyncTimestamp).coerceAtLeast(0) / 1000.0
                 lastSyncTimestamp = now
                 accumulatedListenTime += elapsed
+                ServerSyncTick(session.id, accumulatedListenTime)
+            }
+        }
+        if (tick != null) {
+            try {
                 apiService.syncSessionProgress(
-                    sessionId = session.id,
+                    sessionId = tick.sessionId,
                     currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                     duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                    timeListened = accumulatedListenTime,
+                    timeListened = tick.timeListened,
                 )
             } catch (_: Exception) {}
         } else {

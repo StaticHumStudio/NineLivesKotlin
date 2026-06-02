@@ -77,15 +77,18 @@ class NineLivesApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // Start network monitoring (no dependency on settings)
-        connectivityMonitor.startMonitoring()
-
-        // Load settings from disk FIRST, then start sync.
-        // syncManager.start() must wait for settings to be loaded so it has
-        // a valid server URL and auth token for the first sync attempt.
+        // Load settings from disk FIRST, then bring up everything that depends
+        // on them. Order matters: the server URL and auth token must be in
+        // place before any network call fires. Otherwise the first request
+        // races against the empty placeholder base URL (http://localhost/) and
+        // fails with ConnectException, which the app would misread as a
+        // "session expired" / signed-out state on every cold start.
         appScope.launch {
             settingsManager.loadSettings()
             apiService.initializeFromSettings()
+            // serverUrl + token are now loaded, so it is safe to probe the
+            // server and start syncing.
+            connectivityMonitor.startMonitoring()
             syncManager.start()
         }
     }

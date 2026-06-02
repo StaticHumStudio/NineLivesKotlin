@@ -13,6 +13,28 @@ import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
 
 /**
+ * Outcome of validating an auth token against the server.
+ *
+ * The distinction between [INVALID] and [UNREACHABLE] is load-bearing: only
+ * [INVALID] (the server actively rejected the credentials) is a reason to log
+ * the user out. [UNREACHABLE] means we could not get a verdict (offline, server
+ * down, no server URL yet) and the stored token must be preserved.
+ */
+enum class TokenValidationResult { VALID, INVALID, UNREACHABLE }
+
+/**
+ * Classifies an HTTP status code from a token-validation endpoint.
+ * 2xx means the server accepted the token, 401/403 means it rejected it, and
+ * anything else (5xx, unexpected codes) is treated as a transient inability to
+ * reach a verdict rather than an auth failure.
+ */
+internal fun classifyValidationStatus(code: Int): TokenValidationResult = when {
+    code in 200..299 -> TokenValidationResult.VALID
+    code == 401 || code == 403 -> TokenValidationResult.INVALID
+    else -> TokenValidationResult.UNREACHABLE
+}
+
+/**
  * High-level API service that wraps Retrofit calls with error handling and
  * maps API DTOs to domain models. Ports the C# AudioBookshelfApiService logic.
  */
@@ -32,7 +54,7 @@ class ApiService @Inject constructor(
     private val tokenValidationMutex = Mutex()
     @Volatile private var lastValidatedToken: String? = null
     @Volatile private var lastValidationAtMs: Long = 0L
-    @Volatile private var lastValidationResult: Boolean? = null
+    @Volatile private var lastValidationResult: TokenValidationResult? = null
 
     val isAuthenticated: Boolean
         get() = authInterceptor.hasToken() && settingsManager.currentSettings.serverUrl.isNotEmpty()
@@ -88,16 +110,26 @@ class ApiService @Inject constructor(
                 authInterceptor.setToken(token)
                 settingsManager.saveAuthToken(token)
 
-                val isValid = validateToken(forceRefresh = true, tokenOverride = token)
-                if (!isValid) {
-                    authInterceptor.setToken(null)
-                    settingsManager.clearAuthToken()
-                    lastError = "Invalid API token"
-                    return@withContext false
+                when (validateTokenDetailed(forceRefresh = true, tokenOverride = token)) {
+                    TokenValidationResult.VALID -> {
+                        lastError = null
+                        true
+                    }
+                    TokenValidationResult.INVALID -> {
+                        // Server actively rejected the token — discard it.
+                        authInterceptor.setToken(null)
+                        settingsManager.clearAuthToken()
+                        lastError = "Invalid API token"
+                        false
+                    }
+                    TokenValidationResult.UNREACHABLE -> {
+                        // Could not reach the server to verify. Keep the token
+                        // (it may be perfectly valid) so the session works once
+                        // the server is reachable, but report the failure.
+                        lastError = "Could not reach server to verify the token. Check the URL and your connection, then try again."
+                        false
+                    }
                 }
-
-                lastError = null
-                true
             } catch (e: Exception) {
                 authInterceptor.setToken(null)
                 settingsManager.clearAuthToken()
@@ -134,12 +166,38 @@ class ApiService @Inject constructor(
         settingsManager.clearAuthToken()
     }
 
-    suspend fun validateToken(forceRefresh: Boolean = false, tokenOverride: String? = null): Boolean {
+    /**
+     * Backwards-compatible boolean check: true only when the session is known
+     * to be valid right now. A transient network failure returns false here
+     * but is NOT a signal to log out — callers that clear the token must use
+     * [validateTokenDetailed] and only act on [TokenValidationResult.INVALID].
+     */
+    suspend fun validateToken(forceRefresh: Boolean = false, tokenOverride: String? = null): Boolean =
+        validateTokenDetailed(forceRefresh, tokenOverride) == TokenValidationResult.VALID
+
+    /**
+     * Validates the stored (or supplied) token and reports a three-state result:
+     * VALID (server accepted it), INVALID (server rejected it — 401/403, safe to
+     * log out), or UNREACHABLE (no token, no server URL, or a network/server
+     * error — must NOT trigger a logout, the token may still be good).
+     */
+    suspend fun validateTokenDetailed(
+        forceRefresh: Boolean = false,
+        tokenOverride: String? = null,
+    ): TokenValidationResult {
         return withContext(Dispatchers.IO) {
             try {
-                // Try to restore token from secure storage
                 val token = tokenOverride ?: settingsManager.getAuthToken()
-                if (token.isNullOrEmpty()) return@withContext false
+                // No token at all is "nothing to validate", not a server
+                // rejection — report UNREACHABLE so it never drives a logout.
+                if (token.isNullOrEmpty()) return@withContext TokenValidationResult.UNREACHABLE
+
+                // Without a server URL the only request we could make would hit
+                // the placeholder base URL (http://localhost) and fail. That is
+                // not an auth failure, so report UNREACHABLE and never log out.
+                if (settingsManager.currentSettings.serverUrl.isBlank()) {
+                    return@withContext TokenValidationResult.UNREACHABLE
+                }
 
                 authInterceptor.setToken(token)
 
@@ -151,19 +209,18 @@ class ApiService @Inject constructor(
                     result
                 }
             } catch (e: Exception) {
-                false
+                // Network/transport error — unreachable, not unauthorized.
+                TokenValidationResult.UNREACHABLE
             }
         }
     }
 
-    private suspend fun validateTokenWithLightweightEndpoint(): Boolean {
+    private suspend fun validateTokenWithLightweightEndpoint(): TokenValidationResult {
         val response = try {
             api.authorize()
         } catch (e: Exception) {
-            return false
+            return TokenValidationResult.UNREACHABLE
         }
-
-        if (response.isSuccessful) return true
 
         // Some Audiobookshelf servers may not expose /api/authorize.
         // Fall back to /api/me (heavier payload), but cached/debounced above.
@@ -171,19 +228,19 @@ class ApiService @Inject constructor(
             return fallbackValidateTokenViaProfileSync()
         }
 
-        return false
+        return classifyValidationStatus(response.code())
     }
 
-    private suspend fun fallbackValidateTokenViaProfileSync(): Boolean {
+    private suspend fun fallbackValidateTokenViaProfileSync(): TokenValidationResult {
         val response = try {
             api.getMe()
         } catch (e: Exception) {
-            return false
+            return TokenValidationResult.UNREACHABLE
         }
-        return response.isSuccessful
+        return classifyValidationStatus(response.code())
     }
 
-    private fun getCachedValidation(token: String, forceRefresh: Boolean): Boolean? {
+    private fun getCachedValidation(token: String, forceRefresh: Boolean): TokenValidationResult? {
         if (forceRefresh) return null
         val cachedResult = lastValidationResult ?: return null
         val isSameToken = token == lastValidatedToken
@@ -191,7 +248,12 @@ class ApiService @Inject constructor(
         return if (isSameToken && isFresh) cachedResult else null
     }
 
-    private fun cacheValidation(token: String, result: Boolean) {
+    private fun cacheValidation(token: String, result: TokenValidationResult) {
+        // Only cache definitive verdicts. UNREACHABLE is transient: caching it
+        // would make a forced foreground reachability check return the stale
+        // "unreachable" answer for up to the debounce window even after the
+        // server comes back, delaying recovery.
+        if (result == TokenValidationResult.UNREACHABLE) return
         lastValidatedToken = token
         lastValidationResult = result
         lastValidationAtMs = System.currentTimeMillis()
@@ -247,6 +309,10 @@ class ApiService @Inject constructor(
                     allItems.addAll(body.results.map { mapToAudioBook(it, libraryId) })
 
                     if (allItems.size >= body.total) break
+                    // A page smaller than the requested limit is the last page.
+                    // This also guarantees termination if a misbehaving server
+                    // keeps reporting a `total` larger than it ever delivers.
+                    if (body.results.size < limit) break
                     currentPage++
                 }
 

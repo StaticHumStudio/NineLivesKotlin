@@ -138,7 +138,12 @@ class ConnectivityMonitor @Inject constructor(
         pingJob = scope.launch {
             while (isActive) {
                 delay(60_000)
-                checkServerReachable()
+                // Route through launchReachabilityCheck so the periodic ping
+                // shares the single-flight cancellation with the callback- and
+                // foreground-driven checks. Calling checkServerReachable()
+                // directly let two checks race and the slower (stale) one win
+                // the last write to _isServerReachable.
+                launchReachabilityCheck()
             }
         }
     }
@@ -211,8 +216,14 @@ class ConnectivityMonitor @Inject constructor(
      * connection state within seconds instead of waiting up to 60s.
      */
     fun onAppForegrounded() {
+        // Never backgrounded yet (first foreground after cold start): there are
+        // no stale connections to evict, and startMonitoring() already runs the
+        // initial reachability check. Skip to avoid a pointless eviction and a
+        // bogus "background=<epoch>ms" log line.
+        if (backgroundedAt == 0L) return
+
         val elapsed = System.currentTimeMillis() - backgroundedAt
-        if (backgroundedAt > 0 && elapsed < MIN_BACKGROUND_DURATION_MS) return
+        if (elapsed < MIN_BACKGROUND_DURATION_MS) return
 
         Log.d(TAG, "onAppForegrounded: background=${elapsed}ms — evicting stale connections")
 

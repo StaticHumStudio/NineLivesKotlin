@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.TokenValidationResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -227,21 +228,41 @@ class SettingsViewModel @Inject constructor(
             )
         }
 
-        // Check if already connected by validating stored token
+        // Check if already connected by validating stored token. Only an
+        // explicit INVALID verdict (server rejected the token) clears it — a
+        // transient UNREACHABLE must keep the token so the user stays signed in
+        // and reconnects automatically once the server is back.
         val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
         if (hasToken) {
             try {
-                val valid = apiService.validateToken()
-                _uiState.update {
-                    it.copy(
-                        isConnected = valid,
-                        connectionStatusText = if (valid) "Connected to ${settings.serverUrl}" else "Session expired — please reconnect",
-                    )
-                }
-                if (valid) {
-                    loadLibraries()
-                } else {
-                    apiService.logout()
+                when (apiService.validateTokenDetailed()) {
+                    TokenValidationResult.VALID -> {
+                        _uiState.update {
+                            it.copy(
+                                isConnected = true,
+                                connectionStatusText = "Connected to ${settings.serverUrl}",
+                            )
+                        }
+                        loadLibraries()
+                    }
+                    TokenValidationResult.INVALID -> {
+                        _uiState.update {
+                            it.copy(
+                                isConnected = false,
+                                connectionStatusText = "Session expired — please reconnect",
+                            )
+                        }
+                        apiService.logout()
+                    }
+                    TokenValidationResult.UNREACHABLE -> {
+                        // Keep the token; just reflect that we couldn't reach the server.
+                        _uiState.update {
+                            it.copy(
+                                isConnected = false,
+                                connectionStatusText = "Server unreachable — will retry automatically",
+                            )
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 _uiState.update {
@@ -622,11 +643,17 @@ class SettingsViewModel @Inject constructor(
                 )
             }
 
+            // Re-read the latest field values inside the coroutine. The snapshot
+            // captured before launch can be stale if the user edited the URL,
+            // username, or token between tapping Connect and this point, which
+            // would otherwise log in to (and persist) the wrong server.
+            val s = _uiState.value
+
             try {
-                val success = if (state.useApiToken) {
-                    apiService.loginWithToken(state.serverUrl, state.apiToken)
+                val success = if (s.useApiToken) {
+                    apiService.loginWithToken(s.serverUrl, s.apiToken)
                 } else {
-                    apiService.login(state.serverUrl, state.username, state.password)
+                    apiService.login(s.serverUrl, s.username, s.password)
                 }
 
                 if (success) {
@@ -634,7 +661,7 @@ class SettingsViewModel @Inject constructor(
                         it.copy(
                             isConnected = true,
                             isConnecting = false,
-                            connectionStatusText = "Connected to ${state.serverUrl}",
+                            connectionStatusText = "Connected to ${s.serverUrl}",
                             successMessage = "Successfully connected!",
                             password = "",
                             apiToken = "", // Clear token after successful login
@@ -644,9 +671,9 @@ class SettingsViewModel @Inject constructor(
                     // Save settings
                     settingsManager.updateSettings {
                         it.copy(
-                            serverUrl = state.serverUrl,
-                            username = if (state.useApiToken) "" else state.username,
-                            useApiToken = state.useApiToken,
+                            serverUrl = s.serverUrl,
+                            username = if (s.useApiToken) "" else s.username,
+                            useApiToken = s.useApiToken,
                         )
                     }
 
@@ -662,7 +689,7 @@ class SettingsViewModel @Inject constructor(
                             isConnecting = false,
                             connectionStatusText = "Connection failed",
                             errorMessage = apiService.lastError
-                                ?: if (state.useApiToken) "Invalid API token."
+                                ?: if (s.useApiToken) "Invalid API token."
                                    else "Login failed. Check your credentials and server URL.",
                         )
                     }
@@ -884,28 +911,33 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(isCollectingReport = true) }
 
         viewModelScope.launch {
-            val subject = "${state.reportType.subjectPrefix} ${getAppVersion()}"
-            val diagnostics = buildDiagnostics(state)
-            val logs = if (state.includeLogsInReport) collectLogcat() else null
+            try {
+                val subject = "${state.reportType.subjectPrefix} ${getAppVersion()}"
+                val diagnostics = buildDiagnostics(state)
+                val logs = if (state.includeLogsInReport) collectLogcat() else null
 
-            val body = buildString {
-                appendLine("--- ${state.reportType.label} ---")
-                appendLine()
-                appendLine("[Describe the issue or request here]")
-                appendLine()
-                appendLine()
-                appendLine("─── Device & App Info ───")
-                append(diagnostics)
-                if (logs != null) {
+                val body = buildString {
+                    appendLine("--- ${state.reportType.label} ---")
+                    appendLine()
+                    appendLine("[Describe the issue or request here]")
                     appendLine()
                     appendLine()
-                    appendLine("─── Recent Logs (last 500 lines) ───")
-                    appendLine(logs)
+                    appendLine("─── Device & App Info ───")
+                    append(diagnostics)
+                    if (logs != null) {
+                        appendLine()
+                        appendLine()
+                        appendLine("─── Recent Logs (last 500 lines) ───")
+                        appendLine(logs)
+                    }
                 }
-            }
 
-            _uiState.update { it.copy(isCollectingReport = false) }
-            onReady(subject, body)
+                onReady(subject, body)
+            } finally {
+                // Always clear the flag so the "collecting" spinner can never get
+                // stuck if the build throws or the coroutine is cancelled.
+                _uiState.update { it.copy(isCollectingReport = false) }
+            }
         }
     }
 

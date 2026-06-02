@@ -13,6 +13,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -216,13 +217,18 @@ class NightwatchDossierViewModel @Inject constructor(
         loadDossier()
     }
 
+    private var loadJob: Job? = null
+
     fun onPeriodChanged(period: DossierPeriod) {
         _uiState.update { it.copy(selectedPeriod = period, isLoading = true) }
-        viewModelScope.launch { loadDossier() }
+        loadDossier()
     }
 
     private fun loadDossier() {
-        viewModelScope.launch {
+        // Cancel any in-flight load so rapid period switches cannot let a slower
+        // earlier load finish last and overwrite the newest selection with stale data.
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
 
             val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL

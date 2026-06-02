@@ -41,6 +41,22 @@ class DownloadsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    // Most recent live byte counts per download id, keyed by download id. The DAO
+    // row lags behind the live download stream, so we overlay these whenever the
+    // active list is (re)built — otherwise a DB-driven rebuild snaps the progress
+    // bar backward to the last persisted byte count. Only touched from
+    // viewModelScope collectors (Main dispatcher), so no synchronization needed.
+    private var liveProgress: Map<String, Pair<Long, Long>> = emptyMap()
+
+    private fun DownloadUiItem.withLiveProgress(): DownloadUiItem {
+        val live = liveProgress[download.id] ?: return this
+        // Keep whichever byte count is further along so a stale live entry can
+        // never drag a freshly-persisted DB value backward.
+        val downloaded = maxOf(download.downloadedBytes, live.first)
+        val total = maxOf(download.totalBytes, live.second)
+        return copy(download = download.copy(downloadedBytes = downloaded, totalBytes = total))
+    }
+
     init {
         // Observe active downloads
         viewModelScope.launch {
@@ -53,8 +69,12 @@ class DownloadsViewModel @Inject constructor(
                     DownloadUiItem(
                         download = item,
                         coverPath = book.coverPath,
-                    )
+                    ).withLiveProgress()
                 }
+                // Drop live entries for downloads that are no longer active so the
+                // overlay map cannot grow without bound.
+                val activeIds = items.mapTo(HashSet()) { it.download.id }
+                liveProgress = liveProgress.filterKeys { it in activeIds }
                 _uiState.update {
                     it.copy(
                         activeDownloads = items,
@@ -89,6 +109,9 @@ class DownloadsViewModel @Inject constructor(
         // Observe progress updates
         viewModelScope.launch {
             downloadManager.progressUpdates.collect { progress ->
+                // Record the live byte counts so a later DB-driven rebuild keeps them.
+                liveProgress = liveProgress + (progress.downloadId to
+                    (progress.downloadedBytes to progress.totalBytes))
                 _uiState.update { state ->
                     state.copy(
                         activeDownloads = state.activeDownloads.map { uiItem ->

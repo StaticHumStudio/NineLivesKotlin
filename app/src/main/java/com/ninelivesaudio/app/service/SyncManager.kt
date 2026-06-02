@@ -85,6 +85,11 @@ class SyncManager @Inject constructor(
             while (isActive) {
                 delay(DEFAULT_SYNC_INTERVAL_MS)
                 syncNow()
+                // Also retry the offline queue here. The rising-edge flush only
+                // fires once per reconnect, so a push that failed right after
+                // reconnect would otherwise sit queued until the next full
+                // disconnect/reconnect cycle.
+                flushOfflineQueue()
             }
         }
 
@@ -138,6 +143,9 @@ class SyncManager @Inject constructor(
             syncLibraries()
 
             _syncCompleted.tryEmit(Unit)
+        } catch (e: CancellationException) {
+            // Don't swallow cancellation — let structured concurrency unwind.
+            throw e
         } catch (e: Exception) {
             // Non-fatal — log and continue
         } finally {
@@ -369,6 +377,9 @@ class SyncManager @Inject constructor(
      */
     private suspend fun flushOfflineQueue() {
         if (!hasAuthToken()) return
+        // Never push to a server while in LOCAL mode. (The rising-edge caller
+        // already gates on this; guard here too since the periodic loop also calls us.)
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
         try {
             val count = progressRepository.getPendingProgressCount()
             if (count > 0) {

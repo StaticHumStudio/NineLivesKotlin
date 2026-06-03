@@ -376,8 +376,13 @@ class PlaybackService : MediaLibraryService() {
                             val items = (0 until itemCount).map {
                                 player.getMediaItemAt(it)
                             }
+                            // currentPosition is relative to the CURRENT media item
+                            // (track), so the start index must be the current item
+                            // index, not 0. For a multi-track book resumed mid-way,
+                            // returning index 0 with a track-relative position hands
+                            // Auto an inconsistent (index, position) pair.
                             MediaSession.MediaItemsWithStartPosition(
-                                items, 0, player.currentPosition
+                                items, player.currentMediaItemIndex, player.currentPosition
                             )
                         } else {
                             Log.w(TAG, "onSetMediaItems: player empty after load, falling back to original items")

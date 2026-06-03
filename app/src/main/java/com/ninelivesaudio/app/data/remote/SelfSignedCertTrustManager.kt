@@ -39,15 +39,6 @@ import javax.net.ssl.X509TrustManager
 object SelfSignedCertTrustManager {
     private const val TAG = "SelfSignedTrustManager"
 
-    /**
-     * Fingerprint staged during [checkServerTrusted] but not yet persisted.
-     * Only committed to storage in the [hostnameVerifier] callback after the
-     * actual peer hostname has been confirmed to match the configured server.
-     * This prevents redirect/interception from poisoning the TOFU trust store.
-     */
-    @Volatile
-    private var pendingTofuFingerprint: Pair<String, String>? = null // (host, fingerprint)
-
     class CertificateFingerprintMismatchException(
         val host: String,
         val expectedFingerprint: String,
@@ -104,11 +95,11 @@ object SelfSignedCertTrustManager {
                 val trustedFingerprint = settingsManager.getTrustedCertificateFingerprint(configuredHost)
 
                 if (trustedFingerprint == null) {
-                    // Stage for enrollment — actual persistence happens in hostnameVerifier
-                    // after the peer hostname is confirmed. This prevents a redirect or
-                    // interception to a different host from poisoning the stored fingerprint.
-                    pendingTofuFingerprint = configuredHost to fingerprint
-                    Log.i(TAG, "TOFU staged fingerprint for host=$configuredHost (awaiting hostname verification)")
+                    // First-time connection: accept here. Enrollment happens in the
+                    // hostnameVerifier from this session's own peer certificate, so it
+                    // is bound to the verified hostname and the actual handshake — no
+                    // shared cross-connection state to race or poison.
+                    Log.i(TAG, "TOFU first contact for host=$configuredHost (enrollment pending hostname verification)")
                     return
                 }
 
@@ -133,7 +124,7 @@ object SelfSignedCertTrustManager {
 
         sslSocketFactory(sslContext.socketFactory, trustManager)
 
-        hostnameVerifier { hostname, _ ->
+        hostnameVerifier { hostname, session ->
             val currentSettings = settingsManager.currentSettings
             val serverUrl = currentSettings.serverUrl
             if (serverUrl.isEmpty()) return@hostnameVerifier false
@@ -141,24 +132,34 @@ object SelfSignedCertTrustManager {
             try {
                 val configuredHost = URI(serverUrl).host
                 val matches = hostname.equals(configuredHost, ignoreCase = true)
+                if (!matches) return@hostnameVerifier false
 
-                // Commit the staged TOFU fingerprint now that hostname is confirmed.
-                // If the hostname doesn't match, the pending fingerprint is discarded
-                // so a redirect/interception can't poison the trust store.
-                val pending = pendingTofuFingerprint
-                if (pending != null) {
-                    if (matches && pending.first.equals(configuredHost, ignoreCase = true)) {
-                        settingsManager.saveTrustedCertificateFingerprint(pending.first, pending.second)
-                        Log.i(TAG, "TOFU enrolled fingerprint for host=${pending.first} after hostname verification")
-                    } else {
-                        Log.w(TAG, "TOFU enrollment discarded: hostname mismatch (peer=$hostname, configured=$configuredHost)")
+                // Enroll TOFU here, from THIS session's own peer certificate, only
+                // if nothing is stored yet. Deriving the fingerprint from the
+                // verified session (rather than a shared field set during
+                // checkServerTrusted) ties it to this exact handshake and hostname,
+                // so concurrent first-time handshakes can't enroll each other's cert.
+                // Wrapped separately so an enrollment hiccup never blocks a valid connection.
+                try {
+                    val normalizedHost = configuredHost?.lowercase()
+                    if (!normalizedHost.isNullOrEmpty() &&
+                        settingsManager.getTrustedCertificateFingerprint(normalizedHost) == null
+                    ) {
+                        val leaf = session.peerCertificates.firstOrNull() as? X509Certificate
+                        if (leaf != null) {
+                            settingsManager.saveTrustedCertificateFingerprint(
+                                normalizedHost,
+                                leaf.sha256Fingerprint(),
+                            )
+                            Log.i(TAG, "TOFU enrolled fingerprint for host=$normalizedHost from verified session")
+                        }
                     }
-                    pendingTofuFingerprint = null
+                } catch (e: Exception) {
+                    Log.w(TAG, "TOFU enrollment skipped: ${e.message}")
                 }
 
-                matches
+                true
             } catch (_: Exception) {
-                pendingTofuFingerprint = null
                 false
             }
         }

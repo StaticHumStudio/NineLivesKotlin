@@ -202,7 +202,11 @@ class DownloadManager @Inject constructor(
     // ─── Download Processing ─────────────────────────────────────────────────
 
     private fun launchDownload(item: DownloadItem, audioBook: AudioBook) {
-        val job = scope.launch {
+        // Start lazily so we can atomically claim the activeJobs slot BEFORE the
+        // coroutine runs. Two quick resume/queue calls for the same id would
+        // otherwise both run processDownload, writing the same .part file and
+        // orphaning the first (uncancellable) job. putIfAbsent makes the claim race-free.
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 semaphore.acquire()
                 processDownload(item, audioBook)
@@ -211,7 +215,14 @@ class DownloadManager @Inject constructor(
                 activeJobs.remove(item.id)
             }
         }
-        activeJobs[item.id] = job
+        val existing = activeJobs.putIfAbsent(item.id, job)
+        if (existing != null) {
+            // Another job for this id is already active — drop this duplicate.
+            job.cancel()
+            Log.w(TAG, "launchDownload: download ${item.id} already active, ignoring duplicate")
+        } else {
+            job.start()
+        }
     }
 
     private suspend fun processDownload(item: DownloadItem, audioBook: AudioBook) {
@@ -286,6 +297,11 @@ class DownloadManager @Inject constructor(
 
                     val response = api.getAudioFileStream(book.id, audioFile.ino)
                     if (!response.isSuccessful || response.body() == null) {
+                        // Close the (error) body so the streaming connection is
+                        // returned to the pool instead of leaking a socket/fd on
+                        // every failed attempt (e.g. 401 after token expiry).
+                        response.errorBody()?.close()
+                        response.body()?.close()
                         throw Exception("HTTP ${response.code()}: Failed to download $fileName")
                     }
 

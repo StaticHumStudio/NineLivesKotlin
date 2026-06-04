@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.ui.settings.SettingsScreen
  */
 object Routes {
     const val HOME = "home"
+    const val WELCOME = "welcome"
     const val LIBRARY = "library"
     const val PLAYER = "player"
     const val DOWNLOADS = "downloads"

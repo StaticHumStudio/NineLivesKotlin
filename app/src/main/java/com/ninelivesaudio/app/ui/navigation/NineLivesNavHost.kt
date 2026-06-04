@@ -55,6 +55,7 @@ fun NineLivesNavHost(
             fun goToSettings() {
                 navController.navigate(Routes.SETTINGS) {
                     popUpTo(Routes.WELCOME) { inclusive = true }
+                    launchSingleTop = true
                 }
             }
             WelcomeScreen(

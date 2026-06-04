@@ -4,7 +4,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class AppSettings(
-    val appMode: AppMode = AppMode.AUDIOBOOKSHELF,
+    val appMode: AppMode = AppMode.LOCAL,
+    val onboardingComplete: Boolean = false,
     val serverUrl: String = "",
     val username: String = "",
     val useApiToken: Boolean = false, // true = API token login, false = username/password

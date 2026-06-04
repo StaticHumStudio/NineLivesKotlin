@@ -64,6 +64,10 @@ class SettingsManager @Inject constructor(
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
+    private val _isLoaded = MutableStateFlow(false)
+    /** Becomes true once [loadSettings] has finished its first read (success or fallback). */
+    val isLoaded: StateFlow<Boolean> = _isLoaded.asStateFlow()
+
     val currentSettings: AppSettings
         get() = _settings.value
 
@@ -117,6 +121,8 @@ class SettingsManager @Inject constructor(
             val defaults = AppSettings(downloadPath = defaultDownloadPath())
             _settings.value = defaults
             defaults
+        } finally {
+            _isLoaded.value = true
         }
     }
 

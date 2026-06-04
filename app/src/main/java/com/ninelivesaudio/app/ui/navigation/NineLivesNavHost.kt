@@ -9,11 +9,15 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailScreen
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierScreen
 import com.ninelivesaudio.app.ui.downloads.DownloadsScreen
 import com.ninelivesaudio.app.ui.home.HomeScreen
 import com.ninelivesaudio.app.ui.library.LibraryScreen
+import com.ninelivesaudio.app.ui.onboarding.WelcomeScreen
+import com.ninelivesaudio.app.ui.onboarding.WelcomeViewModel
 import com.ninelivesaudio.app.ui.player.PlayerScreen
 import com.ninelivesaudio.app.ui.settings.LicensesScreen
 import com.ninelivesaudio.app.ui.settings.SettingsScreen
@@ -38,13 +42,33 @@ object Routes {
 @Composable
 fun NineLivesNavHost(
     navController: NavHostController,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    startDestination: String = Routes.HOME,
 ) {
     NavHost(
         navController = navController,
-        startDestination = Routes.HOME,
+        startDestination = startDestination,
         modifier = modifier
     ) {
+        composable(Routes.WELCOME) {
+            val welcomeViewModel: WelcomeViewModel = hiltViewModel()
+            fun goToSettings() {
+                navController.navigate(Routes.SETTINGS) {
+                    popUpTo(Routes.WELCOME) { inclusive = true }
+                }
+            }
+            WelcomeScreen(
+                onChooseLocal = {
+                    welcomeViewModel.choose(AppMode.LOCAL)
+                    goToSettings()
+                },
+                onChooseServer = {
+                    welcomeViewModel.choose(AppMode.AUDIOBOOKSHELF)
+                    goToSettings()
+                },
+            )
+        }
+
         composable(Routes.HOME) {
             HomeScreen(
                 onNavigateToLibrary = {

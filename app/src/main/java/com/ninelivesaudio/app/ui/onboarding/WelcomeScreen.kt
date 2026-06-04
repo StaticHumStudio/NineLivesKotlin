@@ -26,7 +26,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextMuted
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextPrimary
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveVoidSurface

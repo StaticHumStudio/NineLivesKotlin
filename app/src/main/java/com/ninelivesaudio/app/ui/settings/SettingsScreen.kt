@@ -924,6 +924,7 @@ private fun ServerConnectionGuide(
                 style = MaterialTheme.typography.bodyMedium,
                 color = GoldFilament,
                 fontWeight = FontWeight.SemiBold,
+                textDecoration = TextDecoration.Underline,
                 modifier = Modifier.clickable { onOpenSite() },
             )
         }

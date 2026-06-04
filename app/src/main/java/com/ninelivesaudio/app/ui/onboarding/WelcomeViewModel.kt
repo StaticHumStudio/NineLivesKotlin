@@ -13,10 +13,15 @@ class WelcomeViewModel @Inject constructor(
     private val settingsManager: SettingsManager,
 ) : ViewModel() {
 
-    /** Persist the first-run source choice and mark onboarding complete. */
-    fun choose(mode: AppMode) {
+    /**
+     * Persist the first-run source choice and mark onboarding complete, then invoke
+     * [onPersisted]. Navigation must wait for persistence so the destination screen
+     * (Settings) initializes from the chosen mode rather than the previous default.
+     */
+    fun choose(mode: AppMode, onPersisted: () -> Unit) {
         viewModelScope.launch {
             settingsManager.updateSettings { applyOnboardingChoice(it, mode) }
+            onPersisted()
         }
     }
 }

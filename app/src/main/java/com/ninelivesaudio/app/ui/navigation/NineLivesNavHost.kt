@@ -60,12 +60,10 @@ fun NineLivesNavHost(
             }
             WelcomeScreen(
                 onChooseLocal = {
-                    welcomeViewModel.choose(AppMode.LOCAL)
-                    goToSettings()
+                    welcomeViewModel.choose(AppMode.LOCAL) { goToSettings() }
                 },
                 onChooseServer = {
-                    welcomeViewModel.choose(AppMode.AUDIOBOOKSHELF)
-                    goToSettings()
+                    welcomeViewModel.choose(AppMode.AUDIOBOOKSHELF) { goToSettings() }
                 },
             )
         }

@@ -39,6 +39,7 @@ import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperContext
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperHost
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperOnEnter
 import com.ninelivesaudio.app.ui.navigation.BottomNavBar
+import com.ninelivesaudio.app.ui.navigation.startDestinationFor
 import com.ninelivesaudio.app.ui.navigation.LeftNavRail
 import com.ninelivesaudio.app.ui.navigation.NineLivesNavHost
 import com.ninelivesaudio.app.ui.navigation.Routes
@@ -82,6 +83,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             // Observe settings for Unhinged Mode
             val appSettings by settingsManager.settings.collectAsStateWithLifecycle()
+            val settingsLoaded by settingsManager.isLoaded.collectAsStateWithLifecycle()
 
             // Detect system reduce motion preference
             val systemReduceMotion = try {
@@ -111,11 +113,19 @@ class MainActivity : ComponentActivity() {
                     "reduceMotion=${unhingedSettings.reduceMotionRequested}")
 
             NineLivesAudioTheme(unhingedSettings = unhingedSettings) {
+                if (!settingsLoaded) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        CosmicBackgroundGradient()
+                    }
+                    return@NineLivesAudioTheme
+                }
+
                 val navController = rememberNavController()
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = navBackStackEntry?.destination?.route
                 val screenWidthDp = LocalConfiguration.current.screenWidthDp
                 val useRailNavigation = screenWidthDp >= 720
+                val startDestination = startDestinationFor(appSettings.onboardingComplete)
 
                 // WhisperHost wraps all content to show atmospheric whisper overlays
                 WhisperHost(modifier = Modifier.fillMaxSize()) {
@@ -155,6 +165,7 @@ class MainActivity : ComponentActivity() {
                                 Column(modifier = Modifier.fillMaxSize()) {
                                     NineLivesNavHost(
                                         navController = navController,
+                                        startDestination = startDestination,
                                         modifier = Modifier.weight(1f)
                                     )
                                     if (currentRoute != Routes.PLAYER) {

@@ -164,6 +164,10 @@ fun SettingsScreen(
                 }
             } else {
             SettingsGroup(title = "Connection") {
+                ServerConnectionGuide(
+                    startExpanded = serverGuideStartsExpanded(isConnected = uiState.isConnected),
+                    onOpenSite = { uriHandler.openUri("https://www.audiobookshelf.org") },
+                )
                 // Connection status
                 Row(
                     modifier = Modifier
@@ -835,11 +839,12 @@ private fun SourceModeToggle(
     }
 }
 
-// ─── Local Loading Guide ──────────────────────────────────────────────────
+// ─── Collapsible Guide Scaffold ───────────────────────────────────────────
 
 @Composable
-private fun LocalLoadingGuide(
+private fun CollapsibleGuide(
     startExpanded: Boolean,
+    content: @Composable () -> Unit,
 ) {
     var expanded by remember(startExpanded) { mutableStateOf(startExpanded) }
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -865,18 +870,62 @@ private fun LocalLoadingGuide(
             )
         }
         AnimatedVisibility(visible = expanded) {
+            content()
+        }
+    }
+}
+
+// ─── Local Loading Guide ──────────────────────────────────────────────────
+
+@Composable
+private fun LocalLoadingGuide(
+    startExpanded: Boolean,
+) {
+    CollapsibleGuide(startExpanded = startExpanded) {
+        Text(
+            text = "Point Nine Lives at one folder that holds your audiobooks. " +
+                "Two ways to arrange what’s inside:\n\n" +
+                "• A folder per book — each book gets its own folder of audio files. " +
+                "The folder name becomes the title. For multi-part books, tag the tracks " +
+                "or name them 01, 02… so they play in order. Drop a cover.jpg or folder.jpg in for art.\n\n" +
+                "• Single files — a lone .m4b or .mp3 sitting loose in that folder becomes its own book.\n\n" +
+                "Only the top folder is read, one level down. " +
+                "Supported: m4b, m4a, mp3, opus, ogg, flac, aac, wma, wav.",
+            style = MaterialTheme.typography.bodySmall,
+            color = ArchiveTextMuted,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+// ─── Server Connection Guide ──────────────────────────────────────────────
+
+@Composable
+private fun ServerConnectionGuide(
+    startExpanded: Boolean,
+    onOpenSite: () -> Unit,
+) {
+    CollapsibleGuide(startExpanded = startExpanded) {
+        Column(
+            modifier = Modifier.padding(top = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Text(
-                text = "Point Nine Lives at one folder that holds your audiobooks. " +
-                    "Two ways to arrange what’s inside:\n\n" +
-                    "• A folder per book — each book gets its own folder of audio files. " +
-                    "The folder name becomes the title. For multi-part books, tag the tracks " +
-                    "or name them 01, 02… so they play in order. Drop a cover.jpg or folder.jpg in for art.\n\n" +
-                    "• Single files — a lone .m4b or .mp3 sitting loose in that folder becomes its own book.\n\n" +
-                    "Only the top folder is read, one level down. " +
-                    "Supported: m4b, m4a, mp3, opus, ogg, flac, aac, wma, wav.",
+                text = "Audiobookshelf is a free, open-source media server you host yourself, " +
+                    "on a home PC, a NAS, or a small box. It keeps your audiobooks and podcasts " +
+                    "in one place and tracks your progress. Point Nine Lives at your server’s " +
+                    "address and sign in, and your library streams here with progress synced " +
+                    "across your devices.\n\nNew to it? Set up a server first, then come back and connect.",
                 style = MaterialTheme.typography.bodySmall,
                 color = ArchiveTextMuted,
-                modifier = Modifier.padding(top = 4.dp),
+            )
+            Text(
+                text = "Open audiobookshelf.org",
+                style = MaterialTheme.typography.bodyMedium,
+                color = GoldFilament,
+                fontWeight = FontWeight.SemiBold,
+                textDecoration = TextDecoration.Underline,
+                modifier = Modifier.clickable { onOpenSite() },
             )
         }
     }

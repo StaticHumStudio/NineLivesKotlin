@@ -138,6 +138,11 @@ fun SettingsScreen(
             // ═════════════════════════════════════════════════════════════════
             if (uiState.appMode == AppMode.LOCAL) {
                 SettingsGroup(title = "Local Folders") {
+                    LocalLoadingGuide(
+                        startExpanded = localGuideStartsExpanded(
+                            hasLocalLibraries = uiState.localLibraries.isNotEmpty(),
+                        ),
+                    )
                     LocalFoldersSection(
                         localLibraries = uiState.localLibraries,
                         selectedLocalLibrary = uiState.selectedLocalLibrary,
@@ -826,6 +831,53 @@ private fun SourceModeToggle(
                     ),
                 )
             }
+        }
+    }
+}
+
+// ─── Local Loading Guide ──────────────────────────────────────────────────
+
+@Composable
+private fun LocalLoadingGuide(
+    startExpanded: Boolean,
+) {
+    var expanded by remember(startExpanded) { mutableStateOf(startExpanded) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "How it works",
+                style = MaterialTheme.typography.bodyMedium,
+                color = ArchiveTextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = ArchiveTextMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Text(
+                text = "Point Nine Lives at one folder that holds your audiobooks. " +
+                    "Two ways to arrange what’s inside:\n\n" +
+                    "• A folder per book — each book gets its own folder of audio files. " +
+                    "The folder name becomes the title. For multi-part books, tag the tracks " +
+                    "or name them 01, 02… so they play in order. Drop a cover.jpg in for art.\n\n" +
+                    "• Single files — a lone .m4b or .mp3 sitting loose in that folder becomes its own book.\n\n" +
+                    "Only the top folder is read, one level down. " +
+                    "Supported: m4b, m4a, mp3, opus, ogg, flac, aac, wma, wav.",
+                style = MaterialTheme.typography.bodySmall,
+                color = ArchiveTextMuted,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }

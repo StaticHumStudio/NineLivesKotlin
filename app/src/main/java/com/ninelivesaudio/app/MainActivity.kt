@@ -135,7 +135,7 @@ class MainActivity : ComponentActivity() {
                     Scaffold(
                         modifier = Modifier.fillMaxSize(),
                         bottomBar = {
-                            if (!useRailNavigation) {
+                            if (!useRailNavigation && currentRoute != Routes.WELCOME) {
                                 BottomNavBar(
                                     navController = navController,
                                     appMode = appSettings.appMode,
@@ -148,7 +148,7 @@ class MainActivity : ComponentActivity() {
                                 .fillMaxSize()
                                 .padding(innerPadding)
                         ) {
-                            if (useRailNavigation) {
+                            if (useRailNavigation && currentRoute != Routes.WELCOME) {
                                 LeftNavRail(
                                     navController = navController,
                                     modifier = Modifier.width(72.dp),
@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
                                         startDestination = startDestination,
                                         modifier = Modifier.weight(1f)
                                     )
-                                    if (currentRoute != Routes.PLAYER) {
+                                    if (currentRoute != Routes.PLAYER && currentRoute != Routes.WELCOME) {
                                         MiniPlayer(
                                             playbackManager = playbackManager,
                                             onNavigateToPlayer = {

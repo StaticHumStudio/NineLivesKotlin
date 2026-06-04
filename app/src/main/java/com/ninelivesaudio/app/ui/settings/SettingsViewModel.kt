@@ -53,7 +53,7 @@ class SettingsViewModel @Inject constructor(
 
     data class UiState(
         // Mode
-        val appMode: AppMode = AppMode.AUDIOBOOKSHELF,
+        val appMode: AppMode = AppMode.LOCAL,
 
         // Connection
         val serverUrl: String = "",

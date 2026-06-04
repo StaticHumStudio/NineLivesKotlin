@@ -15,4 +15,14 @@ class LocalGuideStateTest {
     fun `guide starts collapsed once a library exists`() {
         assertFalse(localGuideStartsExpanded(hasLocalLibraries = true))
     }
+
+    @Test
+    fun `server guide starts expanded when not connected`() {
+        assertTrue(serverGuideStartsExpanded(isConnected = false))
+    }
+
+    @Test
+    fun `server guide starts collapsed when connected`() {
+        assertFalse(serverGuideStartsExpanded(isConnected = true))
+    }
 }

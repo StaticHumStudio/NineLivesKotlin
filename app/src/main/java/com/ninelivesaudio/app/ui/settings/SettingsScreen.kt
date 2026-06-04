@@ -870,7 +870,7 @@ private fun LocalLoadingGuide(
                     "Two ways to arrange what’s inside:\n\n" +
                     "• A folder per book — each book gets its own folder of audio files. " +
                     "The folder name becomes the title. For multi-part books, tag the tracks " +
-                    "or name them 01, 02… so they play in order. Drop a cover.jpg in for art.\n\n" +
+                    "or name them 01, 02… so they play in order. Drop a cover.jpg or folder.jpg in for art.\n\n" +
                     "• Single files — a lone .m4b or .mp3 sitting loose in that folder becomes its own book.\n\n" +
                     "Only the top folder is read, one level down. " +
                     "Supported: m4b, m4a, mp3, opus, ogg, flac, aac, wma, wav.",

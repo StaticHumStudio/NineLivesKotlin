@@ -91,10 +91,13 @@ no dedicated ViewModel required).
 `NineLivesNavHost` (`.../ui/navigation/NineLivesNavHost.kt`):
 
 - Add `Routes.WELCOME = "welcome"`.
-- `startDestination` becomes conditional on the already-loaded settings:
+- `startDestination` becomes conditional on the loaded settings:
   `if (!settings.onboardingComplete) Routes.WELCOME else Routes.HOME`.
-  Settings are loaded in `Application.onCreate()`, so this read is synchronous and
-  causes no flicker.
+  Settings load asynchronously (`loadSettings()` runs off the main thread), so
+  `MainActivity` must wait for a "settings loaded" signal before choosing the
+  start destination, otherwise a returning user could briefly route to Welcome.
+  Add a `SettingsManager.isLoaded` StateFlow (set true when `loadSettings()`
+  finishes) and render only the background until it is true.
 - Add `composable(Routes.WELCOME)` wiring:
   - `onChooseLocal`: persist `appMode = LOCAL` + `onboardingComplete = true`,
     then `navigate(Routes.SETTINGS)` with `popUpTo(Routes.WELCOME) { inclusive = true }`.

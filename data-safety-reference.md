@@ -1,89 +1,156 @@
-# Google Play Data Safety Questionnaire — Reference Sheet
+# Nine Lives Audio Play Store Data Safety Reference
 
-> Use this as a guide when filling out the Data Safety section in Play Console.
-> Based on the app's privacy policy and actual data practices.
+Last updated: 2026-06-05
 
----
+Use this file as the source of truth when filling out the Play Console Data safety form for `com.ninelivesaudio.app`.
 
-## Overview Questions
+This is based on the current release code path, the live privacy URL, and the pre AAB Play compliance audit in `docs/play-store-compliance-audit-2026-06-04.md`.
 
-**Does your app collect or share any of the required user data types?**
-Yes — but only device-local and user-initiated.
+## Play Console Overview
 
-**Does your app use encryption to protect collected data?**
-Yes — credentials and auth tokens are encrypted with AES-256-GCM via EncryptedSharedPreferences.
+Question: Does the app collect or share any required user data types?
 
-**Do you provide a way for users to request data deletion?**
-Yes — users can clear app data or uninstall. Server data is managed on their own Audiobookshelf server.
+Answer: Yes.
 
----
+Reason: the app can transmit data off the device to the user configured Audiobookshelf server, and optional reports can be sent to Static Hum Studio by email.
 
-## Data Types to Declare
+Question: Is all user data encrypted in transit?
 
-### 1. Crash Logs (App info and performance > Crash logs)
+Recommended current answer: No.
 
-| Field | Value |
-|-------|-------|
-| Collected | Yes |
-| Shared | No |
-| Required or optional | Optional — user must actively choose to send each crash report |
-| Purpose | App functionality (crash diagnosis) |
-| Ephemeral | No (retained until issue is resolved, then deleted) |
-| User-initiated | Yes — opt-in dialog after each crash |
+Reason: HTTPS is the default for server setup, but the current build allows a user to explicitly configure an `http://` Audiobookshelf server for local or self hosted setups. If we want to answer Yes, the release build must block cleartext server URLs before submission.
 
-**Details:** Crash reports include stack trace, app version, device model, Android version, and available memory. Sent via user's email client to developer inbox. No auth tokens, server URLs, or audiobook content included.
+Question: Can users request deletion of collected data?
 
-### 2. Device or other IDs (Device or other IDs)
+Answer: Yes.
 
-| Field | Value |
-|-------|-------|
-| Collected | Yes |
-| Shared | No |
-| Required or optional | Required (for Audiobookshelf session identification) |
-| Purpose | App functionality |
-| Ephemeral | No |
+Reason: local app data can be deleted by clearing app data or uninstalling. Audiobookshelf data is controlled by the user on their own server. Crash reports and manual feedback emails sent to Static Hum Studio can be deleted by request at `Static@StaticHum.Studio`.
 
-**Details:** A randomly generated UUID, not tied to hardware identifiers (no IMEI, Android ID, etc.). Stored only on-device and sent to the user's own Audiobookshelf server for session tracking.
+Question: Is the app a Kids or Families app?
 
----
+Answer: No.
 
-## Data Types to NOT Declare
+## Data Types To Declare
 
-These are NOT collected and should be answered "No":
+### Personal Info, User IDs
+
+Collected: Yes, for server mode.
+
+Shared: Play Console judgment call.
+
+Required or optional: Required for Audiobookshelf server features.
+
+Purpose: App functionality.
+
+Notes: Audiobookshelf login uses user account identity on the server the user configured. Static Hum Studio does not receive this data. If Play treats the user configured Audiobookshelf server as a third party destination, mark this as shared. If Play treats this as a user directed first party destination, mark it as not shared.
+
+### App Activity, App Interactions
+
+Collected: Yes, for server mode.
+
+Shared: Play Console judgment call.
+
+Required or optional: Required for progress sync, bookmarks, listening sessions, and server library behavior.
+
+Purpose: App functionality.
+
+Notes: Playback progress, bookmarks, library requests, and session updates can be sent to the user's Audiobookshelf server. Static Hum Studio does not receive this data.
+
+### Device Or Other IDs
+
+Collected: Yes, for server mode.
+
+Shared: Play Console judgment call.
+
+Required or optional: Required for Audiobookshelf playback session behavior.
+
+Purpose: App functionality.
+
+Notes: The app generates a random install UUID. It is not an IMEI, Android ID, serial number, or hardware fingerprint. It can be sent to the user's Audiobookshelf server as the playback session device ID.
+
+### App Info And Performance, Crash Logs
+
+Collected: Yes.
+
+Shared: No.
+
+Required or optional: Optional.
+
+Purpose: App functionality.
+
+Notes: Crash reports are user initiated and sent through the user's email client to Static Hum Studio. ACRA prepares the report locally. It does not send through ACRA servers.
+
+Declare as optional because the user must choose to send each report.
+
+### App Info And Performance, Diagnostics
+
+Collected: Yes.
+
+Shared: No.
+
+Required or optional: Optional.
+
+Purpose: App functionality.
+
+Notes: Manual bug reports and upgrade requests include app version, build type, device manufacturer and model, Android version and API level, connection status text, and selected playback settings. Recent app logs can be attached only if the user turns on the optional log switch. The switch is off by default in the current release branch.
+
+## Data Types To Answer No
+
+Use No for these categories unless the app behavior changes before release:
 
 | Category | Reason |
-|----------|--------|
-| Location | Not collected |
-| Personal info (name, email, etc.) | Not collected by the app; credentials are for the user's own server |
-| Financial info | Not collected |
-| Health and fitness | Not collected |
-| Messages | Not collected |
+| --- | --- |
+| Approximate location | Not requested or transmitted |
+| Precise location | Not requested or transmitted |
+| Financial info | No payments, billing, or purchase tracking in app |
+| Health and fitness | Not used |
+| Messages | Not used |
 | Photos and videos | Not collected |
-| Audio files | Audiobook files are downloaded from user's own server, not collected by developer |
-| Files and docs | Not collected |
-| Calendar | Not collected |
-| Contacts | Not collected |
-| App activity (page views, etc.) | No analytics or usage tracking |
-| Web browsing history | Not collected |
-
----
+| Audio files | Audiobook files are downloaded from the user's server or accessed through SAF. The app does not upload audiobook files from the device |
+| Files and docs | SAF local library metadata stays on device |
+| Calendar | Not used |
+| Contacts | Not used |
+| Web browsing history | Not used |
+| Installed apps | Not used |
+| Search history | Local or server library search only. Static Hum Studio does not receive it |
+| Advertising ID | No ads or ad ID dependency found |
 
 ## Security Practices
 
-| Question | Answer |
-|----------|--------|
-| Is data encrypted in transit? | Yes — HTTPS to user's Audiobookshelf server (user-configurable; self-signed cert support is opt-in) |
-| Is data encrypted at rest? | Yes — credentials via AES-256-GCM EncryptedSharedPreferences |
-| Can users request data deletion? | Yes — clear app data or uninstall |
-| Does the app follow Google's Families Policy? | App is not targeted at children (COPPA disclosure in privacy policy) |
+Credentials and auth tokens are encrypted at rest through Android encrypted storage.
 
----
+Crash reports and manual feedback are sent by the user's email client.
 
-## Notes for Jeff
+Server traffic defaults to HTTPS, but user configured HTTP is currently allowed for local and self hosted servers. Because of that, answer No to "all user data encrypted in transit" unless cleartext server URLs are blocked before release.
 
-- The Play Console form is at: Play Console > Your App > App content > Data safety
-- Walk through each data type category and answer based on the table above
-- For "crash logs": select "Optional" and "User-initiated"
-- For "device IDs": select "Required" since the UUID is generated on first launch
-- The form will ask about third-party SDKs — ACRA sends via email (no ACRA servers involved)
-- Review the generated summary before publishing; it appears on the store listing
+Self signed certificate support is opt in and host scoped.
+
+## Privacy Policy URL
+
+Use:
+
+```text
+https://statichum.studio/apps/nine-lives/privacy
+```
+
+Do not use the old URL:
+
+```text
+https://statichum.studio/nine-lives-audio/privacy
+```
+
+The old URL returned 404 during the release audit.
+
+## Official References
+
+Target API requirements:
+
+https://support.google.com/googleplay/android-developer/answer/11926878
+
+Data Safety form guidance:
+
+https://support.google.com/googleplay/android-developer/answer/10787469
+
+User Data policy:
+
+https://support.google.com/googleplay/android-developer/answer/10144311

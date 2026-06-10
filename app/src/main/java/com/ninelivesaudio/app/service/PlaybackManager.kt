@@ -1067,6 +1067,7 @@ class PlaybackManager @Inject constructor(
 
     // ─── Player Listener ──────────────────────────────────────────────────
 
+    @OptIn(UnstableApi::class)
     private fun createPlayerListener() = object : Player.Listener {
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             // The audio sink just produced a usable session id (it is UNSET

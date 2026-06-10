@@ -61,8 +61,16 @@ fun SettingsScreen(
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data
             if (uri != null) {
-                val persistableFlags = (result.data?.flags ?: 0) and
-                    (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                val resultFlags = result.data?.flags ?: 0
+                val hasReadGrant = resultFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0
+                val hasWriteGrant = resultFlags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION != 0
+                val persistableFlags = when {
+                    hasReadGrant && hasWriteGrant ->
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    hasReadGrant -> Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    hasWriteGrant -> Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    else -> 0
+                }
 
                 if (persistableFlags == 0) {
                     viewModel.onLocalFolderPermissionFailed("The selected folder did not grant persistent access.")
@@ -1334,12 +1342,12 @@ private fun FeedbackSection(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Attach Logs",
+                    text = "Attach Optional Logs",
                     style = MaterialTheme.typography.bodyMedium,
                     color = ArchiveTextPrimary,
                 )
                 Text(
-                    text = "Include recent app logs for debugging",
+                    text = "Adds recent app logs to the email report",
                     style = MaterialTheme.typography.bodySmall,
                     color = ArchiveTextMuted,
                 )

@@ -116,7 +116,7 @@ class SettingsViewModel @Inject constructor(
 
         // Feedback Report
         val reportType: ReportType = ReportType.BUG,
-        val includeLogsInReport: Boolean = true,
+        val includeLogsInReport: Boolean = false,
         val isCollectingReport: Boolean = false,
     )
 
@@ -922,12 +922,12 @@ class SettingsViewModel @Inject constructor(
                     appendLine("[Describe the issue or request here]")
                     appendLine()
                     appendLine()
-                    appendLine("─── Device & App Info ───")
+                    appendLine("Device and App Info")
                     append(diagnostics)
                     if (logs != null) {
                         appendLine()
                         appendLine()
-                        appendLine("─── Recent Logs (last 500 lines) ───")
+                        appendLine("Recent Logs (last 500 lines)")
                         appendLine(logs)
                     }
                 }

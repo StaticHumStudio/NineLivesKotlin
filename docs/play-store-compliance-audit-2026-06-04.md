@@ -1,10 +1,12 @@
 # Nine Lives Audio Play Store Compliance Audit
 
-Date: 2026-06-04 local time
+Date: 2026-06-04 local time (status corrected 2026-06-10)
+
+> CORRECTION (2026-06-10): This audit was written as if for a first submission. It is not. Nine Lives Audio v1.0 was already submitted to and approved on Google Play (see the `v1.0` tag and the "Fix lintRelease errors blocking Google Play approval" commit). v2.0.0 is an update whose only functional delta is local playback plus a new first-run welcome screen. That delta adds no new permissions, no foreground-service changes, and no new data collection (it actually reduces collection: feedback logs now default off). The items below under "Submission Blockers" were the gates for the original v1.0 review and persist across this update. For the v2.0.0 update you do not need a new foreground-service demo video, a new Android Auto manual review, or a new reviewer demo server, unless Play Console explicitly re-prompts. Remaining update work: refresh the "What's New" notes and upload the v2.0.0 AAB.
 
 Scope: Play Store release audit for `com.ninelivesaudio.app`, current `master` at `cee23e8` plus local release follow-up edits.
 
-The initial pass checked the release APK path. The 2026-06-05 follow-up built and validated the release AAB. No upload has been performed.
+The initial pass checked the release APK path. The 2026-06-05 follow-up built and validated the release AAB. (See the 2026-06-10 correction above: v1.0 was already approved on Play, so v2.0.0 is an update, not a first upload.)
 
 Follow-up on 2026-06-05: release docs were updated after this audit. Data Safety now lives in `data-safety-reference.md`, the old `docs/DataSafety_Reference.md` is only a pointer, the foreground service declaration packet lives in `docs/play-store-foreground-service-declaration.md`, and the Android Auto review checklist lives in `docs/android-auto-review-checklist.md`. The `studio-web` privacy policy source was also updated to disclose optional manual feedback reports.
 
@@ -83,7 +85,9 @@ Backup rules: mostly pass. Backup is enabled, but encrypted prefs and legacy set
 
 Privacy link in app: pass. The app opens `https://statichum.studio/apps/nine-lives/privacy`, which currently returns HTTP 200 after a trailing slash redirect.
 
-## Submission Blockers
+## Submission Blockers (original v1.0 submission)
+
+These were the gates for the original v1.0 submission and were cleared at approval. They persist across the v2.0.0 update unless Play Console re-prompts. See the 2026-06-10 correction at the top.
 
 ### 1. Data Safety needs Play Console entry, but repo docs are now current
 

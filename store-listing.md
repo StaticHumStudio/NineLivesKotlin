@@ -49,19 +49,13 @@ Android 11+ (API 30) required.
 
 v2.0.0
 
-Your Audiobookshelf library, in your pocket.
+Local playback is here. You can now load audiobooks straight from your device and listen with no Audiobookshelf server required.
 
-- Background audio with media notification and lock screen controls
-- Android Auto support with browsing, search, and chapter skip
-- Offline downloads with concurrent queue and automatic retry
-- Sleep timer with motion sensing, shake-to-reset, and auto-rewind
-- 5-band equalizer and volume boost
-- Bidirectional progress sync with offline queue
-- Listening analytics with shareable summary cards
-- Chapter navigation with fluorescent square progress glow
-- 11 sorting options, tab filters, and series/author/genre grouping
-- Bookmarks synced with your server
-- No tracking, no ads, no analytics. Your data stays yours
+- New Local mode: play audiobooks stored on your device, no server needed
+- Import a folder of books and start listening right away
+- Local bookmarks and listening history kept on device
+- Friendlier first-run welcome screen to help you get set up
+- Audiobookshelf server mode, sync, and Android Auto are unchanged
 
 ---
 

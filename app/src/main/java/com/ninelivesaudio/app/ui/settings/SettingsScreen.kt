@@ -44,6 +44,13 @@ import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
+/**
+ * Whether to show the library selector. Driven purely by how many libraries are
+ * cached, not by connectivity: switching only persists the choice and the list
+ * is local, so the picker must remain reachable offline (airplane mode).
+ */
+internal fun shouldShowLibrarySelector(libraryCount: Int): Boolean = libraryCount > 1
+
 @Composable
 fun SettingsScreen(
     onNavigateToDossier: () -> Unit = {},
@@ -406,8 +413,11 @@ fun SettingsScreen(
                     }
                 }
 
-                // Library Selector (when connected with multiple libraries)
-                if (uiState.isConnected && uiState.libraries.size > 1) {
+                // Library Selector (whenever more than one library is cached).
+                // Not gated on connectivity: selecting a library only persists the
+                // choice (no network), and the list comes from cache, so the picker
+                // must stay reachable in airplane mode.
+                if (shouldShowLibrarySelector(uiState.libraries.size)) {
                     HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
 
                     var libraryExpanded by remember { mutableStateOf(false) }

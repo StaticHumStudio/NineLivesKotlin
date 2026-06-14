@@ -182,7 +182,15 @@ class LibraryViewModel @Inject constructor(
     private suspend fun loadAudioBooks(libraryId: String) {
         try {
             val selected = _uiState.value.selectedLibrary
-            if (selected?.isLocal != true) {
+            // Only hit the network when a remote library is selected AND we have
+            // connectivity. In airplane mode the old code attempted syncLibraryItems
+            // regardless, leaving the switch spinning on a doomed request until the
+            // OkHttp timeout. Skipping the sync lets cached data load instantly.
+            if (shouldSyncOnLibraryLoad(
+                    isLocalLibrary = selected?.isLocal == true,
+                    isOnline = connectivityMonitor.isOnline.value,
+                )
+            ) {
                 try {
                     audioBookRepository.syncLibraryItems(libraryId)
                 } catch (_: Exception) {
@@ -382,6 +390,17 @@ class LibraryViewModel @Inject constructor(
         return libs
     }
 }
+
+// ─── Load-path decisions (internal for testability) ───────────────────────
+
+/**
+ * Whether loading a library should attempt a remote sync. Local libraries never
+ * sync, and a remote library only syncs when there is connectivity. Offline
+ * (airplane mode) the switch must fall through to cached data rather than block
+ * on a network request that cannot succeed.
+ */
+internal fun shouldSyncOnLibraryLoad(isLocalLibrary: Boolean, isOnline: Boolean): Boolean =
+    !isLocalLibrary && isOnline
 
 // ─── Grouping helpers (internal for testability) ──────────────────────────
 

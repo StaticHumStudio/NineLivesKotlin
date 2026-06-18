@@ -1,17 +1,28 @@
 package com.ninelivesaudio.app.service.download
 
-// ─── WorkManager identifiers for downloads ────────────────────────────────
-//
-// All downloads run on a single unique-work chain so they execute strictly one
-// at a time (APPEND_OR_REPLACE on this name enforces the order). Each book's
-// work is also tagged by its download id so it can be cancelled individually
-// for pause/cancel without disturbing the rest of the queue.
+import com.ninelivesaudio.app.domain.model.DownloadItem
+import com.ninelivesaudio.app.domain.model.DownloadStatus
 
-/** Shared unique-work name for the sequential download chain. */
+// ─── WorkManager identifier + queue selection ─────────────────────────────
+//
+// Downloads run on a single "drain the queue" worker rather than one chained
+// worker per book. Sequencing is a plain loop inside the worker (pick the next
+// item, download it, repeat), which avoids the WorkManager dependency-chain
+// handoff that left the next item stuck after the first finished.
+
+/** Unique-work name for the single download-queue worker. */
 const val DOWNLOAD_WORK_NAME = "audiobook_downloads"
 
-/** Input-data key carrying the download id into the worker. */
-const val KEY_DOWNLOAD_ID = "download_id"
-
-/** Per-download work tag, used to cancel a single book's work by tag. */
-fun downloadWorkTag(downloadId: String): String = "download:$downloadId"
+/**
+ * Pick the next item the drain worker should download from the active set: an
+ * interrupted Downloading item first (resume it after process death), otherwise
+ * the oldest Queued item. Paused, completed, failed, and cancelled items are
+ * never selected. Returns null when there is nothing left to download.
+ */
+fun selectNextDownload(items: List<DownloadItem>): DownloadItem? =
+    items
+        .filter { it.status == DownloadStatus.Downloading || it.status == DownloadStatus.Queued }
+        .minWithOrNull(
+            compareByDescending<DownloadItem> { it.status == DownloadStatus.Downloading }
+                .thenBy { it.startedAt ?: Long.MAX_VALUE }
+        )

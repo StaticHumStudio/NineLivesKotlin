@@ -35,6 +35,14 @@ interface DownloadItemDao {
     @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1, 2) ORDER BY StartedAt DESC")
     fun observeActive(): Flow<List<DownloadItemEntity>>
 
+    /**
+     * Downloadable items for the drain worker: Queued (0) or interrupted
+     * Downloading (1). Paused/Completed/Failed/Cancelled are excluded so the
+     * worker never auto-resumes a user-paused or finished download.
+     */
+    @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1) ORDER BY StartedAt ASC")
+    suspend fun getDownloadable(): List<DownloadItemEntity>
+
     /** Get completed downloads. Status 3=Completed */
     @Query("SELECT * FROM DownloadItems WHERE Status = 3 ORDER BY CompletedAt DESC")
     fun observeCompleted(): Flow<List<DownloadItemEntity>>

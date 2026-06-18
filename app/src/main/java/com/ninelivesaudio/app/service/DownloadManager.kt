@@ -6,7 +6,6 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import androidx.work.workDataOf
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -16,9 +15,7 @@ import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
 import com.ninelivesaudio.app.service.download.DownloadEngine
-import com.ninelivesaudio.app.service.download.DownloadWorker
-import com.ninelivesaudio.app.service.download.KEY_DOWNLOAD_ID
-import com.ninelivesaudio.app.service.download.downloadWorkTag
+import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -35,11 +32,11 @@ import javax.inject.Singleton
  * Public facade for audiobook downloads: queue/pause/resume/cancel/delete and
  * progress/completion events.
  *
- * Execution and concurrency are owned by WorkManager: every book runs as a
- * [DownloadWorker] on a single unique-work chain ([DOWNLOAD_WORK_NAME]), which
- * makes downloads strictly sequential and lets them survive app-switch and
- * process death. The streaming work itself lives in [DownloadEngine]; this class
- * enqueues it and owns the event flows the UI overlays on top of Room.
+ * Execution is owned by a single [DownloadQueueWorker] that drains the Room
+ * queue one book at a time as a dataSync foreground service, so downloads are
+ * strictly sequential and survive app-switch / process death. This class
+ * manages the Room queue, (re)enqueues the drain worker, and owns the event
+ * flows the UI overlays on top of Room.
  */
 @Singleton
 class DownloadManager @Inject constructor(
@@ -72,7 +69,8 @@ class DownloadManager @Inject constructor(
 
     /**
      * Queue an audiobook for download.
-     * Creates a DownloadItem, persists it, and enqueues the download worker.
+     * Creates a DownloadItem, persists it Queued, and ensures the drain worker
+     * is running so it gets picked up.
      *
      * Scanned-local books carry a synthetic id the server doesn't know, so they
      * are short-circuited here (returns null) rather than attempting a fetch
@@ -117,22 +115,24 @@ class DownloadManager @Inject constructor(
             filesToDownload = files,
         )
 
-        // Persist to DB, then enqueue the worker.
         downloadItemDao.upsert(downloadItem.toEntity())
-        enqueue(downloadId)
+        enqueueDrain(replace = false)
 
         return downloadItem
     }
 
-    /** Pause an active download: stop its worker and mark it Paused. */
+    /** Pause a download: mark it Paused; restart the drain if it was the active one. */
     suspend fun pauseDownload(downloadId: String) {
-        workManager.cancelAllWorkByTag(downloadWorkTag(downloadId))
-
         val entity = downloadItemDao.getById(downloadId) ?: return
+        val wasDownloading = entity.status == DownloadStatus.Downloading.ordinal
         downloadItemDao.upsert(entity.copy(status = DownloadStatus.Paused.ordinal))
+        if (wasDownloading) {
+            // Stop the engine on this book and let the drain continue with the rest.
+            enqueueDrain(replace = true)
+        }
     }
 
-    /** Resume a paused download by re-enqueuing it at the back of the queue. */
+    /** Resume a paused/failed download by re-queuing it and ensuring the drain runs. */
     suspend fun resumeDownload(downloadId: String) {
         val entity = downloadItemDao.getById(downloadId) ?: return
         val item = entity.toDomain()
@@ -140,27 +140,26 @@ class DownloadManager @Inject constructor(
 
         // Reset to Queued. The engine skips already-finished files on re-run.
         downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
-        enqueue(downloadId)
+        enqueueDrain(replace = false)
     }
 
-    /** Cancel a download and clean up. */
+    /** Cancel a download and clean up; restart the drain if it was the active one. */
     suspend fun cancelDownload(downloadId: String) {
-        workManager.cancelAllWorkByTag(downloadWorkTag(downloadId))
+        val entity = downloadItemDao.getById(downloadId)
+        val wasDownloading = entity?.status == DownloadStatus.Downloading.ordinal
         downloadItemDao.deleteById(downloadId)
+        if (wasDownloading) {
+            enqueueDrain(replace = true)
+        }
     }
 
-    /** Delete a completed download's files and DB record. */
+    /** Delete a download's files and DB record. */
     suspend fun deleteDownload(audioBookId: String) {
-        // Use the actual localPath stored on the audiobook — this matches
-        // the path set by the engine. The old code used getDownloadPath(audioBookId)
-        // which returns basePath/audioBookId, but downloads are saved to basePath/Author - Title.
+        // Use the actual localPath stored on the audiobook — this matches the path
+        // set by the engine (basePath/Author - Title), not basePath/audioBookId.
         val bookEntity = audioBookDao.getById(audioBookId)
-
-        // Stop any in-flight or queued work for this book before deleting files.
         val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
-        if (downloadEntity != null) {
-            workManager.cancelAllWorkByTag(downloadWorkTag(downloadEntity.id))
-        }
+        val wasDownloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal
 
         withContext(Dispatchers.IO) {
             val localPath = bookEntity?.localPath
@@ -169,14 +168,15 @@ class DownloadManager @Inject constructor(
             }
         }
 
-        // Update audiobook as not downloaded
         if (bookEntity != null) {
             audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null))
         }
-
-        // Delete download record
         if (downloadEntity != null) {
             downloadItemDao.deleteById(downloadEntity.id)
+        }
+        if (wasDownloading) {
+            // Stop the engine if it was mid-download on this book.
+            enqueueDrain(replace = true)
         }
     }
 
@@ -201,7 +201,7 @@ class DownloadManager @Inject constructor(
         )
     }
 
-    /** Emit a terminal event for the worker's finished download. */
+    /** Emit a terminal event for a finished download. */
     fun notifyTerminal(item: DownloadItem) {
         when (item.status) {
             DownloadStatus.Completed -> _downloadCompleted.tryEmit(item)
@@ -210,23 +210,29 @@ class DownloadManager @Inject constructor(
         }
     }
 
-    // ─── Enqueue ─────────────────────────────────────────────────────────────
+    // ─── Drain worker ────────────────────────────────────────────────────────
 
     /**
-     * Enqueue (or append) a book's worker onto the shared sequential chain.
-     * APPEND_OR_REPLACE on one unique name is what enforces strict one-at-a-time
-     * ordering across the whole queue.
+     * Ensure the single download-queue worker is running.
+     *
+     * [replace] = false (KEEP): used when adding work. If a drain worker is
+     * already running it keeps going and picks up the new Queued row on its next
+     * loop; otherwise a fresh one starts.
+     *
+     * [replace] = true (REPLACE): used when pausing/cancelling the active book.
+     * It cancels the running drain (stopping the engine on the current book) and
+     * starts a fresh drain that skips the now paused/removed item and continues.
      */
-    private fun enqueue(downloadId: String) {
-        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(workDataOf(KEY_DOWNLOAD_ID to downloadId))
-            .addTag(downloadWorkTag(downloadId))
+    private fun enqueueDrain(replace: Boolean) {
+        val request = OneTimeWorkRequestBuilder<DownloadQueueWorker>()
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
             )
             .build()
-        workManager.enqueueUniqueWork(DOWNLOAD_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+        val policy = if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+        android.util.Log.d("DownloadManager", "enqueueDrain policy=${if (replace) "REPLACE" else "KEEP"}")
+        workManager.enqueueUniqueWork(DOWNLOAD_WORK_NAME, policy, request)
     }
 }

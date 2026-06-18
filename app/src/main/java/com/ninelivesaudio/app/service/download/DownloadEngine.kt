@@ -174,14 +174,15 @@ class DownloadEngine @Inject constructor(
                     lastPersistedAt = System.currentTimeMillis()
 
                 } catch (e: CancellationException) {
-                    // Clean up partial file
+                    // The drain worker was stopped (pause/cancel/system kill). Clean
+                    // up the partial file and rethrow so cancellation propagates
+                    // properly. The DownloadManager facade owns the resulting Room
+                    // status; an interrupted item stays Downloading so the next drain
+                    // worker resumes it (the engine skips already-finished files).
                     try { partPath.delete() } catch (cleanupError: Exception) {
                         // Ignore cleanup errors - file may already be deleted
                     }
-                    // Mark as paused (not failed)
-                    download = download.copy(status = DownloadStatus.Paused, downloadedBytes = downloadedBytes)
-                    downloadItemDao.upsert(download.toEntity())
-                    return download
+                    throw e
                 } catch (e: Exception) {
                     try { partPath.delete() } catch (cleanupError: Exception) {
                         // Ignore cleanup errors - file may already be deleted

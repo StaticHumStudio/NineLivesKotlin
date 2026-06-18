@@ -1,49 +1,42 @@
 package com.ninelivesaudio.app.service
 
-import android.content.Context
 import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
-import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
-import dagger.hilt.android.qualifiers.ApplicationContext
+import com.ninelivesaudio.app.service.download.DownloadEngine
+import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Semaphore
-import kotlin.time.Duration.Companion.seconds
 import java.io.File
-import android.os.Environment
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.pow
 
 /**
- * Manages audiobook downloads with concurrent queue, pause/resume, retry with
- * exponential backoff, and progress tracking.
+ * Public facade for audiobook downloads: queue/pause/resume/cancel/delete and
+ * progress/completion events. The streaming work itself lives in
+ * [DownloadEngine]; this class owns queuing, concurrency, and the event flows
+ * the UI collects.
  *
- * Port of C# DownloadService.cs (379 lines).
- * Uses coroutines + Semaphore instead of ConcurrentDictionary + SemaphoreSlim.
+ * Port of C# DownloadService.cs. Uses coroutines + Semaphore instead of
+ * ConcurrentDictionary + SemaphoreSlim.
  */
 @Singleton
 class DownloadManager @Inject constructor(
-    @param:ApplicationContext private val context: Context,
     private val downloadItemDao: DownloadItemDao,
     private val audioBookDao: AudioBookDao,
-    private val api: AudiobookshelfApi,
-    private val settingsManager: SettingsManager,
+    private val engine: DownloadEngine,
 ) {
     companion object {
         private const val TAG = "DownloadManager"
         private const val MAX_CONCURRENT = 2
-        private const val BUFFER_SIZE = 81_920 // 80 KB
-        private const val MIN_PROGRESS_UPDATE_INTERVAL_MS = 750L
-        private const val MIN_PROGRESS_DELTA_BYTES = 512 * 1024L // 512 KB
     }
 
     // Coroutine scope for download tasks
@@ -92,7 +85,7 @@ class DownloadManager @Inject constructor(
 
         // Ensure we have file metadata before queuing.
         val resolvedBook = if (audioBook.audioFiles.isEmpty()) {
-            fetchFullBookDetails(audioBook.id) ?: audioBook
+            engine.fetchFullBookDetails(audioBook.id) ?: audioBook
         } else {
             audioBook
         }
@@ -117,10 +110,7 @@ class DownloadManager @Inject constructor(
             audioBookId = audioBook.id,
             title = audioBook.title,
             status = DownloadStatus.Queued,
-            totalBytes = resolvedBook.audioFiles.sumOf { it.size }.let { size ->
-                if (size > 0) size
-                else (resolvedBook.audioFiles.sumOf { it.duration.inWholeSeconds } * 16_000L) // ~128kbps estimate
-            },
+            totalBytes = estimateTotalBytes(resolvedBook.audioFiles),
             downloadedBytes = 0,
             startedAt = System.currentTimeMillis(),
             filesToDownload = files,
@@ -171,7 +161,7 @@ class DownloadManager @Inject constructor(
     /** Delete a completed download's files and DB record. */
     suspend fun deleteDownload(audioBookId: String) {
         // Use the actual localPath stored on the audiobook — this matches
-        // the path set by processDownload(). The old code used getDownloadPath(audioBookId)
+        // the path set by the engine. The old code used getDownloadPath(audioBookId)
         // which returns basePath/audioBookId, but downloads are saved to basePath/Author - Title.
         val bookEntity = audioBookDao.getById(audioBookId)
         withContext(Dispatchers.IO) {
@@ -204,12 +194,12 @@ class DownloadManager @Inject constructor(
     private fun launchDownload(item: DownloadItem, audioBook: AudioBook) {
         // Start lazily so we can atomically claim the activeJobs slot BEFORE the
         // coroutine runs. Two quick resume/queue calls for the same id would
-        // otherwise both run processDownload, writing the same .part file and
+        // otherwise both run the engine, writing the same .part file and
         // orphaning the first (uncancellable) job. putIfAbsent makes the claim race-free.
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 semaphore.acquire()
-                processDownload(item, audioBook)
+                runDownload(item, audioBook)
             } finally {
                 semaphore.release()
                 activeJobs.remove(item.id)
@@ -225,211 +215,15 @@ class DownloadManager @Inject constructor(
         }
     }
 
-    private suspend fun processDownload(item: DownloadItem, audioBook: AudioBook) {
-        var download = item.copy(status = DownloadStatus.Downloading)
-        downloadItemDao.upsert(download.toEntity())
-
-        // Create download directory
-        val downloadDir = getDownloadPath(audioBook)
-        downloadDir.mkdirs()
-
-        // Get full book details if audio files are missing
-        val book = if (audioBook.audioFiles.isEmpty()) {
-            fetchFullBookDetails(audioBook.id) ?: audioBook
-        } else {
-            audioBook
+    /** Run the engine for one book and surface its terminal status as an event. */
+    private suspend fun runDownload(item: DownloadItem, audioBook: AudioBook) {
+        val result = engine.download(item, audioBook) { id, downloaded, total ->
+            emitProgress(id, downloaded, total)
         }
-
-        if (book.audioFiles.isEmpty()) {
-            download = download.copy(
-                status = DownloadStatus.Failed,
-                errorMessage = "No audio files available for download",
-            )
-            downloadItemDao.upsert(download.toEntity())
-            _downloadFailed.tryEmit(download)
-            return
-        }
-
-        // Calculate total bytes
-        val totalBytes = book.audioFiles.sumOf { it.size }.let { size ->
-            if (size > 0) size
-            else (book.audioFiles.sumOf { it.duration.inWholeSeconds.coerceAtLeast(0) } * 16_000L)
-        }
-        download = download.copy(totalBytes = totalBytes)
-
-        var downloadedBytes = 0L
-        var lastPersistedBytes = 0L
-        var lastPersistedAt = System.currentTimeMillis()
-        val maxRetries = item.maxRetries
-
-        // Download each audio file
-        for (i in book.audioFiles.indices) {
-            val audioFile = book.audioFiles[i]
-
-            // Check for cancellation
-            currentCoroutineContext().ensureActive()
-
-            val fileName = sanitizeFileName(audioFile.filename.ifEmpty { "track_${i + 1}" })
-            val finalPath = File(downloadDir, fileName)
-            val partPath = File(downloadDir, "$fileName.part")
-
-            // Skip if already downloaded
-            if (finalPath.exists() && finalPath.length() > 0) {
-                downloadedBytes += finalPath.length()
-                emitProgress(download.id, downloadedBytes, totalBytes)
-                continue
-            }
-
-            // Retry loop for the CURRENT file. The old code used `continue`
-            // in the catch block which advanced the for-loop index, skipping
-            // the failed file instead of retrying it.
-            var retryCount = 0
-            var fileSuccess = false
-            while (!fileSuccess) {
-                // Snapshot byte count before this attempt — used to revert on retry
-                val bytesBeforeAttempt = downloadedBytes
-
-                try {
-                    // Stream the file
-                    if (audioFile.ino.isBlank()) {
-                        throw Exception("Missing audio file identifier for $fileName")
-                    }
-
-                    val response = api.getAudioFileStream(book.id, audioFile.ino)
-                    if (!response.isSuccessful || response.body() == null) {
-                        // Close the (error) body so the streaming connection is
-                        // returned to the pool instead of leaking a socket/fd on
-                        // every failed attempt (e.g. 401 after token expiry).
-                        response.errorBody()?.close()
-                        response.body()?.close()
-                        throw Exception("HTTP ${response.code()}: Failed to download $fileName")
-                    }
-
-                    response.body()?.use { body ->
-                        partPath.outputStream().buffered().use { output ->
-                            body.byteStream().use { input ->
-                                val buffer = ByteArray(BUFFER_SIZE)
-                                var bytesRead: Int
-
-                                while (input.read(buffer).also { bytesRead = it } > 0) {
-                                    currentCoroutineContext().ensureActive()
-                                    output.write(buffer, 0, bytesRead)
-                                    downloadedBytes += bytesRead
-
-                                    // Throttled progress updates (time + byte delta)
-                                    val now = System.currentTimeMillis()
-                                    val bytesDelta = downloadedBytes - lastPersistedBytes
-                                    val timeDelta = now - lastPersistedAt
-                                    val shouldPersist = bytesDelta >= MIN_PROGRESS_DELTA_BYTES ||
-                                        timeDelta >= MIN_PROGRESS_UPDATE_INTERVAL_MS
-
-                                    if (shouldPersist) {
-                                        download = download.copy(downloadedBytes = downloadedBytes)
-                                        downloadItemDao.upsert(download.toEntity())
-                                        emitProgress(download.id, downloadedBytes, totalBytes)
-                                        lastPersistedBytes = downloadedBytes
-                                        lastPersistedAt = now
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Atomic rename .part → final
-                    if (finalPath.exists()) finalPath.delete()
-                    val renamed = partPath.renameTo(finalPath)
-                    if (!renamed) {
-                        throw Exception("Failed to finalize $fileName")
-                    }
-                    fileSuccess = true
-
-                    // Always flush progress after each completed file.
-                    download = download.copy(downloadedBytes = downloadedBytes)
-                    downloadItemDao.upsert(download.toEntity())
-                    emitProgress(download.id, downloadedBytes, totalBytes)
-                    lastPersistedBytes = downloadedBytes
-                    lastPersistedAt = System.currentTimeMillis()
-
-                } catch (e: CancellationException) {
-                    // Clean up partial file
-                    try { partPath.delete() } catch (cleanupError: Exception) {
-                        // Ignore cleanup errors - file may already be deleted
-                    }
-                    // Mark as paused (not failed)
-                    download = download.copy(status = DownloadStatus.Paused, downloadedBytes = downloadedBytes)
-                    downloadItemDao.upsert(download.toEntity())
-                    return
-                } catch (e: Exception) {
-                    try { partPath.delete() } catch (cleanupError: Exception) {
-                        // Ignore cleanup errors - file may already be deleted
-                    }
-                    downloadedBytes = bytesBeforeAttempt
-
-                    retryCount++
-                    if (retryCount < maxRetries) {
-                        // Exponential backoff: 10s, 20s, 40s
-                        val delayMs = (2.0.pow(retryCount) * 5_000).toLong()
-                        delay(delayMs)
-                        // Loop will retry the same file
-                    } else {
-                        // Fail the entire download
-                        download = download.copy(
-                            status = DownloadStatus.Failed,
-                            errorMessage = "$fileName: ${e.message}",
-                            downloadedBytes = downloadedBytes,
-                        )
-                        downloadItemDao.upsert(download.toEntity())
-                        _downloadFailed.tryEmit(download)
-                        return
-                    }
-                }
-            }
-        }
-
-        // All files downloaded successfully
-        download = download.copy(
-            status = DownloadStatus.Completed,
-            downloadedBytes = maxOf(downloadedBytes, totalBytes),
-            completedAt = System.currentTimeMillis(),
-        )
-        downloadItemDao.upsert(download.toEntity())
-
-        // Update audiobook as downloaded with local path
-        val bookEntity = audioBookDao.getById(audioBook.id)
-        if (bookEntity != null) {
-            audioBookDao.upsert(
-                bookEntity.copy(
-                    isDownloaded = 1,
-                    localPath = downloadDir.absolutePath,
-                )
-            )
-        }
-
-        _downloadCompleted.tryEmit(download)
-    }
-
-    private suspend fun fetchFullBookDetails(audioBookId: String): AudioBook? {
-        return try {
-            val response = api.getItem(audioBookId, expanded = 1)
-            if (response.isSuccessful) {
-                response.body()?.let { apiItem ->
-                    // Map to domain model (simplified)
-                    val audioFiles = apiItem.media?.audioFiles?.mapIndexed { idx, af ->
-                        com.ninelivesaudio.app.domain.model.AudioFile(
-                            id = af.ino ?: "",
-                            ino = af.ino ?: "",
-                            index = idx,
-                            duration = (af.duration ?: 0.0).seconds,
-                            filename = af.metadata?.filename ?: "track_${idx + 1}",
-                            size = af.metadata?.size ?: 0,
-                        )
-                    } ?: emptyList()
-
-                    audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
-                }
-            } else null
-        } catch (_: Exception) {
-            null
+        when (result.status) {
+            DownloadStatus.Completed -> _downloadCompleted.tryEmit(result)
+            DownloadStatus.Failed -> _downloadFailed.tryEmit(result)
+            else -> { /* Paused/cancelled: no terminal event */ }
         }
     }
 
@@ -443,53 +237,5 @@ class DownloadManager @Inject constructor(
                 totalBytes = total,
             )
         )
-    }
-
-    // ─── File Paths ──────────────────────────────────────────────────────────
-
-    /** Get download directory for an audiobook. */
-    private fun getDownloadPath(audioBook: AudioBook): File {
-        val basePath = getBasePath()
-        val author = audioBook.author.takeIf { it.isNotBlank() && it != "Unknown Author" }
-        val folderName = if (author != null) {
-            sanitizeFileName("$author - ${audioBook.title}")
-        } else {
-            sanitizeFileName(audioBook.title)
-        }.ifBlank { audioBook.id }
-
-        return File(basePath, folderName)
-    }
-
-    /** Base storage directory for all downloads. */
-    private fun getBasePath(): File {
-        // Respect user-configured path when possible, with path traversal validation.
-        val configuredPath = settingsManager.currentSettings.downloadPath.trim()
-        if (configuredPath.isNotEmpty()) {
-            try {
-                val candidate = File(configuredPath).canonicalFile
-                // Reject paths targeting sensitive system directories
-                val forbidden = listOf("/system", "/data/data", "/data/user", "/proc", "/dev")
-                val isSafe = forbidden.none { candidate.absolutePath.startsWith(it) }
-                if (isSafe) {
-                    return candidate.also { it.mkdirs() }
-                }
-                Log.w(TAG, "getBasePath: Configured path rejected (targets system dir): $configuredPath")
-            } catch (e: Exception) {
-                Log.w(TAG, "getBasePath: Failed to resolve configured path: $configuredPath", e)
-            }
-        }
-
-        // Fallback to app-specific external storage.
-        val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
-        return File(musicDir, "Audiobookshelf").also { it.mkdirs() }
-    }
-
-    /** Sanitize a filename for the filesystem. */
-    private fun sanitizeFileName(name: String): String {
-        return name
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-            .take(200) // Reasonable max filename length
     }
 }

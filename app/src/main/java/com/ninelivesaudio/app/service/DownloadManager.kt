@@ -1,6 +1,12 @@
 package com.ninelivesaudio.app.service
 
-import android.util.Log
+import android.content.Context
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -8,45 +14,41 @@ import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
+import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
 import com.ninelivesaudio.app.service.download.DownloadEngine
+import com.ninelivesaudio.app.service.download.DownloadWorker
+import com.ninelivesaudio.app.service.download.KEY_DOWNLOAD_ID
+import com.ninelivesaudio.app.service.download.downloadWorkTag
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.sync.Semaphore
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Public facade for audiobook downloads: queue/pause/resume/cancel/delete and
- * progress/completion events. The streaming work itself lives in
- * [DownloadEngine]; this class owns queuing, concurrency, and the event flows
- * the UI collects.
+ * progress/completion events.
  *
- * Port of C# DownloadService.cs. Uses coroutines + Semaphore instead of
- * ConcurrentDictionary + SemaphoreSlim.
+ * Execution and concurrency are owned by WorkManager: every book runs as a
+ * [DownloadWorker] on a single unique-work chain ([DOWNLOAD_WORK_NAME]), which
+ * makes downloads strictly sequential and lets them survive app-switch and
+ * process death. The streaming work itself lives in [DownloadEngine]; this class
+ * enqueues it and owns the event flows the UI overlays on top of Room.
  */
 @Singleton
 class DownloadManager @Inject constructor(
+    @param:ApplicationContext private val context: Context,
     private val downloadItemDao: DownloadItemDao,
     private val audioBookDao: AudioBookDao,
     private val engine: DownloadEngine,
 ) {
-    companion object {
-        private const val TAG = "DownloadManager"
-        private const val MAX_CONCURRENT = 2
-    }
-
-    // Coroutine scope for download tasks
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    // Semaphore for concurrency control
-    private val semaphore = Semaphore(MAX_CONCURRENT)
-
-    // Active download jobs (downloadId → Job)
-    private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
 
     // ─── Progress Events ─────────────────────────────────────────────────────
 
@@ -70,7 +72,7 @@ class DownloadManager @Inject constructor(
 
     /**
      * Queue an audiobook for download.
-     * Creates a DownloadItem, persists it, and starts the download process.
+     * Creates a DownloadItem, persists it, and enqueues the download worker.
      *
      * Scanned-local books carry a synthetic id the server doesn't know, so they
      * are short-circuited here (returns null) rather than attempting a fetch
@@ -78,7 +80,6 @@ class DownloadManager @Inject constructor(
      */
     suspend fun queueDownload(audioBook: AudioBook): DownloadItem? {
         if (audioBook.isLocal) {
-            Log.d(TAG, "Skipping download for local book ${audioBook.id} (${audioBook.title})")
             return null
         }
         val downloadId = UUID.randomUUID().toString()
@@ -116,45 +117,35 @@ class DownloadManager @Inject constructor(
             filesToDownload = files,
         )
 
-        // Persist to DB
+        // Persist to DB, then enqueue the worker.
         downloadItemDao.upsert(downloadItem.toEntity())
-
-        // Start the download
-        launchDownload(downloadItem, resolvedBook)
+        enqueue(downloadId)
 
         return downloadItem
     }
 
-    /** Pause an active download. */
+    /** Pause an active download: stop its worker and mark it Paused. */
     suspend fun pauseDownload(downloadId: String) {
-        activeJobs[downloadId]?.cancel()
-        activeJobs.remove(downloadId)
+        workManager.cancelAllWorkByTag(downloadWorkTag(downloadId))
 
         val entity = downloadItemDao.getById(downloadId) ?: return
         downloadItemDao.upsert(entity.copy(status = DownloadStatus.Paused.ordinal))
     }
 
-    /** Resume a paused download. */
+    /** Resume a paused download by re-enqueuing it at the back of the queue. */
     suspend fun resumeDownload(downloadId: String) {
         val entity = downloadItemDao.getById(downloadId) ?: return
         val item = entity.toDomain()
         if (item.status != DownloadStatus.Paused && item.status != DownloadStatus.Failed) return
 
-        // Reset to Queued
+        // Reset to Queued. The engine skips already-finished files on re-run.
         downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
-
-        // Reload audiobook to get file info
-        val bookEntity = audioBookDao.getById(item.audioBookId) ?: return
-        val audioBook = bookEntity.toDomain()
-
-        launchDownload(item.copy(status = DownloadStatus.Queued), audioBook)
+        enqueue(downloadId)
     }
 
     /** Cancel a download and clean up. */
     suspend fun cancelDownload(downloadId: String) {
-        activeJobs[downloadId]?.cancel()
-        activeJobs.remove(downloadId)
-
+        workManager.cancelAllWorkByTag(downloadWorkTag(downloadId))
         downloadItemDao.deleteById(downloadId)
     }
 
@@ -164,6 +155,13 @@ class DownloadManager @Inject constructor(
         // the path set by the engine. The old code used getDownloadPath(audioBookId)
         // which returns basePath/audioBookId, but downloads are saved to basePath/Author - Title.
         val bookEntity = audioBookDao.getById(audioBookId)
+
+        // Stop any in-flight or queued work for this book before deleting files.
+        val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
+        if (downloadEntity != null) {
+            workManager.cancelAllWorkByTag(downloadWorkTag(downloadEntity.id))
+        }
+
         withContext(Dispatchers.IO) {
             val localPath = bookEntity?.localPath
             if (!localPath.isNullOrEmpty()) {
@@ -177,7 +175,6 @@ class DownloadManager @Inject constructor(
         }
 
         // Delete download record
-        val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
         if (downloadEntity != null) {
             downloadItemDao.deleteById(downloadEntity.id)
         }
@@ -189,45 +186,10 @@ class DownloadManager @Inject constructor(
         return entity?.status == DownloadStatus.Completed.ordinal
     }
 
-    // ─── Download Processing ─────────────────────────────────────────────────
+    // ─── Worker callbacks ──────────────────────────────────────────────────
 
-    private fun launchDownload(item: DownloadItem, audioBook: AudioBook) {
-        // Start lazily so we can atomically claim the activeJobs slot BEFORE the
-        // coroutine runs. Two quick resume/queue calls for the same id would
-        // otherwise both run the engine, writing the same .part file and
-        // orphaning the first (uncancellable) job. putIfAbsent makes the claim race-free.
-        val job = scope.launch(start = CoroutineStart.LAZY) {
-            try {
-                semaphore.acquire()
-                runDownload(item, audioBook)
-            } finally {
-                semaphore.release()
-                activeJobs.remove(item.id)
-            }
-        }
-        val existing = activeJobs.putIfAbsent(item.id, job)
-        if (existing != null) {
-            // Another job for this id is already active — drop this duplicate.
-            job.cancel()
-            Log.w(TAG, "launchDownload: download ${item.id} already active, ignoring duplicate")
-        } else {
-            job.start()
-        }
-    }
-
-    /** Run the engine for one book and surface its terminal status as an event. */
-    private suspend fun runDownload(item: DownloadItem, audioBook: AudioBook) {
-        val result = engine.download(item, audioBook) { id, downloaded, total ->
-            emitProgress(id, downloaded, total)
-        }
-        when (result.status) {
-            DownloadStatus.Completed -> _downloadCompleted.tryEmit(result)
-            DownloadStatus.Failed -> _downloadFailed.tryEmit(result)
-            else -> { /* Paused/cancelled: no terminal event */ }
-        }
-    }
-
-    private fun emitProgress(downloadId: String, downloaded: Long, total: Long) {
+    /** Republish live progress from the worker for the UI's liveliness overlay. */
+    fun publishProgress(downloadId: String, downloaded: Long, total: Long) {
         val progress = if (total > 0) (downloaded.toDouble() / total * 100.0).coerceIn(0.0, 100.0) else 0.0
         _progressUpdates.tryEmit(
             DownloadProgress(
@@ -237,5 +199,34 @@ class DownloadManager @Inject constructor(
                 totalBytes = total,
             )
         )
+    }
+
+    /** Emit a terminal event for the worker's finished download. */
+    fun notifyTerminal(item: DownloadItem) {
+        when (item.status) {
+            DownloadStatus.Completed -> _downloadCompleted.tryEmit(item)
+            DownloadStatus.Failed -> _downloadFailed.tryEmit(item)
+            else -> { /* Paused/cancelled: no terminal event */ }
+        }
+    }
+
+    // ─── Enqueue ─────────────────────────────────────────────────────────────
+
+    /**
+     * Enqueue (or append) a book's worker onto the shared sequential chain.
+     * APPEND_OR_REPLACE on one unique name is what enforces strict one-at-a-time
+     * ordering across the whole queue.
+     */
+    private fun enqueue(downloadId: String) {
+        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setInputData(workDataOf(KEY_DOWNLOAD_ID to downloadId))
+            .addTag(downloadWorkTag(downloadId))
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        workManager.enqueueUniqueWork(DOWNLOAD_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 }

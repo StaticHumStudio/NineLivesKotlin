@@ -8,6 +8,11 @@ import org.junit.Test
  * The library-load path must not fire a blocking remote sync when there is no
  * network (airplane mode). Switching libraries offline should fall straight
  * through to cached data instead of hanging on a doomed request.
+ *
+ * This gate governs both remote sync sites in the load path: the per-library
+ * items sync (LibraryViewModel.loadAudioBooks) and the library-list sync
+ * (LibraryViewModel.loadAudiobookshelfLibraries). The library list is always
+ * remote, so it passes isLocalLibrary = false and the gate reduces to isOnline.
  */
 class LibrarySyncGateTest {
 

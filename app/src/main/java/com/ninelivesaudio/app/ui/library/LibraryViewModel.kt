@@ -381,11 +381,22 @@ class LibraryViewModel @Inject constructor(
 
     private suspend fun loadAudiobookshelfLibraries(): List<Library> {
         var libs = libraryRepository.getAudiobookshelf()
-        try {
-            val serverLibs = libraryRepository.syncFromServer()
-            if (serverLibs.isNotEmpty()) libs = serverLibs
-        } catch (_: Exception) {
-            // Use cached
+        // Only hit the network when online. The unconditional syncFromServer()
+        // fired a doomed OkHttp request in airplane mode that blocked the Library
+        // screen on the timeout before cached libraries could display. This is the
+        // same gate that guards the per-library items sync in loadAudioBooks();
+        // the library list is always remote here, so isLocalLibrary = false.
+        if (shouldSyncOnLibraryLoad(
+                isLocalLibrary = false,
+                isOnline = connectivityMonitor.isOnline.value,
+            )
+        ) {
+            try {
+                val serverLibs = libraryRepository.syncFromServer()
+                if (serverLibs.isNotEmpty()) libs = serverLibs
+            } catch (_: Exception) {
+                // Use cached
+            }
         }
         return libs
     }

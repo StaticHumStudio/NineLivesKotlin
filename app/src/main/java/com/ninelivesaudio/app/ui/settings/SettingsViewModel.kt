@@ -235,7 +235,8 @@ class SettingsViewModel @Inject constructor(
         val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
         if (hasToken) {
             try {
-                when (apiService.validateTokenDetailed()) {
+                val result = apiService.validateTokenDetailed()
+                when (result) {
                     TokenValidationResult.VALID -> {
                         _uiState.update {
                             it.copy(
@@ -243,7 +244,6 @@ class SettingsViewModel @Inject constructor(
                                 connectionStatusText = "Connected to ${settings.serverUrl}",
                             )
                         }
-                        loadLibraries()
                     }
                     TokenValidationResult.INVALID -> {
                         _uiState.update {
@@ -263,6 +263,15 @@ class SettingsViewModel @Inject constructor(
                             )
                         }
                     }
+                }
+
+                // Populate the cached library selector unless the token was
+                // rejected. loadLibraries() reads the local cache first and only
+                // then attempts a server sync that fails gracefully, so it is
+                // safe offline — without this the selector never appears when
+                // Settings is opened in airplane mode (UNREACHABLE).
+                if (shouldLoadCachedLibrariesAfterValidation(result)) {
+                    loadLibraries()
                 }
             } catch (e: Exception) {
                 _uiState.update {
@@ -1025,3 +1034,15 @@ class SettingsViewModel @Inject constructor(
         return "v$versionName ($versionCode)"
     }
 }
+
+// ─── Init-path decisions (internal for testability) ───────────────────────
+
+/**
+ * Whether to populate the cached library selector after validating the stored
+ * token. VALID and UNREACHABLE both keep the session, so the cache-backed
+ * selector should appear (UNREACHABLE means offline / airplane mode, where the
+ * selector is still useful and requires no network). INVALID means the token was
+ * rejected and the user was logged out, so there is nothing to load.
+ */
+internal fun shouldLoadCachedLibrariesAfterValidation(result: TokenValidationResult): Boolean =
+    result != TokenValidationResult.INVALID

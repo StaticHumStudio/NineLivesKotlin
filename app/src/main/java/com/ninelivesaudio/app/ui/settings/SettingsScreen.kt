@@ -38,6 +38,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
@@ -507,6 +508,16 @@ fun SettingsScreen(
             }
 
             // ═════════════════════════════════════════════════════════════
+            //  Group: Appearance
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Appearance") {
+                ThemeSelectorSection(
+                    selected = uiState.themeMode,
+                    onThemeSelected = viewModel::setThemeMode,
+                )
+            }
+
+            // ═════════════════════════════════════════════════════════════
             //  Group 3: Audio
             // ═════════════════════════════════════════════════════════════
             SettingsGroup(title = "Audio") {
@@ -852,6 +863,78 @@ private fun SourceModeToggle(
                         iconColor = ArchiveTextMuted,
                     ),
                 )
+            }
+        }
+    }
+}
+
+// ─── Theme Selector ───────────────────────────────────────────────────────
+
+@Composable
+private fun ThemeSelectorSection(
+    selected: ThemeMode,
+    onThemeSelected: (ThemeMode) -> Unit,
+) {
+    data class ThemeOption(
+        val mode: ThemeMode,
+        val label: String,
+        val description: String,
+    )
+
+    val options = listOf(
+        ThemeOption(ThemeMode.NOIR, "Noir", "Deep indigo void, gold filament"),
+        ThemeOption(ThemeMode.CANDLELIGHT, "Candlelight", "Warm sepia, amber glow"),
+        ThemeOption(ThemeMode.AMOLED, "AMOLED", "True black, saves OLED battery"),
+        ThemeOption(ThemeMode.BRIGHT, "Bright", "Light parchment, bronze accent"),
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "Theme",
+            style = MaterialTheme.typography.bodyMedium,
+            color = ArchiveTextPrimary,
+        )
+        Text(
+            text = "Color palette for the whole app",
+            style = MaterialTheme.typography.bodySmall,
+            color = ArchiveTextMuted,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        options.forEach { option ->
+            val isSelected = selected == option.mode
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onThemeSelected(option.mode) }
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
+                    contentDescription = null,
+                    tint = if (isSelected) GoldFilament else ArchiveTextMuted,
+                    modifier = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = option.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isSelected) GoldFilament else ArchiveTextPrimary,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    Text(
+                        text = option.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ArchiveTextMuted,
+                    )
+                }
             }
         }
     }

@@ -985,10 +985,15 @@ class SettingsViewModel @Inject constructor(
 
     private suspend fun loadLibraries() {
         try {
-            // Load local first
-            var libs = libraryRepository.getAll()
+            // This is the Audiobookshelf library selector, so load only ABS
+            // libraries from cache — never Local folder roots. getAll() would
+            // include local roots, and on the offline path (where the server
+            // sync below returns nothing) they would leak into the ABS selector,
+            // letting the user persist a local id as selectedLibraryId without
+            // switching appMode and leaving ABS-scoped screens empty.
+            var libs = libraryRepository.getAudiobookshelf()
 
-            // Sync from server if possible
+            // Sync from server if possible (server returns ABS libraries only)
             try {
                 val serverLibs = libraryRepository.syncFromServer()
                 if (serverLibs.isNotEmpty()) libs = serverLibs

@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
 import com.ninelivesaudio.app.ui.theme.unhinged.ImpossibleAccent
 
@@ -35,7 +36,7 @@ fun CornerSigils(
                     .padding(8.dp)
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(GoldFilament),
+                    .background(NineLivesTheme.colors.goldFilament),
             )
         }
         if (bookmarked) {
@@ -45,7 +46,7 @@ fun CornerSigils(
                     .padding(8.dp)
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(ImpossibleAccent),
+                    .background(NineLivesTheme.colors.impossibleAccent),
             )
         }
     }

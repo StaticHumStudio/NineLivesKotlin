@@ -11,11 +11,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveOutline
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilamentBright
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilamentDim
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilamentGlow
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 /**
  * Containment Halo progress ring with premium, intentional aesthetic.
@@ -48,11 +44,15 @@ fun ContainmentProgressRing(
     progress: Float,
     modifier: Modifier = Modifier,
     style: RingStyle = RingStyle.BookDetail,
-    progressColor: Color = GoldFilament,
-    trackColor: Color = ArchiveOutline,
+    progressColor: Color = NineLivesTheme.colors.goldFilament,
+    trackColor: Color = NineLivesTheme.colors.archiveOutline,
 ) {
     val clampedProgress = progress.coerceIn(0f, 1f)
     val density = LocalDensity.current
+    // Resolve the gold family once for gradient detection and construction.
+    val goldFilament = NineLivesTheme.colors.goldFilament
+    val goldFilamentBright = NineLivesTheme.colors.goldFilamentBright
+    val goldFilamentDim = NineLivesTheme.colors.goldFilamentDim
 
     Canvas(modifier = modifier) {
         // Convert dp to px within proper density context
@@ -90,7 +90,12 @@ fun ContainmentProgressRing(
             val progressSweepAngle = trackSweepAngle * clampedProgress
 
             // Create filament gradient based on progress color
-            val filamentGradient = createFilamentGradient(progressColor)
+            val filamentGradient = createFilamentGradient(
+                baseColor = progressColor,
+                goldFilament = goldFilament,
+                goldFilamentBright = goldFilamentBright,
+                goldFilamentDim = goldFilamentDim,
+            )
 
             // Glow underlay (2 layers for soft depth)
             if (style.glowAlpha > 0f) {
@@ -137,12 +142,17 @@ fun ContainmentProgressRing(
  * For gold colors (GoldFilament), uses: GoldFilamentDim → GoldFilament → GoldFilamentBright
  * For other colors (e.g., ImpossibleAccent), creates monochromatic gradient with alpha variations
  */
-private fun createFilamentGradient(baseColor: Color): Brush {
+private fun createFilamentGradient(
+    baseColor: Color,
+    goldFilament: Color,
+    goldFilamentBright: Color,
+    goldFilamentDim: Color,
+): Brush {
     // More robust gold color detection using direct color comparison
     // This avoids fragile range checks that break with theme changes
-    val isGoldColor = baseColor == GoldFilament ||
-                      baseColor == GoldFilamentBright ||
-                      baseColor == GoldFilamentDim ||
+    val isGoldColor = baseColor == goldFilament ||
+                      baseColor == goldFilamentBright ||
+                      baseColor == goldFilamentDim ||
                       // Fallback: check if color is in gold family (warm yellow-orange tones)
                       (baseColor.red > 0.75f &&
                        baseColor.green > 0.65f &&
@@ -154,9 +164,9 @@ private fun createFilamentGradient(baseColor: Color): Brush {
         // Gold filament gradient: dim → bright → brighter
         Brush.sweepGradient(
             colors = listOf(
-                GoldFilamentDim.copy(alpha = 0.7f),
-                GoldFilament.copy(alpha = 1.0f),
-                GoldFilamentBright.copy(alpha = 0.95f)
+                goldFilamentDim.copy(alpha = 0.7f),
+                goldFilament.copy(alpha = 1.0f),
+                goldFilamentBright.copy(alpha = 0.95f)
             )
         )
     } else {

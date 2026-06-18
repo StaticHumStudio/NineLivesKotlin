@@ -31,6 +31,7 @@ import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonSt
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import java.time.Instant
@@ -58,14 +59,14 @@ fun BookDetailScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = GoldFilament,
+                            tint = NineLivesTheme.colors.goldFilament,
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = ArchiveVoidDeep),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = NineLivesTheme.colors.archiveVoidDeep),
             )
         },
-        containerColor = ArchiveVoidDeep,
+        containerColor = NineLivesTheme.colors.archiveVoidDeep,
     ) { innerPadding ->
         when {
             uiState.isLoading -> {
@@ -75,7 +76,7 @@ fun BookDetailScreen(
                         .padding(innerPadding),
                     contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator(color = GoldFilament, strokeWidth = 2.dp)
+                    CircularProgressIndicator(color = NineLivesTheme.colors.goldFilament, strokeWidth = 2.dp)
                 }
             }
             uiState.errorMessage != null -> {
@@ -87,7 +88,7 @@ fun BookDetailScreen(
                 ) {
                     Text(
                         text = uiState.errorMessage ?: "Error",
-                        color = ArchiveError,
+                        color = NineLivesTheme.colors.archiveError,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -122,7 +123,7 @@ private fun BookDetailContent(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep),
+            .background(NineLivesTheme.colors.archiveVoidDeep),
         contentPadding = PaddingValues(bottom = 100.dp),
     ) {
         // ─── Cover + Core Metadata ──────────────────────────────────
@@ -146,7 +147,7 @@ private fun BookDetailContent(
                             .matchParentSize()
                             .padding(10.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(ArchiveVoidElevated),
+                            .background(NineLivesTheme.colors.archiveVoidElevated),
                     ) {
                         BookCoverImage(
                             coverUrl = uiState.coverUrl,
@@ -180,7 +181,7 @@ private fun BookDetailContent(
                 Text(
                     text = uiState.title,
                     style = MaterialTheme.typography.headlineSmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     fontWeight = FontWeight.Bold,
                 )
 
@@ -190,7 +191,7 @@ private fun BookDetailContent(
                 Text(
                     text = "by ${uiState.author}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                 )
 
                 // Narrator
@@ -199,7 +200,7 @@ private fun BookDetailContent(
                     Text(
                         text = "Narrated by $narrator",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                 }
 
@@ -214,12 +215,12 @@ private fun BookDetailContent(
                             Icons.Outlined.CollectionsBookmark,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = GoldFilament,
+                            tint = NineLivesTheme.colors.goldFilament,
                         )
                         Text(
                             text = series,
                             style = MaterialTheme.typography.bodySmall,
-                            color = GoldFilament,
+                            color = NineLivesTheme.colors.goldFilament,
                             fontWeight = FontWeight.Medium,
                         )
                     }
@@ -259,8 +260,8 @@ private fun BookDetailContent(
                             .fillMaxWidth()
                             .height(6.dp)
                             .clip(RoundedCornerShape(3.dp)),
-                        color = GoldFilament,
-                        trackColor = ArchiveOutline.copy(alpha = 0.3f),
+                        color = NineLivesTheme.colors.goldFilament,
+                        trackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.3f),
                     )
 
                     Spacer(modifier = Modifier.height(6.dp))
@@ -269,7 +270,7 @@ private fun BookDetailContent(
                     Text(
                         text = "${uiState.progressPercent}% complete (${currentDuration.toHumanReadableString()} / ${uiState.duration.toHumanReadableString()})",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextSecondary,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
                     )
                 }
             }
@@ -282,7 +283,7 @@ private fun BookDetailContent(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                 ) {
                     Surface(
-                        color = ArchiveInfo.copy(alpha = 0.15f),
+                        color = NineLivesTheme.colors.archiveInfo.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(8.dp),
                     ) {
                         Row(
@@ -294,12 +295,12 @@ private fun BookDetailContent(
                                 Icons.Outlined.CloudDownload,
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),
-                                tint = ArchiveInfo,
+                                tint = NineLivesTheme.colors.archiveInfo,
                             )
                             Text(
                                 text = "Downloaded",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = ArchiveInfo,
+                                color = NineLivesTheme.colors.archiveInfo,
                                 fontWeight = FontWeight.Medium,
                             )
                         }
@@ -321,8 +322,8 @@ private fun BookDetailContent(
                     onClick = onPlayBook,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = GoldFilament,
-                        contentColor = ArchiveVoidDeep,
+                        containerColor = NineLivesTheme.colors.goldFilament,
+                        contentColor = NineLivesTheme.colors.archiveVoidDeep,
                     ),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
@@ -362,19 +363,20 @@ private fun BookDetailContent(
                     Text(
                         text = "Details",
                         style = MaterialTheme.typography.titleSmall,
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         fontWeight = FontWeight.SemiBold,
                         letterSpacing = 1.sp,
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    val descColor = ArchiveTextSecondary.toArgb()
+                    val descColor = NineLivesTheme.colors.archiveTextSecondary.toArgb()
+                    val linkColor = NineLivesTheme.colors.goldFilament.toArgb()
                     AndroidView(
                         factory = { context ->
                             android.widget.TextView(context).apply {
                                 setTextColor(descColor)
                                 textSize = 14f
                                 setLineSpacing(4f, 1f)
-                                setLinkTextColor(GoldFilament.toArgb())
+                                setLinkTextColor(linkColor)
                             }
                         },
                         update = { textView ->
@@ -394,12 +396,12 @@ private fun BookDetailContent(
             item {
                 HorizontalDivider(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    color = ArchiveVoidElevated,
+                    color = NineLivesTheme.colors.archiveVoidElevated,
                 )
                 Text(
                     text = "Chapters (${uiState.chapters.size})",
                     style = MaterialTheme.typography.titleSmall,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
@@ -421,7 +423,7 @@ private fun BookDetailContent(
         item {
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                color = ArchiveVoidElevated,
+                color = NineLivesTheme.colors.archiveVoidElevated,
             )
             Row(
                 modifier = Modifier
@@ -433,7 +435,7 @@ private fun BookDetailContent(
                 Text(
                     text = "Listening History",
                     style = MaterialTheme.typography.titleSmall,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp,
                     modifier = Modifier.weight(1f),
@@ -441,7 +443,7 @@ private fun BookDetailContent(
                 if (uiState.isHistoryLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         strokeWidth = 2.dp,
                     )
                 } else {
@@ -451,7 +453,7 @@ private fun BookDetailContent(
                         else
                             Icons.Outlined.ExpandMore,
                         contentDescription = if (uiState.isHistoryExpanded) "Collapse" else "Expand",
-                        tint = GoldFilament,
+                        tint = NineLivesTheme.colors.goldFilament,
                         modifier = Modifier.size(20.dp),
                     )
                 }
@@ -464,7 +466,7 @@ private fun BookDetailContent(
                     Text(
                         text = "No listening sessions found",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                     )
                 }
@@ -498,9 +500,9 @@ private fun DownloadButton(
             OutlinedButton(
                 onClick = onDownload,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = ArchiveInfo),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NineLivesTheme.colors.archiveInfo),
                 border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveInfo.copy(alpha = 0.5f)),
+                    brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.archiveInfo.copy(alpha = 0.5f)),
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
@@ -525,14 +527,14 @@ private fun DownloadButton(
                 enabled = false,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    disabledContentColor = ArchiveTextSecondary,
+                    disabledContentColor = NineLivesTheme.colors.archiveTextSecondary,
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                     strokeWidth = 2.dp,
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -551,14 +553,14 @@ private fun DownloadButton(
                     enabled = false,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        disabledContentColor = ArchiveInfo,
+                        disabledContentColor = NineLivesTheme.colors.archiveInfo,
                     ),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
                 ) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
-                        color = ArchiveInfo,
+                        color = NineLivesTheme.colors.archiveInfo,
                         strokeWidth = 2.dp,
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -579,8 +581,8 @@ private fun DownloadButton(
                         .padding(top = 4.dp)
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = ArchiveInfo,
-                    trackColor = ArchiveVoidElevated,
+                    color = NineLivesTheme.colors.archiveInfo,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
             }
         }
@@ -589,9 +591,9 @@ private fun DownloadButton(
             OutlinedButton(
                 onClick = onDownload,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = GoldFilament),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NineLivesTheme.colors.goldFilament),
                 border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(GoldFilament.copy(alpha = 0.5f)),
+                    brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.goldFilament.copy(alpha = 0.5f)),
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
@@ -614,9 +616,9 @@ private fun DownloadButton(
             OutlinedButton(
                 onClick = onDeleteDownload,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = ArchiveSuccess),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NineLivesTheme.colors.archiveSuccess),
                 border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveSuccess.copy(alpha = 0.3f)),
+                    brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.archiveSuccess.copy(alpha = 0.3f)),
                 ),
                 shape = RoundedCornerShape(12.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
@@ -652,12 +654,12 @@ private fun MetadataChip(
             imageVector = icon,
             contentDescription = null,
             modifier = Modifier.size(14.dp),
-            tint = ArchiveTextMuted,
+            tint = NineLivesTheme.colors.archiveTextMuted,
         )
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             fontSize = 12.sp,
         )
     }
@@ -680,14 +682,14 @@ private fun ChapterRow(
         Text(
             text = "$index",
             style = MaterialTheme.typography.labelMedium,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             modifier = Modifier.width(28.dp),
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = chapter.title,
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -695,7 +697,7 @@ private fun ChapterRow(
         Text(
             text = chapter.duration.toHumanReadableString(),
             style = MaterialTheme.typography.labelSmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
         )
     }
 }
@@ -725,7 +727,7 @@ private fun ListeningSessionRow(
         Text(
             text = formatSessionDate(session.startedAt),
             style = MaterialTheme.typography.labelSmall,
-            color = ArchiveTextSecondary,
+            color = NineLivesTheme.colors.archiveTextSecondary,
             modifier = Modifier.width(48.dp),
         )
 
@@ -735,7 +737,7 @@ private fun ListeningSessionRow(
                 Text(
                     text = chapterTitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -744,17 +746,17 @@ private fun ListeningSessionRow(
                 Text(
                     text = "at ${session.currentTime.toClockString()}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
                 Text(
                     text = "\u00B7",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
                 Text(
                     text = "${session.timeListening.toHumanReadableString()} listened",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
             }
         }
@@ -764,7 +766,7 @@ private fun ListeningSessionRow(
             Icons.Outlined.PlayArrow,
             contentDescription = "Jump to position",
             modifier = Modifier.size(16.dp),
-            tint = GoldFilamentDim,
+            tint = NineLivesTheme.colors.goldFilamentDim,
         )
     }
 }

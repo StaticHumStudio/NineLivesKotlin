@@ -11,6 +11,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.settings.unhinged.CopyMode
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextFlavor
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 
@@ -50,7 +51,7 @@ fun RitualLabel(
             Text(
                 text = flavor,
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextFlavor,
+                color = NineLivesTheme.colors.archiveTextFlavor,
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
@@ -115,7 +116,7 @@ fun RitualEmptyState(
             Text(
                 text = flavorMessage,
                 style = MaterialTheme.typography.bodyMedium,
-                color = ArchiveTextFlavor,
+                color = NineLivesTheme.colors.archiveTextFlavor,
                 modifier = Modifier.padding(top = 8.dp)
             )
         }
@@ -158,7 +159,7 @@ fun RitualNavLabel(
             Text(
                 text = flavor,
                 style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextFlavor.copy(alpha = 0.6f),
+                color = NineLivesTheme.colors.archiveTextFlavor.copy(alpha = 0.6f),
                 modifier = Modifier.padding(top = 2.dp)
             )
         }

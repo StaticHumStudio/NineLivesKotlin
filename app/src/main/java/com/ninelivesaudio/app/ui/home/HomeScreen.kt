@@ -37,6 +37,7 @@ import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
@@ -65,7 +66,7 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ArchiveVoidDeep)
+                .background(NineLivesTheme.colors.archiveVoidDeep)
                 .verticalScroll(rememberScrollState()),
         ) {
             // ─── Header ──────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ private fun HomeGridTile(
                 .matchParentSize()
                 .padding(6.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(ArchiveVoidElevated),
+                .background(NineLivesTheme.colors.archiveVoidElevated),
         ) {
             BookCoverImage(
                 coverUrl = item.coverPath,
@@ -147,7 +148,7 @@ private fun HomeGridTile(
         FluorescentSquareProgress(
             progress = animatedProgress,
             modifier = Modifier.matchParentSize(),
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             cornerRadius = 14.dp,
             padding = 6.dp,
         )
@@ -163,7 +164,7 @@ private fun HomeGridTile(
         Text(
             text = item.lifeLabel,
             style = MaterialTheme.typography.labelSmall,
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             fontWeight = FontWeight.Bold,
             fontSize = 9.sp,
             letterSpacing = 1.sp,
@@ -273,10 +274,10 @@ private fun NineLivesAltar(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(18.dp),
-            color = ArchiveVoidSurface,
+            color = NineLivesTheme.colors.archiveVoidSurface,
             tonalElevation = 2.dp,
             shadowElevation = 4.dp,
-            border = BorderStroke(1.dp, ArchiveOutline.copy(alpha = 0.7f)),
+            border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline.copy(alpha = 0.7f)),
         ) {
             Box(
                 modifier = Modifier
@@ -297,7 +298,7 @@ private fun NineLivesAltar(
                     Text(
                         text = altarEpithet,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         letterSpacing = 2.sp,
                     )
 
@@ -345,7 +346,7 @@ private fun NineLivesAltar(
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 4.sp,
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.offset { glitchOffsetState.value },
                     )
@@ -359,7 +360,7 @@ private fun NineLivesAltar(
                         Text(
                             text = homeSubtitle,
                             style = MaterialTheme.typography.labelSmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                             textAlign = TextAlign.Center,
                             fontSize = 10.sp,
                         )
@@ -370,7 +371,7 @@ private fun NineLivesAltar(
                     Text(
                         text = altarPhrase,
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextSecondary,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(horizontal = 8.dp),
                     )
@@ -380,7 +381,7 @@ private fun NineLivesAltar(
                         Text(
                             text = "Total time given: $totalListeningTime",
                             style = MaterialTheme.typography.labelMedium,
-                            color = GoldFilament,
+                            color = NineLivesTheme.colors.goldFilament,
                             textAlign = TextAlign.Center,
                         )
                     }
@@ -405,7 +406,7 @@ private fun EmptyHomeState(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep),
+            .background(NineLivesTheme.colors.archiveVoidDeep),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -422,7 +423,7 @@ private fun EmptyHomeState(
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             letterSpacing = 3.sp,
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             textAlign = TextAlign.Center,
         )
 
@@ -431,7 +432,7 @@ private fun EmptyHomeState(
         Text(
             text = if (isLocalMode) "No local audio yet" else "The Archive stands empty",
             style = MaterialTheme.typography.titleMedium,
-            color = ArchiveTextSecondary,
+            color = NineLivesTheme.colors.archiveTextSecondary,
             textAlign = TextAlign.Center,
         )
 
@@ -447,7 +448,7 @@ private fun EmptyHomeState(
                 ) ?: "Begin listening to fill these halls with your progress"
             },
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 48.dp),
         )
@@ -457,8 +458,8 @@ private fun EmptyHomeState(
         Button(
             onClick = if (isLocalMode) onNavigateToSettings else onNavigateToLibrary,
             colors = ButtonDefaults.buttonColors(
-                containerColor = GoldFilament,
-                contentColor = ArchiveVoidDeep,
+                containerColor = NineLivesTheme.colors.goldFilament,
+                contentColor = NineLivesTheme.colors.archiveVoidDeep,
             ),
             shape = RoundedCornerShape(12.dp),
         ) {
@@ -482,9 +483,9 @@ private fun DossierEntryBanner(onClick: () -> Unit) {
             .padding(horizontal = 18.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        color = ArchiveVoidSurface,
+        color = NineLivesTheme.colors.archiveVoidSurface,
         tonalElevation = 1.dp,
-        border = BorderStroke(1.dp, ArchiveOutline.copy(alpha = 0.5f)),
+        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline.copy(alpha = 0.5f)),
     ) {
         Row(
             modifier = Modifier
@@ -500,14 +501,14 @@ private fun DossierEntryBanner(onClick: () -> Unit) {
                 Icon(
                     imageVector = Icons.Outlined.Assessment,
                     contentDescription = null,
-                    tint = GoldFilament,
+                    tint = NineLivesTheme.colors.goldFilament,
                     modifier = Modifier.size(18.dp),
                 )
                 Column {
                     Text(
                         text = "THE NIGHTWATCH DOSSIER",
                         style = MaterialTheme.typography.labelSmall,
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.5.sp,
                         fontSize = 11.sp,
@@ -515,14 +516,14 @@ private fun DossierEntryBanner(onClick: () -> Unit) {
                     Text(
                         text = "30-day listening intelligence",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 10.sp,
                     )
                 }
             }
             Text(
                 text = "›",
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Light,
             )

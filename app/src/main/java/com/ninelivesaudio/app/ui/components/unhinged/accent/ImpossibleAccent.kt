@@ -16,9 +16,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 /**
  * Impossible Accent - Verdigris (#3DBFA0 → #2EE8B0) focus/selection system
@@ -40,9 +42,11 @@ import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
  * - Bright: #2EE8B0 (active/hover state)
  */
 
-// Impossible Accent colors
-private val ImpossibleAccent = Color(0xFF3DBFA0)      // Muted verdigris
-private val ImpossibleAccentBright = Color(0xFF2EE8B0) // Bright verdigris
+// The impossible accent now comes from the active theme (NineLivesTheme.colors
+// .impossibleAccent). The "bright" variant used for focus borders and edge lines
+// is derived by lerping the themed accent toward white so the two-tone effect is
+// preserved across themes.
+private fun brightVariant(accent: Color): Color = lerp(accent, Color.White, 0.28f)
 
 /**
  * Add Impossible Accent focus border
@@ -63,13 +67,14 @@ fun Modifier.impossibleFocusBorder(
     val settings = LocalUnhingedSettings.current
     val isFocused by interactionSource.collectIsFocusedAsState()
     val isUnhinged = settings.isUnhinged
+    val accentBright = brightVariant(NineLivesTheme.colors.impossibleAccent)
 
     return this
         .focusable(interactionSource = interactionSource)
         .then(
             if (isUnhinged && isFocused) {
                 Modifier.border(
-                    border = BorderStroke(borderWidth, ImpossibleAccentBright),
+                    border = BorderStroke(borderWidth, accentBright),
                     shape = RoundedCornerShape(cornerRadius)
                 )
             } else {
@@ -94,10 +99,11 @@ fun Modifier.impossibleSelectionGlow(
 ): Modifier {
     val settings = LocalUnhingedSettings.current
     val isUnhinged = settings.isUnhinged
+    val accent = NineLivesTheme.colors.impossibleAccent
 
     return this.drawBehind {
         if (isUnhinged && isSelected) {
-            val glowColor = ImpossibleAccent.copy(alpha = 0.15f)
+            val glowColor = accent.copy(alpha = 0.15f)
 
             // Outer glow
             drawRoundRect(
@@ -114,7 +120,7 @@ fun Modifier.impossibleSelectionGlow(
 
             // Inner border
             drawRoundRect(
-                color = ImpossibleAccent.copy(alpha = 0.3f),
+                color = accent.copy(alpha = 0.3f),
                 cornerRadius = CornerRadius(glowRadius.toPx()),
                 style = Stroke(width = 1.5f)
             )
@@ -138,6 +144,8 @@ fun Modifier.impossibleActiveIndicator(
 ): Modifier {
     val settings = LocalUnhingedSettings.current
     val isUnhinged = settings.isUnhinged
+    val accent = NineLivesTheme.colors.impossibleAccent
+    val accentBright = brightVariant(accent)
 
     return this.drawBehind {
         if (isUnhinged && isActive) {
@@ -146,8 +154,8 @@ fun Modifier.impossibleActiveIndicator(
                 brush = Brush.verticalGradient(
                     colors = listOf(
                         Color.Transparent,
-                        ImpossibleAccentBright,
-                        ImpossibleAccent,
+                        accentBright,
+                        accent,
                         Color.Transparent
                     ),
                     startY = 0f,
@@ -177,11 +185,12 @@ fun Modifier.impossibleRippleHighlight(
 ): Modifier {
     val settings = LocalUnhingedSettings.current
     val isUnhinged = settings.isUnhinged
+    val accent = NineLivesTheme.colors.impossibleAccent
 
     return this.drawBehind {
         if (isUnhinged && isPressed) {
             drawRoundRect(
-                color = ImpossibleAccent.copy(alpha = 0.08f),
+                color = accent.copy(alpha = 0.08f),
                 cornerRadius = CornerRadius(cornerRadius.toPx())
             )
         }

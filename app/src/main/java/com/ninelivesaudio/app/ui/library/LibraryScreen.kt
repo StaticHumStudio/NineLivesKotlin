@@ -54,6 +54,7 @@ import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerCont
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -94,7 +95,7 @@ fun LibraryScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(ArchiveVoidDeep)
+                .background(NineLivesTheme.colors.archiveVoidDeep)
         ) {
             // ─── Pinned Header ────────────────────────────────────────────
             ArchiveScreenHeader(
@@ -126,7 +127,7 @@ fun LibraryScreen(
                         Icon(
                             imageVector = Icons.Outlined.Tune,
                             contentDescription = if (filtersExpanded) "Hide filters" else "Show filters",
-                            tint = if (filtersExpanded) GoldFilament else ArchiveTextSecondary,
+                            tint = if (filtersExpanded) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                             modifier = Modifier.graphicsLayer {
                                 rotationZ = chevronRotation
                             },
@@ -257,12 +258,12 @@ private fun RelicSearchBar(
             .shadow(
                 elevation = if (isFocused) 6.dp else 2.dp,
                 shape = RoundedCornerShape(12.dp),
-                ambientColor = GoldFilament.copy(alpha = if (isFocused) 0.35f else 0.12f),
-                spotColor = GoldFilament.copy(alpha = if (isFocused) 0.35f else 0.12f),
+                ambientColor = NineLivesTheme.colors.goldFilament.copy(alpha = if (isFocused) 0.35f else 0.12f),
+                spotColor = NineLivesTheme.colors.goldFilament.copy(alpha = if (isFocused) 0.35f else 0.12f),
             ),
         singleLine = true,
-        textStyle = MaterialTheme.typography.bodyMedium.copy(color = ArchiveTextPrimary),
-        cursorBrush = SolidColor(GoldFilament),
+        textStyle = MaterialTheme.typography.bodyMedium.copy(color = NineLivesTheme.colors.archiveTextPrimary),
+        cursorBrush = SolidColor(NineLivesTheme.colors.goldFilament),
         interactionSource = interactionSource,
         decorationBox = { innerTextField ->
             OutlinedTextFieldDefaults.DecorationBox(
@@ -280,7 +281,7 @@ private fun RelicSearchBar(
                             ritualHint = "Seek titles, authors, or bloodlines",
                             unhingedHint = "Whisper a title and see what answers back",
                         ),
-                        color = if (isFocused) ArchiveTextSecondary else ArchiveTextMuted,
+                        color = if (isFocused) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyMedium,
@@ -290,7 +291,7 @@ private fun RelicSearchBar(
                     Icon(
                         Icons.Outlined.Search,
                         contentDescription = null,
-                        tint = if (isFocused) GoldFilament else ArchiveTextSecondary,
+                        tint = if (isFocused) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                         modifier = Modifier.size(20.dp),
                     )
                 },
@@ -303,20 +304,20 @@ private fun RelicSearchBar(
                             Icon(
                                 Icons.Outlined.Clear,
                                 contentDescription = "Clear search",
-                                tint = ArchiveTextMuted,
+                                tint = NineLivesTheme.colors.archiveTextMuted,
                                 modifier = Modifier.size(18.dp),
                             )
                         }
                     }
                 } else null,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = GoldFilament.copy(alpha = 0.95f),
-                    unfocusedBorderColor = ArchiveOutline,
-                    focusedContainerColor = ArchiveVoidSurface,
-                    unfocusedContainerColor = ArchiveVoidSurface,
-                    focusedTextColor = ArchiveTextPrimary,
-                    unfocusedTextColor = ArchiveTextPrimary,
-                    cursorColor = GoldFilament,
+                    focusedBorderColor = NineLivesTheme.colors.goldFilament.copy(alpha = 0.95f),
+                    unfocusedBorderColor = NineLivesTheme.colors.archiveOutline,
+                    focusedContainerColor = NineLivesTheme.colors.archiveVoidSurface,
+                    unfocusedContainerColor = NineLivesTheme.colors.archiveVoidSurface,
+                    focusedTextColor = NineLivesTheme.colors.archiveTextPrimary,
+                    unfocusedTextColor = NineLivesTheme.colors.archiveTextPrimary,
+                    cursorColor = NineLivesTheme.colors.goldFilament,
                 ),
                 container = {
                     OutlinedTextFieldDefaults.ContainerBox(
@@ -325,10 +326,10 @@ private fun RelicSearchBar(
                         interactionSource = interactionSource,
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GoldFilament.copy(alpha = 0.95f),
-                            unfocusedBorderColor = ArchiveOutline,
-                            focusedContainerColor = ArchiveVoidSurface,
-                            unfocusedContainerColor = ArchiveVoidSurface,
+                            focusedBorderColor = NineLivesTheme.colors.goldFilament.copy(alpha = 0.95f),
+                            unfocusedBorderColor = NineLivesTheme.colors.archiveOutline,
+                            focusedContainerColor = NineLivesTheme.colors.archiveVoidSurface,
+                            unfocusedContainerColor = NineLivesTheme.colors.archiveVoidSurface,
                         ),
                     )
                 },
@@ -357,17 +358,17 @@ private fun StoneTabsRow(
                     .clip(RoundedCornerShape(8.dp))
                     .clickable { onTabSelected(tab) },
                 shape = RoundedCornerShape(8.dp),
-                color = if (isSelected) GoldFilamentFaint else ArchiveVoidSurface,
+                color = if (isSelected) NineLivesTheme.colors.goldFilamentFaint else NineLivesTheme.colors.archiveVoidSurface,
                 border = BorderStroke(
                     width = 1.dp,
-                    color = if (isSelected) GoldFilament.copy(alpha = 0.6f) else ArchiveOutline,
+                    color = if (isSelected) NineLivesTheme.colors.goldFilament.copy(alpha = 0.6f) else NineLivesTheme.colors.archiveOutline,
                 ),
             ) {
                 Text(
                     text = tab.label,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (isSelected) GoldFilament else ArchiveTextSecondary,
+                    color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
                     maxLines = 1,
@@ -461,7 +462,7 @@ private fun LibraryFiltersRow(
                     DropdownMenu(
                         expanded = sortExpanded,
                         onDismissRequest = { sortExpanded = false },
-                        containerColor = ArchiveVoidSurface,
+                        containerColor = NineLivesTheme.colors.archiveVoidSurface,
                     ) {
                         SortMode.entries.forEach { mode ->
                             DropdownMenuItem(
@@ -471,7 +472,7 @@ private fun LibraryFiltersRow(
                                             .lowercase()
                                             .replace('_', ' ')
                                             .replaceFirstChar { it.uppercase() },
-                                        color = if (mode == uiState.sortMode) GoldFilament else ArchiveTextPrimary,
+                                        color = if (mode == uiState.sortMode) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
                                         fontWeight = if (mode == uiState.sortMode) FontWeight.Bold else FontWeight.Normal,
                                     )
                                 },
@@ -549,8 +550,8 @@ private fun GroupHeaderRow(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(10.dp),
-        color = ArchiveVoidElevated,
-        border = BorderStroke(1.dp, ArchiveOutline),
+        color = NineLivesTheme.colors.archiveVoidElevated,
+        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -560,13 +561,13 @@ private fun GroupHeaderRow(
             Icon(
                 imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                 contentDescription = null,
-                tint = GoldFilament,
+                tint = NineLivesTheme.colors.goldFilament,
                 modifier = Modifier.size(18.dp),
             )
             Text(
                 text = "$title • $count",
                 style = MaterialTheme.typography.titleSmall,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -620,7 +621,7 @@ private fun ArchiveBookListItem(
                         .matchParentSize()
                         .padding(3.dp)
                         .clip(RoundedCornerShape(3.dp))
-                        .background(ArchiveVoidBase),
+                        .background(NineLivesTheme.colors.archiveVoidBase),
                 ) {
                     BookCoverImage(
                         coverUrl = book.coverPath,
@@ -654,7 +655,7 @@ private fun ArchiveBookListItem(
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     fontWeight = FontWeight.Medium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -664,7 +665,7 @@ private fun ArchiveBookListItem(
                 Text(
                     text = book.author,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontSize = 12.sp,
@@ -674,7 +675,7 @@ private fun ArchiveBookListItem(
                     Text(
                         text = whisper,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted.copy(alpha = 0.6f),
+                        color = NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.6f),
                         fontWeight = FontWeight.Light,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -690,7 +691,7 @@ private fun ArchiveBookListItem(
                         Text(
                             text = "${book.progressPercent.toInt()}%",
                             style = MaterialTheme.typography.labelSmall,
-                            color = GoldFilament,
+                            color = NineLivesTheme.colors.goldFilament,
                             fontWeight = FontWeight.Medium,
                             fontSize = 11.sp,
                         )
@@ -700,7 +701,7 @@ private fun ArchiveBookListItem(
                                 Text(
                                     text = "Ch ${chapterIdx + 1}/${book.chapters.size}",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = ArchiveTextMuted,
+                                    color = NineLivesTheme.colors.archiveTextMuted,
                                     fontSize = 10.sp,
                                 )
                             }
@@ -716,7 +717,7 @@ private fun ArchiveBookListItem(
                 .fillMaxWidth()
                 .padding(start = 92.dp, end = 16.dp)
                 .height(0.5.dp)
-                .background(ArchiveOutline.copy(alpha = 0.5f)),
+                .background(NineLivesTheme.colors.archiveOutline.copy(alpha = 0.5f)),
         )
     }
 }
@@ -757,7 +758,7 @@ private fun ArchiveBookTile(
                     .matchParentSize()
                     .padding(6.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(ArchiveVoidElevated),
+                    .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
                     coverUrl = book.coverPath,
@@ -797,7 +798,7 @@ private fun ArchiveBookTile(
         Text(
             text = book.title,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
             fontWeight = FontWeight.Medium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -807,7 +808,7 @@ private fun ArchiveBookTile(
         Text(
             text = book.author,
             style = MaterialTheme.typography.labelSmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             fontSize = 11.sp,
@@ -824,7 +825,7 @@ private fun LoadingState() {
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator(
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             strokeWidth = 2.dp,
         )
     }
@@ -866,20 +867,20 @@ private fun EmptyState(uiState: LibraryViewModel.UiState) {
             Icons.Outlined.AutoStories,
             contentDescription = null,
             modifier = Modifier.size(64.dp),
-            tint = ArchiveTextMuted,
+            tint = NineLivesTheme.colors.archiveTextMuted,
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp),
         )

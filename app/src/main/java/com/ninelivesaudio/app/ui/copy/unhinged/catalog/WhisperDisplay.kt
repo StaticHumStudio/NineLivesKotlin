@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.animation.unhinged.motion.MotionTokens
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextFlavor
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveVoidElevated
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
@@ -100,7 +101,7 @@ private fun WhisperCard(
                 shape = RoundedCornerShape(12.dp)
             )
             .background(
-                color = ArchiveVoidElevated,
+                color = NineLivesTheme.colors.archiveVoidElevated,
                 shape = RoundedCornerShape(12.dp)
             )
             .padding(horizontal = 20.dp, vertical = 12.dp)
@@ -108,7 +109,7 @@ private fun WhisperCard(
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextFlavor
+            color = NineLivesTheme.colors.archiveTextFlavor
         )
     }
 }

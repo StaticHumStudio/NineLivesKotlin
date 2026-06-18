@@ -22,7 +22,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 /**
  * Fluorescent rounded-square progress indicator with a multi-layer glow effect
@@ -43,7 +43,7 @@ import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
 fun FluorescentSquareProgress(
     progress: Float,
     modifier: Modifier = Modifier,
-    color: Color = GoldFilament,
+    color: Color = NineLivesTheme.colors.goldFilament,
     cornerRadius: Dp = 20.dp,
     padding: Dp = 8.dp,
     strokeScale: Float = 1.0f,

@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -47,10 +48,10 @@ fun BookListItem(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        colors = CardDefaults.cardColors(containerColor = NineLivesTheme.colors.archiveVoidSurface),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = BorderStroke(1.dp, ArchiveOutline),
+        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
     ) {
         Row(
             modifier = Modifier
@@ -63,7 +64,7 @@ fun BookListItem(
                 modifier = Modifier
                     .size(76.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(ArchiveVoidElevated),
+                    .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
                     coverUrl = book.coverPath,
@@ -81,7 +82,7 @@ fun BookListItem(
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.titleSmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -90,7 +91,7 @@ fun BookListItem(
                 Text(
                     text = book.author,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -117,20 +118,20 @@ fun BookListItem(
                             .fillMaxWidth()
                             .height(4.dp)
                             .clip(RoundedCornerShape(2.dp)),
-                        color = GoldFilament,
-                        trackColor = ArchiveOutline,
+                        color = NineLivesTheme.colors.goldFilament,
+                        trackColor = NineLivesTheme.colors.archiveOutline,
                     )
                     Text(
                         text = book.progressText,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                 }
             }
 
             if (book.isDownloaded) {
                 Surface(
-                    color = ArchiveInfo.copy(alpha = 0.2f),
+                    color = NineLivesTheme.colors.archiveInfo.copy(alpha = 0.2f),
                     shape = RoundedCornerShape(999.dp),
                 ) {
                     Icon(
@@ -139,7 +140,7 @@ fun BookListItem(
                         modifier = Modifier
                             .padding(8.dp)
                             .size(16.dp),
-                        tint = ArchiveInfo,
+                        tint = NineLivesTheme.colors.archiveInfo,
                     )
                 }
             }
@@ -153,17 +154,17 @@ private fun StatusTag(
     isHighlighted: Boolean,
 ) {
     Surface(
-        color = if (isHighlighted) GoldFilament.copy(alpha = 0.16f) else ArchiveVoidSurface,
+        color = if (isHighlighted) NineLivesTheme.colors.goldFilament.copy(alpha = 0.16f) else NineLivesTheme.colors.archiveVoidSurface,
         shape = RoundedCornerShape(8.dp),
         border = BorderStroke(
             width = 1.dp,
-            color = if (isHighlighted) GoldFilament.copy(alpha = 0.5f) else ArchiveOutline,
+            color = if (isHighlighted) NineLivesTheme.colors.goldFilament.copy(alpha = 0.5f) else NineLivesTheme.colors.archiveOutline,
         ),
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = if (isHighlighted) GoldFilament else ArchiveTextSecondary,
+            color = if (isHighlighted) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
         )
     }

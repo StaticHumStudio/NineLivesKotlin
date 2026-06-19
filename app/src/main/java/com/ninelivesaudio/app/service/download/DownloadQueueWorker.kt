@@ -9,8 +9,10 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.DownloadManager
+import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -40,6 +42,8 @@ class DownloadQueueWorker(
         fun downloadItemDao(): DownloadItemDao
         fun audioBookDao(): AudioBookDao
         fun downloadManager(): DownloadManager
+        fun settingsManager(): SettingsManager
+        fun apiService(): ApiService
     }
 
     private val deps: Deps by lazy {
@@ -49,6 +53,14 @@ class DownloadQueueWorker(
     override suspend fun doWork(): Result {
         android.util.Log.d(TAG, "drain START")
         DownloadNotifications.ensureChannel(applicationContext)
+
+        // Cold start after process death / reboot: WorkManager can run this worker
+        // before NineLivesApp's async onCreate init finishes, leaving the API with
+        // a placeholder base URL and no auth token. Load settings + token here
+        // (idempotent) so restored downloads hit the real server and survive,
+        // instead of failing against http://localhost with no auth.
+        deps.settingsManager().loadSettings()
+        deps.apiService().initializeFromSettings()
 
         val dao = deps.downloadItemDao()
         val books = deps.audioBookDao()

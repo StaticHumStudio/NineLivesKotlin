@@ -77,13 +77,6 @@ class DownloadQueueWorker(
                 continue
             }
             val book = bookEntity.toDomain()
-            android.util.Log.d(
-                TAG,
-                "book='${item.title}' files=${book.audioFiles.size} " +
-                    "sumSize=${book.audioFiles.sumOf { it.size }} " +
-                    "sumDurSec=${book.audioFiles.sumOf { it.duration.inWholeSeconds }} " +
-                    "item.totalBytes=${item.totalBytes}"
-            )
 
             // Promote to / keep the foreground service. The first call starts the
             // FGS for the whole batch; later calls just update the notification, so

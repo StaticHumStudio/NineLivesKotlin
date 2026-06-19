@@ -67,6 +67,11 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!-- Download notification action buttons (pause/resume/cancel) -->
+        <receiver
+            android:name=".service.download.DownloadActionReceiver"
+            android:exported="false" />
+
         <!-- FileProvider for sharing images -->
         <provider
             android:name="androidx.core.content.FileProvider"

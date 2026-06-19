@@ -15,8 +15,10 @@ import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
 import com.ninelivesaudio.app.service.download.DownloadEngine
+import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
+import com.ninelivesaudio.app.service.download.selectNextDownload
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -46,6 +48,16 @@ class DownloadManager @Inject constructor(
     private val engine: DownloadEngine,
 ) {
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
+
+    // Whether the whole download queue is paused (set from the notification's
+    // Pause action). In-memory: a paused queue isn't downloading, so the process
+    // is a kill candidate and the flag may be lost on death — acceptable, since
+    // Resume re-enqueues the drain and queuing/resuming a book restarts it anyway.
+    @Volatile
+    private var downloadsPaused = false
+
+    /** Whether the drain worker should hold (used by the worker to stop draining). */
+    fun isDownloadsPaused(): Boolean = downloadsPaused
 
     // ─── Progress Events ─────────────────────────────────────────────────────
 
@@ -116,7 +128,8 @@ class DownloadManager @Inject constructor(
         )
 
         downloadItemDao.upsert(downloadItem.toEntity())
-        enqueueDrain(replace = false)
+        // Respect a paused queue: the book waits until the user resumes.
+        if (!downloadsPaused) enqueueDrain(replace = false)
 
         return downloadItem
     }
@@ -140,6 +153,23 @@ class DownloadManager @Inject constructor(
 
         // Reset to Queued. The engine skips already-finished files on re-run.
         downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
+        if (!downloadsPaused) enqueueDrain(replace = false)
+    }
+
+    /** Pause the whole download queue: stop the drain and show a Resume notification. */
+    suspend fun pauseQueue() {
+        downloadsPaused = true
+        // Stop the drain worker; the active book stays Downloading in Room and is
+        // resumed first when the queue restarts.
+        workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
+        val current = selectNextDownload(downloadItemDao.getDownloadable().map { it.toDomain() })
+        DownloadNotifications.showPaused(context, current?.title ?: "")
+    }
+
+    /** Resume the whole download queue. */
+    fun resumeQueue() {
+        downloadsPaused = false
+        DownloadNotifications.clearPaused(context)
         enqueueDrain(replace = false)
     }
 

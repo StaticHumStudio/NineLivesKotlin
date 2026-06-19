@@ -56,6 +56,10 @@ class DownloadQueueWorker(
         val manager = deps.downloadManager()
 
         while (true) {
+            if (manager.isDownloadsPaused()) {
+                android.util.Log.d(TAG, "queue paused; stopping drain")
+                break
+            }
             val active = dao.getDownloadable().map { it.toDomain() }
             val item = selectNextDownload(active) ?: break
             android.util.Log.d(TAG, "next id=${item.id} status=${item.status} title=${item.title}")
@@ -79,11 +83,14 @@ class DownloadQueueWorker(
             // there is never a second foreground-service start mid-queue.
             setForeground(foregroundInfo(item.title, item.downloadedBytes, item.totalBytes))
 
-            // Stream on IO: the engine does blocking network reads and file writes.
+            // Stream on IO (blocking network reads + file writes). Progress is
+            // pushed to the UI and the FGS notification is refreshed via
+            // setForeground (a bare notify() does not reliably update an FGS
+            // notification, which left the progress bar stuck at 0).
             val result = withContext(Dispatchers.IO) {
                 engine.download(item, book) { id, downloaded, total ->
                     manager.publishProgress(id, downloaded, total)
-                    DownloadNotifications.update(applicationContext, item.title, downloaded, total)
+                    setForeground(foregroundInfo(item.title, downloaded, total))
                 }
             }
             manager.notifyTerminal(result)
@@ -95,7 +102,7 @@ class DownloadQueueWorker(
     }
 
     private fun foregroundInfo(title: String, downloaded: Long, total: Long): ForegroundInfo {
-        val notification = DownloadNotifications.build(applicationContext, title, downloaded, total)
+        val notification = DownloadNotifications.downloadNotification(applicationContext, title, downloaded, total)
         // minSdk is 30, so the typed foreground service is always available.
         return ForegroundInfo(
             DownloadNotifications.NOTIFICATION_ID,

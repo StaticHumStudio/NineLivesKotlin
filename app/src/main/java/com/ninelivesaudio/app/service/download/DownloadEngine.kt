@@ -54,7 +54,7 @@ class DownloadEngine @Inject constructor(
     suspend fun download(
         item: DownloadItem,
         audioBook: AudioBook,
-        onProgress: (downloadId: String, downloaded: Long, total: Long) -> Unit,
+        onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
     ): DownloadItem {
         var download = item.copy(status = DownloadStatus.Downloading)
         downloadItemDao.upsert(download.toEntity())

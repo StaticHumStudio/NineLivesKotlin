@@ -459,7 +459,7 @@ private fun EmptyHomeState(
             onClick = if (isLocalMode) onNavigateToSettings else onNavigateToLibrary,
             colors = ButtonDefaults.buttonColors(
                 containerColor = NineLivesTheme.colors.goldFilament,
-                contentColor = NineLivesTheme.colors.archiveVoidDeep,
+                contentColor = NineLivesTheme.colors.onAccent,
             ),
             shape = RoundedCornerShape(12.dp),
         ) {

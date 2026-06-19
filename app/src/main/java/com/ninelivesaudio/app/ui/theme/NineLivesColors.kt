@@ -77,4 +77,11 @@ data class NineLivesColors(
 ) {
     /** Focus outline always tracks the impossible accent, as in the original palette. */
     val archiveFocusOutline: Color get() = impossibleAccent
+
+    /**
+     * Foreground color for content sitting on a gold/accent surface (buttons,
+     * primary chips). The accents are light/mid-tone in every theme, so this is
+     * dark ink in a light theme and the deep void otherwise.
+     */
+    val onAccent: Color get() = if (isLight) archiveTextPrimary else archiveVoidDeep
 }

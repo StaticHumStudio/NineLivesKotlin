@@ -344,7 +344,7 @@ fun SettingsScreen(
                             enabled = !uiState.isConnecting,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = NineLivesTheme.colors.goldFilament,
-                                contentColor = NineLivesTheme.colors.archiveVoidDeep,
+                                contentColor = NineLivesTheme.colors.onAccent,
                                 disabledContainerColor = NineLivesTheme.colors.goldFilamentDim,
                             ),
                             shape = RoundedCornerShape(12.dp),
@@ -1191,7 +1191,7 @@ private fun LocalFoldersSection(
             enabled = !isScanning,
             colors = ButtonDefaults.buttonColors(
                 containerColor = NineLivesTheme.colors.goldFilament,
-                contentColor = NineLivesTheme.colors.archiveVoidDeep,
+                contentColor = NineLivesTheme.colors.onAccent,
                 disabledContainerColor = NineLivesTheme.colors.goldFilamentDim,
             ),
             shape = RoundedCornerShape(12.dp),
@@ -1466,7 +1466,7 @@ private fun FeedbackSection(
         enabled = !isCollecting,
         colors = ButtonDefaults.buttonColors(
             containerColor = NineLivesTheme.colors.goldFilament,
-            contentColor = NineLivesTheme.colors.archiveVoidDeep,
+            contentColor = NineLivesTheme.colors.onAccent,
             disabledContainerColor = NineLivesTheme.colors.goldFilamentDim,
         ),
         shape = RoundedCornerShape(12.dp),

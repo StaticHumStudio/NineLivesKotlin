@@ -1031,7 +1031,7 @@ private fun BookmarkSheet(
                     },
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = NineLivesTheme.colors.goldFilament,
-                        contentColor = NineLivesTheme.colors.archiveVoidDeep,
+                        contentColor = NineLivesTheme.colors.onAccent,
                     ),
                 ) {
                     Icon(

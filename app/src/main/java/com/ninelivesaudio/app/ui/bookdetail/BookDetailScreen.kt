@@ -323,7 +323,7 @@ private fun BookDetailContent(
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NineLivesTheme.colors.goldFilament,
-                        contentColor = NineLivesTheme.colors.archiveVoidDeep,
+                        contentColor = NineLivesTheme.colors.onAccent,
                     ),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),

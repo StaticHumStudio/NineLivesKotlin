@@ -234,19 +234,23 @@ fun nineLivesColorsFor(mode: ThemeMode): NineLivesColors = when (mode) {
 fun colorSchemeFor(mode: ThemeMode): ColorScheme {
     val c = nineLivesColorsFor(mode)
     val base = if (c.isLight) lightColorScheme() else darkColorScheme()
+    // The accent colors (gold, etc.) are light/mid-tone in every theme, so their
+    // on-color must be dark ink in a light theme. The dark themes keep the deep
+    // void background as the on-accent color, unchanged.
+    val onAccent = if (c.isLight) c.archiveTextPrimary else c.archiveVoidDeep
     return base.copy(
         primary = c.goldFilament,
-        onPrimary = c.archiveVoidDeep,
+        onPrimary = onAccent,
         primaryContainer = c.goldFilamentFaint,
-        onPrimaryContainer = c.goldFilamentBright,
+        onPrimaryContainer = if (c.isLight) c.archiveTextPrimary else c.goldFilamentBright,
 
         secondary = c.archiveTextTertiary,
-        onSecondary = c.archiveVoidDeep,
+        onSecondary = onAccent,
         secondaryContainer = c.archiveVoidElevated,
         onSecondaryContainer = c.archiveTextSecondary,
 
         tertiary = c.impossibleAccent,
-        onTertiary = c.archiveVoidDeep,
+        onTertiary = onAccent,
         tertiaryContainer = c.archiveVoidElevated,
         onTertiaryContainer = c.impossibleAccent,
 

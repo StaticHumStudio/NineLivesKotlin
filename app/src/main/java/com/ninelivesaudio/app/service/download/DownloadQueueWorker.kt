@@ -77,20 +77,37 @@ class DownloadQueueWorker(
                 continue
             }
             val book = bookEntity.toDomain()
+            android.util.Log.d(
+                TAG,
+                "book='${item.title}' files=${book.audioFiles.size} " +
+                    "sumSize=${book.audioFiles.sumOf { it.size }} " +
+                    "sumDurSec=${book.audioFiles.sumOf { it.duration.inWholeSeconds }} " +
+                    "item.totalBytes=${item.totalBytes}"
+            )
 
             // Promote to / keep the foreground service. The first call starts the
             // FGS for the whole batch; later calls just update the notification, so
             // there is never a second foreground-service start mid-queue.
             setForeground(foregroundInfo(item.title, item.downloadedBytes, item.totalBytes))
 
-            // Stream on IO (blocking network reads + file writes). Progress is
-            // pushed to the UI and the FGS notification is refreshed via
-            // setForeground (a bare notify() does not reliably update an FGS
-            // notification, which left the progress bar stuck at 0).
+            // Stream on IO (blocking network reads + file writes). The UI overlay
+            // updates every tick, but the FGS notification only refreshes when the
+            // displayed percent changes: the engine reports progress ~10x/second
+            // and Android rate-limits notification posts, so unthrottled updates
+            // get dropped and the bar appears frozen / far behind.
+            var lastNotifiedPercent = -1
             val result = withContext(Dispatchers.IO) {
                 engine.download(item, book) { id, downloaded, total ->
                     manager.publishProgress(id, downloaded, total)
-                    setForeground(foregroundInfo(item.title, downloaded, total))
+                    val percent = if (total > 0) {
+                        ((downloaded.toDouble() / total) * 100).toInt()
+                    } else {
+                        -1
+                    }
+                    if (percent != lastNotifiedPercent) {
+                        lastNotifiedPercent = percent
+                        setForeground(foregroundInfo(item.title, downloaded, total))
+                    }
                 }
             }
             manager.notifyTerminal(result)
@@ -98,6 +115,11 @@ class DownloadQueueWorker(
         }
 
         android.util.Log.d(TAG, "drain END (queue empty)")
+        // Best-effort: drop the ongoing notification when there is nothing left.
+        // (Skipped when paused, where the standalone paused notification stands in.)
+        if (!manager.isDownloadsPaused()) {
+            DownloadNotifications.clearActive(applicationContext)
+        }
         return Result.success()
     }
 

@@ -76,9 +76,20 @@ object DownloadNotifications {
     }
 
     /** Remove the standalone paused notification (e.g. on resume). */
-    fun clearPaused(context: Context) {
+    fun clearPaused(context: Context) = cancelId(context, PAUSED_NOTIFICATION_ID)
+
+    /** Remove the ongoing download notification (e.g. when the queue is empty). */
+    fun clearActive(context: Context) = cancelId(context, NOTIFICATION_ID)
+
+    /** Remove both download notifications. */
+    fun clearAll(context: Context) {
+        cancelId(context, NOTIFICATION_ID)
+        cancelId(context, PAUSED_NOTIFICATION_ID)
+    }
+
+    private fun cancelId(context: Context, id: Int) {
         try {
-            NotificationManagerCompat.from(context).cancel(PAUSED_NOTIFICATION_ID)
+            NotificationManagerCompat.from(context).cancel(id)
         } catch (_: Exception) {
             // Ignore; nothing showing.
         }

@@ -178,7 +178,14 @@ class DownloadManager @Inject constructor(
         val entity = downloadItemDao.getById(downloadId)
         val wasDownloading = entity?.status == DownloadStatus.Downloading.ordinal
         downloadItemDao.deleteById(downloadId)
-        if (wasDownloading) {
+
+        if (downloadItemDao.getDownloadable().isEmpty()) {
+            // Nothing left to download: stop the drain and clear the notification
+            // so it doesn't linger after cancelling the last item.
+            workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
+            DownloadNotifications.clearAll(context)
+        } else if (wasDownloading) {
+            // More queued: stop the engine on the cancelled book and continue.
             enqueueDrain(replace = true)
         }
     }

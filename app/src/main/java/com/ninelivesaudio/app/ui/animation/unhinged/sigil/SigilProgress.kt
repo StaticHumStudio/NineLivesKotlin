@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.animation.unhinged.motion.MotionTokens
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.math.cos
 import kotlin.math.sin
@@ -46,8 +47,8 @@ fun SigilProgress(
     val reduceMotion = LocalUnhingedSettings.current.reduceMotionRequested
 
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val progressColor = GoldFilament
-    val shimmerColor = GoldFilamentBright
+    val progressColor = NineLivesTheme.colors.goldFilament
+    val shimmerColor = NineLivesTheme.colors.goldFilamentBright
 
     val infiniteTransition = rememberInfiniteTransition(label = "sigil_infinite")
 
@@ -183,9 +184,9 @@ fun SigilProgressBar(
     val reduceMotion = LocalUnhingedSettings.current.reduceMotionRequested
 
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val progressColor = GoldFilament
-    val shimmerColor = GoldFilamentBright
-    val accentColor = ImpossibleAccent.copy(alpha = 0.3f)
+    val progressColor = NineLivesTheme.colors.goldFilament
+    val shimmerColor = NineLivesTheme.colors.goldFilamentBright
+    val accentColor = NineLivesTheme.colors.impossibleAccent.copy(alpha = 0.3f)
 
     val infiniteTransition = rememberInfiniteTransition(label = "bar_shimmer")
     val shimmerPosition by if (!reduceMotion && progress > 0f) {

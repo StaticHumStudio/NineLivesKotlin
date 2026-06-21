@@ -38,10 +38,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -96,7 +98,7 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep)
+            .background(NineLivesTheme.colors.archiveVoidDeep)
     ) {
         // ─── Unified Header ───────────────────────────────────────────
         ArchiveScreenHeader(
@@ -199,11 +201,11 @@ fun SettingsScreen(
                     Text(
                         text = uiState.connectionStatusText,
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextSecondary,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
                     )
                 }
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Server URL field
                 CosmicTextField(
@@ -216,7 +218,7 @@ fun SettingsScreen(
                     keyboardType = KeyboardType.Uri,
                 )
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Auth mode toggle
                 Row(
@@ -227,12 +229,12 @@ fun SettingsScreen(
                         Text(
                             text = "Use API Token",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = ArchiveTextPrimary,
+                            color = NineLivesTheme.colors.archiveTextPrimary,
                         )
                         Text(
                             text = "Login with a pre-generated API token",
                             style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                         )
                     }
                     Switch(
@@ -240,10 +242,10 @@ fun SettingsScreen(
                         onCheckedChange = viewModel::onUseApiTokenChanged,
                         enabled = !uiState.isConnected,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = GoldFilament,
-                            checkedTrackColor = GoldFilamentFaint,
-                            uncheckedThumbColor = ArchiveTextSecondary,
-                            uncheckedTrackColor = ArchiveVoidElevated,
+                            checkedThumbColor = NineLivesTheme.colors.goldFilament,
+                            checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+                            uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+                            uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                         ),
                     )
                 }
@@ -278,7 +280,7 @@ fun SettingsScreen(
                     )
                 }
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Self-signed certificates
                 Row(
@@ -289,22 +291,22 @@ fun SettingsScreen(
                         Text(
                             text = "Allow Self-Signed Certificates",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = ArchiveTextPrimary,
+                            color = NineLivesTheme.colors.archiveTextPrimary,
                         )
                         Text(
                             text = "Required for TOFU on self-hosted servers",
                             style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                         )
                     }
                     Switch(
                         checked = uiState.allowSelfSignedCertificates,
                         onCheckedChange = viewModel::onAllowSelfSignedChanged,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = GoldFilament,
-                            checkedTrackColor = GoldFilamentFaint,
-                            uncheckedThumbColor = ArchiveTextSecondary,
-                            uncheckedTrackColor = ArchiveVoidElevated,
+                            checkedThumbColor = NineLivesTheme.colors.goldFilament,
+                            checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+                            uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+                            uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                         ),
                     )
                 }
@@ -316,7 +318,7 @@ fun SettingsScreen(
                         "No trusted fingerprint stored yet for this host."
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
 
                 TextButton(
@@ -328,7 +330,7 @@ fun SettingsScreen(
                     Text("Reset trusted fingerprint")
                 }
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Connect / Disconnect buttons
                 Row(
@@ -341,16 +343,16 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f),
                             enabled = !uiState.isConnecting,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = GoldFilament,
-                                contentColor = ArchiveVoidDeep,
-                                disabledContainerColor = GoldFilamentDim,
+                                containerColor = NineLivesTheme.colors.goldFilament,
+                                contentColor = NineLivesTheme.colors.onAccent,
+                                disabledContainerColor = NineLivesTheme.colors.goldFilamentDim,
                             ),
                             shape = RoundedCornerShape(12.dp),
                         ) {
                             if (uiState.isConnecting) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(20.dp),
-                                    color = ArchiveVoidDeep,
+                                    color = NineLivesTheme.colors.archiveVoidDeep,
                                     strokeWidth = 2.dp,
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -365,8 +367,8 @@ fun SettingsScreen(
                             onClick = viewModel::refreshConnection,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = ArchiveVoidSurface,
-                                contentColor = GoldFilament,
+                                containerColor = NineLivesTheme.colors.archiveVoidSurface,
+                                contentColor = NineLivesTheme.colors.goldFilament,
                             ),
                             shape = RoundedCornerShape(12.dp),
                         ) {
@@ -383,8 +385,8 @@ fun SettingsScreen(
                             onClick = viewModel::testConnection,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = ArchiveVoidSurface,
-                                contentColor = GoldFilament,
+                                containerColor = NineLivesTheme.colors.archiveVoidSurface,
+                                contentColor = NineLivesTheme.colors.goldFilament,
                             ),
                             shape = RoundedCornerShape(12.dp),
                         ) {
@@ -404,8 +406,8 @@ fun SettingsScreen(
                         onClick = viewModel::disconnect,
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = ArchiveError.copy(alpha = 0.15f),
-                            contentColor = ArchiveError,
+                            containerColor = NineLivesTheme.colors.archiveError.copy(alpha = 0.15f),
+                            contentColor = NineLivesTheme.colors.archiveError,
                         ),
                         shape = RoundedCornerShape(12.dp),
                     ) {
@@ -418,7 +420,7 @@ fun SettingsScreen(
                 // choice (no network), and the list comes from cache, so the picker
                 // must stay reachable in airplane mode.
                 if (shouldShowLibrarySelector(uiState.libraries.size)) {
-                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                    HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                     var libraryExpanded by remember { mutableStateOf(false) }
 
@@ -434,25 +436,25 @@ fun SettingsScreen(
                         Icon(
                             @Suppress("DEPRECATION") Icons.Outlined.LibraryBooks,
                             contentDescription = null,
-                            tint = GoldFilament,
+                            tint = NineLivesTheme.colors.goldFilament,
                             modifier = Modifier.size(20.dp),
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = uiState.selectedLibrary?.name ?: "Select Library",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = ArchiveTextPrimary,
+                                color = NineLivesTheme.colors.archiveTextPrimary,
                             )
                             Text(
                                 text = "${uiState.libraries.size} libraries available",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = ArchiveTextMuted,
+                                color = NineLivesTheme.colors.archiveTextMuted,
                             )
                         }
                         Icon(
                             if (libraryExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                             contentDescription = null,
-                            tint = ArchiveTextSecondary,
+                            tint = NineLivesTheme.colors.archiveTextSecondary,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -460,7 +462,7 @@ fun SettingsScreen(
                     DropdownMenu(
                         expanded = libraryExpanded,
                         onDismissRequest = { libraryExpanded = false },
-                        containerColor = ArchiveVoidSurface,
+                        containerColor = NineLivesTheme.colors.archiveVoidSurface,
                     ) {
                         uiState.libraries.forEach { library ->
                             val isSelected = library.id == uiState.selectedLibrary?.id
@@ -468,7 +470,7 @@ fun SettingsScreen(
                                 text = {
                                     Text(
                                         text = library.name,
-                                        color = if (isSelected) GoldFilament else ArchiveTextPrimary,
+                                        color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                     )
                                 },
@@ -480,7 +482,7 @@ fun SettingsScreen(
                                     Icon(
                                         if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
                                         contentDescription = null,
-                                        tint = if (isSelected) GoldFilament else ArchiveTextMuted,
+                                        tint = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
                                         modifier = Modifier.size(18.dp),
                                     )
                                 },
@@ -507,6 +509,16 @@ fun SettingsScreen(
             }
 
             // ═════════════════════════════════════════════════════════════
+            //  Group: Appearance
+            // ═════════════════════════════════════════════════════════════
+            SettingsGroup(title = "Appearance") {
+                ThemeSelectorSection(
+                    selected = uiState.themeMode,
+                    onThemeSelected = viewModel::setThemeMode,
+                )
+            }
+
+            // ═════════════════════════════════════════════════════════════
             //  Group 3: Audio
             // ═════════════════════════════════════════════════════════════
             SettingsGroup(title = "Audio") {
@@ -522,7 +534,7 @@ fun SettingsScreen(
                     onResetEq = viewModel::resetEq,
                 )
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 SectionLabel("Playback Behavior")
 
@@ -535,7 +547,7 @@ fun SettingsScreen(
                     onAutoRewindSecondsChange = viewModel::setAutoRewindSeconds,
                 )
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 SectionLabel("Sleep Timer")
 
@@ -560,17 +572,17 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = uiState.isConnected && !uiState.isSyncing,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = ArchiveVoidElevated,
-                        contentColor = GoldFilament,
-                        disabledContainerColor = ArchiveVoidElevated.copy(alpha = 0.5f),
-                        disabledContentColor = ArchiveTextMuted,
+                        containerColor = NineLivesTheme.colors.archiveVoidElevated,
+                        contentColor = NineLivesTheme.colors.goldFilament,
+                        disabledContainerColor = NineLivesTheme.colors.archiveVoidElevated.copy(alpha = 0.5f),
+                        disabledContentColor = NineLivesTheme.colors.archiveTextMuted,
                     ),
                     shape = RoundedCornerShape(12.dp),
                 ) {
                     if (uiState.isSyncing) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
-                            color = GoldFilament,
+                            color = NineLivesTheme.colors.goldFilament,
                             strokeWidth = 2.dp,
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -586,17 +598,17 @@ fun SettingsScreen(
                     }
                 }
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 OutlinedButton(
                     onClick = viewModel::clearCache,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
-                        brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
+                        brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.archiveVoidElevated)
                     ),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = ArchiveTextSecondary,
+                        contentColor = NineLivesTheme.colors.archiveTextSecondary,
                     ),
                 ) {
                     Icon(
@@ -617,7 +629,7 @@ fun SettingsScreen(
                 DiagnosticRow("App Version", uiState.appVersion)
                 DiagnosticRow("Settings File", uiState.settingsFilePath.ifEmpty { "(default)" })
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -627,14 +639,14 @@ fun SettingsScreen(
                     Text(
                         text = "Studio",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                     Text(
                         text = "StaticHum.Studio",
                         style = MaterialTheme.typography.bodySmall.copy(
                             textDecoration = TextDecoration.Underline,
                         ),
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         modifier = Modifier.clickable {
                             uriHandler.openUri("https://statichum.studio")
                         },
@@ -649,14 +661,14 @@ fun SettingsScreen(
                     Text(
                         text = "Privacy Policy",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                     Text(
                         text = "View",
                         style = MaterialTheme.typography.bodySmall.copy(
                             textDecoration = TextDecoration.Underline,
                         ),
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         modifier = Modifier.clickable {
                             uriHandler.openUri("https://statichum.studio/apps/nine-lives/privacy")
                         },
@@ -673,18 +685,18 @@ fun SettingsScreen(
                     Text(
                         text = "Open Source Licenses",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                     Text(
                         text = "View",
                         style = MaterialTheme.typography.bodySmall.copy(
                             textDecoration = TextDecoration.Underline,
                         ),
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                     )
                 }
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Feedback
                 SectionLabel("Feedback & Reports")
@@ -718,7 +730,7 @@ fun SettingsScreen(
                     },
                 )
 
-                HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Nightwatch Dossier
                 SectionLabel("Nightwatch Dossier")
@@ -727,8 +739,8 @@ fun SettingsScreen(
                     onClick = onNavigateToDossier,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = ArchiveVoidElevated,
-                        contentColor = GoldFilament,
+                        containerColor = NineLivesTheme.colors.archiveVoidElevated,
+                        contentColor = NineLivesTheme.colors.goldFilament,
                     ),
                     shape = RoundedCornerShape(12.dp),
                 ) {
@@ -743,7 +755,7 @@ fun SettingsScreen(
                 Text(
                     text = "Listening stats, behavioral patterns, and temporal analysis",
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
             }
 
@@ -766,13 +778,13 @@ private fun SettingsGroup(
         Text(
             text = title,
             style = MaterialTheme.typography.titleSmall,
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 1.sp,
             modifier = Modifier.padding(bottom = 8.dp),
         )
         Card(
-            colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+            colors = CardDefaults.cardColors(containerColor = NineLivesTheme.colors.archiveVoidSurface),
             shape = RoundedCornerShape(16.dp),
         ) {
             Column(
@@ -800,12 +812,12 @@ private fun SourceModeToggle(
         Text(
             text = "Library Source",
             style = MaterialTheme.typography.bodyMedium,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
         )
         Text(
             text = "Where your audiobooks live",
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
         )
 
         Spacer(modifier = Modifier.height(4.dp))
@@ -844,14 +856,86 @@ private fun SourceModeToggle(
                     },
                     modifier = Modifier.weight(1f),
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = GoldFilamentFaint,
-                        selectedLabelColor = GoldFilament,
-                        selectedLeadingIconColor = GoldFilament,
-                        containerColor = ArchiveVoidElevated,
-                        labelColor = ArchiveTextSecondary,
-                        iconColor = ArchiveTextMuted,
+                        selectedContainerColor = NineLivesTheme.colors.goldFilamentFaint,
+                        selectedLabelColor = NineLivesTheme.colors.goldFilament,
+                        selectedLeadingIconColor = NineLivesTheme.colors.goldFilament,
+                        containerColor = NineLivesTheme.colors.archiveVoidElevated,
+                        labelColor = NineLivesTheme.colors.archiveTextSecondary,
+                        iconColor = NineLivesTheme.colors.archiveTextMuted,
                     ),
                 )
+            }
+        }
+    }
+}
+
+// ─── Theme Selector ───────────────────────────────────────────────────────
+
+@Composable
+private fun ThemeSelectorSection(
+    selected: ThemeMode,
+    onThemeSelected: (ThemeMode) -> Unit,
+) {
+    data class ThemeOption(
+        val mode: ThemeMode,
+        val label: String,
+        val description: String,
+    )
+
+    val options = listOf(
+        ThemeOption(ThemeMode.NOIR, "Noir", "Deep indigo void, gold filament"),
+        ThemeOption(ThemeMode.CANDLELIGHT, "Candlelight", "Warm sepia, amber glow"),
+        ThemeOption(ThemeMode.AMOLED, "AMOLED", "True black, saves OLED battery"),
+        ThemeOption(ThemeMode.BRIGHT, "Bright", "Light parchment, bronze accent"),
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "Theme",
+            style = MaterialTheme.typography.bodyMedium,
+            color = NineLivesTheme.colors.archiveTextPrimary,
+        )
+        Text(
+            text = "Color palette for the whole app",
+            style = MaterialTheme.typography.bodySmall,
+            color = NineLivesTheme.colors.archiveTextMuted,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        options.forEach { option ->
+            val isSelected = selected == option.mode
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onThemeSelected(option.mode) }
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
+                    contentDescription = null,
+                    tint = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                    modifier = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = option.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    Text(
+                        text = option.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextMuted,
+                    )
+                }
             }
         }
     }
@@ -877,13 +961,13 @@ private fun CollapsibleGuide(
             Text(
                 text = "How it works",
                 style = MaterialTheme.typography.bodyMedium,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
                 modifier = Modifier.weight(1f),
             )
             Icon(
                 if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                 contentDescription = if (expanded) "Collapse" else "Expand",
-                tint = ArchiveTextMuted,
+                tint = NineLivesTheme.colors.archiveTextMuted,
                 modifier = Modifier.size(20.dp),
             )
         }
@@ -910,7 +994,7 @@ private fun LocalLoadingGuide(
                 "Only the top folder is read, one level down. " +
                 "Supported: m4b, m4a, mp3, opus, ogg, flac, aac, wma, wav.",
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             modifier = Modifier.padding(top = 4.dp),
         )
     }
@@ -935,12 +1019,12 @@ private fun ServerConnectionGuide(
                     "address and sign in, and your library streams here with progress synced " +
                     "across your devices.\n\nNew to it? Set up a server first, then come back and connect.",
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextMuted,
+                color = NineLivesTheme.colors.archiveTextMuted,
             )
             Text(
                 text = "Open audiobookshelf.org",
                 style = MaterialTheme.typography.bodyMedium,
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 fontWeight = FontWeight.SemiBold,
                 textDecoration = TextDecoration.Underline,
                 modifier = Modifier.clickable { onOpenSite() },
@@ -969,7 +1053,7 @@ private fun LocalFoldersSection(
         Text(
             text = "Pick folders containing your audiobooks. Each subfolder becomes one book.",
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
         )
 
         // Scanning indicator
@@ -978,20 +1062,20 @@ private fun LocalFoldersSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(GoldFilamentFaint.copy(alpha = 0.15f))
+                    .background(NineLivesTheme.colors.goldFilamentFaint.copy(alpha = 0.15f))
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     strokeWidth = 2.dp,
                 )
                 Text(
                     text = "Scanning folder...",
                     style = MaterialTheme.typography.bodySmall,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                 )
             }
         }
@@ -1001,13 +1085,13 @@ private fun LocalFoldersSection(
             Text(
                 text = lastScanMessage ?: "",
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextSecondary,
+                color = NineLivesTheme.colors.archiveTextSecondary,
             )
         }
 
         // Added folders list
         if (localLibraries.isNotEmpty()) {
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+            HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
             localLibraries.forEach { library ->
                 val isSelected = library.id == selectedLocalLibrary?.id
@@ -1018,7 +1102,7 @@ private fun LocalFoldersSection(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(
-                            if (isSelected) GoldFilamentFaint.copy(alpha = 0.08f)
+                            if (isSelected) NineLivesTheme.colors.goldFilamentFaint.copy(alpha = 0.08f)
                             else androidx.compose.ui.graphics.Color.Transparent
                         )
                         .clickable { onSelect(library) }
@@ -1029,14 +1113,14 @@ private fun LocalFoldersSection(
                     Icon(
                         if (isSelected) Icons.Outlined.FolderSpecial else Icons.Outlined.Folder,
                         contentDescription = null,
-                        tint = if (isSelected) GoldFilament else ArchiveTextSecondary,
+                        tint = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                         modifier = Modifier.size(20.dp),
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = library.name,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (isSelected) GoldFilament else ArchiveTextPrimary,
+                            color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -1046,7 +1130,7 @@ private fun LocalFoldersSection(
                                 text = Uri.parse(uri).lastPathSegment
                                     ?.substringAfterLast(':') ?: uri,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = ArchiveTextMuted,
+                                color = NineLivesTheme.colors.archiveTextMuted,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -1062,7 +1146,7 @@ private fun LocalFoldersSection(
                         Icon(
                             Icons.Outlined.Refresh,
                             contentDescription = "Rescan",
-                            tint = ArchiveTextSecondary,
+                            tint = NineLivesTheme.colors.archiveTextSecondary,
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -1079,7 +1163,7 @@ private fun LocalFoldersSection(
                             Icon(
                                 Icons.Outlined.DeleteForever,
                                 contentDescription = "Confirm remove",
-                                tint = ArchiveError,
+                                tint = NineLivesTheme.colors.archiveError,
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -1091,7 +1175,7 @@ private fun LocalFoldersSection(
                             Icon(
                                 Icons.Outlined.Close,
                                 contentDescription = "Remove",
-                                tint = ArchiveTextMuted,
+                                tint = NineLivesTheme.colors.archiveTextMuted,
                                 modifier = Modifier.size(16.dp),
                             )
                         }
@@ -1106,9 +1190,9 @@ private fun LocalFoldersSection(
             modifier = Modifier.fillMaxWidth(),
             enabled = !isScanning,
             colors = ButtonDefaults.buttonColors(
-                containerColor = GoldFilament,
-                contentColor = ArchiveVoidDeep,
-                disabledContainerColor = GoldFilamentDim,
+                containerColor = NineLivesTheme.colors.goldFilament,
+                contentColor = NineLivesTheme.colors.onAccent,
+                disabledContainerColor = NineLivesTheme.colors.goldFilamentDim,
             ),
             shape = RoundedCornerShape(12.dp),
         ) {
@@ -1130,7 +1214,7 @@ private fun SectionLabel(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.labelMedium,
-        color = ArchiveTextSecondary,
+        color = NineLivesTheme.colors.archiveTextSecondary,
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 0.5.sp,
     )
@@ -1155,7 +1239,7 @@ private fun CosmicTextField(
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            color = ArchiveTextSecondary,
+            color = NineLivesTheme.colors.archiveTextSecondary,
             fontSize = 12.sp,
         )
         OutlinedTextField(
@@ -1166,7 +1250,7 @@ private fun CosmicTextField(
             placeholder = {
                 Text(
                     text = placeholder,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
             },
             leadingIcon = leadingIcon?.let {
@@ -1174,7 +1258,7 @@ private fun CosmicTextField(
                     Icon(
                         imageVector = it,
                         contentDescription = null,
-                        tint = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+                        tint = if (enabled) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted,
                         modifier = Modifier.size(20.dp),
                     )
                 }
@@ -1188,7 +1272,7 @@ private fun CosmicTextField(
                             else
                                 Icons.Outlined.Visibility,
                             contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                            tint = ArchiveTextMuted,
+                            tint = NineLivesTheme.colors.archiveTextMuted,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -1205,16 +1289,16 @@ private fun CosmicTextField(
             singleLine = true,
             shape = RoundedCornerShape(12.dp),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = GoldFilament,
-                unfocusedBorderColor = ArchiveVoidElevated,
-                disabledBorderColor = ArchiveVoidElevated.copy(alpha = 0.5f),
-                focusedContainerColor = ArchiveVoidSurface,
-                unfocusedContainerColor = ArchiveVoidSurface,
-                disabledContainerColor = ArchiveVoidSurface.copy(alpha = 0.5f),
-                focusedTextColor = ArchiveTextPrimary,
-                unfocusedTextColor = ArchiveTextPrimary,
-                disabledTextColor = ArchiveTextSecondary,
-                cursorColor = GoldFilament,
+                focusedBorderColor = NineLivesTheme.colors.goldFilament,
+                unfocusedBorderColor = NineLivesTheme.colors.archiveVoidElevated,
+                disabledBorderColor = NineLivesTheme.colors.archiveVoidElevated.copy(alpha = 0.5f),
+                focusedContainerColor = NineLivesTheme.colors.archiveVoidSurface,
+                unfocusedContainerColor = NineLivesTheme.colors.archiveVoidSurface,
+                disabledContainerColor = NineLivesTheme.colors.archiveVoidSurface.copy(alpha = 0.5f),
+                focusedTextColor = NineLivesTheme.colors.archiveTextPrimary,
+                unfocusedTextColor = NineLivesTheme.colors.archiveTextPrimary,
+                disabledTextColor = NineLivesTheme.colors.archiveTextSecondary,
+                cursorColor = NineLivesTheme.colors.goldFilament,
             ),
         )
     }
@@ -1228,9 +1312,9 @@ private fun MessageCard(
     isError: Boolean,
     onDismiss: () -> Unit,
 ) {
-    val bgColor = if (isError) ArchiveError.copy(alpha = 0.1f) else ArchiveSuccess.copy(alpha = 0.1f)
-    val borderColor = if (isError) ArchiveError.copy(alpha = 0.3f) else ArchiveSuccess.copy(alpha = 0.3f)
-    val textColor = if (isError) ArchiveError else ArchiveSuccess
+    val bgColor = if (isError) NineLivesTheme.colors.archiveError.copy(alpha = 0.1f) else NineLivesTheme.colors.archiveSuccess.copy(alpha = 0.1f)
+    val borderColor = if (isError) NineLivesTheme.colors.archiveError.copy(alpha = 0.3f) else NineLivesTheme.colors.archiveSuccess.copy(alpha = 0.3f)
+    val textColor = if (isError) NineLivesTheme.colors.archiveError else NineLivesTheme.colors.archiveSuccess
     val icon = if (isError) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle
 
     Row(
@@ -1280,12 +1364,12 @@ private fun DiagnosticRow(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
         )
     }
 }
@@ -1309,7 +1393,7 @@ private fun FeedbackSection(
         Text(
             text = "Report Type",
             style = MaterialTheme.typography.bodyMedium,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1333,17 +1417,17 @@ private fun FeedbackSection(
                         }
                     } else null,
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = GoldFilamentFaint,
-                        selectedLabelColor = GoldFilament,
-                        selectedLeadingIconColor = GoldFilament,
-                        containerColor = ArchiveVoidElevated,
-                        labelColor = ArchiveTextSecondary,
+                        selectedContainerColor = NineLivesTheme.colors.goldFilamentFaint,
+                        selectedLabelColor = NineLivesTheme.colors.goldFilament,
+                        selectedLeadingIconColor = NineLivesTheme.colors.goldFilament,
+                        containerColor = NineLivesTheme.colors.archiveVoidElevated,
+                        labelColor = NineLivesTheme.colors.archiveTextSecondary,
                     ),
                 )
             }
         }
 
-        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+        HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
         // Include logs toggle
         Row(
@@ -1354,22 +1438,22 @@ private fun FeedbackSection(
                 Text(
                     text = "Attach Optional Logs",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                 )
                 Text(
                     text = "Adds recent app logs to the email report",
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
             }
             Switch(
                 checked = includeLogs,
                 onCheckedChange = onIncludeLogsChanged,
                 colors = SwitchDefaults.colors(
-                    checkedThumbColor = GoldFilament,
-                    checkedTrackColor = GoldFilamentFaint,
-                    uncheckedThumbColor = ArchiveTextSecondary,
-                    uncheckedTrackColor = ArchiveVoidElevated,
+                    checkedThumbColor = NineLivesTheme.colors.goldFilament,
+                    checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+                    uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+                    uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                 ),
             )
         }
@@ -1381,16 +1465,16 @@ private fun FeedbackSection(
         modifier = Modifier.fillMaxWidth(),
         enabled = !isCollecting,
         colors = ButtonDefaults.buttonColors(
-            containerColor = GoldFilament,
-            contentColor = ArchiveVoidDeep,
-            disabledContainerColor = GoldFilamentDim,
+            containerColor = NineLivesTheme.colors.goldFilament,
+            contentColor = NineLivesTheme.colors.onAccent,
+            disabledContainerColor = NineLivesTheme.colors.goldFilamentDim,
         ),
         shape = RoundedCornerShape(12.dp),
     ) {
         if (isCollecting) {
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
-                color = ArchiveVoidDeep,
+                color = NineLivesTheme.colors.archiveVoidDeep,
                 strokeWidth = 2.dp,
             )
             Spacer(modifier = Modifier.width(8.dp))
@@ -1409,7 +1493,7 @@ private fun FeedbackSection(
     Text(
         text = "Opens your email app with device info pre-filled",
         style = MaterialTheme.typography.bodySmall,
-        color = ArchiveTextMuted,
+        color = NineLivesTheme.colors.archiveTextMuted,
     )
 }
 
@@ -1440,7 +1524,7 @@ private fun ArchivePreferencesSection(
             onCheckedChange = { onToggleAnomalies() },
         )
 
-        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+        HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
         // Whispers toggle
         ArchivePreferenceRow(
@@ -1453,7 +1537,7 @@ private fun ArchivePreferencesSection(
             onCheckedChange = { onToggleWhispers() },
         )
 
-        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+        HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
         // Reduced Motion toggle
         ArchivePreferenceRow(
@@ -1463,7 +1547,7 @@ private fun ArchivePreferencesSection(
             onCheckedChange = { onToggleReduceMotion() },
         )
 
-        HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+        HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
         // Session Counter
         Row(
@@ -1477,18 +1561,18 @@ private fun ArchivePreferencesSection(
                 Text(
                     text = "Sessions Recorded",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                 )
                 Text(
                     text = "The Archive remembers every visit",
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
             }
             Text(
                 text = sessionCount.toString(),
                 style = MaterialTheme.typography.headlineSmall,
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 fontWeight = FontWeight.Bold,
             )
         }
@@ -1512,22 +1596,22 @@ private fun ArchivePreferenceRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyMedium,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextMuted,
+                color = NineLivesTheme.colors.archiveTextMuted,
             )
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = GoldFilament,
-                checkedTrackColor = GoldFilamentFaint,
-                uncheckedThumbColor = ArchiveTextSecondary,
-                uncheckedTrackColor = ArchiveVoidElevated,
+                checkedThumbColor = NineLivesTheme.colors.goldFilament,
+                checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+                uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+                uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
             ),
         )
     }
@@ -1561,7 +1645,7 @@ private fun PlaybackBehaviorSection(
                 Column(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+                    HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                     // Mode: Smart / Fixed
                     Row(
@@ -1574,10 +1658,10 @@ private fun PlaybackBehaviorSection(
                                 onClick = { onAutoRewindModeChange(value) },
                                 label = { Text(label) },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = GoldFilamentFaint,
-                                    selectedLabelColor = GoldFilament,
-                                    containerColor = ArchiveVoidElevated,
-                                    labelColor = ArchiveTextSecondary,
+                                    selectedContainerColor = NineLivesTheme.colors.goldFilamentFaint,
+                                    selectedLabelColor = NineLivesTheme.colors.goldFilament,
+                                    containerColor = NineLivesTheme.colors.archiveVoidElevated,
+                                    labelColor = NineLivesTheme.colors.archiveTextSecondary,
                                 ),
                             )
                         }
@@ -1588,7 +1672,7 @@ private fun PlaybackBehaviorSection(
                         Text(
                             text = "Rewind scales with pause duration — short pauses rewind less, long pauses rewind more",
                             style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                         )
                     }
 
@@ -1598,7 +1682,7 @@ private fun PlaybackBehaviorSection(
                             Text(
                                 text = "Rewind: ${formatSeconds(autoRewindSeconds)}",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = GoldFilament,
+                                color = NineLivesTheme.colors.goldFilament,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Slider(
@@ -1607,9 +1691,9 @@ private fun PlaybackBehaviorSection(
                                 valueRange = 0f..120f,
                                 steps = 23, // (120 - 0) / 5 - 1
                                 colors = SliderDefaults.colors(
-                                    thumbColor = GoldFilament,
-                                    activeTrackColor = GoldFilament,
-                                    inactiveTrackColor = ArchiveVoidElevated,
+                                    thumbColor = NineLivesTheme.colors.goldFilament,
+                                    activeTrackColor = NineLivesTheme.colors.goldFilament,
+                                    inactiveTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                                 ),
                             )
                         }
@@ -1642,7 +1726,7 @@ private fun SleepTimerSettingsSection(
                 onCheckedChange = onMotionEnabledChange,
             )
 
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+            HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
             // Shake to reset toggle
             ArchivePreferenceRow(
@@ -1652,7 +1736,7 @@ private fun SleepTimerSettingsSection(
                 onCheckedChange = onShakeResetEnabledChange,
             )
 
-            HorizontalDivider(color = ArchiveVoidElevated, thickness = 1.dp)
+            HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
             // Rewind on sleep slider
             Column(
@@ -1661,12 +1745,12 @@ private fun SleepTimerSettingsSection(
                 Text(
                     text = "Rewind on Sleep: ${formatSeconds(rewindSeconds)}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                 )
                 Text(
                     text = "How far to rewind when the sleep timer stops playback",
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Slider(
@@ -1675,9 +1759,9 @@ private fun SleepTimerSettingsSection(
                     valueRange = 0f..60f,
                     steps = 11, // (60 - 0) / 5 - 1
                     colors = SliderDefaults.colors(
-                        thumbColor = GoldFilament,
-                        activeTrackColor = GoldFilament,
-                        inactiveTrackColor = ArchiveVoidElevated,
+                        thumbColor = NineLivesTheme.colors.goldFilament,
+                        activeTrackColor = NineLivesTheme.colors.goldFilament,
+                        inactiveTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                     ),
                 )
             }
@@ -1721,22 +1805,22 @@ private fun EqualizerSection(
                     Text(
                         text = "5-Band Equalizer",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = ArchiveTextPrimary,
+                        color = NineLivesTheme.colors.archiveTextPrimary,
                     )
                     Text(
                         text = "Shape the frequency response",
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                 }
                 Switch(
                     checked = eqEnabled,
                     onCheckedChange = { onToggleEq() },
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = GoldFilament,
-                        checkedTrackColor = GoldFilamentFaint,
-                        uncheckedThumbColor = ArchiveTextSecondary,
-                        uncheckedTrackColor = ArchiveVoidElevated,
+                        checkedThumbColor = NineLivesTheme.colors.goldFilament,
+                        checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+                        uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+                        uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                     ),
                 )
             }
@@ -1751,19 +1835,19 @@ private fun EqualizerSection(
                 Text(
                     text = "+${maxGain / 100}dB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 9.sp,
                 )
                 Text(
                     text = "0dB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 9.sp,
                 )
                 Text(
                     text = "${minGain / 100}dB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 9.sp,
                 )
             }
@@ -1797,11 +1881,11 @@ private fun EqualizerSection(
                 enabled = eqEnabled,
                 shape = RoundedCornerShape(10.dp),
                 border = ButtonDefaults.outlinedButtonBorder(enabled = eqEnabled).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
+                    brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.archiveVoidElevated)
                 ),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = ArchiveTextSecondary,
-                    disabledContentColor = ArchiveTextMuted,
+                    contentColor = NineLivesTheme.colors.archiveTextSecondary,
+                    disabledContentColor = NineLivesTheme.colors.archiveTextMuted,
                 ),
             ) {
                 Text("Reset EQ")
@@ -1827,7 +1911,7 @@ private fun SettingsEqBandSlider(
         Text(
             text = "${if (gain >= 0) "+" else ""}${gain / 100}",
             style = MaterialTheme.typography.labelSmall,
-            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            color = if (enabled) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted,
             fontSize = 9.sp,
         )
 
@@ -1846,12 +1930,12 @@ private fun SettingsEqBandSlider(
                     .width(160.dp)
                     .graphicsLayer { rotationZ = -90f },
                 colors = SliderDefaults.colors(
-                    thumbColor = if (enabled) GoldFilament else ArchiveTextMuted,
-                    activeTrackColor = if (enabled) GoldFilament else ArchiveTextMuted,
-                    inactiveTrackColor = ArchiveOutline,
-                    disabledThumbColor = ArchiveTextMuted,
-                    disabledActiveTrackColor = ArchiveTextMuted.copy(alpha = 0.5f),
-                    disabledInactiveTrackColor = ArchiveOutline.copy(alpha = 0.5f),
+                    thumbColor = if (enabled) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                    activeTrackColor = if (enabled) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                    inactiveTrackColor = NineLivesTheme.colors.archiveOutline,
+                    disabledThumbColor = NineLivesTheme.colors.archiveTextMuted,
+                    disabledActiveTrackColor = NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.5f),
+                    disabledInactiveTrackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.5f),
                 ),
             )
         }
@@ -1859,7 +1943,7 @@ private fun SettingsEqBandSlider(
         Text(
             text = frequencyLabel,
             style = MaterialTheme.typography.labelSmall,
-            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            color = if (enabled) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted,
             fontSize = 9.sp,
         )
     }

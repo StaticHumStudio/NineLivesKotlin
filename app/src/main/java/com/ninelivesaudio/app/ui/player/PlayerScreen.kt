@@ -41,6 +41,7 @@ import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.domain.util.toClockString
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
@@ -97,7 +98,7 @@ fun PlayerScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep)
+            .background(NineLivesTheme.colors.archiveVoidDeep)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -106,13 +107,13 @@ fun PlayerScreen(
         // ─── Source Badge ─────────────────────────────────────────────
         if (uiState.isLocalFile) {
             Surface(
-                color = ArchiveInfo.copy(alpha = 0.15f),
+                color = NineLivesTheme.colors.archiveInfo.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(8.dp),
             ) {
                 Text(
                     text = "Playing from local file",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveInfo,
+                    color = NineLivesTheme.colors.archiveInfo,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
@@ -132,7 +133,7 @@ fun PlayerScreen(
                     .matchParentSize()
                     .padding(14.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(ArchiveVoidElevated),
+                    .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
                     coverUrl = uiState.coverUrl,
@@ -178,7 +179,7 @@ fun PlayerScreen(
                 Text(
                     text = chapterLabel,
                     style = MaterialTheme.typography.labelMedium,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
@@ -204,9 +205,9 @@ fun PlayerScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 4.dp),
                     colors = SliderDefaults.colors(
-                        thumbColor = ImpossibleAccent,
-                        activeTrackColor = ImpossibleAccent,
-                        inactiveTrackColor = ArchiveOutline.copy(alpha = 0.3f),
+                        thumbColor = NineLivesTheme.colors.impossibleAccent,
+                        activeTrackColor = NineLivesTheme.colors.impossibleAccent,
+                        inactiveTrackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.3f),
                     ),
                 )
 
@@ -219,12 +220,12 @@ fun PlayerScreen(
                     Text(
                         text = uiState.currentChapterPosition.toClockString(),
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                     Text(
                         text = uiState.currentChapterDuration.toClockString(),
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                 }
             }
@@ -248,9 +249,9 @@ fun PlayerScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 4.dp),
                     colors = SliderDefaults.colors(
-                        thumbColor = GoldFilament,
-                        activeTrackColor = GoldFilament,
-                        inactiveTrackColor = ArchiveOutline.copy(alpha = 0.3f),
+                        thumbColor = NineLivesTheme.colors.goldFilament,
+                        activeTrackColor = NineLivesTheme.colors.goldFilament,
+                        inactiveTrackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.3f),
                     ),
                 )
 
@@ -263,12 +264,12 @@ fun PlayerScreen(
                     Text(
                         text = uiState.positionText,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                     Text(
                         text = uiState.remainingText,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                 }
             }
@@ -279,7 +280,7 @@ fun PlayerScreen(
         Text(
             text = "${uiState.positionText} / ${uiState.durationText}",
             style = MaterialTheme.typography.labelSmall,
-            color = ArchiveTextMuted.copy(alpha = 0.7f),
+            color = NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -302,7 +303,7 @@ fun PlayerScreen(
                 Icon(
                     Icons.Outlined.SkipPrevious,
                     contentDescription = "Previous Chapter",
-                    tint = if (uiState.currentChapterIndex > 0) ArchiveTextSecondary else ArchiveTextMuted.copy(alpha = 0.4f),
+                    tint = if (uiState.currentChapterIndex > 0) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.4f),
                     modifier = Modifier.size(28.dp),
                 )
             }
@@ -311,7 +312,7 @@ fun PlayerScreen(
                 Icon(
                     Icons.Outlined.Replay10,
                     contentDescription = "Skip back 10s",
-                    tint = ArchiveTextPrimary,
+                    tint = NineLivesTheme.colors.archiveTextPrimary,
                     modifier = Modifier.size(36.dp),
                 )
             }
@@ -321,19 +322,19 @@ fun PlayerScreen(
                 modifier = Modifier
                     .size(64.dp)
                     .clip(CircleShape)
-                    .background(GoldFilament),
+                    .background(NineLivesTheme.colors.goldFilament),
             ) {
                 if (uiState.isLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(28.dp),
-                        color = ArchiveVoidDeep,
+                        color = NineLivesTheme.colors.archiveVoidDeep,
                         strokeWidth = 2.dp,
                     )
                 } else {
                     Icon(
                         imageVector = if (uiState.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                        tint = ArchiveVoidDeep,
+                        tint = NineLivesTheme.colors.archiveVoidDeep,
                         modifier = Modifier.size(32.dp),
                     )
                 }
@@ -343,7 +344,7 @@ fun PlayerScreen(
                 Icon(
                     Icons.Outlined.Forward30,
                     contentDescription = "Skip forward 30s",
-                    tint = ArchiveTextPrimary,
+                    tint = NineLivesTheme.colors.archiveTextPrimary,
                     modifier = Modifier.size(36.dp),
                 )
             }
@@ -358,7 +359,7 @@ fun PlayerScreen(
                 Icon(
                     Icons.Outlined.SkipNext,
                     contentDescription = "Next Chapter",
-                    tint = if (uiState.currentChapterIndex < uiState.chapters.size - 1) ArchiveTextSecondary else ArchiveTextMuted.copy(alpha = 0.4f),
+                    tint = if (uiState.currentChapterIndex < uiState.chapters.size - 1) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.4f),
                     modifier = Modifier.size(28.dp),
                 )
             }
@@ -399,13 +400,13 @@ fun PlayerScreen(
                 Icon(
                     Icons.Outlined.Bookmarks,
                     contentDescription = "Bookmarks",
-                    tint = if (uiState.bookmarks.isNotEmpty()) GoldFilament else ArchiveTextSecondary,
+                    tint = if (uiState.bookmarks.isNotEmpty()) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                     modifier = Modifier.size(22.dp),
                 )
                 Text(
                     text = if (uiState.bookmarks.isNotEmpty()) "${uiState.bookmarks.size}" else "Marks",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 10.sp,
                 )
             }
@@ -439,7 +440,7 @@ fun PlayerScreen(
             Text(
                 text = uiState.sleepTimerText,
                 style = MaterialTheme.typography.labelSmall,
-                color = GoldFilament.copy(alpha = alpha),
+                color = NineLivesTheme.colors.goldFilament.copy(alpha = alpha),
                 textAlign = TextAlign.Center,
             )
         }
@@ -455,7 +456,7 @@ private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
     Text(
         text = uiState.title,
         style = MaterialTheme.typography.headlineMedium,
-        color = ArchiveTextPrimary,
+        color = NineLivesTheme.colors.archiveTextPrimary,
         fontWeight = FontWeight.Bold,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
@@ -467,7 +468,7 @@ private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
     Text(
         text = uiState.author,
         style = MaterialTheme.typography.titleMedium,
-        color = ArchiveTextSecondary,
+        color = NineLivesTheme.colors.archiveTextSecondary,
         textAlign = TextAlign.Center,
     )
 
@@ -476,7 +477,7 @@ private fun TitleAuthorBlock(uiState: PlayerViewModel.UiState) {
         Text(
             text = series,
             style = MaterialTheme.typography.bodyMedium,
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             textAlign = TextAlign.Center,
         )
     }
@@ -499,14 +500,14 @@ private fun BookWhisperCard(uiState: PlayerViewModel.UiState) {
 
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = ArchiveVoidElevated,
-        border = BorderStroke(1.dp, ArchiveOutline),
+        color = NineLivesTheme.colors.archiveVoidElevated,
+        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
             text = whisper,
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
         )
@@ -530,13 +531,13 @@ private fun ChapterSelectorButton(
             Icon(
                 imageVector = Icons.Outlined.MenuBook,
                 contentDescription = "Chapter selector",
-                tint = ArchiveTextSecondary,
+                tint = NineLivesTheme.colors.archiveTextSecondary,
                 modifier = Modifier.size(22.dp),
             )
             Text(
                 text = "Chapter",
                 style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextMuted,
+                color = NineLivesTheme.colors.archiveTextMuted,
                 fontSize = 10.sp,
             )
         }
@@ -544,7 +545,7 @@ private fun ChapterSelectorButton(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            containerColor = ArchiveVoidSurface,
+            containerColor = NineLivesTheme.colors.archiveVoidSurface,
         ) {
             chapters.forEachIndexed { index, chapter ->
                 DropdownMenuItem(
@@ -553,7 +554,7 @@ private fun ChapterSelectorButton(
                             text = "${index + 1}. ${chapter.title}",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            color = if (index == currentChapterIndex) GoldFilament else ArchiveTextPrimary,
+                            color = if (index == currentChapterIndex) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
                         )
                     },
                     onClick = {
@@ -579,13 +580,13 @@ private fun EqButton(
         Icon(
             Icons.Outlined.Equalizer,
             contentDescription = "Equalizer",
-            tint = if (eqEnabled) GoldFilament else ArchiveTextSecondary,
+            tint = if (eqEnabled) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
             modifier = Modifier.size(22.dp),
         )
         Text(
             text = if (eqEnabled) "EQ" else "EQ",
             style = MaterialTheme.typography.labelSmall,
-            color = if (eqEnabled) GoldFilament else ArchiveTextMuted,
+            color = if (eqEnabled) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
             fontSize = 10.sp,
         )
     }
@@ -610,8 +611,8 @@ private fun EqSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = ArchiveVoidSurface,
-        contentColor = ArchiveTextPrimary,
+        containerColor = NineLivesTheme.colors.archiveVoidSurface,
+        contentColor = NineLivesTheme.colors.archiveTextPrimary,
     ) {
         Column(
             modifier = Modifier
@@ -628,17 +629,17 @@ private fun EqSheet(
                 Text(
                     text = "Equalizer",
                     style = MaterialTheme.typography.titleMedium,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     fontWeight = FontWeight.Bold,
                 )
                 Switch(
                     checked = eqEnabled,
                     onCheckedChange = { onToggleEq() },
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = GoldFilament,
-                        checkedTrackColor = GoldFilamentFaint,
-                        uncheckedThumbColor = ArchiveTextSecondary,
-                        uncheckedTrackColor = ArchiveVoidElevated,
+                        checkedThumbColor = NineLivesTheme.colors.goldFilament,
+                        checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+                        uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+                        uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
                     ),
                 )
             }
@@ -654,12 +655,12 @@ private fun EqSheet(
                 Text(
                     text = "Volume Boost",
                     style = MaterialTheme.typography.labelMedium,
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                 )
                 Text(
                     text = "+${volumeBoost / 100}dB",
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (volumeBoost > 0) GoldFilament else ArchiveTextMuted,
+                    color = if (volumeBoost > 0) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -669,9 +670,9 @@ private fun EqSheet(
                 valueRange = 0f..1000f,
                 modifier = Modifier.fillMaxWidth(),
                 colors = SliderDefaults.colors(
-                    thumbColor = GoldFilament,
-                    activeTrackColor = GoldFilament,
-                    inactiveTrackColor = ArchiveOutline,
+                    thumbColor = NineLivesTheme.colors.goldFilament,
+                    activeTrackColor = NineLivesTheme.colors.goldFilament,
+                    inactiveTrackColor = NineLivesTheme.colors.archiveOutline,
                 ),
             )
 
@@ -687,19 +688,19 @@ private fun EqSheet(
                 Text(
                     text = "+${maxGain / 100}dB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 9.sp,
                 )
                 Text(
                     text = "0dB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 9.sp,
                 )
                 Text(
                     text = "${minGain / 100}dB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 9.sp,
                 )
             }
@@ -739,11 +740,11 @@ private fun EqSheet(
                 enabled = eqEnabled,
                 shape = RoundedCornerShape(10.dp),
                 border = ButtonDefaults.outlinedButtonBorder(enabled = eqEnabled).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(ArchiveVoidElevated)
+                    brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.archiveVoidElevated)
                 ),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = ArchiveTextSecondary,
-                    disabledContentColor = ArchiveTextMuted,
+                    contentColor = NineLivesTheme.colors.archiveTextSecondary,
+                    disabledContentColor = NineLivesTheme.colors.archiveTextMuted,
                 ),
             ) {
                 Text("Reset EQ", fontWeight = FontWeight.SemiBold)
@@ -771,7 +772,7 @@ private fun EqBandSlider(
         Text(
             text = "${if (gain >= 0) "+" else ""}${gain / 100}",
             style = MaterialTheme.typography.labelSmall,
-            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            color = if (enabled) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted,
             fontSize = 9.sp,
         )
 
@@ -793,12 +794,12 @@ private fun EqBandSlider(
                         rotationZ = -90f
                     },
                 colors = SliderDefaults.colors(
-                    thumbColor = if (enabled) GoldFilament else ArchiveTextMuted,
-                    activeTrackColor = if (enabled) GoldFilament else ArchiveTextMuted,
-                    inactiveTrackColor = ArchiveOutline,
-                    disabledThumbColor = ArchiveTextMuted,
-                    disabledActiveTrackColor = ArchiveTextMuted.copy(alpha = 0.5f),
-                    disabledInactiveTrackColor = ArchiveOutline.copy(alpha = 0.5f),
+                    thumbColor = if (enabled) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                    activeTrackColor = if (enabled) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                    inactiveTrackColor = NineLivesTheme.colors.archiveOutline,
+                    disabledThumbColor = NineLivesTheme.colors.archiveTextMuted,
+                    disabledActiveTrackColor = NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.5f),
+                    disabledInactiveTrackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.5f),
                 ),
             )
         }
@@ -807,7 +808,7 @@ private fun EqBandSlider(
         Text(
             text = frequencyLabel,
             style = MaterialTheme.typography.labelSmall,
-            color = if (enabled) ArchiveTextSecondary else ArchiveTextMuted,
+            color = if (enabled) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted,
             fontSize = 9.sp,
         )
     }
@@ -836,13 +837,13 @@ private fun SpeedButton(
             Icon(
                 Icons.Outlined.Speed,
                 contentDescription = "Speed",
-                tint = ArchiveTextSecondary,
+                tint = NineLivesTheme.colors.archiveTextSecondary,
                 modifier = Modifier.size(22.dp),
             )
             Text(
                 text = "${currentSpeed}x",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (currentSpeed != 1.0f) GoldFilament else ArchiveTextMuted,
+                color = if (currentSpeed != 1.0f) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
                 fontSize = 10.sp,
             )
         }
@@ -850,14 +851,14 @@ private fun SpeedButton(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            containerColor = ArchiveVoidSurface,
+            containerColor = NineLivesTheme.colors.archiveVoidSurface,
         ) {
             options.forEach { speed ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             "${speed}x",
-                            color = if (speed == currentSpeed) GoldFilament else ArchiveTextPrimary,
+                            color = if (speed == currentSpeed) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
                             fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal,
                         )
                     },
@@ -890,13 +891,13 @@ private fun SleepTimerButton(
             Icon(
                 Icons.Outlined.Bedtime,
                 contentDescription = "Sleep Timer",
-                tint = if (isActive) GoldFilament else ArchiveTextSecondary,
+                tint = if (isActive) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                 modifier = Modifier.size(22.dp),
             )
             Text(
                 text = if (isActive) "On" else "Off",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isActive) GoldFilament else ArchiveTextMuted,
+                color = if (isActive) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
                 fontSize = 10.sp,
             )
         }
@@ -904,14 +905,14 @@ private fun SleepTimerButton(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            containerColor = ArchiveVoidSurface,
+            containerColor = NineLivesTheme.colors.archiveVoidSurface,
         ) {
             options.forEach { minutes ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             text = if (minutes == null) "Off" else "$minutes min",
-                            color = ArchiveTextPrimary,
+                            color = NineLivesTheme.colors.archiveTextPrimary,
                         )
                     },
                     onClick = {
@@ -931,7 +932,7 @@ private fun EmptyPlayerState() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep),
+            .background(NineLivesTheme.colors.archiveVoidDeep),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -939,20 +940,20 @@ private fun EmptyPlayerState() {
             Icons.Outlined.Headphones,
             contentDescription = null,
             modifier = Modifier.size(72.dp),
-            tint = ArchiveTextMuted,
+            tint = NineLivesTheme.colors.archiveTextMuted,
         )
         Spacer(modifier = Modifier.height(20.dp))
         Text(
             text = "The Silence Holds",
             style = MaterialTheme.typography.titleMedium,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = "Choose a relic from the Archive to begin listening",
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             textAlign = TextAlign.Center,
         )
     }
@@ -976,8 +977,8 @@ private fun BookmarkSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = ArchiveVoidSurface,
-        contentColor = ArchiveTextPrimary,
+        containerColor = NineLivesTheme.colors.archiveVoidSurface,
+        contentColor = NineLivesTheme.colors.archiveTextPrimary,
     ) {
         Column(
             modifier = Modifier
@@ -989,7 +990,7 @@ private fun BookmarkSheet(
             Text(
                 text = "Bookmarks",
                 style = MaterialTheme.typography.titleMedium,
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 fontWeight = FontWeight.Bold,
             )
 
@@ -1008,16 +1009,16 @@ private fun BookmarkSheet(
                     placeholder = {
                         Text(
                             "Bookmark at $positionText",
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                         )
                     },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = GoldFilament,
-                        unfocusedBorderColor = ArchiveOutline,
-                        cursorColor = GoldFilament,
-                        focusedTextColor = ArchiveTextPrimary,
-                        unfocusedTextColor = ArchiveTextPrimary,
+                        focusedBorderColor = NineLivesTheme.colors.goldFilament,
+                        unfocusedBorderColor = NineLivesTheme.colors.archiveOutline,
+                        cursorColor = NineLivesTheme.colors.goldFilament,
+                        focusedTextColor = NineLivesTheme.colors.archiveTextPrimary,
+                        unfocusedTextColor = NineLivesTheme.colors.archiveTextPrimary,
                     ),
                     shape = RoundedCornerShape(10.dp),
                 )
@@ -1029,8 +1030,8 @@ private fun BookmarkSheet(
                         newBookmarkTitle = ""
                     },
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = GoldFilament,
-                        contentColor = ArchiveVoidDeep,
+                        containerColor = NineLivesTheme.colors.goldFilament,
+                        contentColor = NineLivesTheme.colors.onAccent,
                     ),
                 ) {
                     Icon(
@@ -1048,7 +1049,7 @@ private fun BookmarkSheet(
                 Text(
                     text = "No bookmarks yet",
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 24.dp),
@@ -1083,7 +1084,7 @@ private fun BookmarkRow(
 ) {
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = ArchiveVoidElevated,
+        color = NineLivesTheme.colors.archiveVoidElevated,
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onSeek),
@@ -1098,7 +1099,7 @@ private fun BookmarkRow(
             Icon(
                 Icons.Outlined.Bookmark,
                 contentDescription = null,
-                tint = GoldFilament,
+                tint = NineLivesTheme.colors.goldFilament,
                 modifier = Modifier.size(20.dp),
             )
 
@@ -1106,7 +1107,7 @@ private fun BookmarkRow(
                 Text(
                     text = bookmark.title,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1114,7 +1115,7 @@ private fun BookmarkRow(
                 Text(
                     text = bookmark.timeFormatted,
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontSize = 11.sp,
                 )
             }
@@ -1126,7 +1127,7 @@ private fun BookmarkRow(
                 Icon(
                     Icons.Outlined.Delete,
                     contentDescription = "Delete bookmark",
-                    tint = ArchiveError.copy(alpha = 0.7f),
+                    tint = NineLivesTheme.colors.archiveError.copy(alpha = 0.7f),
                     modifier = Modifier.size(18.dp),
                 )
             }

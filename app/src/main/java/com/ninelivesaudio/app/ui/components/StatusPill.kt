@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -36,12 +37,12 @@ fun StatusPill(
     isLocalMode: Boolean = false,
 ) {
     val (label, dotColor) = when {
-        isLocalMode -> "Local" to ArchiveLocalAccent
+        isLocalMode -> "Local" to NineLivesTheme.colors.archiveLocalAccent
         else -> when (connectionStatus) {
-            ConnectionStatus.CONNECTED -> "Connected" to ArchiveSuccess
-            ConnectionStatus.SYNCING -> "Syncing" to GoldFilament
-            ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to ArchiveWarning
-            ConnectionStatus.OFFLINE -> "Offline" to ArchiveTextMuted
+            ConnectionStatus.CONNECTED -> "Connected" to NineLivesTheme.colors.archiveSuccess
+            ConnectionStatus.SYNCING -> "Syncing" to NineLivesTheme.colors.goldFilament
+            ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to NineLivesTheme.colors.archiveWarning
+            ConnectionStatus.OFFLINE -> "Offline" to NineLivesTheme.colors.archiveTextMuted
         }
     }
 
@@ -54,7 +55,7 @@ fun StatusPill(
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
-            .background(ArchiveVoidSurface)
+            .background(NineLivesTheme.colors.archiveVoidSurface)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),

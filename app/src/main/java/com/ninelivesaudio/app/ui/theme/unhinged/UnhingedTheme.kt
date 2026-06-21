@@ -3,117 +3,70 @@ package com.ninelivesaudio.app.ui.theme.unhinged
 import android.app.Activity
 import android.util.Log
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
+import com.ninelivesaudio.app.ui.theme.LocalNineLivesColors
 import com.ninelivesaudio.app.ui.theme.Shapes
 import com.ninelivesaudio.app.ui.theme.Typography
+import com.ninelivesaudio.app.ui.theme.colorSchemeFor
+import com.ninelivesaudio.app.ui.theme.nineLivesColorsFor
 
 private const val TAG = "UnhingedTheme"
 
 /**
- * Archive Beneath Color Scheme (Unhinged Mode)
+ * Archive Beneath Theme Wrapper
  *
- * The dark, atmospheric theme for unhinged mode. Maintains identical layout
- * to the normal theme but uses the Archive Beneath palette:
- * - Obsidian/indigo backgrounds
- * - Gold filament accents
- * - Impossible accent for focus (used sparingly)
- */
-private val ArchiveBeneathColorScheme = darkColorScheme(
-    // Primary = Gold Filament (accent)
-    primary = GoldFilament,
-    onPrimary = ArchiveVoidDeep,
-    primaryContainer = GoldFilamentFaint,
-    onPrimaryContainer = GoldFilamentBright,
-
-    // Secondary = Muted text colors
-    secondary = ArchiveTextTertiary,
-    onSecondary = ArchiveVoidDeep,
-    secondaryContainer = ArchiveVoidElevated,
-    onSecondaryContainer = ArchiveTextSecondary,
-
-    // Tertiary = Impossible Accent (for focus/selection only)
-    tertiary = ImpossibleAccent,
-    onTertiary = ArchiveVoidDeep,
-    tertiaryContainer = ArchiveVoidElevated,
-    onTertiaryContainer = ImpossibleAccent,
-
-    // Background & Surface
-    background = ArchiveVoidDeep,
-    onBackground = ArchiveTextPrimary,
-    surface = ArchiveVoidBase,
-    onSurface = ArchiveTextPrimary,
-    surfaceVariant = ArchiveVoidSurface,
-    onSurfaceVariant = ArchiveTextSecondary,
-    surfaceContainerLowest = ArchiveVoidDeep,
-    surfaceContainerLow = ArchiveVoidBase,
-    surfaceContainer = ArchiveVoidSurface,
-    surfaceContainerHigh = ArchiveVoidElevated,
-    surfaceContainerHighest = ArchiveVoidElevated,
-
-    // Error
-    error = ArchiveError,
-    onError = ArchiveVoidDeep,
-    errorContainer = ArchiveError.copy(alpha = 0.2f),
-    onErrorContainer = ArchiveError,
-
-    // Outline & Dividers
-    outline = ArchiveOutline,
-    outlineVariant = ArchiveDivider,
-
-    // Inverse (for snackbars, etc.)
-    inverseSurface = ArchiveTextSecondary,
-    inverseOnSurface = ArchiveVoidDeep,
-    inversePrimary = GoldFilamentDim
-)
-
-/**
- * Unhinged Mode Theme Wrapper
+ * Resolves the selected [ThemeMode] into a brand color holder and a Material color
+ * scheme, provides the brand colors via LocalNineLivesColors so the whole app
+ * recolors on theme switch, and keeps all other theme properties (typography,
+ * shapes) unchanged.
  *
- * Apply this theme when unhingedSettings.unhingedThemeEnabled is true.
- * Uses the Archive Beneath color scheme while maintaining all other
- * theme properties (typography, shapes, etc.).
- *
- * @param unhingedSettings The unhinged mode configuration
+ * @param themeMode The selected color theme. Defaults to NOIR (the original
+ *   Archive Beneath look) so behaviour is unchanged unless a theme is chosen.
+ * @param unhingedSettings The unhinged mode feature configuration
  * @param content The app content
  */
 @Composable
 fun UnhingedTheme(
+    themeMode: ThemeMode = ThemeMode.NOIR,
     unhingedSettings: UnhingedSettings = UnhingedSettings.Default,
     content: @Composable () -> Unit
 ) {
-    Log.d(TAG, "UnhingedTheme: Applying Archive Beneath theme")
+    Log.d(TAG, "UnhingedTheme: Applying theme=$themeMode")
     Log.d(TAG, "UnhingedTheme: Settings - " +
             "unhingedThemeEnabled=${unhingedSettings.unhingedThemeEnabled}, " +
             "anomaliesEnabled=${unhingedSettings.anomaliesEnabled}, " +
             "whispersEnabled=${unhingedSettings.whispersEnabled}, " +
             "copyMode=${unhingedSettings.copyMode}")
 
-    val colorScheme = ArchiveBeneathColorScheme
+    val brandColors = nineLivesColorsFor(themeMode)
+    val colorScheme = colorSchemeFor(themeMode)
     val view = LocalView.current
 
-    // Set system bars to match the unhinged theme
+    // Set system bar icon polarity to match the theme's background luminance.
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
 
             val insetsController = WindowCompat.getInsetsController(window, view)
-            insetsController.isAppearanceLightStatusBars = false
-            insetsController.isAppearanceLightNavigationBars = false
+            insetsController.isAppearanceLightStatusBars = brandColors.isLight
+            insetsController.isAppearanceLightNavigationBars = brandColors.isLight
 
-            Log.d(TAG, "UnhingedTheme: System bars set to Archive colors")
+            Log.d(TAG, "UnhingedTheme: System bars set, isLight=${brandColors.isLight}")
         }
     }
 
-    // Provide unhinged settings to all composables
-    CompositionLocalProvider(LocalUnhingedSettings provides unhingedSettings) {
+    // Provide brand colors and unhinged settings to all composables
+    CompositionLocalProvider(
+        LocalNineLivesColors provides brandColors,
+        LocalUnhingedSettings provides unhingedSettings,
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,

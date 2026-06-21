@@ -13,6 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 private data class LibraryLicense(
@@ -97,14 +98,14 @@ fun LicensesScreen(
     onNavigateBack: () -> Unit,
 ) {
     Scaffold(
-        containerColor = ArchiveVoidDeep,
+        containerColor = NineLivesTheme.colors.archiveVoidDeep,
         topBar = {
             TopAppBar(
                 title = {
                     Text(
                         text = "Open Source Licenses",
                         style = MaterialTheme.typography.titleMedium,
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         fontWeight = FontWeight.SemiBold,
                     )
                 },
@@ -113,12 +114,12 @@ fun LicensesScreen(
                         Icon(
                             Icons.AutoMirrored.Outlined.ArrowBack,
                             contentDescription = "Back",
-                            tint = GoldFilament,
+                            tint = NineLivesTheme.colors.goldFilament,
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = ArchiveVoidBase,
+                    containerColor = NineLivesTheme.colors.archiveVoidBase,
                 ),
             )
         },
@@ -134,21 +135,21 @@ fun LicensesScreen(
             Text(
                 text = "NineLives is licensed under the GNU General Public License v3.0.",
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextSecondary,
+                color = NineLivesTheme.colors.archiveTextSecondary,
                 modifier = Modifier.padding(bottom = 4.dp),
             )
 
             Text(
                 text = "Third-Party Libraries",
                 style = MaterialTheme.typography.titleSmall,
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 fontWeight = FontWeight.SemiBold,
                 letterSpacing = 1.sp,
                 modifier = Modifier.padding(top = 4.dp),
             )
 
             Card(
-                colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+                colors = CardDefaults.cardColors(containerColor = NineLivesTheme.colors.archiveVoidSurface),
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Column(
@@ -160,7 +161,7 @@ fun LicensesScreen(
                     thirdPartyLibraries.forEachIndexed { index, lib ->
                         if (index > 0) {
                             HorizontalDivider(
-                                color = ArchiveVoidElevated,
+                                color = NineLivesTheme.colors.archiveVoidElevated,
                                 thickness = 1.dp,
                                 modifier = Modifier.padding(vertical = 10.dp),
                             )
@@ -169,18 +170,18 @@ fun LicensesScreen(
                             Text(
                                 text = lib.name,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = ArchiveTextPrimary,
+                                color = NineLivesTheme.colors.archiveTextPrimary,
                                 fontWeight = FontWeight.Medium,
                             )
                             Text(
                                 text = lib.copyright,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = ArchiveTextMuted,
+                                color = NineLivesTheme.colors.archiveTextMuted,
                             )
                             Text(
                                 text = lib.license,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = GoldFilamentDim,
+                                color = NineLivesTheme.colors.goldFilamentDim,
                             )
                         }
                     }
@@ -192,7 +193,7 @@ fun LicensesScreen(
             Text(
                 text = "A Static Hum Studio Production",
                 style = MaterialTheme.typography.labelMedium,
-                color = GoldFilamentDim,
+                color = NineLivesTheme.colors.goldFilamentDim,
                 letterSpacing = 1.sp,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,

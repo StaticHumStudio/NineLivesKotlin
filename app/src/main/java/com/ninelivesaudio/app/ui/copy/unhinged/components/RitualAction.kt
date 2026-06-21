@@ -9,6 +9,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.settings.unhinged.CopyMode
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextFlavor
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 
@@ -72,7 +73,7 @@ fun RitualAction(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextFlavor.copy(alpha = 0.7f),
+                    color = NineLivesTheme.colors.archiveTextFlavor.copy(alpha = 0.7f),
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
@@ -115,7 +116,7 @@ fun RitualTextAction(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextFlavor.copy(alpha = 0.7f),
+                    color = NineLivesTheme.colors.archiveTextFlavor.copy(alpha = 0.7f),
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
@@ -163,7 +164,7 @@ fun RitualOutlinedAction(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextFlavor.copy(alpha = 0.7f),
+                    color = NineLivesTheme.colors.archiveTextFlavor.copy(alpha = 0.7f),
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }

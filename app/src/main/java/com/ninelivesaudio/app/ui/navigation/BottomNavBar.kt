@@ -25,9 +25,7 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.ninelivesaudio.app.domain.model.AppMode
-import com.ninelivesaudio.app.ui.theme.SigilGold
-import com.ninelivesaudio.app.ui.theme.MistFaint
-import com.ninelivesaudio.app.ui.theme.VoidBase
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 data class BottomNavItem(
     val route: String,
@@ -86,9 +84,10 @@ fun BottomNavBar(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
+    val colors = NineLivesTheme.colors
     NavigationBar(
-        containerColor = VoidBase,
-        contentColor = SigilGold
+        containerColor = colors.archiveVoidBase,
+        contentColor = colors.goldFilament
     ) {
         bottomNavItemsFor(appMode).forEach { item ->
             val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
@@ -116,11 +115,11 @@ fun BottomNavBar(
                     )
                 },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = SigilGold,
-                    selectedTextColor = SigilGold,
-                    unselectedIconColor = MistFaint,
-                    unselectedTextColor = MistFaint,
-                    indicatorColor = SigilGold.copy(alpha = 0.12f)
+                    selectedIconColor = colors.goldFilament,
+                    selectedTextColor = colors.goldFilament,
+                    unselectedIconColor = colors.archiveTextMuted,
+                    unselectedTextColor = colors.archiveTextMuted,
+                    indicatorColor = colors.goldFilament.copy(alpha = 0.12f)
                 )
             )
         }

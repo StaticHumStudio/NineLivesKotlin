@@ -10,6 +10,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -44,12 +45,14 @@ fun RelicSurface(
 ) {
     val settings = LocalUnhingedSettings.current
     val isUnhinged = settings.isUnhinged
+    // Themed gold, resolved here so the drawBehind lambda can capture it.
+    val edgeGlowGold = NineLivesTheme.colors.goldFilament
 
     Surface(
         modifier = if (isUnhinged && showEdgeGlow) {
             modifier.drawBehind {
                 // Subtle gold edge glow (Archive filament)
-                val glowColor = Color(0xFFE8C468).copy(alpha = 0.03f)
+                val glowColor = edgeGlowGold.copy(alpha = 0.03f)
 
                 // Top edge glow
                 drawRect(

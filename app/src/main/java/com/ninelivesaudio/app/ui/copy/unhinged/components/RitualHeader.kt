@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.settings.unhinged.CopyMode
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextFlavor
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 
@@ -62,7 +63,7 @@ fun RitualHeader(
             Text(
                 text = subtitle,
                 style = subtitleStyle,
-                color = ArchiveTextFlavor, // Lower contrast for subtlety
+                color = NineLivesTheme.colors.archiveTextFlavor, // Lower contrast for subtlety
                 modifier = Modifier.padding(top = 4.dp)
             )
         }

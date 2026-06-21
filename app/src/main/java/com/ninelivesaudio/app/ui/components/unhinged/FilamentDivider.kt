@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 /**
  * Filament Divider - A divider that adapts based on Unhinged Mode
@@ -53,8 +54,8 @@ private fun FilamentGlowDivider(
     modifier: Modifier = Modifier,
     thickness: Dp = 1.dp
 ) {
-    // Archive gold color
-    val goldColor = Color(0xFFE8C468)
+    // Archive gold color, sourced from the active theme so it recolors.
+    val goldColor = NineLivesTheme.colors.goldFilament
     val goldGlow = goldColor.copy(alpha = 0.15f) // Very subtle glow
 
     Canvas(

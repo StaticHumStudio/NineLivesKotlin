@@ -27,6 +27,7 @@ import com.ninelivesaudio.app.domain.util.toDisplaySize
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
@@ -38,7 +39,7 @@ fun DownloadsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep),
+            .background(NineLivesTheme.colors.archiveVoidDeep),
     ) {
         // ─── Header ──────────────────────────────────────────────────────
         ArchiveScreenHeader(
@@ -93,7 +94,7 @@ fun DownloadsScreen(
                             TextButton(onClick = { viewModel.clearCompleted() }) {
                                 Text(
                                     text = "Clear All",
-                                    color = GoldFilament,
+                                    color = NineLivesTheme.colors.goldFilament,
                                     style = MaterialTheme.typography.labelMedium,
                                 )
                             }
@@ -126,7 +127,7 @@ private fun SectionHeader(title: String) {
     Text(
         text = title,
         style = MaterialTheme.typography.titleSmall,
-        color = ArchiveTextSecondary,
+        color = NineLivesTheme.colors.archiveTextSecondary,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(vertical = 4.dp),
     )
@@ -148,7 +149,7 @@ private fun ActiveDownloadCard(
 
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = ArchiveVoidSurface,
+        color = NineLivesTheme.colors.archiveVoidSurface,
     ) {
         Column(
             modifier = Modifier
@@ -165,7 +166,7 @@ private fun ActiveDownloadCard(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(ArchiveVoidElevated),
+                        .background(NineLivesTheme.colors.archiveVoidElevated),
                 ) {
                     BookCoverImage(
                         coverUrl = item.coverPath,
@@ -181,7 +182,7 @@ private fun ActiveDownloadCard(
                     Text(
                         text = download.title,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = ArchiveTextPrimary,
+                        color = NineLivesTheme.colors.archiveTextPrimary,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -193,11 +194,11 @@ private fun ActiveDownloadCard(
                     ) {
                         // Status badge
                         val (statusText, statusColor) = when (download.status) {
-                            DownloadStatus.Queued -> "Queued" to ArchiveTextMuted
-                            DownloadStatus.Downloading -> "Downloading" to GoldFilament
-                            DownloadStatus.Paused -> "Paused" to ArchiveWarning
-                            DownloadStatus.Failed -> "Failed" to ArchiveError
-                            else -> "" to ArchiveTextMuted
+                            DownloadStatus.Queued -> "Queued" to NineLivesTheme.colors.archiveTextMuted
+                            DownloadStatus.Downloading -> "Downloading" to NineLivesTheme.colors.goldFilament
+                            DownloadStatus.Paused -> "Paused" to NineLivesTheme.colors.archiveWarning
+                            DownloadStatus.Failed -> "Failed" to NineLivesTheme.colors.archiveError
+                            else -> "" to NineLivesTheme.colors.archiveTextMuted
                         }
                         Text(
                             text = statusText,
@@ -210,7 +211,7 @@ private fun ActiveDownloadCard(
                         Text(
                             text = download.sizeDisplay,
                             style = MaterialTheme.typography.labelSmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                             fontSize = 11.sp,
                         )
                     }
@@ -220,7 +221,7 @@ private fun ActiveDownloadCard(
                         Text(
                             text = download.errorMessage,
                             style = MaterialTheme.typography.labelSmall,
-                            color = ArchiveError,
+                            color = NineLivesTheme.colors.archiveError,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             fontSize = 10.sp,
@@ -238,7 +239,7 @@ private fun ActiveDownloadCard(
                             Icon(
                                 Icons.Outlined.Pause,
                                 contentDescription = "Pause",
-                                tint = ArchiveTextSecondary,
+                                tint = NineLivesTheme.colors.archiveTextSecondary,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -252,7 +253,7 @@ private fun ActiveDownloadCard(
                             Icon(
                                 Icons.Outlined.PlayArrow,
                                 contentDescription = "Resume",
-                                tint = GoldFilament,
+                                tint = NineLivesTheme.colors.goldFilament,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
@@ -265,7 +266,7 @@ private fun ActiveDownloadCard(
                         Icon(
                             Icons.Outlined.Close,
                             contentDescription = "Cancel",
-                            tint = ArchiveError,
+                            tint = NineLivesTheme.colors.archiveError,
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -281,8 +282,8 @@ private fun ActiveDownloadCard(
                         .fillMaxWidth()
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = GoldFilament,
-                    trackColor = ArchiveOutline.copy(alpha = 0.3f),
+                    color = NineLivesTheme.colors.goldFilament,
+                    trackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.3f),
                 )
 
                 // Progress text
@@ -295,13 +296,13 @@ private fun ActiveDownloadCard(
                     Text(
                         text = "${download.progress.toInt()}%",
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 10.sp,
                     )
                     Text(
                         text = "${download.downloadedBytes.toDisplaySize()} / ${download.totalBytes.toDisplaySize()}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 10.sp,
                     )
                 }
@@ -323,7 +324,7 @@ private fun CompletedDownloadCard(
 
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = ArchiveVoidSurface,
+        color = NineLivesTheme.colors.archiveVoidSurface,
     ) {
         Row(
             modifier = Modifier
@@ -337,7 +338,7 @@ private fun CompletedDownloadCard(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(ArchiveVoidElevated),
+                    .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
                     coverUrl = item.coverPath,
@@ -353,7 +354,7 @@ private fun CompletedDownloadCard(
                 Text(
                     text = download.title,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -366,19 +367,19 @@ private fun CompletedDownloadCard(
                     Icon(
                         Icons.Outlined.CheckCircle,
                         contentDescription = null,
-                        tint = ArchiveSuccess,
+                        tint = NineLivesTheme.colors.archiveSuccess,
                         modifier = Modifier.size(14.dp),
                     )
                     Text(
                         text = "Downloaded",
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveSuccess,
+                        color = NineLivesTheme.colors.archiveSuccess,
                         fontSize = 11.sp,
                     )
                     Text(
                         text = download.sizeDisplay,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 11.sp,
                     )
                 }
@@ -392,7 +393,7 @@ private fun CompletedDownloadCard(
                 Icon(
                     Icons.Outlined.Delete,
                     contentDescription = "Delete download",
-                    tint = ArchiveError.copy(alpha = 0.7f),
+                    tint = NineLivesTheme.colors.archiveError.copy(alpha = 0.7f),
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -417,7 +418,7 @@ private fun EmptyDownloadsState(isLocalMode: Boolean) {
             Icons.Outlined.CloudDownload,
             contentDescription = null,
             modifier = Modifier.size(72.dp),
-            tint = ArchiveTextMuted,
+            tint = NineLivesTheme.colors.archiveTextMuted,
         )
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -425,7 +426,7 @@ private fun EmptyDownloadsState(isLocalMode: Boolean) {
         Text(
             text = CopyStyleGuide.Downloads.DOWNLOADS_NAV,
             style = MaterialTheme.typography.titleMedium,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
 
@@ -441,7 +442,7 @@ private fun EmptyDownloadsState(isLocalMode: Boolean) {
                 ) ?: CopyStyleGuide.EmptyStates.EMPTY_DOWNLOADS_NORMAL
             },
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             textAlign = TextAlign.Center,
         )
     }

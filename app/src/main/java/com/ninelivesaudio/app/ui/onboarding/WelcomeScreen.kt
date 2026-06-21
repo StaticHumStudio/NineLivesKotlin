@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextMuted
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextPrimary
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveVoidSurface
@@ -47,7 +48,7 @@ fun WelcomeScreen(
         Text(
             text = "Nine Lives",
             style = MaterialTheme.typography.headlineMedium,
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 2.sp,
         )
@@ -55,7 +56,7 @@ fun WelcomeScreen(
         Text(
             text = "Where do your audiobooks live?",
             style = MaterialTheme.typography.bodyMedium,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(32.dp))
@@ -91,7 +92,7 @@ private fun SourceCard(
         onClick = onClick,
         modifier = modifier,
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        colors = CardDefaults.cardColors(containerColor = NineLivesTheme.colors.archiveVoidSurface),
     ) {
         Column(
             modifier = Modifier
@@ -103,13 +104,13 @@ private fun SourceCard(
             Icon(
                 icon,
                 contentDescription = null,
-                tint = GoldFilament,
+                tint = NineLivesTheme.colors.goldFilament,
                 modifier = Modifier.size(36.dp),
             )
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
                 fontWeight = FontWeight.SemiBold,
             )
         }

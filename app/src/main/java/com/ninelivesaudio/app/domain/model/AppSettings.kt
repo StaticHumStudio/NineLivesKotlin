@@ -28,6 +28,8 @@ data class AppSettings(
     val serverProfiles: List<ServerProfile> = emptyList(),
     // Archive Beneath is permanent. There is no "normal" mode.
     val unhingedThemeEnabled: Boolean = true,
+    // Selectable color theme. Defaults to NOIR so existing users see no change.
+    val themeMode: ThemeMode = ThemeMode.NOIR,
     val anomaliesEnabled: Boolean = true,
     val whispersEnabled: Boolean = true,
     val copyMode: String = "Unhinged", // Normal, Ritual, or Unhinged

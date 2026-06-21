@@ -26,9 +26,7 @@ import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.IntOffset
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
-import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveOutline
-import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveVoidDeep
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.abs
@@ -91,6 +89,11 @@ internal fun AltarEffects(
     // Generate particles deterministically (no per-frame randomness).
     val particles = remember(seed) { buildSootParticles(seed, count = 22) }
 
+    // Resolve theme colors in composable scope for use inside DrawScope lambdas.
+    val goldFilament = NineLivesTheme.colors.goldFilament
+    val archiveVoidDeep = NineLivesTheme.colors.archiveVoidDeep
+    val archiveOutline = NineLivesTheme.colors.archiveOutline
+
     Box(modifier = modifier) {
         // Flicker vignette (drawn first, then motes over it)
         Canvas(
@@ -104,8 +107,8 @@ internal fun AltarEffects(
 
             val vignette = Brush.radialGradient(
                 colors = listOf(
-                    GoldFilament.copy(alpha = 0.10f * i * flicker.value),
-                    ArchiveVoidDeep.copy(alpha = 0.42f * flicker.value),
+                    goldFilament.copy(alpha = 0.10f * i * flicker.value),
+                    archiveVoidDeep.copy(alpha = 0.42f * flicker.value),
                     Color.Black.copy(alpha = 0.55f),
                 ),
                 center = Offset(w * 0.52f, h * 0.35f),
@@ -119,7 +122,7 @@ internal fun AltarEffects(
                 val sheen = Brush.linearGradient(
                     colors = listOf(
                         Color.Transparent,
-                        ArchiveOutline.copy(alpha = 0.18f * i * abs(flicker.value - 0.86f) * 2f),
+                        archiveOutline.copy(alpha = 0.18f * i * abs(flicker.value - 0.86f) * 2f),
                         Color.Transparent,
                     ),
                     start = Offset(0f, h * 0.1f),

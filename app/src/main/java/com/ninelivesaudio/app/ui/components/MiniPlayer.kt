@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.PlaybackState
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -53,7 +54,7 @@ fun MiniPlayer(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-            .background(ArchiveVoidSurface),
+            .background(NineLivesTheme.colors.archiveVoidSurface),
     ) {
         // Progress bar at top
         LinearProgressIndicator(
@@ -61,8 +62,8 @@ fun MiniPlayer(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(2.dp),
-            color = GoldFilament,
-            trackColor = ArchiveOutline.copy(alpha = 0.3f),
+            color = NineLivesTheme.colors.goldFilament,
+            trackColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.3f),
         )
 
         // Content row
@@ -79,7 +80,7 @@ fun MiniPlayer(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(ArchiveVoidElevated),
+                    .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
                     coverUrl = book.coverPath,
@@ -97,7 +98,7 @@ fun MiniPlayer(
                 Text(
                     text = book.title,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -107,7 +108,7 @@ fun MiniPlayer(
                     Text(
                         text = ch.title,
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         fontSize = 11.sp,
@@ -127,12 +128,12 @@ fun MiniPlayer(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(GoldFilament),
+                    .background(NineLivesTheme.colors.goldFilament),
             ) {
                 Icon(
                     imageVector = if (playbackState == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = if (playbackState == PlaybackState.PLAYING) "Pause" else "Play",
-                    tint = ArchiveVoidDeep,
+                    tint = NineLivesTheme.colors.archiveVoidDeep,
                     modifier = Modifier.size(22.dp),
                 )
             }

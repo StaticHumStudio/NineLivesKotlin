@@ -47,6 +47,7 @@ import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -65,7 +66,7 @@ fun NightwatchDossierScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(ArchiveVoidDeep)
+            .background(NineLivesTheme.colors.archiveVoidDeep)
     ) {
         // ─── Header ────────────────────────────────────────────────────
         DossierHeader(
@@ -82,7 +83,7 @@ fun NightwatchDossierScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(
-                            color = GoldFilament,
+                            color = NineLivesTheme.colors.goldFilament,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(32.dp),
                         )
@@ -90,7 +91,7 @@ fun NightwatchDossierScreen(
                         Text(
                             text = "Compiling the dossier...",
                             style = MaterialTheme.typography.bodySmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                         )
                     }
                 }
@@ -104,7 +105,7 @@ fun NightwatchDossierScreen(
                     Text(
                         text = state.error ?: "An error occurred.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = ArchiveTextSecondary,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
                     )
                 }
             }
@@ -128,7 +129,7 @@ private fun DossierHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(ArchiveVoidDeep)
+            .background(NineLivesTheme.colors.archiveVoidDeep)
             .padding(start = 4.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -136,20 +137,20 @@ private fun DossierHeader(
             Icon(
                 Icons.AutoMirrored.Outlined.ArrowBack,
                 contentDescription = "Back",
-                tint = ArchiveTextSecondary,
+                tint = NineLivesTheme.colors.archiveTextSecondary,
             )
         }
         Column {
             Text(
                 text = "Nightwatch Dossier",
                 style = MaterialTheme.typography.headlineMedium,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
                 fontWeight = FontWeight.Bold,
             )
             Text(
                 text = headerWhisper,
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextFlavor,
+                color = NineLivesTheme.colors.archiveTextFlavor,
                 fontStyle = FontStyle.Italic,
             )
         }
@@ -190,14 +191,14 @@ private fun DossierContent(
                         )
                     },
                     colors = FilterChipDefaults.filterChipColors(
-                        containerColor = ArchiveVoidSurface,
-                        selectedContainerColor = GoldFilamentFaint,
-                        labelColor = ArchiveTextSecondary,
-                        selectedLabelColor = GoldFilament,
+                        containerColor = NineLivesTheme.colors.archiveVoidSurface,
+                        selectedContainerColor = NineLivesTheme.colors.goldFilamentFaint,
+                        labelColor = NineLivesTheme.colors.archiveTextSecondary,
+                        selectedLabelColor = NineLivesTheme.colors.goldFilament,
                     ),
                     border = FilterChipDefaults.filterChipBorder(
-                        borderColor = ArchiveOutline,
-                        selectedBorderColor = GoldFilament.copy(alpha = 0.4f),
+                        borderColor = NineLivesTheme.colors.archiveOutline,
+                        selectedBorderColor = NineLivesTheme.colors.goldFilament.copy(alpha = 0.4f),
                         enabled = true,
                         selected = state.selectedPeriod == period,
                     ),
@@ -256,13 +257,13 @@ private fun OverviewSection(
         Text(
             text = viewModel.formatDurationLong(state.totalListeningTime),
             style = MaterialTheme.typography.headlineLarge,
-            color = GoldFilament,
+            color = NineLivesTheme.colors.goldFilament,
             fontWeight = FontWeight.Bold,
         )
         Text(
             text = state.selectedPeriod.overviewSubtitle(),
             style = MaterialTheme.typography.bodySmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -303,7 +304,7 @@ private fun OverviewSection(
             Text(
                 text = "${state.filteredNoiseSessions} brief sessions excluded",
                 style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextMuted,
+                color = NineLivesTheme.colors.archiveTextMuted,
                 fontSize = 10.sp,
             )
         }
@@ -322,13 +323,13 @@ private fun StatChip(value: String, label: String, highlight: Boolean = false) {
         Text(
             text = value,
             style = MaterialTheme.typography.titleLarge,
-            color = if (highlight) GoldFilament else ArchiveTextPrimary,
+            color = if (highlight) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
         )
     }
 }
@@ -358,7 +359,7 @@ private fun BookStatsSection(
                     modifier = Modifier
                         .size(56.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(ArchiveVoidElevated),
+                        .background(NineLivesTheme.colors.archiveVoidElevated),
                 ) {
                     BookCoverImage(
                         coverUrl = book.coverUrl,
@@ -373,7 +374,7 @@ private fun BookStatsSection(
                     Text(
                         text = book.title,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = ArchiveTextPrimary,
+                        color = NineLivesTheme.colors.archiveTextPrimary,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -381,7 +382,7 @@ private fun BookStatsSection(
                     Text(
                         text = book.author,
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextSecondary,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -389,7 +390,7 @@ private fun BookStatsSection(
                         Text(
                             text = "Read by $narrator",
                             style = MaterialTheme.typography.labelSmall,
-                            color = ArchiveTextMuted,
+                            color = NineLivesTheme.colors.archiveTextMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -401,13 +402,13 @@ private fun BookStatsSection(
                     Text(
                         text = viewModel.formatDuration(book.listeningTime),
                         style = MaterialTheme.typography.titleMedium,
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
                         text = "${book.sessionCount} sessions",
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                     )
                 }
             }
@@ -426,8 +427,8 @@ private fun BookStatsSection(
                         .weight(1f)
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp)),
-                    color = if (book.isFinished) ArchiveSuccess else GoldFilament,
-                    trackColor = ArchiveVoidElevated,
+                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
 
                 val progressLabel = when {
@@ -441,7 +442,7 @@ private fun BookStatsSection(
                     Text(
                         text = progressLabel,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (book.isFinished) ArchiveSuccess else ArchiveTextMuted,
+                        color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 10.sp,
                     )
                 }
@@ -462,7 +463,7 @@ private fun BookStatsSection(
         ) {
             Text(
                 text = if (expanded) "Show less" else "Show all ${bookStats.size} books",
-                color = GoldFilamentDim,
+                color = NineLivesTheme.colors.goldFilamentDim,
                 style = MaterialTheme.typography.labelMedium,
             )
         }
@@ -493,7 +494,7 @@ private fun NarratorSection(
                 Text(
                     text = narrator.name,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     modifier = Modifier
                         .weight(0.45f)
                         .widthIn(min = 100.dp),
@@ -507,14 +508,14 @@ private fun NarratorSection(
                         .weight(1f)
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp)),
-                    color = GoldFilament,
-                    trackColor = ArchiveVoidElevated,
+                    color = NineLivesTheme.colors.goldFilament,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
 
                 Text(
                     text = viewModel.formatDuration(narrator.listeningTime),
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                     modifier = Modifier.width(40.dp),
                 )
             }
@@ -551,7 +552,7 @@ private fun GenreSection(
                 Text(
                     text = genre.name,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     modifier = Modifier
                         .weight(0.45f)
                         .widthIn(min = 100.dp),
@@ -565,14 +566,14 @@ private fun GenreSection(
                         .weight(1f)
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp)),
-                    color = ImpossibleAccent,
-                    trackColor = ArchiveVoidElevated,
+                    color = NineLivesTheme.colors.impossibleAccent,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
 
                 Text(
                     text = viewModel.formatDuration(genre.listeningTime),
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                     modifier = Modifier.width(40.dp),
                 )
             }
@@ -609,7 +610,7 @@ private fun AuthorSection(
                 Text(
                     text = author.name,
                     style = MaterialTheme.typography.bodySmall,
-                    color = ArchiveTextPrimary,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
                     modifier = Modifier
                         .weight(0.45f)
                         .widthIn(min = 100.dp),
@@ -623,14 +624,14 @@ private fun AuthorSection(
                         .weight(1f)
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp)),
-                    color = ImpossibleAccent,
-                    trackColor = ArchiveVoidElevated,
+                    color = NineLivesTheme.colors.impossibleAccent,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
 
                 Text(
                     text = viewModel.formatDuration(author.listeningTime),
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextSecondary,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
                     modifier = Modifier.width(40.dp),
                 )
             }
@@ -659,7 +660,7 @@ private fun TemporalSection(
         Text(
             text = "Listening by hour",
             style = MaterialTheme.typography.labelMedium,
-            color = ArchiveTextSecondary,
+            color = NineLivesTheme.colors.archiveTextSecondary,
         )
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -700,7 +701,7 @@ private fun TemporalSection(
                     Text(
                         text = label,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isPeak) GoldFilament else ArchiveTextMuted,
+                        color = if (isPeak) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
                         modifier = Modifier.width(56.dp),
                         fontSize = 10.sp,
                     )
@@ -711,14 +712,14 @@ private fun TemporalSection(
                             .weight(1f)
                             .height(8.dp)
                             .clip(RoundedCornerShape(4.dp)),
-                        color = if (isPeak) GoldFilament else GoldFilamentDim,
-                        trackColor = ArchiveVoidElevated,
+                        color = if (isPeak) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.goldFilamentDim,
+                        trackColor = NineLivesTheme.colors.archiveVoidElevated,
                     )
 
                     Text(
                         text = viewModel.formatDuration(blockTime),
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isPeak) GoldFilament else ArchiveTextSecondary,
+                        color = if (isPeak) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextSecondary,
                         modifier = Modifier.width(36.dp),
                         fontSize = 10.sp,
                     )
@@ -736,12 +737,12 @@ private fun TemporalSection(
                 Text(
                     text = "Most active day",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
                 Text(
                     text = day,
                     style = MaterialTheme.typography.labelSmall,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -757,12 +758,12 @@ private fun TemporalSection(
                 Text(
                     text = "Best single day",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                 )
                 Text(
                     text = "$day — ${viewModel.formatDuration(state.bestDayTime)}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -841,15 +842,15 @@ private fun DossierShareSection(
         modifier = Modifier.fillMaxWidth(),
         enabled = !isSharing,
         colors = ButtonDefaults.buttonColors(
-            containerColor = GoldFilamentFaint,
-            contentColor = GoldFilament,
+            containerColor = NineLivesTheme.colors.goldFilamentFaint,
+            contentColor = NineLivesTheme.colors.goldFilament,
         ),
         shape = RoundedCornerShape(12.dp),
     ) {
         if (isSharing) {
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 strokeWidth = 2.dp,
             )
         } else {
@@ -874,7 +875,7 @@ private fun DossierSummaryCard(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = ArchiveVoidDeep,
+        color = NineLivesTheme.colors.archiveVoidDeep,
     ) {
         Column(
             modifier = Modifier
@@ -886,7 +887,7 @@ private fun DossierSummaryCard(
             Text(
                 text = "NIGHTWATCH DOSSIER",
                 style = MaterialTheme.typography.labelMedium,
-                color = GoldFilament,
+                color = NineLivesTheme.colors.goldFilament,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 3.sp,
             )
@@ -894,7 +895,7 @@ private fun DossierSummaryCard(
             Text(
                 text = state.selectedPeriod.subtitle,
                 style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextMuted,
+                color = NineLivesTheme.colors.archiveTextMuted,
                 letterSpacing = 1.sp,
             )
 
@@ -905,10 +906,10 @@ private fun DossierSummaryCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(ArchiveVoidSurface)
+                    .background(NineLivesTheme.colors.archiveVoidSurface)
                     .border(
                         width = 1.dp,
-                        color = GoldFilament.copy(alpha = 0.3f),
+                        color = NineLivesTheme.colors.goldFilament.copy(alpha = 0.3f),
                         shape = RoundedCornerShape(12.dp),
                     )
                     .padding(vertical = 20.dp),
@@ -918,7 +919,7 @@ private fun DossierSummaryCard(
                     Text(
                         text = viewModel.formatDurationLong(state.totalListeningTime),
                         style = MaterialTheme.typography.headlineLarge,
-                        color = GoldFilament,
+                        color = NineLivesTheme.colors.goldFilament,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
                         fontSize = 30.sp,
@@ -927,7 +928,7 @@ private fun DossierSummaryCard(
                     Text(
                         text = "TOTAL LISTENING",
                         style = MaterialTheme.typography.labelSmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         letterSpacing = 2.sp,
                         fontSize = 10.sp,
                     )
@@ -1007,7 +1008,7 @@ private fun DossierSummaryCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(ArchiveVoidSurface)
+                        .background(NineLivesTheme.colors.archiveVoidSurface)
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
@@ -1016,7 +1017,7 @@ private fun DossierSummaryCard(
                             label = "TOP AUTHOR",
                             value = it.name,
                             fraction = it.fraction,
-                            color = GoldFilament,
+                            color = NineLivesTheme.colors.goldFilament,
                         )
                     }
                     topNarrator?.let {
@@ -1024,7 +1025,7 @@ private fun DossierSummaryCard(
                             label = "TOP VOICE",
                             value = it.name,
                             fraction = it.fraction,
-                            color = ImpossibleAccent,
+                            color = NineLivesTheme.colors.impossibleAccent,
                         )
                     }
                     topGenre?.let {
@@ -1032,7 +1033,7 @@ private fun DossierSummaryCard(
                             label = "TOP GENRE",
                             value = it.name,
                             fraction = it.fraction,
-                            color = GoldFilamentDim,
+                            color = NineLivesTheme.colors.goldFilamentDim,
                         )
                     }
                 }
@@ -1051,7 +1052,7 @@ private fun DossierSummaryCard(
                 Text(
                     text = temporalParts.joinToString("  ·  "),
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextTertiary,
+                    color = NineLivesTheme.colors.archiveTextTertiary,
                     textAlign = TextAlign.Center,
                     letterSpacing = 0.5.sp,
                 )
@@ -1061,7 +1062,7 @@ private fun DossierSummaryCard(
             // ─── Whisper Divider ────────────────────────────────────
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 32.dp),
-                color = GoldFilament.copy(alpha = 0.15f),
+                color = NineLivesTheme.colors.goldFilament.copy(alpha = 0.15f),
                 thickness = 1.dp,
             )
 
@@ -1071,7 +1072,7 @@ private fun DossierSummaryCard(
             Text(
                 text = "\"${state.headerWhisper}\"",
                 style = MaterialTheme.typography.bodySmall,
-                color = ArchiveTextFlavor,
+                color = NineLivesTheme.colors.archiveTextFlavor,
                 fontStyle = FontStyle.Italic,
                 textAlign = TextAlign.Center,
                 lineHeight = 18.sp,
@@ -1095,14 +1096,14 @@ private fun DossierSummaryCard(
                 Text(
                     text = "Nine Lives Audio",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted,
+                    color = NineLivesTheme.colors.archiveTextMuted,
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 1.sp,
                 )
                 Text(
                     text = "  ·  statichum.studio",
                     style = MaterialTheme.typography.labelSmall,
-                    color = ArchiveTextMuted.copy(alpha = 0.6f),
+                    color = NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.6f),
                 )
             }
         }
@@ -1124,11 +1125,11 @@ private fun ShareCoverItem(
             modifier = Modifier
                 .size(width = width, height = height)
                 .clip(RoundedCornerShape(8.dp))
-                .background(ArchiveVoidElevated)
+                .background(NineLivesTheme.colors.archiveVoidElevated)
                 .then(
                     if (rank == 1) Modifier.border(
                         width = 1.dp,
-                        color = GoldFilament.copy(alpha = 0.4f),
+                        color = NineLivesTheme.colors.goldFilament.copy(alpha = 0.4f),
                         shape = RoundedCornerShape(8.dp),
                     ) else Modifier
                 ),
@@ -1151,7 +1152,7 @@ private fun ShareCoverItem(
         Text(
             text = book.title,
             style = MaterialTheme.typography.labelSmall,
-            color = if (rank == 1) ArchiveTextPrimary else ArchiveTextMuted,
+            color = if (rank == 1) NineLivesTheme.colors.archiveTextPrimary else NineLivesTheme.colors.archiveTextMuted,
             fontWeight = if (rank == 1) FontWeight.SemiBold else FontWeight.Normal,
             fontSize = 9.sp,
             maxLines = 1,
@@ -1171,13 +1172,13 @@ private fun ShareStatPill(
         Text(
             text = value,
             style = MaterialTheme.typography.titleMedium,
-            color = ArchiveTextPrimary,
+            color = NineLivesTheme.colors.archiveTextPrimary,
             fontWeight = FontWeight.Bold,
         )
         Text(
             text = label.uppercase(),
             style = MaterialTheme.typography.labelSmall,
-            color = ArchiveTextMuted,
+            color = NineLivesTheme.colors.archiveTextMuted,
             fontSize = 8.sp,
             letterSpacing = 1.sp,
         )
@@ -1200,14 +1201,14 @@ private fun ShareLeaderboardRow(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = ArchiveTextMuted,
+                color = NineLivesTheme.colors.archiveTextMuted,
                 letterSpacing = 1.5.sp,
                 fontSize = 9.sp,
             )
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyMedium,
-                color = ArchiveTextPrimary,
+                color = NineLivesTheme.colors.archiveTextPrimary,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1220,7 +1221,7 @@ private fun ShareLeaderboardRow(
                 .fillMaxWidth()
                 .height(4.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(ArchiveVoidElevated),
+                .background(NineLivesTheme.colors.archiveVoidElevated),
         ) {
             Box(
                 modifier = Modifier
@@ -1333,7 +1334,7 @@ private fun DossierCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = ArchiveVoidSurface),
+        colors = CardDefaults.cardColors(containerColor = NineLivesTheme.colors.archiveVoidSurface),
         shape = RoundedCornerShape(12.dp),
     ) {
         Column(
@@ -1350,7 +1351,7 @@ private fun SectionHeader(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleSmall,
-        color = GoldFilament,
+        color = NineLivesTheme.colors.goldFilament,
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 1.sp,
         modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
@@ -1362,7 +1363,7 @@ private fun WhisperText(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodySmall,
-        color = ArchiveTextFlavor,
+        color = NineLivesTheme.colors.archiveTextFlavor,
         fontStyle = FontStyle.Italic,
         lineHeight = 16.sp,
     )

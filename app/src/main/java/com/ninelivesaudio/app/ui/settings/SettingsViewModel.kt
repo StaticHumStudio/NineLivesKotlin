@@ -16,6 +16,7 @@ import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -97,6 +98,9 @@ class SettingsViewModel @Inject constructor(
         val anomaliesEnabled: Boolean = true,
         val whispersEnabled: Boolean = true,
         val reduceMotionRequested: Boolean = false,
+
+        // Appearance
+        val themeMode: ThemeMode = ThemeMode.NOIR,
 
         // Equalizer
         val eqEnabled: Boolean = false,
@@ -225,6 +229,7 @@ class SettingsViewModel @Inject constructor(
                 sleepTimerMotionEnabled = settings.sleepTimerMotionEnabled,
                 sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
                 sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
+                themeMode = settings.themeMode,
             )
         }
 
@@ -574,6 +579,15 @@ class SettingsViewModel @Inject constructor(
                 successMessage = "Trusted certificate fingerprint reset for $host",
                 errorMessage = null,
             )
+        }
+    }
+
+    // ─── Appearance Settings ──────────────────────────────────────────────
+
+    fun setThemeMode(mode: ThemeMode) {
+        _uiState.update { it.copy(themeMode = mode) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(themeMode = mode) }
         }
     }
 

@@ -112,7 +112,10 @@ class MainActivity : ComponentActivity() {
                     "copyMode=${unhingedSettings.copyMode}, " +
                     "reduceMotion=${unhingedSettings.reduceMotionRequested}")
 
-            NineLivesAudioTheme(unhingedSettings = unhingedSettings) {
+            NineLivesAudioTheme(
+                themeMode = appSettings.themeMode,
+                unhingedSettings = unhingedSettings,
+            ) {
                 if (!settingsLoaded) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         CosmicBackgroundGradient()

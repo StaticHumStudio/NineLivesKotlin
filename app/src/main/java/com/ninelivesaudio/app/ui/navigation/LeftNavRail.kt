@@ -18,10 +18,7 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.ninelivesaudio.app.domain.model.AppMode
-import com.ninelivesaudio.app.ui.theme.AccentGold
-import com.ninelivesaudio.app.ui.theme.MistFaint
-import com.ninelivesaudio.app.ui.theme.NavRailBackground
-import com.ninelivesaudio.app.ui.theme.SigilGold
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 data class NavItem(
     val route: String,
@@ -42,7 +39,7 @@ fun LeftNavRail(
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .background(NavRailBackground)
+            .background(NineLivesTheme.colors.archiveNavRail)
             .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -73,6 +70,7 @@ private fun LeftNavItem(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = NineLivesTheme.colors
     Box(
         modifier = Modifier.size(56.dp),
         contentAlignment = Alignment.Center
@@ -83,7 +81,7 @@ private fun LeftNavItem(
                 modifier = Modifier
                     .size(48.dp, 40.dp)
                     .clip(RoundedCornerShape(20.dp))
-                    .background(SigilGold.copy(alpha = 0.12f))
+                    .background(colors.goldFilament.copy(alpha = 0.12f))
             )
         }
 
@@ -95,11 +93,11 @@ private fun LeftNavItem(
                     .width(3.dp)
                     .height(32.dp)
                     .clip(RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp))
-                    .background(SigilGold)
+                    .background(colors.goldFilament)
                     .shadow(
                         elevation = 3.dp,
                         shape = RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp),
-                        spotColor = AccentGold.copy(alpha = 0.25f)
+                        spotColor = colors.goldFilament.copy(alpha = 0.25f)
                     )
             )
         }
@@ -112,7 +110,7 @@ private fun LeftNavItem(
             Icon(
                 imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
                 contentDescription = item.label,
-                tint = if (isSelected) SigilGold else MistFaint,
+                tint = if (isSelected) colors.goldFilament else colors.archiveTextMuted,
                 modifier = Modifier.size(24.dp)
             )
         }

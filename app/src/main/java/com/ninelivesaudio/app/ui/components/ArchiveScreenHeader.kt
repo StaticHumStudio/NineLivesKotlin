@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -29,6 +30,9 @@ fun ArchiveScreenHeader(
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null,
 ) {
+    // Resolved in composable scope for use inside the Canvas DrawScope lambda.
+    val goldFilament = NineLivesTheme.colors.goldFilament
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -42,7 +46,7 @@ fun ArchiveScreenHeader(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    color = GoldFilament,
+                    color = NineLivesTheme.colors.goldFilament,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Medium,
                     letterSpacing = 2.sp,
@@ -52,7 +56,7 @@ fun ArchiveScreenHeader(
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
-                        color = ArchiveTextMuted,
+                        color = NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 12.sp,
                     )
                 }
@@ -74,8 +78,8 @@ fun ArchiveScreenHeader(
             drawLine(
                 brush = Brush.horizontalGradient(
                     colors = listOf(
-                        GoldFilament.copy(alpha = 0.6f),
-                        GoldFilament.copy(alpha = 0.25f),
+                        goldFilament.copy(alpha = 0.6f),
+                        goldFilament.copy(alpha = 0.25f),
                         Color.Transparent,
                     ),
                     startX = 0f,

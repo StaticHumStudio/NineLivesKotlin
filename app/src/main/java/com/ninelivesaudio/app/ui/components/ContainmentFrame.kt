@@ -10,8 +10,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveOutline
-import com.ninelivesaudio.app.ui.theme.unhinged.GoldFilament
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 
 /**
  * A dual-stroke containment frame drawn via Canvas.
@@ -33,8 +32,8 @@ fun ContainmentFrame(
     val insetPx = with(density) { inset.toPx() }
     val cornerPx = with(density) { cornerRadius.toPx() }
 
-    val outerColor = ArchiveOutline.copy(alpha = 0.18f)
-    val innerColor = GoldFilament.copy(alpha = 0.55f)
+    val outerColor = NineLivesTheme.colors.archiveOutline.copy(alpha = 0.18f)
+    val innerColor = NineLivesTheme.colors.goldFilament.copy(alpha = 0.55f)
 
     Canvas(modifier = modifier) {
         val w = size.width

@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.downloads
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
@@ -72,7 +73,7 @@ class DownloadsViewModel @Inject constructor(
                     if (book == null) return@mapNotNull null
                     DownloadUiItem(
                         download = item,
-                        coverPath = book.coverPath,
+                        coverPath = book.effectiveCoverPath,
                     ).withLiveProgress()
                 }
                 // Drop live entries for downloads that are no longer active so the
@@ -98,7 +99,7 @@ class DownloadsViewModel @Inject constructor(
                     if (book == null) return@mapNotNull null
                     DownloadUiItem(
                         download = item,
-                        coverPath = book.coverPath,
+                        coverPath = book.effectiveCoverPath,
                     )
                 }
                 _uiState.update {

@@ -306,7 +306,7 @@ class NightwatchDossierViewModel @Inject constructor(
                         chaptersTotal = book?.chapters?.size ?: 0,
                         currentChapter = (book?.getCurrentChapterIndex() ?: -1) + 1,
                         isFinished = book?.isFinished ?: false,
-                        coverUrl = book?.coverPath,
+                        coverUrl = book?.effectiveCoverPath,
                         whisper = book?.let { generateBookWhisper(it, bookTime) },
                     )
                 }.sortedByDescending { it.listeningTime }

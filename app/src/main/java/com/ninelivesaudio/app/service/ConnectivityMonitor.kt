@@ -244,11 +244,27 @@ class ConnectivityMonitor @Inject constructor(
     // ─── Status Calculation ───────────────────────────────────────────────
 
     private fun updateConnectionStatus() {
-        _connectionStatus.value = when {
-            _isSyncing.value -> ConnectionStatus.SYNCING
-            _isServerReachable.value -> ConnectionStatus.CONNECTED
-            _isOnline.value -> ConnectionStatus.SERVER_UNREACHABLE
-            else -> ConnectionStatus.OFFLINE
-        }
+        _connectionStatus.value = computeConnectionStatus(
+            isOnline = _isOnline.value,
+            isSyncing = _isSyncing.value,
+            isServerReachable = _isServerReachable.value,
+        )
     }
+}
+
+/**
+ * Pure status resolution. OFFLINE takes precedence over everything: with no
+ * network there is nothing to sync and nothing to reach, so a lingering sync
+ * flag (a coroutine still timing out on a dead socket) must not keep the UI
+ * showing "Syncing" after airplane mode is on.
+ */
+internal fun computeConnectionStatus(
+    isOnline: Boolean,
+    isSyncing: Boolean,
+    isServerReachable: Boolean,
+): ConnectivityMonitor.ConnectionStatus = when {
+    !isOnline -> ConnectivityMonitor.ConnectionStatus.OFFLINE
+    isSyncing -> ConnectivityMonitor.ConnectionStatus.SYNCING
+    isServerReachable -> ConnectivityMonitor.ConnectionStatus.CONNECTED
+    else -> ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE
 }

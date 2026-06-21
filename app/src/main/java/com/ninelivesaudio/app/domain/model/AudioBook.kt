@@ -26,8 +26,16 @@ data class AudioBook(
     val isFinished: Boolean = false,
     val isDownloaded: Boolean = false,
     val localPath: String? = null,
+    val localCoverPath: String? = null, // file:// URI of the cover saved at download time
     val lastPlayedAt: Long? = null, // epoch millis, from PlaybackProgress.UpdatedAt
 ) {
+    /**
+     * Cover to display. Prefers the locally persisted cover (downloaded books,
+     * available offline) and falls back to the remote server URL.
+     */
+    val effectiveCoverPath: String?
+        get() = localCoverPath ?: coverPath
+
     /** Progress normalized to 0–100 regardless of API format. */
     val progressPercent: Double
         get() {

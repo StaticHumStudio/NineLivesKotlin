@@ -130,8 +130,8 @@ class MediaBrowseTree @Inject constructor(
             metadataBuilder.setGenre(book.genres.first())
         }
 
-        if (!book.coverPath.isNullOrEmpty()) {
-            metadataBuilder.setArtworkUri(Uri.parse(book.coverPath))
+        book.effectiveCoverPath?.takeIf { it.isNotEmpty() }?.let {
+            metadataBuilder.setArtworkUri(Uri.parse(it))
         }
 
         return MediaItem.Builder()

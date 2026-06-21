@@ -128,7 +128,7 @@ class BookDetailViewModel @Inject constructor(
                 narrator = book.narrator,
                 seriesDisplay = seriesDisplay,
                 description = book.description,
-                coverUrl = book.coverPath,
+                coverUrl = book.effectiveCoverPath,
                 duration = book.duration,
                 progress = book.progress,
                 progressPercent = book.progressPercent.roundToInt(),

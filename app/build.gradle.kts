@@ -126,12 +126,16 @@ dependencies {
     // DataStore (Preferences)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // WorkManager (background downloads, foreground-service notification)
+    implementation(libs.androidx.work.runtime.ktx)
+
     // ACRA (Crash Reporting)
     implementation("ch.acra:acra-mail:5.11.4")
     implementation("ch.acra:acra-dialog:5.11.4")
 
     // Testing
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.work.testing)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

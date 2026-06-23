@@ -340,7 +340,10 @@ class LibraryViewModel @Inject constructor(
             LibraryTab.InProgress -> 1
             LibraryTab.Completed -> 2
             LibraryTab.Downloaded -> 3
-            LibraryTab.Archive -> 4
+            // Defensive: if the Archive tab is somehow selected outside LOCAL
+            // mode (stale state after a mode switch), fall back to All so the
+            // shelf is not silently empty.
+            LibraryTab.Archive -> if (state.isLocalMode) 4 else 0
         }
         val books = audioBookRepository.getFilteredBooks(
             libraryId = libraryId,

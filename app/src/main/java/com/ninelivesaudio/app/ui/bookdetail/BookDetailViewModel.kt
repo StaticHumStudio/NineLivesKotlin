@@ -288,6 +288,11 @@ class BookDetailViewModel @Inject constructor(
     fun deleteForever(onDeleted: () -> Unit) {
         val id = _uiState.value.book?.id ?: return
         viewModelScope.launch {
+            // Stop playback first if this is the live book, so the session-sync
+            // coroutine can't re-write the rows we're about to delete.
+            if (playbackManager.currentBook.value?.id == id) {
+                playbackManager.stop()
+            }
             audioBookRepository.deleteLocalBookForever(id)
             onDeleted()
         }

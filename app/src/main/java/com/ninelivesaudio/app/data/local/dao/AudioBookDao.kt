@@ -148,14 +148,14 @@ interface AudioBookDao {
     suspend fun countByLibrary(libraryId: String): Int
 
     /** Distinct series names for a library. */
-    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
+    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
     suspend fun getDistinctSeries(libraryId: String): List<String>
 
     /** Distinct authors for a library. */
-    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND Author IS NOT NULL AND Author != '' ORDER BY Author")
+    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND Author IS NOT NULL AND Author != '' ORDER BY Author")
     suspend fun getDistinctAuthors(libraryId: String): List<String>
 
     /** Distinct genres for a library (genres stored as JSON array). */
-    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
+    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
     suspend fun getDistinctGenresJson(libraryId: String): List<String>
 }

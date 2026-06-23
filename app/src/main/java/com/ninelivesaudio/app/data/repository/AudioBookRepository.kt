@@ -7,6 +7,7 @@ import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
 import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
+import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -26,6 +27,7 @@ class AudioBookRepository @Inject constructor(
     private val apiService: ApiService,
     private val localListeningSessionDao: LocalListeningSessionDao,
     private val localBookmarkDao: LocalBookmarkDao,
+    private val playbackProgressDao: PlaybackProgressDao,
 ) {
     /** Observe all audiobooks (reactive). */
     fun observeAll(): Flow<List<AudioBook>> =
@@ -221,10 +223,14 @@ class AudioBookRepository @Inject constructor(
 
     /**
      * Permanently delete a LOCAL book and everything tied to it: the row, its
-     * listening sessions, its bookmarks, and the cached cover file.
+     * playback progress, its listening sessions, its bookmarks, and the cached
+     * cover file. PlaybackProgress is keyed by the (content-deterministic) book
+     * id, so leaving it would resurrect old position/finished state if the same
+     * folder is re-added later.
      */
     suspend fun deleteLocalBookForever(bookId: String) {
         audioBookDao.deleteById(bookId)
+        playbackProgressDao.deleteByAudioBookId(bookId)
         localListeningSessionDao.deleteByAudioBookId(bookId)
         localBookmarkDao.deleteAllForBook(bookId)
         runCatching {

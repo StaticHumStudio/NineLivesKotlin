@@ -2,6 +2,9 @@ package com.ninelivesaudio.app
 
 import android.app.Application
 import android.content.Context
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
@@ -11,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import org.acra.ReportField
 import org.acra.config.dialog
 import org.acra.config.mailSender
@@ -19,7 +23,7 @@ import org.acra.ktx.initAcra
 import javax.inject.Inject
 
 @HiltAndroidApp
-class NineLivesApp : Application() {
+class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var connectivityMonitor: ConnectivityMonitor
@@ -32,6 +36,11 @@ class NineLivesApp : Application() {
 
     @Inject
     lateinit var apiService: ApiService
+
+    // The app's OkHttpClient carries the auth token, self-signed cert config, and
+    // dynamic base URL, so cover requests authenticate like every other call.
+    @Inject
+    lateinit var okHttpClient: OkHttpClient
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -97,5 +106,23 @@ class NineLivesApp : Application() {
         connectivityMonitor.stopMonitoring()
         syncManager.stop()
         super.onTerminate()
+    }
+
+    /**
+     * Coil image loader for the whole app. Reuses the authenticated OkHttpClient
+     * so server covers carry the auth token, and adds a persistent disk cache so
+     * covers fetched once survive offline instead of relying on Coil's defaults.
+     */
+    override fun newImageLoader(): ImageLoader {
+        return ImageLoader.Builder(this)
+            .okHttpClient { okHttpClient }
+            .crossfade(true)
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizePercent(0.05)
+                    .build()
+            }
+            .build()
     }
 }

@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.ui.home
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -135,7 +136,7 @@ class HomeViewModel @Inject constructor(
                 audioBookId = book.id,
                 displayTitle = book.title,
                 displayAuthor = book.author ?: "Unknown Author",
-                coverPath = book.coverPath,
+                coverPath = book.effectiveCoverPath,
                 progressPercent = normalizedProgress.coerceIn(0.0, 100.0),
                 isMostRecent = idx == 0,
                 isDownloaded = book.isDownloaded == 1,

@@ -1483,45 +1483,16 @@ class PlaybackManager @Inject constructor(
             .setDisplayTitle(book.title)
             .setSubtitle(book.author)
 
-        // Set cover art URI so the notification and lock screen show album art
-        if (!book.coverPath.isNullOrEmpty()) {
-            builder.setArtworkUri(Uri.parse(book.coverPath))
+        // Set cover art URI so the notification and lock screen show album art.
+        // Prefer the locally persisted cover (downloaded books) so artwork shows
+        // offline.
+        if (!book.effectiveCoverPath.isNullOrEmpty()) {
+            builder.setArtworkUri(Uri.parse(book.effectiveCoverPath))
 
             // Also embed cover bytes for Android Auto, which can't fetch
             // authenticated URLs or self-signed cert servers.
             val artworkBytes = withContext(Dispatchers.IO) {
-                try {
-                    val request = Request.Builder().url(book.coverPath).build()
-                    okHttpClient.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) {
-                            Log.w(TAG, "buildMediaMetadata: artwork skipped reason=http_${response.code}")
-                            null
-                        } else {
-                            val body = response.body
-                            if (body == null) {
-                                Log.w(TAG, "buildMediaMetadata: artwork skipped reason=empty_body")
-                                null
-                            } else {
-                                val contentLength = body.contentLength()
-                                if (contentLength > ARTWORK_MAX_DOWNLOAD_BYTES) {
-                                    Log.w(
-                                        TAG,
-                                        "buildMediaMetadata: artwork skipped reason=content_length contentLength=$contentLength maxBytes=$ARTWORK_MAX_DOWNLOAD_BYTES",
-                                    )
-                                    null
-                                } else {
-                                    // Wrap in BoundedInputStream to enforce the byte cap even when
-                                    // Content-Length is unknown (-1) e.g. chunked transfer encoding.
-                                    val boundedStream = BoundedInputStream(body.byteStream(), ARTWORK_MAX_DOWNLOAD_BYTES)
-                                    decodeAndCompressArtwork(boundedStream, contentLength)
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "buildMediaMetadata: cover download failed: ${e.message}")
-                    null
-                }
+                loadArtworkBytes(book.localCoverPath, book.coverPath)
             }
             if (artworkBytes != null) {
                 builder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
@@ -1529,6 +1500,57 @@ class PlaybackManager @Inject constructor(
         }
 
         return builder.build()
+    }
+
+    /**
+     * Cover bytes for embedding (Android Auto / lock screen). Reads the locally
+     * persisted cover file first so it works offline, falling back to the remote
+     * authenticated URL. Returns null on any failure — artwork is optional.
+     */
+    private fun loadArtworkBytes(localCoverPath: String?, remoteCoverUrl: String?): ByteArray? {
+        val localFile = localCoverPath
+            ?.let { runCatching { Uri.parse(it).path }.getOrNull() }
+            ?.let { File(it) }
+        if (localFile != null && localFile.exists()) {
+            return try {
+                BufferedInputStream(localFile.inputStream()).use { stream ->
+                    decodeAndCompressArtwork(stream, localFile.length())
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "buildMediaMetadata: local artwork read failed: ${e.message}")
+                null
+            }
+        }
+
+        if (remoteCoverUrl.isNullOrEmpty()) return null
+        return try {
+            val request = Request.Builder().url(remoteCoverUrl).build()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "buildMediaMetadata: artwork skipped reason=http_${response.code}")
+                    return null
+                }
+                val body = response.body ?: run {
+                    Log.w(TAG, "buildMediaMetadata: artwork skipped reason=empty_body")
+                    return null
+                }
+                val contentLength = body.contentLength()
+                if (contentLength > ARTWORK_MAX_DOWNLOAD_BYTES) {
+                    Log.w(
+                        TAG,
+                        "buildMediaMetadata: artwork skipped reason=content_length contentLength=$contentLength maxBytes=$ARTWORK_MAX_DOWNLOAD_BYTES",
+                    )
+                    return null
+                }
+                // Wrap in BoundedInputStream to enforce the byte cap even when
+                // Content-Length is unknown (-1) e.g. chunked transfer encoding.
+                val boundedStream = BoundedInputStream(body.byteStream(), ARTWORK_MAX_DOWNLOAD_BYTES)
+                decodeAndCompressArtwork(boundedStream, contentLength)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "buildMediaMetadata: cover download failed: ${e.message}")
+            null
+        }
     }
 
     private fun decodeAndCompressArtwork(inputStream: java.io.InputStream, contentLength: Long): ByteArray? {

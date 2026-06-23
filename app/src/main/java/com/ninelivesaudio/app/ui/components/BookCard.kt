@@ -67,7 +67,7 @@ fun BookListItem(
                     .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
-                    coverUrl = book.coverPath,
+                    coverUrl = book.effectiveCoverPath,
                     contentDescription = book.title,
                     modifier = Modifier.fillMaxSize(),
                     title = book.title,

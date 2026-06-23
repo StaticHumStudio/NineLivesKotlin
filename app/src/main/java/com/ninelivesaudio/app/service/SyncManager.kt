@@ -127,8 +127,19 @@ class SyncManager @Inject constructor(
      * Thread-safe via Mutex.
      */
     suspend fun syncNow() {
-        if (!hasAuthToken()) return
-        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
+        // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a network.
+        if (!shouldRunSync(
+                isOnline = connectivityMonitor.isOnline.value,
+                isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                hasAuth = hasAuthToken(),
+            )
+        ) return
+
+        // Actually reach the server before committing to a sync. A live VPN
+        // interface (e.g. Tailscale) keeps isOnline=true with no real connectivity,
+        // so without this fast probe the sync fires and hangs on the full 30s
+        // request timeout — the "still trying to sync" symptom in airplane mode.
+        if (!connectivityMonitor.probeServerReachable()) return
 
         // Prevent concurrent syncs
         if (!syncMutex.tryLock()) return
@@ -396,3 +407,14 @@ class SyncManager @Inject constructor(
         return settingsManager.getAuthToken()?.isNotBlank() == true
     }
 }
+
+/**
+ * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an
+ * active network. The online check is the "internet connection check" that
+ * keeps airplane mode from triggering doomed sync attempts.
+ */
+internal fun shouldRunSync(
+    isOnline: Boolean,
+    isLocalMode: Boolean,
+    hasAuth: Boolean,
+): Boolean = isOnline && !isLocalMode && hasAuth

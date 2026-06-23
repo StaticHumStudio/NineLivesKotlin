@@ -40,6 +40,7 @@ fun AudioBookEntity.toDomain(): AudioBook = AudioBook(
     isFinished = isFinished == 1,
     isDownloaded = isDownloaded == 1,
     localPath = localPath,
+    localCoverPath = localCoverPath,
 )
 
 fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
@@ -59,12 +60,21 @@ fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
     isFinished = if (isFinished) 1 else 0,
     isDownloaded = if (isDownloaded) 1 else 0,
     localPath = localPath,
+    localCoverPath = localCoverPath,
     seriesName = seriesName,
     seriesSequence = seriesSequence,
     genresJson = json.encodeToString(genres),
     tagsJson = json.encodeToString(tags),
     chaptersJson = json.encodeToString(chapters.map { it.toJson() }),
 )
+
+/**
+ * Cover to display, preferring the locally persisted file (downloaded books,
+ * available offline). Mirrors [AudioBook.effectiveCoverPath] for call sites that
+ * read straight from the DAO without converting to the domain model.
+ */
+val AudioBookEntity.effectiveCoverPath: String?
+    get() = localCoverPath ?: coverPath
 
 // ─── Library ─────────────────────────────────────────────────────────────
 

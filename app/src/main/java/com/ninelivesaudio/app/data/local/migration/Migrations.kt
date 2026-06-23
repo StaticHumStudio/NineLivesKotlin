@@ -63,6 +63,14 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // file:// URI of the cover persisted locally at download time, so
+        // downloaded books render their cover with no network.
+        db.execSQL("ALTER TABLE AudioBooks ADD COLUMN LocalCoverPath TEXT")
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -71,4 +79,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_1_2,
     MIGRATION_2_3,
     MIGRATION_3_4,
+    MIGRATION_4_5,
 )

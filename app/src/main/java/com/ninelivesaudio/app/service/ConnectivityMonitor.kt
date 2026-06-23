@@ -6,7 +6,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
-import com.ninelivesaudio.app.data.remote.ApiService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -16,6 +15,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,13 +27,23 @@ import javax.inject.Singleton
 @Singleton
 class ConnectivityMonitor @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val apiService: ApiService,
     private val okHttpClient: OkHttpClient,
+    private val settingsManager: SettingsManager,
 ) {
     companion object {
         private const val TAG = "ConnectivityMonitor"
         /** Minimum background duration (ms) before triggering recovery on foreground. */
         private const val MIN_BACKGROUND_DURATION_MS = 5_000L
+        /** Reachability probe budget. Short so the app drops to offline quickly. */
+        private const val PROBE_TIMEOUT_MS = 5_000L
+    }
+
+    // A clone of the app client with a short total-call timeout, used only for the
+    // reachability probe so it fails fast instead of waiting out the 30s sync timeout.
+    private val probeClient: OkHttpClient by lazy {
+        okHttpClient.newBuilder()
+            .callTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
     }
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -175,18 +186,38 @@ class ConnectivityMonitor @Inject constructor(
             updateConnectionStatus()
             return false
         }
+        return probeServerReachable()
+    }
 
-        return try {
-            // Uses ApiService's lightweight auth check (with fallback debounce) to keep the 60s cadence cheap.
-            val reachable = apiService.validateToken()
-            _isServerReachable.value = reachable
-            updateConnectionStatus()
-            reachable
-        } catch (_: Exception) {
+    /**
+     * Fast server reachability probe: hit the server with a short timeout and
+     * treat ANY HTTP response (even an error code) as reachable. Only a transport
+     * failure or timeout counts as unreachable.
+     *
+     * This is the "internet connection check" that matters when a VPN interface
+     * (e.g. Tailscale) keeps ConnectivityManager reporting online with no real
+     * connectivity: isOnline stays true, so without an actual probe a sync would
+     * fire and hang on the full request timeout. SyncManager calls this before
+     * committing to a sync, and it also drives the periodic status refresh.
+     */
+    suspend fun probeServerReachable(): Boolean {
+        val serverUrl = settingsManager.currentSettings.serverUrl.trim()
+        if (serverUrl.isBlank()) {
             _isServerReachable.value = false
             updateConnectionStatus()
-            false
+            return false
         }
+        val reachable = withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder().url("${serverUrl.trimEnd('/')}/ping").build()
+                probeClient.newCall(request).execute().use { true }
+            } catch (_: Exception) {
+                false
+            }
+        }
+        _isServerReachable.value = reachable
+        updateConnectionStatus()
+        return reachable
     }
 
     // ─── Sync State (updated by SyncManager) ─────────────────────────────
@@ -244,11 +275,27 @@ class ConnectivityMonitor @Inject constructor(
     // ─── Status Calculation ───────────────────────────────────────────────
 
     private fun updateConnectionStatus() {
-        _connectionStatus.value = when {
-            _isSyncing.value -> ConnectionStatus.SYNCING
-            _isServerReachable.value -> ConnectionStatus.CONNECTED
-            _isOnline.value -> ConnectionStatus.SERVER_UNREACHABLE
-            else -> ConnectionStatus.OFFLINE
-        }
+        _connectionStatus.value = computeConnectionStatus(
+            isOnline = _isOnline.value,
+            isSyncing = _isSyncing.value,
+            isServerReachable = _isServerReachable.value,
+        )
     }
+}
+
+/**
+ * Pure status resolution. OFFLINE takes precedence over everything: with no
+ * network there is nothing to sync and nothing to reach, so a lingering sync
+ * flag (a coroutine still timing out on a dead socket) must not keep the UI
+ * showing "Syncing" after airplane mode is on.
+ */
+internal fun computeConnectionStatus(
+    isOnline: Boolean,
+    isSyncing: Boolean,
+    isServerReachable: Boolean,
+): ConnectivityMonitor.ConnectionStatus = when {
+    !isOnline -> ConnectivityMonitor.ConnectionStatus.OFFLINE
+    isSyncing -> ConnectivityMonitor.ConnectionStatus.SYNCING
+    isServerReachable -> ConnectivityMonitor.ConnectionStatus.CONNECTED
+    else -> ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE
 }

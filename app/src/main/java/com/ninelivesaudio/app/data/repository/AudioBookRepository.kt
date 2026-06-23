@@ -4,6 +4,7 @@ import androidx.sqlite.db.SimpleSQLiteQuery
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
@@ -192,26 +193,7 @@ class AudioBookRepository @Inject constructor(
             // REPLACE from wiping isDownloaded/localPath on libraryId mismatch.
             val localBooks = audioBookDao.getByIds(remote.map { it.id }).associateBy { it.id }
             val merged = remote.map { remoteBook ->
-                val local = localBooks[remoteBook.id]
-                if (local != null) {
-                    // Preserve local download state
-                    val withDownload = if (local.isDownloaded == 1) {
-                        remoteBook.copy(isDownloaded = true, localPath = local.localPath)
-                    } else remoteBook
-
-                    // Preserve local progress if it's ahead of server (offline playback)
-                    val localTime = local.currentTimeSeconds
-                    val remoteTime = withDownload.currentTime.inWholeMilliseconds / 1000.0
-                    if (localTime > remoteTime) {
-                        withDownload.copy(
-                            currentTime = localTime.seconds,
-                            progress = local.progress,
-                            isFinished = local.isFinished == 1,
-                        )
-                    } else withDownload
-                } else {
-                    remoteBook
-                }
+                mergeSyncedBook(remoteBook, localBooks[remoteBook.id])
             }
             audioBookDao.upsertAll(merged.map { it.toEntity() })
             return merged
@@ -266,4 +248,33 @@ class AudioBookRepository @Inject constructor(
     suspend fun deleteAll() {
         audioBookDao.deleteAll()
     }
+}
+
+/**
+ * Merge a server book with its local row during sync, preserving local-only
+ * state the server does not know about: the download flag, the on-disk audio
+ * path, the cover persisted at download time, and any local playback progress
+ * that is ahead of the server. Pure, so it is unit-testable without the DB.
+ */
+internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioBook {
+    if (local == null) return remote
+
+    val withDownload = if (local.isDownloaded == 1) {
+        remote.copy(
+            isDownloaded = true,
+            localPath = local.localPath,
+            localCoverPath = local.localCoverPath,
+        )
+    } else remote
+
+    // Preserve local progress if it's ahead of the server (offline playback).
+    val localTime = local.currentTimeSeconds
+    val remoteTime = withDownload.currentTime.inWholeMilliseconds / 1000.0
+    return if (localTime > remoteTime) {
+        withDownload.copy(
+            currentTime = localTime.seconds,
+            progress = local.progress,
+            isFinished = local.isFinished == 1,
+        )
+    } else withDownload
 }

@@ -27,6 +27,7 @@ data class AudioBook(
     val isDownloaded: Boolean = false,
     val localPath: String? = null,
     val localCoverPath: String? = null, // file:// URI of the cover saved at download time
+    val archivedAt: Long? = null, // epoch millis; null = live (LOCAL mode soft-delete)
     val lastPlayedAt: Long? = null, // epoch millis, from PlaybackProgress.UpdatedAt
 ) {
     /**
@@ -35,6 +36,10 @@ data class AudioBook(
      */
     val effectiveCoverPath: String?
         get() = localCoverPath ?: coverPath
+
+    /** LOCAL mode: book's source folder was unscanned; row kept for history. */
+    val isArchived: Boolean
+        get() = archivedAt != null
 
     /** Progress normalized to 0–100 regardless of API format. */
     val progressPercent: Double

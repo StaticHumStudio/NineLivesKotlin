@@ -57,6 +57,7 @@ class BookDetailViewModel @Inject constructor(
         val isFinished: Boolean = false,
         val isDownloaded: Boolean = false,
         val isLocal: Boolean = false,
+        val isArchived: Boolean = false,
         val chapters: List<Chapter> = emptyList(),
         val addedAt: Long? = null,
         val errorMessage: String? = null,
@@ -136,6 +137,7 @@ class BookDetailViewModel @Inject constructor(
                 isFinished = book.isFinished,
                 isDownloaded = book.isDownloaded,
                 isLocal = book.isLocal,
+                isArchived = book.isArchived,
                 chapters = book.chapters.sortedBy { c -> c.start },
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
@@ -278,4 +280,20 @@ class BookDetailViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Permanently delete this (archived) book and everything tied to it, then
+     * invoke [onDeleted] to leave the screen. Cascade wired in Task 7.
+     */
+    fun deleteForever(onDeleted: () -> Unit) {
+        val id = _uiState.value.book?.id ?: return
+        viewModelScope.launch {
+            // deleteLocalBookForever cascade implemented in Task 7
+            onDeleted()
+        }
+    }
 }
+
+/** Archived books have no source file, so they are never playable. */
+internal fun canPlayBook(isLocal: Boolean, isDownloaded: Boolean, isArchived: Boolean): Boolean =
+    !isArchived && (isLocal || isDownloaded)

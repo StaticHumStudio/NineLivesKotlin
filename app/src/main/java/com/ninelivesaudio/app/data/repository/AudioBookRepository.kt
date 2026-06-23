@@ -278,3 +278,12 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
         )
     } else withDownload
 }
+
+/**
+ * The local book ids to archive after a scan: those that exist locally but were
+ * not seen in the latest scan. Pure, so it is unit-testable without the DB.
+ */
+internal fun idsToArchive(existingLocalIds: List<String>, scannedIds: List<String>): List<String> {
+    val scanned = scannedIds.toHashSet()
+    return existingLocalIds.filterNot { it in scanned }
+}

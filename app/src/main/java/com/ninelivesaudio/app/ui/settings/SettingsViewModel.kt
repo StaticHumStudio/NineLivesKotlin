@@ -117,6 +117,7 @@ class SettingsViewModel @Inject constructor(
         val sleepTimerMotionEnabled: Boolean = true,
         val sleepTimerShakeResetEnabled: Boolean = true,
         val sleepTimerRewindSeconds: Int = 15,
+        val includeArchivedInStats: Boolean = true,
 
         // Feedback Report
         val reportType: ReportType = ReportType.BUG,
@@ -229,6 +230,7 @@ class SettingsViewModel @Inject constructor(
                 sleepTimerMotionEnabled = settings.sleepTimerMotionEnabled,
                 sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
                 sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
+                includeArchivedInStats = settings.includeArchivedInStats,
                 themeMode = settings.themeMode,
             )
         }
@@ -620,6 +622,14 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(sleepTimerMotionEnabled = enabled) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(sleepTimerMotionEnabled = enabled) }
+        }
+    }
+
+    fun toggleIncludeArchivedInStats() {
+        val enabled = !_uiState.value.includeArchivedInStats
+        _uiState.update { it.copy(includeArchivedInStats = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(includeArchivedInStats = enabled) }
         }
     }
 

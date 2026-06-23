@@ -60,6 +60,14 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND Id NOT IN (:scannedIds)")
     suspend fun deleteMissingLocalBooks(libraryId: String, scannedIds: List<String>)
 
+    /** Ids of all LOCAL books in a library (live or archived). */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
+    suspend fun getLocalIdsByLibrary(libraryId: String): List<String>
+
+    /** Soft-delete: stamp ArchivedAt on the given books (skips already-archived). */
+    @Query("UPDATE AudioBooks SET ArchivedAt = :archivedAt WHERE Id IN (:ids) AND ArchivedAt IS NULL")
+    suspend fun archiveByIds(ids: List<String>, archivedAt: Long)
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 

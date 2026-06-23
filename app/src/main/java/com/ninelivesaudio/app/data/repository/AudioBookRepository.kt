@@ -227,6 +227,7 @@ class AudioBookRepository @Inject constructor(
                     libraryId = libraryId,
                     isLocal = true,
                     isDownloaded = true,
+                    archivedAt = null, // present in this scan => restore if it was archived
                     currentTime = existing?.currentTimeSeconds?.seconds ?: book.currentTime,
                     progress = existing?.progress ?: book.progress,
                     isFinished = existing?.isFinished?.let { it == 1 } ?: book.isFinished,
@@ -235,12 +236,17 @@ class AudioBookRepository @Inject constructor(
         )
     }
 
-    /** Remove local books from a library that were not present in the latest scan. */
+    /**
+     * Archive local books that were not present in the latest scan (LOCAL-mode
+     * soft-delete) instead of hard-deleting them, so their cover + history
+     * survive. A returning folder re-imports with the same id and clears the
+     * flag (see importLocalBooks).
+     */
     suspend fun removeMissingLocalBooks(libraryId: String, scannedIds: List<String>) {
-        if (scannedIds.isEmpty()) {
-            audioBookDao.deleteLocalByLibrary(libraryId)
-        } else {
-            audioBookDao.deleteMissingLocalBooks(libraryId, scannedIds)
+        val existing = audioBookDao.getLocalIdsByLibrary(libraryId)
+        val toArchive = idsToArchive(existing, scannedIds)
+        if (toArchive.isNotEmpty()) {
+            audioBookDao.archiveByIds(toArchive, System.currentTimeMillis())
         }
     }
 

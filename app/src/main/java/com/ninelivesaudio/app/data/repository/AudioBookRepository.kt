@@ -101,45 +101,7 @@ class AudioBookRepository @Inject constructor(
         downloadedOnly: Boolean = false,
         searchQuery: String = "",
     ): List<AudioBook> {
-        val sql = buildString {
-            append("SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab")
-            append(" LEFT JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId")
-            append(" WHERE ab.LibraryId = ?")
-
-            // Tab filters — progressPercent: if Progress <= 1.0 then Progress*100 else Progress
-            when (tab) {
-                1 -> { // InProgress
-                    append(" AND ab.Progress > 0")
-                    append(" AND ab.IsFinished = 0")
-                    append(" AND (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) < 99.5")
-                }
-                2 -> { // Completed
-                    append(" AND (ab.IsFinished = 1 OR ab.Progress >= 1.0")
-                    append(" OR (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) >= 99.5)")
-                }
-                3 -> { // Downloaded
-                    append(" AND ab.IsDownloaded = 1")
-                }
-            }
-
-            // Hide finished
-            if (hideFinished) {
-                append(" AND ab.IsFinished = 0 AND ab.Progress < 1.0")
-                append(" AND (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) < 99.5")
-            }
-
-            // Downloaded only
-            if (downloadedOnly) {
-                append(" AND ab.IsDownloaded = 1")
-            }
-
-            // Search
-            if (searchQuery.isNotBlank()) {
-                append(" AND (ab.Title LIKE ? OR ab.Author LIKE ? OR ab.SeriesName LIKE ? OR ab.Narrator LIKE ?)")
-            }
-
-            append(" ORDER BY ab.Title")
-        }
+        val sql = buildLibrarySql(tab, hideFinished, downloadedOnly, searchQuery.isNotBlank())
 
         val args = mutableListOf<Any>(libraryId)
         if (searchQuery.isNotBlank()) {
@@ -292,4 +254,59 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
 internal fun idsToArchive(existingLocalIds: List<String>, scannedIds: List<String>): List<String> {
     val scanned = scannedIds.toHashSet()
     return existingLocalIds.filterNot { it in scanned }
+}
+
+/**
+ * Build the library shelf query. Pure, so the archive visibility rules are
+ * unit-testable without the DB. The Archive tab (int 4) shows only archived
+ * books; every other tab shows only live books.
+ */
+internal fun buildLibrarySql(
+    tab: Int,
+    hideFinished: Boolean,
+    downloadedOnly: Boolean,
+    hasSearch: Boolean,
+): String = buildString {
+    append("SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab")
+    append(" LEFT JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId")
+    append(" WHERE ab.LibraryId = ?")
+
+    // Archive visibility: the Archive tab shows only archived; every other tab
+    // shows only live books.
+    if (tab == 4) append(" AND ab.ArchivedAt IS NOT NULL")
+    else append(" AND ab.ArchivedAt IS NULL")
+
+    // Tab filters — progressPercent: if Progress <= 1.0 then Progress*100 else Progress
+    when (tab) {
+        1 -> { // InProgress
+            append(" AND ab.Progress > 0")
+            append(" AND ab.IsFinished = 0")
+            append(" AND (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) < 99.5")
+        }
+        2 -> { // Completed
+            append(" AND (ab.IsFinished = 1 OR ab.Progress >= 1.0")
+            append(" OR (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) >= 99.5)")
+        }
+        3 -> { // Downloaded
+            append(" AND ab.IsDownloaded = 1")
+        }
+    }
+
+    // Hide finished
+    if (hideFinished) {
+        append(" AND ab.IsFinished = 0 AND ab.Progress < 1.0")
+        append(" AND (CASE WHEN ab.Progress <= 1.0 THEN ab.Progress * 100.0 ELSE ab.Progress END) < 99.5")
+    }
+
+    // Downloaded only
+    if (downloadedOnly) {
+        append(" AND ab.IsDownloaded = 1")
+    }
+
+    // Search
+    if (hasSearch) {
+        append(" AND (ab.Title LIKE ? OR ab.Author LIKE ? OR ab.SeriesName LIKE ? OR ab.Narrator LIKE ?)")
+    }
+
+    append(" ORDER BY ab.Title")
 }

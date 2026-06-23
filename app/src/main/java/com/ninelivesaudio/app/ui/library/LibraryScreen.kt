@@ -26,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -146,6 +147,7 @@ fun LibraryScreen(
                         StoneTabsRow(
                             selectedTab = uiState.selectedTab,
                             onTabSelected = viewModel::onLibraryTabChanged,
+                            isLocalMode = uiState.isLocalMode,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         LibraryFiltersRow(
@@ -344,13 +346,16 @@ private fun RelicSearchBar(
 private fun StoneTabsRow(
     selectedTab: LibraryTab,
     onTabSelected: (LibraryTab) -> Unit,
+    isLocalMode: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    // The Archive tab is LOCAL-mode only (soft-delete is a LOCAL feature).
+    val tabs = LibraryTab.entries.filter { it != LibraryTab.Archive || isLocalMode }
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        LibraryTab.entries.forEach { tab ->
+        tabs.forEach { tab ->
             val isSelected = tab == selectedTab
             Surface(
                 modifier = Modifier
@@ -605,7 +610,8 @@ private fun ArchiveBookListItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .alpha(if (book.isArchived) 0.6f else 1f),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -670,6 +676,22 @@ private fun ArchiveBookListItem(
                     overflow = TextOverflow.Ellipsis,
                     fontSize = 12.sp,
                 )
+
+                if (book.isArchived) {
+                    Surface(
+                        color = NineLivesTheme.colors.archiveVoidSurface,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
+                    ) {
+                        Text(
+                            text = "Archived",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NineLivesTheme.colors.archiveTextSecondary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
 
                 if (whisper != null) {
                     Text(

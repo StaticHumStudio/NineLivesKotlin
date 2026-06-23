@@ -130,6 +130,14 @@ class MediaBrowseTree @Inject constructor(
             metadataBuilder.setGenre(book.genres.first())
         }
 
+        // Use the REMOTE cover URL here, not effectiveCoverPath. These browse
+        // items go to out-of-process MediaBrowser clients (Android Auto), which
+        // cannot read a downloaded book's app-private file:// cover under scoped
+        // storage. A remote https URL is loadable by those clients when online;
+        // the local file:// only helps in-process surfaces (the app UI and the
+        // now-playing metadata, which embeds the bytes). Giving Auto offline
+        // browse artwork needs a content:// URI + per-browser grant — tracked as
+        // separate, Auto-tested work.
         if (!book.coverPath.isNullOrEmpty()) {
             metadataBuilder.setArtworkUri(Uri.parse(book.coverPath))
         }

@@ -59,6 +59,9 @@ data class AudioBookEntity(
     @ColumnInfo(name = "LocalPath")
     val localPath: String? = null,
 
+    @ColumnInfo(name = "LocalCoverPath")
+    val localCoverPath: String? = null,
+
     @ColumnInfo(name = "SeriesName")
     val seriesName: String? = null,
 

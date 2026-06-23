@@ -624,7 +624,7 @@ private fun ArchiveBookListItem(
                         .background(NineLivesTheme.colors.archiveVoidBase),
                 ) {
                     BookCoverImage(
-                        coverUrl = book.coverPath,
+                        coverUrl = book.effectiveCoverPath,
                         contentDescription = book.title,
                         modifier = Modifier.fillMaxSize(),
                         title = book.title,
@@ -761,7 +761,7 @@ private fun ArchiveBookTile(
                     .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
-                    coverUrl = book.coverPath,
+                    coverUrl = book.effectiveCoverPath,
                     contentDescription = book.title,
                     modifier = Modifier.fillMaxSize(),
                     title = book.title,

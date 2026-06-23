@@ -83,7 +83,7 @@ fun MiniPlayer(
                     .background(NineLivesTheme.colors.archiveVoidElevated),
             ) {
                 BookCoverImage(
-                    coverUrl = book.coverPath,
+                    coverUrl = book.effectiveCoverPath,
                     contentDescription = book.title,
                     modifier = Modifier.fillMaxSize(),
                     bookId = book.id,

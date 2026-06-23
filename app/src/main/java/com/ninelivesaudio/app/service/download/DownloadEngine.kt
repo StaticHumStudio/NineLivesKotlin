@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service.download
 
 import android.content.Context
+import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
@@ -216,6 +217,10 @@ class DownloadEngine @Inject constructor(
         )
         downloadItemDao.upsert(download.toEntity())
 
+        // Persist the cover next to the audio so it renders offline. Best-effort:
+        // a cover failure must never fail an otherwise-complete download.
+        val localCoverUri = persistCover(book, downloadDir)
+
         // Update audiobook as downloaded with local path
         val bookEntity = audioBookDao.getById(audioBook.id)
         if (bookEntity != null) {
@@ -223,11 +228,36 @@ class DownloadEngine @Inject constructor(
                 bookEntity.copy(
                     isDownloaded = 1,
                     localPath = downloadDir.absolutePath,
+                    localCoverPath = localCoverUri ?: bookEntity.localCoverPath,
                 )
             )
         }
 
         return download
+    }
+
+    /**
+     * Download and save the book cover into its download dir so it shows with no
+     * network. Returns the file:// URI, or null on any failure — the cover is
+     * optional and must not break a completed download.
+     */
+    private suspend fun persistCover(book: AudioBook, downloadDir: File): String? {
+        if (book.coverPath.isNullOrEmpty()) return null
+        return try {
+            val response = api.getCoverImage(book.id)
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                response.body()?.close()
+                return null
+            }
+            val body = response.body() ?: return null
+            val bytes = body.use { it.bytes() }
+            if (bytes.isEmpty()) return null
+            Uri.fromFile(writeCoverFile(bytes, downloadDir)).toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
+            null
+        }
     }
 
     /** Fetch full book details (audio file metadata) from the server. */
@@ -287,4 +317,15 @@ class DownloadEngine @Inject constructor(
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
         return File(musicDir, "Audiobookshelf").also { it.mkdirs() }
     }
+}
+
+/**
+ * Write cover bytes to cover.jpg inside [dir] (creating it if needed) and return
+ * the file. Pure file IO, so it is unit-testable without the Android framework.
+ */
+internal fun writeCoverFile(bytes: ByteArray, dir: File): File {
+    dir.mkdirs()
+    val file = File(dir, "cover.jpg")
+    file.writeBytes(bytes)
+    return file
 }

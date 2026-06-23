@@ -273,7 +273,7 @@ class PlayerViewModel @Inject constructor(
                 hasBook = book != null,
                 title = book?.title ?: "",
                 author = book?.author ?: "",
-                coverUrl = book?.coverPath,
+                coverUrl = book?.effectiveCoverPath,
                 seriesName = book?.seriesName,
                 bookmarkItemId = book?.id,
             )

@@ -206,7 +206,9 @@ class DownloadManager @Inject constructor(
         }
 
         if (bookEntity != null) {
-            audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null))
+            // The cover.jpg lived inside localPath and was removed by deleteRecursively
+            // above, so drop its reference too.
+            audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
         }
         if (downloadEntity != null) {
             downloadItemDao.deleteById(downloadEntity.id)

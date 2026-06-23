@@ -288,7 +288,7 @@ class BookDetailViewModel @Inject constructor(
     fun deleteForever(onDeleted: () -> Unit) {
         val id = _uiState.value.book?.id ?: return
         viewModelScope.launch {
-            // deleteLocalBookForever cascade implemented in Task 7
+            audioBookRepository.deleteLocalBookForever(id)
             onDeleted()
         }
     }

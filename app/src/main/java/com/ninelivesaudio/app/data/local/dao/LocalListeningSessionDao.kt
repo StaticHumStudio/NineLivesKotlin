@@ -45,6 +45,9 @@ interface LocalListeningSessionDao {
     @Query("DELETE FROM LocalListeningSessions WHERE Id = :id")
     suspend fun deleteById(id: Long)
 
+    @Query("DELETE FROM LocalListeningSessions WHERE AudioBookId = :audioBookId")
+    suspend fun deleteByAudioBookId(audioBookId: String)
+
     @Query("DELETE FROM LocalListeningSessions")
     suspend fun deleteAll()
 }

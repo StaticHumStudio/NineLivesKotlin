@@ -122,6 +122,8 @@ private fun BookDetailContent(
     onDeleteForever: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -353,7 +355,7 @@ private fun BookDetailContent(
                         color = NineLivesTheme.colors.archiveTextMuted,
                     )
                     OutlinedButton(
-                        onClick = onDeleteForever,
+                        onClick = { showDeleteConfirm = true },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -517,6 +519,31 @@ private fun BookDetailContent(
                 }
             }
         }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete forever?") },
+            text = {
+                Text(
+                    "This permanently removes \"${uiState.title}\" and its listening " +
+                        "history. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    onDeleteForever()
+                }) {
+                    Text("Delete", color = NineLivesTheme.colors.archiveError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            },
+            containerColor = NineLivesTheme.colors.archiveVoidSurface,
+        )
     }
 }
 

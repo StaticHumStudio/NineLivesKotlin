@@ -1,13 +1,17 @@
 package com.ninelivesaudio.app.data.repository
 
+import android.content.Context
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
+import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
@@ -17,8 +21,11 @@ import kotlin.time.Duration.Companion.seconds
 
 @Singleton
 class AudioBookRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val audioBookDao: AudioBookDao,
     private val apiService: ApiService,
+    private val localListeningSessionDao: LocalListeningSessionDao,
+    private val localBookmarkDao: LocalBookmarkDao,
 ) {
     /** Observe all audiobooks (reactive). */
     fun observeAll(): Flow<List<AudioBook>> =
@@ -209,6 +216,19 @@ class AudioBookRepository @Inject constructor(
         val toArchive = idsToArchive(existing, scannedIds)
         if (toArchive.isNotEmpty()) {
             audioBookDao.archiveByIds(toArchive, System.currentTimeMillis())
+        }
+    }
+
+    /**
+     * Permanently delete a LOCAL book and everything tied to it: the row, its
+     * listening sessions, its bookmarks, and the cached cover file.
+     */
+    suspend fun deleteLocalBookForever(bookId: String) {
+        audioBookDao.deleteById(bookId)
+        localListeningSessionDao.deleteByAudioBookId(bookId)
+        localBookmarkDao.deleteAllForBook(bookId)
+        runCatching {
+            java.io.File(java.io.File(context.filesDir, "local_covers"), "$bookId.jpg").delete()
         }
     }
 

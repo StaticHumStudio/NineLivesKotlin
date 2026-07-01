@@ -94,6 +94,10 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // "session expired" / signed-out state on every cold start.
         appScope.launch {
             settingsManager.loadSettings()
+            // In LOCAL mode the app-wide selectedLibraryId must track the local
+            // library; heal any server id a prior ABS session left behind so the
+            // Home/Library shelves show local books on launch, not server ones.
+            settingsManager.reconcileSelectedLibraryForMode()
             apiService.initializeFromSettings()
             // serverUrl + token are now loaded, so it is safe to probe the
             // server and start syncing.

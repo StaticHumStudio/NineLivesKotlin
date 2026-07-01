@@ -78,6 +78,15 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Book duration carried with each queued offline progress update, so a
+        // flush pushes the real duration instead of 0 (which the server reads as
+        // 0% / not-finished).
+        db.execSQL("ALTER TABLE PendingProgressUpdates ADD COLUMN Duration REAL NOT NULL DEFAULT 0")
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -88,4 +97,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_3_4,
     MIGRATION_4_5,
     MIGRATION_5_6,
+    MIGRATION_6_7,
 )

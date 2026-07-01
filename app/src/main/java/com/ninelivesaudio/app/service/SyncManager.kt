@@ -367,11 +367,11 @@ class SyncManager @Inject constructor(
                 progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
             } catch (_: Exception) {
                 // Failed → enqueue
-                progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished)
+                progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished, safeDuration)
             }
         } else {
             // Offline → enqueue for later
-            progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished)
+            progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished, safeDuration)
         }
 
         // Clear active item

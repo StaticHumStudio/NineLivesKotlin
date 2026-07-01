@@ -173,8 +173,10 @@ class BookDetailViewModel @Inject constructor(
     private fun observeDownloadProgress() {
         viewModelScope.launch {
             downloadManager.progressUpdates.collect { progress ->
-                val entity = downloadItemDao.getByAudioBookId(bookId)
-                if (entity != null && entity.id == progress.downloadId) {
+                // Filter by audioBookId on the emission itself — no DB round-trip
+                // per tick (progress arrives ~10x/sec), and correct even when the
+                // download starts after this screen is already observing.
+                if (progress.audioBookId == bookId) {
                     val pct = if (progress.totalBytes > 0) {
                         (progress.downloadedBytes.toDouble() / progress.totalBytes * 100).toInt().coerceIn(0, 100)
                     } else 0

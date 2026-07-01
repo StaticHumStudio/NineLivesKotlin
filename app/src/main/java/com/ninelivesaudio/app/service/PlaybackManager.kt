@@ -1366,6 +1366,7 @@ class PlaybackManager @Inject constructor(
                     book.id,
                     pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                     isFinished = false,
+                    duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                 )
             } catch (_: Exception) {}
         }

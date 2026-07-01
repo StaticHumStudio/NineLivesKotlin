@@ -95,6 +95,14 @@ fun SettingsScreen(
         }
     }
 
+    uiState.pendingSweep?.let { pending ->
+        ArchiveSweepConfirmDialog(
+            pending = pending,
+            onConfirm = viewModel::confirmSweep,
+            onDismiss = viewModel::cancelSweep,
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -178,6 +186,11 @@ fun SettingsScreen(
                         onRemove = viewModel::removeLocalLibrary,
                         onSelect = viewModel::onLocalLibrarySelected,
                     )
+                }
+                if (uiState.selectedLocalLibrary != null) {
+                    SettingsGroup(title = "Permanently remove data") {
+                        ArchiveCleanupSection(onSweep = viewModel::requestSweep)
+                    }
                 }
             } else {
             SettingsGroup(title = "Connection") {
@@ -1207,6 +1220,106 @@ private fun LocalFoldersSection(
             Text("Add Folder", fontWeight = FontWeight.SemiBold)
         }
     }
+}
+
+// ─── Archive Cleanup (permanent delete) ──────────────────────────────────
+
+@Composable
+private fun ArchiveCleanupSection(
+    onSweep: (SettingsViewModel.SweepType) -> Unit,
+) {
+    Text(
+        text = "Permanently delete local books you can no longer manage, and " +
+            "their listening history. This can't be undone.",
+        style = MaterialTheme.typography.bodySmall,
+        color = NineLivesTheme.colors.archiveTextMuted,
+    )
+    CleanupButton(
+        label = "Orphaned Books",
+        detail = "Archived books from folders you've removed",
+        onClick = { onSweep(SettingsViewModel.SweepType.ORPHANED) },
+    )
+    CleanupButton(
+        label = "All Deleted Books",
+        detail = "Every archived book in this folder",
+        onClick = { onSweep(SettingsViewModel.SweepType.DELETED) },
+    )
+    CleanupButton(
+        label = "All Books",
+        detail = "Wipe this folder and everything in it",
+        onClick = { onSweep(SettingsViewModel.SweepType.ALL) },
+    )
+}
+
+@Composable
+private fun CleanupButton(
+    label: String,
+    detail: String,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        border = ButtonDefaults.outlinedButtonBorder(enabled = true).copy(
+            brush = androidx.compose.ui.graphics.SolidColor(NineLivesTheme.colors.archiveError),
+        ),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = NineLivesTheme.colors.archiveError,
+        ),
+    ) {
+        Icon(
+            Icons.Outlined.DeleteSweep,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, fontWeight = FontWeight.SemiBold)
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = NineLivesTheme.colors.archiveTextMuted,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ArchiveSweepConfirmDialog(
+    pending: SettingsViewModel.PendingSweep,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val noun = if (pending.count == 1) "book" else "books"
+    val (title, body) = when (pending.type) {
+        SettingsViewModel.SweepType.ORPHANED ->
+            "Remove orphaned books?" to
+                "Permanently deletes ${pending.count} archived $noun from folders " +
+                "you've removed, along with their listening history. This can't be undone."
+        SettingsViewModel.SweepType.DELETED ->
+            "Remove deleted books?" to
+                "Permanently deletes ${pending.count} archived $noun in this folder, " +
+                "along with their listening history. This can't be undone."
+        SettingsViewModel.SweepType.ALL ->
+            "Remove this folder?" to
+                "Permanently deletes all ${pending.count} $noun in this folder and their " +
+                "listening history, and removes the folder. This can't be undone."
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(body) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete", color = NineLivesTheme.colors.archiveError)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+        containerColor = NineLivesTheme.colors.archiveVoidSurface,
+    )
 }
 
 // ─── Section Label (inside a group) ──────────────────────────────────────

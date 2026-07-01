@@ -68,6 +68,10 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET ArchivedAt = :archivedAt WHERE Id IN (:ids) AND ArchivedAt IS NULL")
     suspend fun archiveByIds(ids: List<String>, archivedAt: Long)
 
+    /** Repoint a book's cover to a durable path (persisting a SAF folder cover). */
+    @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
+    suspend fun updateCoverPath(id: String, coverPath: String)
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 

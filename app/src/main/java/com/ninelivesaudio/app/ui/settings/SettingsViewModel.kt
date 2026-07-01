@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalLibraryScanner
+import com.ninelivesaudio.app.service.local.LocalMetadataExtractor
 import com.ninelivesaudio.app.service.local.toAudioBook
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -48,6 +49,7 @@ class SettingsViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val playbackManager: PlaybackManager,
     private val localScanner: LocalLibraryScanner,
+    private val localMetadataExtractor: LocalMetadataExtractor,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -426,6 +428,14 @@ class SettingsViewModel @Inject constructor(
                 // re-adding the same folder re-imports and clears ArchivedAt
                 // (restore). "Delete forever" / the archive sweep is the path
                 // to actually remove them.
+                //
+                // First copy any content:// folder covers to durable storage
+                // while the SAF permission is still held. Books scanned before
+                // folder-cover persistence existed would otherwise lose their
+                // cover the moment the permission is released below.
+                audioBookRepository.persistFolderCovers(library.id) { uri, id ->
+                    localMetadataExtractor.persistFolderCover(uri, id)
+                }
                 audioBookRepository.removeMissingLocalBooks(library.id, emptyList())
                 releaseSafPermission(library.folderUri)
 

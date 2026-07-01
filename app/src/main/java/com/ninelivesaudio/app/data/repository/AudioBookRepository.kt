@@ -222,6 +222,29 @@ class AudioBookRepository @Inject constructor(
     }
 
     /**
+     * Make every local cover in [libraryId] durable before archiving. Books
+     * scanned before folder-cover persistence existed still hold a `content://`
+     * SAF cover that dies once the folder's permission is released; copy those
+     * to app-private storage while access is still granted. [persist] performs
+     * the copy (LocalMetadataExtractor.persistFolderCover): it returns a durable
+     * path, the same path when already durable, or null when unreadable, so this
+     * only rewrites CoverPath when it actually changed. Best-effort.
+     */
+    suspend fun persistFolderCovers(
+        libraryId: String,
+        persist: (coverUri: String?, bookId: String) -> String?,
+    ) {
+        audioBookDao.getByLibrary(libraryId)
+            .filter { it.isLocal == 1 }
+            .forEach { entity ->
+                val durable = persist(entity.coverPath, entity.id)
+                if (durable != null && durable != entity.coverPath) {
+                    audioBookDao.updateCoverPath(entity.id, durable)
+                }
+            }
+    }
+
+    /**
      * Permanently delete a LOCAL book and everything tied to it: the row, its
      * playback progress, its listening sessions, its bookmarks, and the cached
      * cover file. PlaybackProgress is keyed by the (content-deterministic) book

@@ -58,7 +58,10 @@ class MediaBrowseTree @Inject constructor(
             parentId == ROOT_ID -> getRootItems()
 
             parentId == RECENTLY_PLAYED_ID -> {
+                // Skip archived books: their source file is gone, so offering a
+                // playable Auto item would load a dead SAF URI.
                 audioBookRepository.getRecentlyPlayed(limit = 20)
+                    .filterNot { (book, _) -> book.isArchived }
                     .map { (book, _) -> bookToMediaItem(book) }
             }
 
@@ -69,6 +72,7 @@ class MediaBrowseTree @Inject constructor(
             parentId.startsWith(LIB_PREFIX) -> {
                 val libId = parentId.removePrefix(LIB_PREFIX)
                 audioBookRepository.getByLibrary(libId)
+                    .filterNot { it.isArchived }
                     .sortedBy { it.title.lowercase() }
                     .drop(page * pageSize)
                     .take(pageSize)
@@ -93,7 +97,11 @@ class MediaBrowseTree @Inject constructor(
 
             mediaId.startsWith(BOOK_PREFIX) -> {
                 val bookId = mediaId.removePrefix(BOOK_PREFIX)
-                audioBookRepository.getById(bookId)?.let { bookToMediaItem(it) }
+                // An archived book has no source, so don't resolve it as a
+                // playable Auto item (e.g. from a stale queued media id).
+                audioBookRepository.getById(bookId)
+                    ?.takeUnless { it.isArchived }
+                    ?.let { bookToMediaItem(it) }
             }
 
             else -> null
@@ -102,7 +110,9 @@ class MediaBrowseTree @Inject constructor(
 
     /** Search books by title/author. */
     suspend fun search(query: String): List<MediaItem> {
-        return audioBookRepository.search(query).map { bookToMediaItem(it) }
+        return audioBookRepository.search(query)
+            .filterNot { it.isArchived }
+            .map { bookToMediaItem(it) }
     }
 
     /** Extract the original AudioBook ID from a media ID like "book_{id}". */

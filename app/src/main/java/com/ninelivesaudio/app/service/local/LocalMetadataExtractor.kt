@@ -6,7 +6,6 @@ import android.net.Uri
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
-import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -82,11 +81,7 @@ class LocalMetadataExtractor @Inject constructor(
             val artBytes = retriever.embeddedPicture ?: return null
 
             val coverDir = File(context.filesDir, "local_covers")
-            coverDir.mkdirs()
-            val coverFile = File(coverDir, "$bookId.jpg")
-            FileOutputStream(coverFile).use { it.write(artBytes) }
-
-            Uri.fromFile(coverFile).toString()
+            Uri.fromFile(writeLocalCoverFile(artBytes, coverDir, bookId)).toString()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to extract embedded cover from $fileUri: ${e.message}")
             null
@@ -94,4 +89,36 @@ class LocalMetadataExtractor @Inject constructor(
             try { retriever.release() } catch (_: Exception) {}
         }
     }
+
+    /**
+     * Copy a folder cover image (a content:// SAF URI that dies when the folder
+     * is unscanned) into app-private storage and return a durable file:// URI.
+     * Returns null if [coverUri] is null/blank, already a file://, or unreadable.
+     */
+    fun persistFolderCover(coverUri: String?, bookId: String): String? {
+        if (coverUri.isNullOrBlank()) return null
+        val parsed = Uri.parse(coverUri)
+        if (parsed.scheme == "file") return coverUri // already durable (embedded)
+        return try {
+            val bytes = context.contentResolver.openInputStream(parsed)?.use { it.readBytes() }
+                ?: return null
+            if (bytes.isEmpty()) return null
+            val coverDir = File(context.filesDir, "local_covers")
+            Uri.fromFile(writeLocalCoverFile(bytes, coverDir, bookId)).toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "persistFolderCover failed for $bookId: ${e.message}")
+            null
+        }
+    }
+}
+
+/**
+ * Write cover bytes to <coverDir>/<bookId>.jpg (creating the dir) and return the
+ * file. Pure file IO, unit-testable without the Android framework.
+ */
+internal fun writeLocalCoverFile(bytes: ByteArray, coverDir: File, bookId: String): File {
+    coverDir.mkdirs()
+    val file = File(coverDir, "$bookId.jpg")
+    file.writeBytes(bytes)
+    return file
 }

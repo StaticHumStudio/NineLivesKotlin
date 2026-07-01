@@ -103,6 +103,7 @@ fun BookDetailScreen(
                     onJumpToSession = { session ->
                         viewModel.jumpToSession(session, onReady = onNavigateToPlayer)
                     },
+                    onDeleteForever = { viewModel.deleteForever(onDeleted = onNavigateBack) },
                     modifier = Modifier.padding(innerPadding),
                 )
             }
@@ -118,8 +119,11 @@ private fun BookDetailContent(
     onDeleteDownload: () -> Unit,
     onToggleHistory: () -> Unit,
     onJumpToSession: (ListeningSession) -> Unit,
+    onDeleteForever: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -320,6 +324,7 @@ private fun BookDetailContent(
                 // Continue / Play button
                 Button(
                     onClick = onPlayBook,
+                    enabled = canPlayBook(uiState.isArchived),
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NineLivesTheme.colors.goldFilament,
@@ -339,6 +344,37 @@ private fun BookDetailContent(
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                     )
+                }
+
+                // Archived: the source folder was unscanned, so the audio file is
+                // gone. Surface that and offer a permanent delete.
+                if (uiState.isArchived) {
+                    Text(
+                        text = "Source file no longer available",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextMuted,
+                    )
+                    OutlinedButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = NineLivesTheme.colors.archiveError,
+                        ),
+                        contentPadding = PaddingValues(vertical = 14.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Delete forever",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                        )
+                    }
                 }
 
                 // Download button (hidden for scanned-local books — they're
@@ -478,11 +514,39 @@ private fun BookDetailContent(
                     ListeningSessionRow(
                         session = session,
                         chapters = uiState.chapters,
+                        // Archived books can't play, so their history rows show
+                        // but don't offer a (doomed) jump-to-play affordance.
+                        enabled = !uiState.isArchived,
                         onClick = { onJumpToSession(session) },
                     )
                 }
             }
         }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete forever?") },
+            text = {
+                Text(
+                    "This permanently removes \"${uiState.title}\" and its listening " +
+                        "history. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    onDeleteForever()
+                }) {
+                    Text("Delete", color = NineLivesTheme.colors.archiveError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            },
+            containerColor = NineLivesTheme.colors.archiveVoidSurface,
+        )
     }
 }
 
@@ -708,6 +772,7 @@ private fun ChapterRow(
 private fun ListeningSessionRow(
     session: ListeningSession,
     chapters: List<Chapter>,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val chapterTitle = remember(session.currentTime, chapters) {
@@ -718,7 +783,7 @@ private fun ListeningSessionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),

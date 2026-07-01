@@ -60,6 +60,18 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND Id NOT IN (:scannedIds)")
     suspend fun deleteMissingLocalBooks(libraryId: String, scannedIds: List<String>)
 
+    /** Ids of all LOCAL books in a library (live or archived). */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
+    suspend fun getLocalIdsByLibrary(libraryId: String): List<String>
+
+    /** Soft-delete: stamp ArchivedAt on the given books (skips already-archived). */
+    @Query("UPDATE AudioBooks SET ArchivedAt = :archivedAt WHERE Id IN (:ids) AND ArchivedAt IS NULL")
+    suspend fun archiveByIds(ids: List<String>, archivedAt: Long)
+
+    /** Repoint a book's cover to a durable path (persisting a SAF folder cover). */
+    @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
+    suspend fun updateCoverPath(id: String, coverPath: String)
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 
@@ -71,6 +83,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -81,6 +94,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -91,7 +105,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
-        WHERE ab.LibraryId = :libraryId
+        WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -102,7 +116,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
-        WHERE ab.LibraryId = :libraryId
+        WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -135,19 +149,20 @@ interface AudioBookDao {
     @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
     suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<RecentlyPlayedResult>
 
-    /** Count all audiobooks in a library. */
-    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId")
+    /** Count live audiobooks in a library (drives the empty-state copy, so it
+     *  excludes archived books — an archive-only library reads as empty). */
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL")
     suspend fun countByLibrary(libraryId: String): Int
 
     /** Distinct series names for a library. */
-    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
+    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
     suspend fun getDistinctSeries(libraryId: String): List<String>
 
     /** Distinct authors for a library. */
-    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND Author IS NOT NULL AND Author != '' ORDER BY Author")
+    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND Author IS NOT NULL AND Author != '' ORDER BY Author")
     suspend fun getDistinctAuthors(libraryId: String): List<String>
 
     /** Distinct genres for a library (genres stored as JSON array). */
-    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
+    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
     suspend fun getDistinctGenresJson(libraryId: String): List<String>
 }

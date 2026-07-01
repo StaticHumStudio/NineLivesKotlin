@@ -36,6 +36,7 @@ enum class LibraryTab(val label: String) {
     InProgress("In Progress"),
     Completed("Completed"),
     Downloaded("Downloaded"),
+    Archive("Archive"),
 }
 
 // ─── Grouped section models ───────────────────────────────────────────────
@@ -91,6 +92,7 @@ class LibraryViewModel @Inject constructor(
         val groupedSections: List<GroupedSection> = emptyList(),
         val expandedGroups: Set<String> = emptySet(),
         val selectedTab: LibraryTab = LibraryTab.All,
+        val isLocalMode: Boolean = false, // LOCAL mode shows the Archive tab
         val hideFinished: Boolean = false,
         val showDownloadedOnly: Boolean = false,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
@@ -164,6 +166,7 @@ class LibraryViewModel @Inject constructor(
                 it.copy(
                     libraries = libs,
                     selectedLibrary = selected,
+                    isLocalMode = settings.appMode == AppMode.LOCAL,
                 )
             }
 
@@ -337,6 +340,10 @@ class LibraryViewModel @Inject constructor(
             LibraryTab.InProgress -> 1
             LibraryTab.Completed -> 2
             LibraryTab.Downloaded -> 3
+            // Defensive: if the Archive tab is somehow selected outside LOCAL
+            // mode (stale state after a mode switch), fall back to All so the
+            // shelf is not silently empty.
+            LibraryTab.Archive -> if (state.isLocalMode) 4 else 0
         }
         val books = audioBookRepository.getFilteredBooks(
             libraryId = libraryId,

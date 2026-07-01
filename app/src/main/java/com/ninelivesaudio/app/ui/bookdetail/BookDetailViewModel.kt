@@ -57,6 +57,7 @@ class BookDetailViewModel @Inject constructor(
         val isFinished: Boolean = false,
         val isDownloaded: Boolean = false,
         val isLocal: Boolean = false,
+        val isArchived: Boolean = false,
         val chapters: List<Chapter> = emptyList(),
         val addedAt: Long? = null,
         val errorMessage: String? = null,
@@ -136,6 +137,7 @@ class BookDetailViewModel @Inject constructor(
                 isFinished = book.isFinished,
                 isDownloaded = book.isDownloaded,
                 isLocal = book.isLocal,
+                isArchived = book.isArchived,
                 chapters = book.chapters.sortedBy { c -> c.start },
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
@@ -209,6 +211,9 @@ class BookDetailViewModel @Inject constructor(
      */
     fun playBook(onReady: () -> Unit) {
         val book = _uiState.value.book ?: return
+        // Backstop symmetric with jumpToSession: the Play button is already
+        // disabled for archived books, but never load a missing source.
+        if (_uiState.value.isArchived) return
         viewModelScope.launch {
             val loaded = playbackManager.loadAudioBook(book)
             if (loaded) {
@@ -270,6 +275,10 @@ class BookDetailViewModel @Inject constructor(
      */
     fun jumpToSession(session: ListeningSession, onReady: () -> Unit) {
         val book = _uiState.value.book ?: return
+        // An archived book's source file is gone; jumping would try to load a
+        // missing URI. History stays visible (read-only), so tapping a row is a
+        // no-op rather than a doomed load.
+        if (_uiState.value.isArchived) return
         viewModelScope.launch {
             val loaded = playbackManager.loadAudioBook(book)
             if (loaded) {
@@ -278,4 +287,29 @@ class BookDetailViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Permanently delete this (archived) book and everything tied to it, then
+     * invoke [onDeleted] to leave the screen. Cascade wired in Task 7.
+     */
+    fun deleteForever(onDeleted: () -> Unit) {
+        val id = _uiState.value.book?.id ?: return
+        viewModelScope.launch {
+            // Stop playback first if this is the live book, so the session-sync
+            // coroutine can't re-write the rows we're about to delete.
+            if (playbackManager.currentBook.value?.id == id) {
+                playbackManager.stop()
+            }
+            audioBookRepository.deleteLocalBookForever(id)
+            onDeleted()
+        }
+    }
 }
+
+/**
+ * Only an archived book blocks playback — its source file is gone. Everything
+ * else plays: a scanned-local book from its file, a downloaded remote book from
+ * disk, and a normal server book streams on demand (isLocal=false,
+ * isDownloaded=false is the common Audiobookshelf online case).
+ */
+internal fun canPlayBook(isArchived: Boolean): Boolean = !isArchived

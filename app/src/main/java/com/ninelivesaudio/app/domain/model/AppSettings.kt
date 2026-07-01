@@ -41,6 +41,8 @@ data class AppSettings(
     val sleepTimerMotionEnabled: Boolean = true,
     val sleepTimerShakeResetEnabled: Boolean = true,
     val sleepTimerRewindSeconds: Int = 15,   // rewind on timer stop: 0–60, step 5
+    // Dossier: count archived (LOCAL soft-deleted) books in listening stats.
+    val includeArchivedInStats: Boolean = true,
 )
 
 @Serializable

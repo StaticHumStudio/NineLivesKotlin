@@ -203,6 +203,10 @@ class PlaybackManager @Inject constructor(
                 ?: audioBookRepository.fetchFromServer(bookId)
         } ?: return false
 
+        // Archived books have no source file; refuse to load one (mirrors
+        // loadBookByIdForAuto) so this stays safe if wired to a UI entry point.
+        if (book.isArchived) return false
+
         return withContext(Dispatchers.Main) {
             loadAudioBook(book)
         }
@@ -219,6 +223,11 @@ class PlaybackManager @Inject constructor(
             audioBookRepository.getById(bookId)
                 ?: audioBookRepository.fetchFromServer(bookId)
         } ?: return false
+
+        // Refuse archived books: the source file is gone, so loading would
+        // attach a dead SAF URI. Browse/search already hide them, but a stale
+        // Auto queue entry could still request one by id.
+        if (book.isArchived) return false
 
         return withContext(Dispatchers.Main) {
             loadAudioBook(book, skipServiceStart = true)

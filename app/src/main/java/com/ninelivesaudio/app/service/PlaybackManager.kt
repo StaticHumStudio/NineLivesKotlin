@@ -1704,17 +1704,25 @@ class PlaybackManager @Inject constructor(
         }
     }
 
+    /**
+     * Release the app-side MediaController and let Media3 own the foreground-service
+     * lifecycle. We deliberately do NOT call context.stopService() here: PlaybackService
+     * is a MediaLibraryService that manages its own FGS state, and hand-rolling
+     * stopService races that teardown (ForegroundServiceDidNotStartInTimeException on
+     * Android 12+ if a controller reconnects mid-teardown). Once the player is stopped
+     * (every caller stops it first), Media3 leaves the foreground on its own while
+     * keeping the session alive for Android Auto browsing; releaseAll() releases the
+     * session, which is what actually stops the service on real teardown.
+     */
     private fun stopPlaybackService() {
         try {
             mediaController?.release()
             mediaController = null
             mediaControllerFuture?.cancel(true)
             mediaControllerFuture = null
-            val intent = Intent(context, PlaybackService::class.java)
-            context.stopService(intent)
-            Log.d(TAG, "Stopped PlaybackService")
+            Log.d(TAG, "Released media controller; Media3 owns FGS teardown")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop PlaybackService: ${e.message}", e)
+            Log.e(TAG, "Failed to release media controller: ${e.message}", e)
         }
     }
 }

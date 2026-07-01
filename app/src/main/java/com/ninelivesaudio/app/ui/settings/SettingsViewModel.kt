@@ -1016,14 +1016,18 @@ class SettingsViewModel @Inject constructor(
             }
 
             // Restore persisted selection, fall back to first available
+            val appMode = settingsManager.currentSettings.appMode
             val savedId = settingsManager.currentSettings.selectedLibraryId
             val selected = libs.firstOrNull { it.id == savedId } ?: libs.firstOrNull()
 
-            // Keep persisted selection in sync with the effective default.
-            // Without this, UI can show a selected library while the rest of
-            // the app still behaves as "all libraries" (null selection).
-            if (selected != null && selected.id != savedId) {
-                settingsManager.updateSettings { it.copy(selectedLibraryId = selected.id) }
+            // Keep the persisted selection in sync with the effective default,
+            // but ONLY in Audiobookshelf mode. In LOCAL mode selectedLibraryId
+            // points at a local library the ABS selector can't see, so the
+            // fallback above would be a server library — persisting it here
+            // hijacks the app-wide selection and makes Home/Library show server
+            // books in local mode (the "Nine Lives shows server books" bug).
+            if (shouldPersistAbsSelection(appMode, selected?.id, savedId)) {
+                settingsManager.updateSettings { it.copy(selectedLibraryId = selected!!.id) }
             }
 
             _uiState.update {
@@ -1065,3 +1069,16 @@ class SettingsViewModel @Inject constructor(
  */
 internal fun shouldLoadCachedLibrariesAfterValidation(result: TokenValidationResult): Boolean =
     result != TokenValidationResult.INVALID
+
+/**
+ * Whether the Audiobookshelf library selector may persist [selectedId] as the
+ * app-wide `selectedLibraryId`. Only Audiobookshelf mode owns that value; in
+ * LOCAL mode it belongs to the selected local library, and the ABS loader must
+ * not overwrite it (doing so makes Home/Library show server books in local
+ * mode). Also requires an actual change from [savedId].
+ */
+internal fun shouldPersistAbsSelection(
+    appMode: AppMode,
+    selectedId: String?,
+    savedId: String?,
+): Boolean = appMode == AppMode.AUDIOBOOKSHELF && selectedId != null && selectedId != savedId

@@ -63,6 +63,7 @@ class DownloadManager @Inject constructor(
 
     data class DownloadProgress(
         val downloadId: String,
+        val audioBookId: String,
         val progress: Double, // 0-100
         val downloadedBytes: Long,
         val totalBytes: Long,
@@ -228,11 +229,12 @@ class DownloadManager @Inject constructor(
     // ─── Worker callbacks ──────────────────────────────────────────────────
 
     /** Republish live progress from the worker for the UI's liveliness overlay. */
-    fun publishProgress(downloadId: String, downloaded: Long, total: Long) {
+    fun publishProgress(downloadId: String, audioBookId: String, downloaded: Long, total: Long) {
         val progress = if (total > 0) (downloaded.toDouble() / total * 100.0).coerceIn(0.0, 100.0) else 0.0
         _progressUpdates.tryEmit(
             DownloadProgress(
                 downloadId = downloadId,
+                audioBookId = audioBookId,
                 progress = progress,
                 downloadedBytes = downloaded,
                 totalBytes = total,

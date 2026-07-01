@@ -103,7 +103,7 @@ class DownloadQueueWorker(
             var lastNotifiedPercent = -1
             val result = withContext(Dispatchers.IO) {
                 engine.download(item, book) { id, downloaded, total ->
-                    manager.publishProgress(id, downloaded, total)
+                    manager.publishProgress(id, item.audioBookId, downloaded, total)
                     val percent = if (total > 0) {
                         ((downloaded.toDouble() / total) * 100).toInt()
                     } else {

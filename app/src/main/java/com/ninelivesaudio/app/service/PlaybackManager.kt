@@ -11,6 +11,7 @@ import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.annotation.OptIn
+import androidx.annotation.VisibleForTesting
 import androidx.media3.common.*
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
@@ -88,6 +89,19 @@ class PlaybackManager @Inject constructor(
         private const val ARTWORK_MAX_DIMENSION = 768
         private const val ARTWORK_MAX_EMBED_BYTES = 300 * 1024
         private const val ARTWORK_MIN_JPEG_QUALITY = 50
+
+        /**
+         * Cover URI for the session metadata of the actively-playing item.
+         * Out-of-process controllers (Android Auto/Automotive, Wear OS)
+         * resolve this URI themselves and can't read a downloaded book's
+         * app-private file:// cover under scoped storage — same constraint
+         * as MediaBrowseTree's browse-item covers, so this is always the
+         * remote URL, never AudioBook.effectiveCoverPath. The embedded
+         * artworkData bytes (set alongside this) carry the actual image for
+         * those clients instead.
+         */
+        @VisibleForTesting
+        internal fun sessionArtworkUri(book: AudioBook): String? = book.coverPath
     }
 
     private val syncManager: SyncManager get() = syncManagerLazy.get()
@@ -1487,7 +1501,7 @@ class PlaybackManager @Inject constructor(
         // Prefer the locally persisted cover (downloaded books) so artwork shows
         // offline.
         if (!book.effectiveCoverPath.isNullOrEmpty()) {
-            builder.setArtworkUri(Uri.parse(book.effectiveCoverPath))
+            sessionArtworkUri(book)?.let { builder.setArtworkUri(Uri.parse(it)) }
 
             // Also embed cover bytes for Android Auto, which can't fetch
             // authenticated URLs or self-signed cert servers.

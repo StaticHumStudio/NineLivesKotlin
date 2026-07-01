@@ -83,6 +83,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -93,6 +94,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -103,7 +105,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
-        WHERE ab.LibraryId = :libraryId
+        WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)
@@ -114,7 +116,7 @@ interface AudioBookDao {
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
-        WHERE ab.LibraryId = :libraryId
+        WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
     """)

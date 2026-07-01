@@ -428,15 +428,7 @@ class SettingsViewModel @Inject constructor(
                 // re-adding the same folder re-imports and clears ArchivedAt
                 // (restore). "Delete forever" / the archive sweep is the path
                 // to actually remove them.
-                //
-                // First copy any content:// folder covers to durable storage
-                // while the SAF permission is still held. Books scanned before
-                // folder-cover persistence existed would otherwise lose their
-                // cover the moment the permission is released below.
-                audioBookRepository.persistFolderCovers(library.id) { uri, id ->
-                    localMetadataExtractor.persistFolderCover(uri, id)
-                }
-                audioBookRepository.removeMissingLocalBooks(library.id, emptyList())
+                archiveMissingBooks(library.id, scannedIds = emptyList())
                 releaseSafPermission(library.folderUri)
 
                 // Clear selection if this was the selected local library
@@ -537,11 +529,25 @@ class SettingsViewModel @Inject constructor(
         scanResult: LocalLibraryScanner.ScanResult,
     ) {
         if (scanResult.errorMessages.isEmpty()) {
-            audioBookRepository.removeMissingLocalBooks(
-                libraryId,
-                scanResult.books.map { it.id },
-            )
+            archiveMissingBooks(libraryId, scanResult.books.map { it.id })
         }
+    }
+
+    /**
+     * The single archive choke point: before soft-deleting the books missing
+     * from [scannedIds], copy any still-readable content:// folder cover to
+     * durable storage. Both archive triggers (whole-folder Remove and the
+     * missing-books pass after a rescan) route through here, so a book scanned
+     * under an older build keeps its cover once archived — the folder is still
+     * accessible at this point (permission not yet released; a rescan only
+     * archives what a clean scan reported missing). Already-durable and
+     * unreadable covers are left as-is (best-effort).
+     */
+    private suspend fun archiveMissingBooks(libraryId: String, scannedIds: List<String>) {
+        audioBookRepository.persistFolderCovers(libraryId) { uri, id ->
+            localMetadataExtractor.persistFolderCover(uri, id)
+        }
+        audioBookRepository.removeMissingLocalBooks(libraryId, scannedIds)
     }
 
     // ─── User Actions ─────────────────────────────────────────────────────

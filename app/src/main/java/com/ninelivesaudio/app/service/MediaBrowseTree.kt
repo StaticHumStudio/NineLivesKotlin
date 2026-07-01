@@ -58,10 +58,10 @@ class MediaBrowseTree @Inject constructor(
             parentId == ROOT_ID -> getRootItems()
 
             parentId == RECENTLY_PLAYED_ID -> {
-                // Skip archived books: their source file is gone, so offering a
-                // playable Auto item would load a dead SAF URI.
+                // getRecentlyPlayed already excludes archived books in SQL (so
+                // the limit is filled with live ones), consistent with the
+                // by-library/search filters below.
                 audioBookRepository.getRecentlyPlayed(limit = 20)
-                    .filterNot { (book, _) -> book.isArchived }
                     .map { (book, _) -> bookToMediaItem(book) }
             }
 

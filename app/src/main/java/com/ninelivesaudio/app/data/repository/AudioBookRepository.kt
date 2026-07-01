@@ -199,6 +199,12 @@ class AudioBookRepository @Inject constructor(
                     isLocal = true,
                     isDownloaded = true,
                     archivedAt = null, // present in this scan => restore if it was archived
+                    // Keep the existing durable cover if this scan resolved none
+                    // (e.g. the folder cover.jpg was removed or art extraction
+                    // hiccuped) — a REPLACE upsert would otherwise null it out
+                    // and orphan the local_covers file still on disk.
+                    coverPath = book.coverPath ?: existing?.coverPath,
+                    localCoverPath = book.localCoverPath ?: existing?.localCoverPath,
                     currentTime = existing?.currentTimeSeconds?.seconds ?: book.currentTime,
                     progress = existing?.progress ?: book.progress,
                     isFinished = existing?.isFinished?.let { it == 1 } ?: book.isFinished,
@@ -287,13 +293,18 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
     // Preserve local progress if it's ahead of the server (offline playback).
     val localTime = local.currentTimeSeconds
     val remoteTime = withDownload.currentTime.inWholeMilliseconds / 1000.0
-    return if (localTime > remoteTime) {
+    val merged = if (localTime > remoteTime) {
         withDownload.copy(
             currentTime = localTime.seconds,
             progress = local.progress,
             isFinished = local.isFinished == 1,
         )
     } else withDownload
+
+    // Carry the local archive flag so a server sync can't resurrect an archived
+    // book (defensive: only local books archive today and they don't sync, but
+    // keep the invariant if archiving is ever extended to server books).
+    return merged.copy(archivedAt = local.archivedAt)
 }
 
 /**

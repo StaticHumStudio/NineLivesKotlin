@@ -189,6 +189,10 @@ class PlaybackManager @Inject constructor(
                 ?: audioBookRepository.fetchFromServer(bookId)
         } ?: return false
 
+        // Archived books have no source file; refuse to load one (mirrors
+        // loadBookByIdForAuto) so this stays safe if wired to a UI entry point.
+        if (book.isArchived) return false
+
         return withContext(Dispatchers.Main) {
             loadAudioBook(book)
         }

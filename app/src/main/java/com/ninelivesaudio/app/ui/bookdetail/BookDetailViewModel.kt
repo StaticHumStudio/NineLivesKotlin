@@ -211,6 +211,9 @@ class BookDetailViewModel @Inject constructor(
      */
     fun playBook(onReady: () -> Unit) {
         val book = _uiState.value.book ?: return
+        // Backstop symmetric with jumpToSession: the Play button is already
+        // disabled for archived books, but never load a missing source.
+        if (_uiState.value.isArchived) return
         viewModelScope.launch {
             val loaded = playbackManager.loadAudioBook(book)
             if (loaded) {

@@ -149,8 +149,9 @@ interface AudioBookDao {
     @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
     suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<RecentlyPlayedResult>
 
-    /** Count all audiobooks in a library. */
-    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId")
+    /** Count live audiobooks in a library (drives the empty-state copy, so it
+     *  excludes archived books — an archive-only library reads as empty). */
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL")
     suspend fun countByLibrary(libraryId: String): Int
 
     /** Distinct series names for a library. */

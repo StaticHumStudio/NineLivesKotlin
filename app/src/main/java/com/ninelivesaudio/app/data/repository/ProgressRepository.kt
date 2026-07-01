@@ -53,12 +53,18 @@ class ProgressRepository @Inject constructor(
 
     // ─── Offline Queue ───────────────────────────────────────────────────
 
-    suspend fun enqueuePendingProgress(itemId: String, currentTime: Double, isFinished: Boolean) {
+    suspend fun enqueuePendingProgress(
+        itemId: String,
+        currentTime: Double,
+        isFinished: Boolean,
+        duration: Double = 0.0,
+    ) {
         pendingProgressDao.insert(
             PendingProgressEntity(
                 itemId = itemId,
                 currentTime = currentTime,
                 isFinished = if (isFinished) 1 else 0,
+                duration = duration,
                 timestamp = System.currentTimeMillis().toIso8601(),
             )
         )
@@ -70,6 +76,7 @@ class ProgressRepository @Inject constructor(
                 itemId = entity.itemId,
                 currentTime = entity.currentTime,
                 isFinished = entity.isFinished == 1,
+                duration = entity.duration,
                 timestamp = entity.timestamp.toEpochMillis() ?: 0L
             )
         }
@@ -104,25 +111,19 @@ class ProgressRepository @Inject constructor(
         // Group by item, push only the latest entry per item. On success, delete
         // ALL fetched rows for that item so superseded older rows don't linger.
         val entriesByItem = entries.groupBy { it.itemId }
-        // Pick the latest row by parsed instant, not by lexicographic string
-        // order. Sorting the raw ISO string would pick the wrong "latest" if the
-        // timestamp format ever varied, causing stale progress to be pushed and
-        // the newer rows to be deleted (losing the user's real position).
-        val latestByItem = entriesByItem.mapValues { (_, rows) ->
-            rows.maxByOrNull { it.timestamp.toEpochMillis() ?: 0L }
-        }
 
         val deletableRowIds = mutableListOf<Long>()
         var allSuccess = true
-        for ((itemId, latest) in latestByItem) {
-            if (latest == null) continue
+        for ((itemId, rows) in entriesByItem) {
+            val push = latestPushArgs(rows) ?: continue
             val success = apiService.updateProgress(
                 itemId,
-                latest.currentTime,
-                latest.isFinished == 1,
+                push.currentTime,
+                push.isFinished,
+                push.duration,
             )
             if (success) {
-                entriesByItem[itemId]?.forEach { row -> deletableRowIds.add(row.id) }
+                rows.forEach { row -> deletableRowIds.add(row.id) }
             } else {
                 allSuccess = false
             }
@@ -149,5 +150,24 @@ data class PendingProgressEntry(
     val itemId: String,
     val currentTime: Double,
     val isFinished: Boolean,
+    val duration: Double,
     val timestamp: Long,
 )
+
+/** The fields pushed for one item's queued progress: the latest row wins. */
+data class PendingPushArgs(
+    val currentTime: Double,
+    val isFinished: Boolean,
+    val duration: Double,
+)
+
+/**
+ * Pick the latest queued row (by parsed instant, not lexicographic string order —
+ * a varying timestamp format would otherwise pick the wrong "latest" and push
+ * stale progress) and map it to the fields sent to the server. Pure, so the
+ * duration-carrying behavior is unit-testable without the DB.
+ */
+internal fun latestPushArgs(rows: List<PendingProgressEntity>): PendingPushArgs? {
+    val latest = rows.maxByOrNull { it.timestamp.toEpochMillis() ?: 0L } ?: return null
+    return PendingPushArgs(latest.currentTime, latest.isFinished == 1, latest.duration)
+}

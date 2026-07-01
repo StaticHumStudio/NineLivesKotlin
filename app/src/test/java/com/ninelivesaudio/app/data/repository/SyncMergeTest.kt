@@ -24,6 +24,7 @@ class SyncMergeTest {
         currentTimeSeconds: Double = 0.0,
         progress: Double = 0.0,
         isFinished: Int = 0,
+        archivedAt: Long? = null,
     ) = AudioBookEntity(
         id = "1",
         title = "Title",
@@ -33,6 +34,7 @@ class SyncMergeTest {
         currentTimeSeconds = currentTimeSeconds,
         progress = progress,
         isFinished = isFinished,
+        archivedAt = archivedAt,
     )
 
     @Test
@@ -44,6 +46,16 @@ class SyncMergeTest {
         assertTrue(merged.isDownloaded)
         assertEquals("/books/1", merged.localPath)
         assertEquals("file:///books/1/cover.jpg", merged.localCoverPath)
+    }
+
+    @Test
+    fun `keeps the local archive flag across a sync`() {
+        val remote = AudioBook(id = "1", coverPath = "https://server/cover") // archivedAt = null
+
+        val merged = mergeSyncedBook(remote, localEntity(archivedAt = 123L))
+
+        assertEquals(123L, merged.archivedAt)
+        assertTrue(merged.isArchived)
     }
 
     @Test

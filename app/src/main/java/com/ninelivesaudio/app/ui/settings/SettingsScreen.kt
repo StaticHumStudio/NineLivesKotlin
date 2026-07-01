@@ -501,10 +501,12 @@ fun SettingsScreen(
                     anomaliesEnabled = uiState.anomaliesEnabled,
                     whispersEnabled = uiState.whispersEnabled,
                     reduceMotionRequested = uiState.reduceMotionRequested,
+                    includeArchivedInStats = uiState.includeArchivedInStats,
                     sessionCount = uiState.sessionCount,
                     onToggleAnomalies = viewModel::toggleAnomalies,
                     onToggleWhispers = viewModel::toggleWhispers,
                     onToggleReduceMotion = viewModel::toggleReduceMotion,
+                    onToggleIncludeArchivedInStats = viewModel::toggleIncludeArchivedInStats,
                 )
             }
 
@@ -1504,10 +1506,12 @@ private fun ArchivePreferencesSection(
     anomaliesEnabled: Boolean,
     whispersEnabled: Boolean,
     reduceMotionRequested: Boolean,
+    includeArchivedInStats: Boolean,
     sessionCount: Int,
     onToggleAnomalies: () -> Unit,
     onToggleWhispers: () -> Unit,
     onToggleReduceMotion: () -> Unit,
+    onToggleIncludeArchivedInStats: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1545,6 +1549,16 @@ private fun ArchivePreferencesSection(
             subtitle = "Disables all animations and effects",
             checked = reduceMotionRequested,
             onCheckedChange = { onToggleReduceMotion() },
+        )
+
+        HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
+
+        // Include archived in stats toggle
+        ArchivePreferenceRow(
+            title = "Include archived in stats",
+            subtitle = "Count unscanned (archived) books in your Dossier totals",
+            checked = includeArchivedInStats,
+            onCheckedChange = { onToggleIncludeArchivedInStats() },
         )
 
         HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)

@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalLibraryScanner
+import com.ninelivesaudio.app.service.local.LocalMetadataExtractor
 import com.ninelivesaudio.app.service.local.toAudioBook
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -48,6 +49,7 @@ class SettingsViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val playbackManager: PlaybackManager,
     private val localScanner: LocalLibraryScanner,
+    private val localMetadataExtractor: LocalMetadataExtractor,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -117,6 +119,7 @@ class SettingsViewModel @Inject constructor(
         val sleepTimerMotionEnabled: Boolean = true,
         val sleepTimerShakeResetEnabled: Boolean = true,
         val sleepTimerRewindSeconds: Int = 15,
+        val includeArchivedInStats: Boolean = true,
 
         // Feedback Report
         val reportType: ReportType = ReportType.BUG,
@@ -229,6 +232,7 @@ class SettingsViewModel @Inject constructor(
                 sleepTimerMotionEnabled = settings.sleepTimerMotionEnabled,
                 sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
                 sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
+                includeArchivedInStats = settings.includeArchivedInStats,
                 themeMode = settings.themeMode,
             )
         }
@@ -416,8 +420,15 @@ class SettingsViewModel @Inject constructor(
     fun removeLocalLibrary(library: Library) {
         viewModelScope.launch {
             try {
-                audioBookRepository.removeMissingLocalBooks(library.id, emptyList())
-                libraryRepository.removeLocalLibrary(library.id)
+                // Soft-delete: archive every book in the folder (empty scan =>
+                // all ids missing) and KEEP the library row. The Archive tab is
+                // scoped by LibraryId, so deleting the row would orphan the
+                // archived books — reachable in the Dossier but with no Archive
+                // tab to browse. The row stays as an archive-only container;
+                // re-adding the same folder re-imports and clears ArchivedAt
+                // (restore). "Delete forever" / the archive sweep is the path
+                // to actually remove them.
+                archiveMissingBooks(library.id, scannedIds = emptyList())
                 releaseSafPermission(library.folderUri)
 
                 // Clear selection if this was the selected local library
@@ -443,7 +454,7 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 _uiState.update {
-                    it.copy(successMessage = "Removed '${library.name}'")
+                    it.copy(successMessage = "Archived '${library.name}'")
                 }
             } catch (e: Exception) {
                 _uiState.update {
@@ -518,11 +529,25 @@ class SettingsViewModel @Inject constructor(
         scanResult: LocalLibraryScanner.ScanResult,
     ) {
         if (scanResult.errorMessages.isEmpty()) {
-            audioBookRepository.removeMissingLocalBooks(
-                libraryId,
-                scanResult.books.map { it.id },
-            )
+            archiveMissingBooks(libraryId, scanResult.books.map { it.id })
         }
+    }
+
+    /**
+     * The single archive choke point: before soft-deleting the books missing
+     * from [scannedIds], copy any still-readable content:// folder cover to
+     * durable storage. Both archive triggers (whole-folder Remove and the
+     * missing-books pass after a rescan) route through here, so a book scanned
+     * under an older build keeps its cover once archived — the folder is still
+     * accessible at this point (permission not yet released; a rescan only
+     * archives what a clean scan reported missing). Already-durable and
+     * unreadable covers are left as-is (best-effort).
+     */
+    private suspend fun archiveMissingBooks(libraryId: String, scannedIds: List<String>) {
+        audioBookRepository.persistFolderCovers(libraryId) { uri, id ->
+            localMetadataExtractor.persistFolderCover(uri, id)
+        }
+        audioBookRepository.removeMissingLocalBooks(libraryId, scannedIds)
     }
 
     // ─── User Actions ─────────────────────────────────────────────────────
@@ -620,6 +645,14 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(sleepTimerMotionEnabled = enabled) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(sleepTimerMotionEnabled = enabled) }
+        }
+    }
+
+    fun toggleIncludeArchivedInStats() {
+        val enabled = !_uiState.value.includeArchivedInStats
+        _uiState.update { it.copy(includeArchivedInStats = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(includeArchivedInStats = enabled) }
         }
     }
 

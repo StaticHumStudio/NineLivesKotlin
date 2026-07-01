@@ -275,10 +275,19 @@ class NightwatchDossierViewModel @Inject constructor(
                     session.copy(timeListening = sanitizeListeningTime(session))
                 }
 
+                // Honor the "include archived in stats" toggle: when off, drop
+                // sessions for archived (LOCAL soft-deleted) books from every
+                // total below. When on, excludedBookIds is empty (a no-op).
+                val archivedBookIds = allBooks.filter { it.isArchived }.map { it.id }.toSet()
+                val includeArchived = settingsManager.currentSettings.includeArchivedInStats
+                val allowedBookIds = statsBookIds(bookMap.keys, archivedBookIds, includeArchived)
+                val excludedBookIds = bookMap.keys - allowedBookIds
+
                 // Filter noise: sessions under 60 seconds
                 val minThreshold = 60.seconds
-                val validSessions = sanitizedSessions.filter { it.timeListening >= minThreshold }
-                val noiseSessions = sanitizedSessions.size - validSessions.size
+                val aboveThreshold = sanitizedSessions.filter { it.timeListening >= minThreshold }
+                val noiseSessions = sanitizedSessions.size - aboveThreshold.size
+                val validSessions = aboveThreshold.filterNot { it.libraryItemId in excludedBookIds }
 
                 // Aggregate
                 val totalTime = validSessions.fold(Duration.ZERO) { acc, s -> acc + s.timeListening }
@@ -709,3 +718,10 @@ class NightwatchDossierViewModel @Inject constructor(
         }
     }
 }
+
+/** The set of book ids whose sessions count toward stats, honoring the toggle. */
+internal fun statsBookIds(
+    allBookIds: Set<String>,
+    archivedBookIds: Set<String>,
+    includeArchived: Boolean,
+): Set<String> = if (includeArchived) allBookIds else allBookIds - archivedBookIds

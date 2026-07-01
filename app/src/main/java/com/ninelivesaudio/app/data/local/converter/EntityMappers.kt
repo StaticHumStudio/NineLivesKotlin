@@ -41,6 +41,7 @@ fun AudioBookEntity.toDomain(): AudioBook = AudioBook(
     isDownloaded = isDownloaded == 1,
     localPath = localPath,
     localCoverPath = localCoverPath,
+    archivedAt = archivedAt,
 )
 
 fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
@@ -61,6 +62,7 @@ fun AudioBook.toEntity(): AudioBookEntity = AudioBookEntity(
     isDownloaded = if (isDownloaded) 1 else 0,
     localPath = localPath,
     localCoverPath = localCoverPath,
+    archivedAt = archivedAt,
     seriesName = seriesName,
     seriesSequence = seriesSequence,
     genresJson = json.encodeToString(genres),

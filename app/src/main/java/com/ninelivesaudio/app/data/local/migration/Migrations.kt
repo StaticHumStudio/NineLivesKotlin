@@ -71,6 +71,13 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // LOCAL-mode soft-delete: epoch millis when the book's folder was unscanned.
+        db.execSQL("ALTER TABLE AudioBooks ADD COLUMN ArchivedAt INTEGER")
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -80,4 +87,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_2_3,
     MIGRATION_3_4,
     MIGRATION_4_5,
+    MIGRATION_5_6,
 )

@@ -201,7 +201,8 @@ class LocalLibraryScanner @Inject constructor(
 
         // Resolve cover
         val bookId = "local_book_${sha256("$rootUri/$folderName")}"
-        val coverUri = findCoverImage(allChildren) ?: metadataExtractor.extractEmbeddedCover(firstFileUri, bookId)
+        val coverUri = metadataExtractor.persistFolderCover(findCoverImage(allChildren), bookId)
+            ?: metadataExtractor.extractEmbeddedCover(firstFileUri, bookId)
 
         return ScannedLocalBook(
             id = bookId,

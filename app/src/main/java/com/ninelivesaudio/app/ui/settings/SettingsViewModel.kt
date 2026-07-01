@@ -125,12 +125,27 @@ class SettingsViewModel @Inject constructor(
         val reportType: ReportType = ReportType.BUG,
         val includeLogsInReport: Boolean = false,
         val isCollectingReport: Boolean = false,
+
+        // Archive sweep (permanent-delete confirm)
+        val pendingSweep: PendingSweep? = null,
     )
 
     enum class ReportType(val label: String, val subjectPrefix: String) {
         BUG("Bug Report", "[NineLives Bug]"),
         UPGRADE("Upgrade Request", "[NineLives Request]"),
     }
+
+    /**
+     * Archive-sweep scopes, narrowest to broadest:
+     * - ORPHANED: archived books in libraries the app can no longer access
+     *   (folder removed) — unrestorable, delete-only. Spans all libraries.
+     * - DELETED: every archived book in the selected library.
+     * - ALL: every book in the selected library, then remove the library itself.
+     */
+    enum class SweepType { ORPHANED, DELETED, ALL }
+
+    /** A staged sweep awaiting confirmation, with the count it will delete. */
+    data class PendingSweep(val type: SweepType, val count: Int)
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -430,28 +445,7 @@ class SettingsViewModel @Inject constructor(
                 // to actually remove them.
                 archiveMissingBooks(library.id, scannedIds = emptyList())
                 releaseSafPermission(library.folderUri)
-
-                // Clear selection if this was the selected local library
-                if (_uiState.value.selectedLocalLibrary?.id == library.id) {
-                    val fallbackLocal = _uiState.value.localLibraries.firstOrNull { local ->
-                        local.id != library.id
-                    }
-                    val fallbackSelectedLibraryId = selectedLibraryIdForMode(
-                        settingsManager.currentSettings.appMode,
-                        fallbackLocal,
-                    )
-                    settingsManager.updateSettings {
-                        it.copy(
-                            selectedLocalLibraryId = fallbackLocal?.id,
-                            selectedLibraryId = if (it.selectedLibraryId == library.id) {
-                                fallbackSelectedLibraryId
-                            } else {
-                                it.selectedLibraryId
-                            },
-                        )
-                    }
-                    _uiState.update { it.copy(selectedLocalLibrary = null) }
-                }
+                moveSelectionOffLibrary(library)
 
                 _uiState.update {
                     it.copy(successMessage = "Archived '${library.name}'")
@@ -461,6 +455,115 @@ class SettingsViewModel @Inject constructor(
                     it.copy(errorMessage = "Failed to remove library: ${e.message}")
                 }
             }
+        }
+    }
+
+    /**
+     * If [library] is the selected local library, move the selection to another
+     * local library (or clear it), so the app is never left pointing at a
+     * library that just lost all its live books.
+     */
+    private suspend fun moveSelectionOffLibrary(library: Library) {
+        if (_uiState.value.selectedLocalLibrary?.id != library.id) return
+        val fallbackLocal = _uiState.value.localLibraries.firstOrNull { it.id != library.id }
+        val fallbackSelectedLibraryId = selectedLibraryIdForMode(
+            settingsManager.currentSettings.appMode,
+            fallbackLocal,
+        )
+        settingsManager.updateSettings {
+            it.copy(
+                selectedLocalLibraryId = fallbackLocal?.id,
+                selectedLibraryId = if (it.selectedLibraryId == library.id) {
+                    fallbackSelectedLibraryId
+                } else {
+                    it.selectedLibraryId
+                },
+            )
+        }
+        _uiState.update { it.copy(selectedLocalLibrary = null) }
+    }
+
+    // ─── Archive sweep (permanently remove archived local data) ────────────
+
+    /** Folder URIs the app still holds a persisted read grant for. */
+    private fun accessibleFolderUris(): Set<String> =
+        context.contentResolver.persistedUriPermissions
+            .filter { it.isReadPermission }
+            .map { it.uri.toString() }
+            .toSet()
+
+    /** Book ids a sweep of [type] would delete, resolved against current state. */
+    private suspend fun sweepTargetIds(type: SweepType): List<String> = when (type) {
+        SweepType.ORPHANED ->
+            orphanedLibraries(_uiState.value.localLibraries, accessibleFolderUris())
+                .flatMap { audioBookRepository.getArchivedLocalIds(it.id) }
+
+        SweepType.DELETED ->
+            _uiState.value.selectedLocalLibrary
+                ?.let { audioBookRepository.getArchivedLocalIds(it.id) }
+                ?: emptyList()
+
+        SweepType.ALL ->
+            _uiState.value.selectedLocalLibrary
+                ?.let { audioBookRepository.getLocalIds(it.id) }
+                ?: emptyList()
+    }
+
+    /** Stage a sweep: compute how many books it will delete, then confirm. */
+    fun requestSweep(type: SweepType) {
+        viewModelScope.launch {
+            val count = sweepTargetIds(type).size
+            if (count == 0) {
+                _uiState.update { it.copy(successMessage = "Nothing to remove") }
+            } else {
+                _uiState.update { it.copy(pendingSweep = PendingSweep(type, count)) }
+            }
+        }
+    }
+
+    fun cancelSweep() {
+        _uiState.update { it.copy(pendingSweep = null) }
+    }
+
+    /** Execute the staged sweep permanently (cascades rows, history, covers). */
+    fun confirmSweep() {
+        val pending = _uiState.value.pendingSweep ?: return
+        _uiState.update { it.copy(pendingSweep = null) }
+        viewModelScope.launch {
+            try {
+                val ids = sweepTargetIds(pending.type)
+                // Stop playback if the live book is in the delete set, so the
+                // session-sync coroutine can't re-create rows we remove.
+                if (playbackManager.currentBook.value?.id in ids) {
+                    playbackManager.stop()
+                }
+                audioBookRepository.deleteLocalBooksForever(ids)
+
+                // "All Books" wipes the whole library — drop the now-empty row
+                // and release its folder permission, then move selection off it.
+                if (pending.type == SweepType.ALL) {
+                    _uiState.value.selectedLocalLibrary?.let { library ->
+                        libraryRepository.removeLocalLibrary(library.id)
+                        releaseSafPermission(library.folderUri)
+                        moveSelectionOffLibrary(library)
+                    }
+                }
+
+                _uiState.update {
+                    it.copy(successMessage = sweepMessage(pending.type, ids.size))
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(errorMessage = "Cleanup failed: ${e.message}") }
+            }
+        }
+    }
+
+    private fun sweepMessage(type: SweepType, count: Int): String {
+        val noun = if (count == 1) "book" else "books"
+        return when (type) {
+            SweepType.ORPHANED -> "Removed $count orphaned $noun"
+            SweepType.DELETED -> "Removed $count archived $noun"
+            SweepType.ALL -> "Removed all data for this folder"
         }
     }
 
@@ -1115,3 +1218,23 @@ internal fun shouldPersistAbsSelection(
     selectedId: String?,
     savedId: String?,
 ): Boolean = appMode == AppMode.AUDIOBOOKSHELF && selectedId != null && selectedId != savedId
+
+// ─── Archive sweep decisions (internal for testability) ───────────────────
+
+/**
+ * The app can only manage a local library's books while it still holds a
+ * persisted permission for the folder. Once the folder is removed the
+ * permission is released, so the library's archived books are "orphaned":
+ * they can no longer be rescanned/restored, only deleted.
+ */
+internal fun isLibraryFolderAccessible(
+    folderUri: String?,
+    accessibleFolderUris: Set<String>,
+): Boolean = !folderUri.isNullOrBlank() && folderUri in accessibleFolderUris
+
+/** Local libraries whose source folder the app can no longer access. */
+internal fun orphanedLibraries(
+    localLibraries: List<Library>,
+    accessibleFolderUris: Set<String>,
+): List<Library> =
+    localLibraries.filter { !isLibraryFolderAccessible(it.folderUri, accessibleFolderUris) }

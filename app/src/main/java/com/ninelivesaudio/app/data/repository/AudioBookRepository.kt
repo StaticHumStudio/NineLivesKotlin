@@ -238,6 +238,19 @@ class AudioBookRepository @Inject constructor(
         }
     }
 
+    /** Cascade-delete a set of local books (used by the archive sweep). */
+    suspend fun deleteLocalBooksForever(ids: List<String>) {
+        ids.forEach { deleteLocalBookForever(it) }
+    }
+
+    /** Ids of every local book in a library (live + archived). */
+    suspend fun getLocalIds(libraryId: String): List<String> =
+        audioBookDao.getLocalIdsByLibrary(libraryId)
+
+    /** Ids of the archived local books in a library. */
+    suspend fun getArchivedLocalIds(libraryId: String): List<String> =
+        audioBookDao.getArchivedLocalIdsByLibrary(libraryId)
+
     /** Delete all audiobooks from local DB. */
     suspend fun deleteAll() {
         audioBookDao.deleteAll()

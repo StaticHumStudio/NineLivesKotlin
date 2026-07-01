@@ -64,6 +64,10 @@ interface AudioBookDao {
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
     suspend fun getLocalIdsByLibrary(libraryId: String): List<String>
 
+    /** Ids of the archived (soft-deleted) LOCAL books in a library. */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND ArchivedAt IS NOT NULL")
+    suspend fun getArchivedLocalIdsByLibrary(libraryId: String): List<String>
+
     /** Soft-delete: stamp ArchivedAt on the given books (skips already-archived). */
     @Query("UPDATE AudioBooks SET ArchivedAt = :archivedAt WHERE Id IN (:ids) AND ArchivedAt IS NULL")
     suspend fun archiveByIds(ids: List<String>, archivedAt: Long)

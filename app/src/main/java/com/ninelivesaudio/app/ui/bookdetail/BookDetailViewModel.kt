@@ -272,6 +272,10 @@ class BookDetailViewModel @Inject constructor(
      */
     fun jumpToSession(session: ListeningSession, onReady: () -> Unit) {
         val book = _uiState.value.book ?: return
+        // An archived book's source file is gone; jumping would try to load a
+        // missing URI. History stays visible (read-only), so tapping a row is a
+        // no-op rather than a doomed load.
+        if (_uiState.value.isArchived) return
         viewModelScope.launch {
             val loaded = playbackManager.loadAudioBook(book)
             if (loaded) {

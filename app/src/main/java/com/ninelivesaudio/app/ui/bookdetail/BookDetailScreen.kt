@@ -514,6 +514,9 @@ private fun BookDetailContent(
                     ListeningSessionRow(
                         session = session,
                         chapters = uiState.chapters,
+                        // Archived books can't play, so their history rows show
+                        // but don't offer a (doomed) jump-to-play affordance.
+                        enabled = !uiState.isArchived,
                         onClick = { onJumpToSession(session) },
                     )
                 }
@@ -769,6 +772,7 @@ private fun ChapterRow(
 private fun ListeningSessionRow(
     session: ListeningSession,
     chapters: List<Chapter>,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val chapterTitle = remember(session.currentTime, chapters) {
@@ -779,7 +783,7 @@ private fun ListeningSessionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),

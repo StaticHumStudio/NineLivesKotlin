@@ -32,6 +32,13 @@ class BookDetailViewModel @Inject constructor(
 
     private val bookId: String = savedStateHandle["bookId"] ?: ""
 
+    // The active download row's id for this book, maintained reactively by
+    // observeDownloadState (Room is the source of truth). Progress events are
+    // matched against it so a replayed/late event from a cancelled or superseded
+    // attempt for the same book can't bleed into a fresh attempt. Both collectors
+    // run on viewModelScope's main dispatcher, so no synchronization is needed.
+    private var currentDownloadId: String? = null
+
     /** Download button state shown on the detail screen. */
     enum class DownloadButtonState {
         NONE,         // Not downloaded, not in progress
@@ -151,6 +158,7 @@ class BookDetailViewModel @Inject constructor(
         viewModelScope.launch {
             downloadItemDao.observeAll().collect { entities ->
                 val entity = entities.firstOrNull { it.audioBookId == bookId }
+                currentDownloadId = entity?.id
                 val state = if (entity == null) {
                     if (_uiState.value.isDownloaded) DownloadButtonState.COMPLETED
                     else DownloadButtonState.NONE
@@ -173,8 +181,11 @@ class BookDetailViewModel @Inject constructor(
     private fun observeDownloadProgress() {
         viewModelScope.launch {
             downloadManager.progressUpdates.collect { progress ->
-                val entity = downloadItemDao.getByAudioBookId(bookId)
-                if (entity != null && entity.id == progress.downloadId) {
+                // Match the current download row's id (cached by observeDownloadState)
+                // instead of querying the DB every tick (~10x/sec). Comparing the id
+                // — not just audioBookId — rejects a replayed/late event from a
+                // cancelled or superseded attempt for the same book.
+                if (progress.downloadId == currentDownloadId) {
                     val pct = if (progress.totalBytes > 0) {
                         (progress.downloadedBytes.toDouble() / progress.totalBytes * 100).toInt().coerceIn(0, 100)
                     } else 0

@@ -418,8 +418,15 @@ class SettingsViewModel @Inject constructor(
     fun removeLocalLibrary(library: Library) {
         viewModelScope.launch {
             try {
+                // Soft-delete: archive every book in the folder (empty scan =>
+                // all ids missing) and KEEP the library row. The Archive tab is
+                // scoped by LibraryId, so deleting the row would orphan the
+                // archived books — reachable in the Dossier but with no Archive
+                // tab to browse. The row stays as an archive-only container;
+                // re-adding the same folder re-imports and clears ArchivedAt
+                // (restore). "Delete forever" / the archive sweep is the path
+                // to actually remove them.
                 audioBookRepository.removeMissingLocalBooks(library.id, emptyList())
-                libraryRepository.removeLocalLibrary(library.id)
                 releaseSafPermission(library.folderUri)
 
                 // Clear selection if this was the selected local library
@@ -445,7 +452,7 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 _uiState.update {
-                    it.copy(successMessage = "Removed '${library.name}'")
+                    it.copy(successMessage = "Archived '${library.name}'")
                 }
             } catch (e: Exception) {
                 _uiState.update {

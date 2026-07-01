@@ -4,26 +4,19 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** An archived book's source file is gone, so it is never playable. */
+/**
+ * Only an archived book (source file gone) is blocked from playback. Local,
+ * downloaded, and streamed-from-server books all play.
+ */
 class BookPlayabilityTest {
 
     @Test
-    fun `local book is playable`() {
-        assertTrue(canPlayBook(isLocal = true, isDownloaded = false, isArchived = false))
-    }
-
-    @Test
-    fun `downloaded remote book is playable`() {
-        assertTrue(canPlayBook(isLocal = false, isDownloaded = true, isArchived = false))
+    fun `a live book is playable`() {
+        assertTrue(canPlayBook(isArchived = false))
     }
 
     @Test
     fun `archived book is never playable`() {
-        assertFalse(canPlayBook(isLocal = true, isDownloaded = true, isArchived = true))
-    }
-
-    @Test
-    fun `remote not-downloaded book is not playable`() {
-        assertFalse(canPlayBook(isLocal = false, isDownloaded = false, isArchived = false))
+        assertFalse(canPlayBook(isArchived = true))
     }
 }

@@ -324,7 +324,7 @@ private fun BookDetailContent(
                 // Continue / Play button
                 Button(
                     onClick = onPlayBook,
-                    enabled = canPlayBook(uiState.isLocal, uiState.isDownloaded, uiState.isArchived),
+                    enabled = canPlayBook(uiState.isArchived),
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NineLivesTheme.colors.goldFilament,

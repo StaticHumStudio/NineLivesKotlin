@@ -299,6 +299,10 @@ class BookDetailViewModel @Inject constructor(
     }
 }
 
-/** Archived books have no source file, so they are never playable. */
-internal fun canPlayBook(isLocal: Boolean, isDownloaded: Boolean, isArchived: Boolean): Boolean =
-    !isArchived && (isLocal || isDownloaded)
+/**
+ * Only an archived book blocks playback — its source file is gone. Everything
+ * else plays: a scanned-local book from its file, a downloaded remote book from
+ * disk, and a normal server book streams on demand (isLocal=false,
+ * isDownloaded=false is the common Audiobookshelf online case).
+ */
+internal fun canPlayBook(isArchived: Boolean): Boolean = !isArchived

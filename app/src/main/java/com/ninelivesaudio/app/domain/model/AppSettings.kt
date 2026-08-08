@@ -23,6 +23,9 @@ data class AppSettings(
     // (actual count depends on device; resized at runtime)
     val eqBandGains: List<Int> = List(5) { 0 },
     val volumeBoostGain: Int = 0, // millibels, 0–1000 (0–10 dB)
+    // Media3 built-in silence trimming. Unlock feature, normalized off for free
+    // by EffectiveSettings rather than being hidden.
+    val skipSilenceEnabled: Boolean = false,
     val allowSelfSignedCertificates: Boolean = false,
     val diagnosticsMode: Boolean = false,
     val serverProfiles: List<ServerProfile> = emptyList(),

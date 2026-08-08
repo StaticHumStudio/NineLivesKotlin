@@ -116,6 +116,7 @@ class SettingsViewModel @Inject constructor(
         val autoRewindSeconds: Int = 15,
 
         // Sleep Timer
+        val skipSilenceEnabled: Boolean = false,
         val sleepTimerMotionEnabled: Boolean = true,
         val sleepTimerShakeResetEnabled: Boolean = true,
         val sleepTimerRewindSeconds: Int = 15,
@@ -244,6 +245,7 @@ class SettingsViewModel @Inject constructor(
                 autoRewindEnabled = settings.autoRewindEnabled,
                 autoRewindMode = settings.autoRewindMode,
                 autoRewindSeconds = settings.autoRewindSeconds,
+                skipSilenceEnabled = settings.skipSilenceEnabled,
                 sleepTimerMotionEnabled = settings.sleepTimerMotionEnabled,
                 sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
                 sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
@@ -743,6 +745,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ─── Sleep Timer Settings ─────────────────────────────────────────────
+
+    /**
+     * Stores the user's choice. EffectiveSettings decides whether the engine
+     * acts on it, so a free user can toggle this and keep the setting for when
+     * they unlock rather than being told no.
+     */
+    fun setSkipSilenceEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(skipSilenceEnabled = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(skipSilenceEnabled = enabled) }
+            playbackManager.applySkipSilence()
+        }
+    }
 
     fun setSleepTimerMotionEnabled(enabled: Boolean) {
         _uiState.update { it.copy(sleepTimerMotionEnabled = enabled) }

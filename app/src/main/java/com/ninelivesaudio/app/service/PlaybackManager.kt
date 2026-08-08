@@ -17,6 +17,8 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import com.ninelivesaudio.app.entitlement.EffectiveSettings
+import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -75,6 +77,9 @@ class PlaybackManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val apiService: ApiService,
     private val settingsManager: SettingsManager,
+    // Anything that ACTS on a setting reads the entitlement-clamped copy.
+    // settingsManager stays for the values entitlement does not gate.
+    private val effectiveSettings: EffectiveSettingsRepository,
     private val progressRepository: ProgressRepository,
     private val audioBookDao: AudioBookDao,
     private val audioBookRepository: AudioBookRepository,
@@ -487,10 +492,12 @@ class PlaybackManager @Inject constructor(
             player.volume = _volume.value
 
             // Load EQ and volume boost settings
-            val appSettings = settingsManager.currentSettings
+            val appSettings = effectiveSettings.current
             _eqEnabled.value = appSettings.eqEnabled
             _eqBandGains.value = appSettings.eqBandGains
             _volumeBoost.value = appSettings.volumeBoostGain
+
+            player.skipSilenceEnabled = appSettings.skipSilenceEnabled
 
             // Attach audio effects
             attachEqualizer()
@@ -771,7 +778,10 @@ class PlaybackManager @Inject constructor(
     fun play() {
         exoPlayer?.let { player ->
             // ── Auto-Rewind ───────────────────────────────────────────
-            val settings = settingsManager.currentSettings
+            // Effective, not stored. A free install resumes exactly where
+            // playback stopped, and the user's chosen rewind mode survives on
+            // disk for when they unlock.
+            val settings = effectiveSettings.current
             if (settings.autoRewindEnabled) {
                 val pausedAt = pausedAtTimestamp
                 if (pausedAt != null) {
@@ -912,8 +922,27 @@ class PlaybackManager @Inject constructor(
     }
 
     fun setSpeed(speed: Float) {
-        _speed.value = speed.coerceIn(0.5f, 3.0f)
-        exoPlayer?.playbackParameters = PlaybackParameters(_speed.value)
+        // Clamped here as well as gated in the UI. A gated control can be
+        // bypassed by a stale callback or a media-session command from Android
+        // Auto, and speed is the most valuable thing behind the unlock.
+        val allowed = if (effectiveSettings.isUnlockedNow) {
+            speed.coerceIn(0.5f, 3.0f)
+        } else {
+            EffectiveSettings.FREE_SPEED.toFloat()
+        }
+        _speed.value = allowed
+        exoPlayer?.playbackParameters = PlaybackParameters(allowed)
+    }
+
+    /**
+     * Media3's built-in silence trimming.
+     *
+     * Applied from effective settings, so a downgrade turns it off in the engine
+     * without touching the stored preference. Never moves position: skipping
+     * silence changes what is rendered, not where the playhead is.
+     */
+    fun applySkipSilence() {
+        exoPlayer?.skipSilenceEnabled = effectiveSettings.current.skipSilenceEnabled
     }
 
     fun setVolume(vol: Float) {

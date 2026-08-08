@@ -42,6 +42,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
+import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
@@ -67,6 +68,8 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val unlockViewModel: UnlockViewModel = hiltViewModel()
     val forceFree by unlockViewModel.forceFree.collectAsStateWithLifecycle()
+    val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
+    val gatesLocked = !unlockState.isUnlocked
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
 
@@ -554,8 +557,30 @@ fun SettingsScreen(
             //  Group 3: Audio
             // ═════════════════════════════════════════════════════════════
             SettingsGroup(title = "Audio") {
+                SectionLabel("Silence Skipping")
+
+                GatedControl(
+                    locked = gatesLocked,
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Silence skipping",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    SkipSilenceRow(
+                        enabled = uiState.skipSilenceEnabled,
+                        onEnabledChange = viewModel::setSkipSilenceEnabled,
+                    )
+                }
+
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
+
                 SectionLabel("Equalizer")
 
+                GatedControl(
+                    locked = gatesLocked,
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Equalizer",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                 EqualizerSection(
                     eqEnabled = uiState.eqEnabled,
                     bandGains = uiState.eqBandGains,
@@ -565,11 +590,18 @@ fun SettingsScreen(
                     onBandGainChange = viewModel::setEqBandGain,
                     onResetEq = viewModel::resetEq,
                 )
+                }
 
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 SectionLabel("Playback Behavior")
 
+                GatedControl(
+                    locked = gatesLocked,
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Auto-rewind on resume",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                 PlaybackBehaviorSection(
                     autoRewindEnabled = uiState.autoRewindEnabled,
                     autoRewindMode = uiState.autoRewindMode,
@@ -578,11 +610,18 @@ fun SettingsScreen(
                     onAutoRewindModeChange = viewModel::setAutoRewindMode,
                     onAutoRewindSecondsChange = viewModel::setAutoRewindSeconds,
                 )
+                }
 
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 SectionLabel("Sleep Timer")
 
+                GatedControl(
+                    locked = gatesLocked,
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Sleep timer options",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                 SleepTimerSettingsSection(
                     motionEnabled = uiState.sleepTimerMotionEnabled,
                     shakeResetEnabled = uiState.sleepTimerShakeResetEnabled,
@@ -591,6 +630,7 @@ fun SettingsScreen(
                     onShakeResetEnabledChange = viewModel::setSleepTimerShakeResetEnabled,
                     onRewindSecondsChange = viewModel::setSleepTimerRewindSeconds,
                 )
+                }
             }
 
             // ═════════════════════════════════════════════════════════════
@@ -813,6 +853,36 @@ fun SettingsScreen(
 }
 
 // ─── Settings Group Card ──────────────────────────────────────────────────
+
+@Composable
+private fun SkipSilenceRow(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Skip silence",
+                style = MaterialTheme.typography.bodyMedium,
+                color = NineLivesTheme.colors.archiveTextPrimary,
+            )
+            Text(
+                text = "Trims long gaps between words. Shortens a book without " +
+                    "speeding up the narrator.",
+                style = MaterialTheme.typography.bodySmall,
+                color = NineLivesTheme.colors.archiveTextMuted,
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = onEnabledChange,
+        )
+    }
+}
 
 @Composable
 private fun UnlockSettingsGroup(

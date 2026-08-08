@@ -7,6 +7,7 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.entitlement.BillingManager
+import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
@@ -40,6 +41,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var billingManager: BillingManager
+
+    @Inject
+    lateinit var downloadManager: DownloadManager
 
     // The app's OkHttpClient carries the auth token, self-signed cert config, and
     // dynamic base URL, so cover requests authenticate like every other call.
@@ -109,6 +113,12 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // fails with ConnectException, which the app would misread as a
         // "session expired" / signed-out state on every cold start.
         appScope.launch {
+            // Before any queue, resume or drain path can run. A provisional slot
+            // claim stranded by a process death is invisible to the drain and can
+            // never promote itself, so it would otherwise hold the free tier's
+            // only download slot forever.
+            downloadManager.cleanupStrandedClaims()
+
             settingsManager.loadSettings()
             // In LOCAL mode the app-wide selectedLibraryId must track the local
             // library; heal any server id a prior ABS session left behind so the

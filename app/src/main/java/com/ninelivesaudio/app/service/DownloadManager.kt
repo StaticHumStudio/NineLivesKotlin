@@ -18,12 +18,15 @@ import com.ninelivesaudio.app.service.download.DownloadEngine
 import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
+import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.selectNextDownload
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -46,7 +49,20 @@ class DownloadManager @Inject constructor(
     private val downloadItemDao: DownloadItemDao,
     private val audioBookDao: AudioBookDao,
     private val engine: DownloadEngine,
+    private val slotStore: DownloadSlotStore,
 ) {
+    /**
+     * Guards check-and-claim on the free tier's single offline slot.
+     *
+     * A slot lock, not a queue lock. Every path that claims, frees or reassigns
+     * the slot takes it, and freeing plus recomputing plus persisting run as ONE
+     * critical section. Check-then-insert without it lets two concurrent queue
+     * attempts both see a free slot during the metadata fetch and both take it.
+     *
+     * Deliberately NOT held across the network round trip. The claim lands
+     * first, the fetch runs outside the lock, and promotion re-takes it.
+     */
+    private val slotMutex = Mutex()
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
 
     // Whether the whole download queue is paused (set from the notification's
@@ -94,44 +110,143 @@ class DownloadManager @Inject constructor(
         }
         val downloadId = UUID.randomUUID().toString()
 
-        // Ensure we have file metadata before queuing.
-        val resolvedBook = if (audioBook.audioFiles.isEmpty()) {
-            engine.fetchFullBookDetails(audioBook.id) ?: audioBook
-        } else {
-            audioBook
-        }
+        // Claim the slot BEFORE the network round trip. fetchFullBookDetails can
+        // take seconds, and an unclaimed window that long is one a second queue
+        // attempt walks straight through.
+        val claimed = slotMutex.withLock {
+            if (!slotStore.canClaim(audioBook.id)) return@withLock false
 
-        val files = resolvedBook.audioFiles.mapNotNull { it.ino.takeIf { ino -> ino.isNotBlank() } }
-        if (files.isEmpty()) {
-            val failedItem = DownloadItem(
+            downloadItemDao.upsert(
+                DownloadItem(
+                    id = downloadId,
+                    audioBookId = audioBook.id,
+                    title = audioBook.title,
+                    status = DownloadStatus.Preparing,
+                    startedAt = System.currentTimeMillis(),
+                ).toEntity()
+            )
+            if (slotStore.slotApplies) slotStore.persistedWinner = audioBook.id
+            true
+        }
+        if (!claimed) return null
+
+        // Everything from here to promotion runs with a claim held. An exception
+        // or a cancelled coroutine in that window would otherwise strand a
+        // Preparing row that the drain cannot see and that can never promote
+        // itself, costing a free install its only slot until the next cold start.
+        var claimSettled = false
+        try {
+            // Ensure we have file metadata before queuing.
+            val resolvedBook = if (audioBook.audioFiles.isEmpty()) {
+                engine.fetchFullBookDetails(audioBook.id) ?: audioBook
+            } else {
+                audioBook
+            }
+
+            val files = resolvedBook.audioFiles.mapNotNull { it.ino.takeIf { ino -> ino.isNotBlank() } }
+            if (files.isEmpty()) {
+                val failedItem = DownloadItem(
+                    id = downloadId,
+                    audioBookId = audioBook.id,
+                    title = audioBook.title,
+                    status = DownloadStatus.Failed,
+                    errorMessage = "No downloadable audio files found for this book",
+                    startedAt = System.currentTimeMillis(),
+                )
+                // Converts the claim rather than adding a second row, and frees the
+                // slot in the same critical section. Failed never occupies the slot,
+                // so a book with nothing downloadable must not cost the user theirs.
+                slotMutex.withLock {
+                    downloadItemDao.upsert(failedItem.toEntity())
+                    if (slotStore.slotApplies) slotStore.resolveAndPersistWinner()
+                }
+                claimSettled = true
+                _downloadFailed.tryEmit(failedItem)
+                return failedItem
+            }
+
+            val downloadItem = DownloadItem(
                 id = downloadId,
                 audioBookId = audioBook.id,
                 title = audioBook.title,
-                status = DownloadStatus.Failed,
-                errorMessage = "No downloadable audio files found for this book",
+                status = DownloadStatus.Queued,
+                totalBytes = estimateTotalBytes(resolvedBook.audioFiles),
+                downloadedBytes = 0,
                 startedAt = System.currentTimeMillis(),
+                filesToDownload = files,
             )
-            downloadItemDao.upsert(failedItem.toEntity())
-            _downloadFailed.tryEmit(failedItem)
-            return failedItem
+
+            // Compare-and-set off Preparing, never a blind upsert. The claim can
+            // legitimately have gone during the fetch: the user cancelled, an
+            // entitlement drop resolved a different winner, or a stranded-claim
+            // sweep cleaned it up. A blind upsert would resurrect it and put the
+            // free tier over its cap.
+            val promoted = slotMutex.withLock {
+                val existing = downloadItemDao.getById(downloadId)
+                val rowStillOurs = existing?.status == DownloadStatus.Preparing.ordinal
+                // Status alone is not sufficient. An entitlement drop during the
+                // fetch can resolve a DIFFERENT winner while this row sits untouched
+                // in Preparing, and promoting it then would put a free install over
+                // its cap with the row looking perfectly legitimate.
+                val stillTheWinner = slotStore.canClaim(audioBook.id)
+
+                if (!rowStillOurs || !stillTheWinner) {
+                    // Failed promotion deletes its own row rather than leaving an
+                    // orphan occupying the slot forever.
+                    if (existing != null) downloadItemDao.deleteById(downloadId)
+                    return@withLock false
+                }
+                downloadItemDao.upsert(downloadItem.toEntity())
+                true
+            }
+            claimSettled = true
+            if (!promoted) return null
+
+            // Respect a paused queue: the book waits until the user resumes.
+            if (!downloadsPaused) enqueueDrain(replace = false)
+
+            return downloadItem
+
+        } finally {
+            if (!claimSettled) releaseClaim(downloadId)
         }
+    }
 
-        val downloadItem = DownloadItem(
-            id = downloadId,
-            audioBookId = audioBook.id,
-            title = audioBook.title,
-            status = DownloadStatus.Queued,
-            totalBytes = estimateTotalBytes(resolvedBook.audioFiles),
-            downloadedBytes = 0,
-            startedAt = System.currentTimeMillis(),
-            filesToDownload = files,
-        )
+    /**
+     * Drop a provisional claim that never became a download.
+     *
+     * Only deletes a row still sitting in Preparing, so it can never remove a
+     * promoted download or a claim that has since been reused. Frees, recomputes
+     * and persists in one critical section.
+     */
+    private suspend fun releaseClaim(downloadId: String) {
+        slotMutex.withLock {
+            val existing = downloadItemDao.getById(downloadId) ?: return@withLock
+            if (existing.status != DownloadStatus.Preparing.ordinal) return@withLock
 
-        downloadItemDao.upsert(downloadItem.toEntity())
-        // Respect a paused queue: the book waits until the user resumes.
-        if (!downloadsPaused) enqueueDrain(replace = false)
+            downloadItemDao.deleteById(downloadId)
+            if (slotStore.slotApplies) slotStore.resolveAndPersistWinner()
+        }
+    }
 
-        return downloadItem
+    /**
+     * Delete provisional claims left behind by a process death mid-fetch.
+     *
+     * Runs before any queue, resume or drain path proceeds. A stranded Preparing
+     * row is invisible to the drain, occupies the slot, and can never promote
+     * itself, so without this sweep one badly timed kill costs the user their
+     * only download slot permanently.
+     */
+    suspend fun cleanupStrandedClaims() {
+        slotMutex.withLock {
+            val stranded = downloadItemDao.getAll()
+                .filter { it.status == DownloadStatus.Preparing.ordinal }
+
+            if (stranded.isEmpty()) return@withLock
+
+            stranded.forEach { downloadItemDao.deleteById(it.id) }
+            if (slotStore.slotApplies) slotStore.resolveAndPersistWinner()
+        }
     }
 
     /** Pause a download: mark it Paused; restart the drain if it was the active one. */

@@ -18,6 +18,17 @@ interface PlaybackProgressDao {
     @Query("SELECT PositionSeconds, IsFinished FROM PlaybackProgress WHERE AudioBookId = :audioBookId")
     suspend fun getPositionAndFinished(audioBookId: String): PositionResult?
 
+    /** Books finished end to end. Used by the In-App Review eligibility gate. */
+    @Query("SELECT COUNT(*) FROM PlaybackProgress WHERE IsFinished = 1")
+    suspend fun countFinished(): Int
+
+    /**
+     * Books with a real position recorded, used as the softer "real use" signal
+     * for anyone still working through a forty-hour book.
+     */
+    @Query("SELECT COUNT(*) FROM PlaybackProgress WHERE PositionSeconds > 60")
+    suspend fun countStarted(): Int
+
     @Query("DELETE FROM PlaybackProgress WHERE AudioBookId = :audioBookId")
     suspend fun deleteByAudioBookId(audioBookId: String)
 

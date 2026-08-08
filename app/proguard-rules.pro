@@ -101,6 +101,15 @@
 -keep class androidx.work.impl.background.systemjob.SystemJobService
 -keep class androidx.work.impl.foreground.SystemForegroundService
 
+# ─── Play In-App Review ───────────────────────────────────────────────────────
+# review-ktx references a Play Services annotation that is not on the runtime
+# classpath. It is compile-time only, so R8 warning about it is correct and
+# harmless, but R8 treats a missing class as a hard error by default.
+#
+# Caught by the release build, not by any test. Debug does not run R8, so this
+# would have been a broken production build with green CI (see issue #64).
+-dontwarn com.google.android.gms.common.annotation.NoNullnessRewrite
+
 # ─── Coil ─────────────────────────────────────────────────────────────────────
 -dontwarn coil.**
 

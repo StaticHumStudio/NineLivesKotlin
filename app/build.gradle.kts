@@ -270,6 +270,9 @@ dependencies {
     // Play Billing (one-time unlock)
     implementation(libs.billing.ktx)
 
+    // Play In-App Review
+    implementation(libs.play.review.ktx)
+
     // ACRA (Crash Reporting)
     implementation("ch.acra:acra-mail:5.11.4")
     implementation("ch.acra:acra-dialog:5.11.4")

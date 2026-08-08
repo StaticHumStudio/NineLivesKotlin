@@ -28,9 +28,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
+import com.ninelivesaudio.app.review.InAppReviewManager
 import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
@@ -70,6 +73,13 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var effectiveSettings: EffectiveSettingsRepository
 
+    /**
+     * The Play review flow has to launch from an Activity, so the trigger lives
+     * here rather than in PlaybackManager, which outlives every Activity.
+     */
+    @Inject
+    lateinit var inAppReviewManager: InAppReviewManager
+
     @Inject
     lateinit var connectivityMonitor: ConnectivityMonitor
 
@@ -84,6 +94,23 @@ class MainActivity : ComponentActivity() {
         // Request POST_NOTIFICATIONS permission (required on Android 13+ / API 33)
         // Without this, Media3 cannot post the foreground service notification.
         requestNotificationPermission()
+
+        // A finished book is the success moment the review prompt hangs off.
+        // Never a payment, a permission result, or any failure state, and never
+        // a button: Play's quota is silent, so a control that sometimes does
+        // nothing reads as broken. The manual path is the Settings row, which
+        // deep-links to the listing and always does something visible.
+        lifecycleScope.launch {
+            // RESUMED, not the bare lifecycleScope. A plain collector runs while
+            // the Activity is stopped, so finishing a book with the screen off or
+            // the app backgrounded would fire a dialog at a user who is not
+            // looking, wasting the one prompt Play might honour.
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                playbackManager.bookCompleted.collect {
+                    inAppReviewManager.maybeRequestReview(this@MainActivity)
+                }
+            }
+        }
 
         // Settings are already loaded by NineLivesApp.onCreate()
         lifecycleScope.launch {

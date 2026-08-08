@@ -761,6 +761,35 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
+                        text = "Rate Nine Lives",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextMuted,
+                    )
+                    Text(
+                        text = "Open Play Store",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                        color = NineLivesTheme.colors.goldFilament,
+                        // Deep-links to the listing rather than triggering the
+                        // in-app prompt. Play's review quota is silent and may
+                        // show nothing, so a button wired to it would sometimes
+                        // do visibly nothing, which reads as a broken app. This
+                        // always opens something.
+                        modifier = Modifier.clickable {
+                            uriHandler.openUri(
+                                "https://play.google.com/store/apps/details?id=com.ninelivesaudio.app"
+                            )
+                        },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
                         text = "Privacy Policy",
                         style = MaterialTheme.typography.bodySmall,
                         color = NineLivesTheme.colors.archiveTextMuted,

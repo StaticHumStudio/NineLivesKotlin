@@ -276,6 +276,17 @@ class PlaybackManager @Inject constructor(
     private val _volume = MutableStateFlow(0.8f)
     val volume: StateFlow<Float> = _volume.asStateFlow()
 
+    private val _bookCompleted = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 4)
+
+    /**
+     * A book was finished end to end.
+     *
+     * The success moment the In-App Review prompt hangs off. Emitted rather than
+     * acted on here, because the Play review flow has to launch from an Activity
+     * and this is a singleton that outlives every one of them.
+     */
+    val bookCompleted: SharedFlow<String> = _bookCompleted.asSharedFlow()
+
     private val _eqEnabled = MutableStateFlow(false)
     val eqEnabled: StateFlow<Boolean> = _eqEnabled.asStateFlow()
 
@@ -1176,6 +1187,7 @@ class PlaybackManager @Inject constructor(
                                 isFinished = true,
                                 duration = durSecs,
                             )
+                            _bookCompleted.tryEmit(book.id)
                             closeSession()
                             // Persist a final state for the local session, if any.
                             if (finalLocalSessionId != null) {

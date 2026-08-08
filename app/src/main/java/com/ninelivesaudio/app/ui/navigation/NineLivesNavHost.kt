@@ -97,7 +97,12 @@ fun NineLivesNavHost(
             LibraryScreen(
                 onNavigateToBookDetail = { bookId ->
                     navController.navigate(Routes.bookDetail(bookId))
-                }
+                },
+                onNavigateToUnlock = {
+                    navController.navigate(Routes.UNLOCK) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

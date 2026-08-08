@@ -55,16 +55,23 @@ import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerCont
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
+import com.ninelivesaudio.app.entitlement.FreeTier
+import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
+import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     onNavigateToBookDetail: (String) -> Unit = {},
+    onNavigateToUnlock: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel(),
+    unlockViewModel: UnlockViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
+    val isUnlocked = unlockState.isUnlocked
     val whisperEpoch by viewModel.whisperEpoch.collectAsStateWithLifecycle()
 
     // Increment whisper epoch each time this screen enters composition
@@ -152,6 +159,8 @@ fun LibraryScreen(
                         )
                         LibraryFiltersRow(
                             uiState = uiState,
+                            isUnlocked = isUnlocked,
+                            onNavigateToUnlock = onNavigateToUnlock,
                             onViewModeChanged = viewModel::onViewModeChanged,
                             onSortModeChanged = viewModel::onSortModeChanged,
                             onHideFinishedChanged = viewModel::onHideFinishedChanged,
@@ -390,6 +399,8 @@ private fun StoneTabsRow(
 @Composable
 private fun LibraryFiltersRow(
     uiState: LibraryViewModel.UiState,
+    isUnlocked: Boolean,
+    onNavigateToUnlock: () -> Unit,
     onViewModeChanged: (ViewMode) -> Unit,
     onSortModeChanged: (SortMode) -> Unit,
     onHideFinishedChanged: (Boolean) -> Unit,
@@ -419,21 +430,39 @@ private fun LibraryFiltersRow(
                     onClick = { onViewModeChanged(ViewMode.ALL) },
                     label = { Text("All") },
                 )
-                FilterChip(
-                    selected = uiState.viewMode == ViewMode.SERIES,
-                    onClick = { onViewModeChanged(ViewMode.SERIES) },
-                    label = { Text("Series") },
-                )
-                FilterChip(
-                    selected = uiState.viewMode == ViewMode.AUTHOR,
-                    onClick = { onViewModeChanged(ViewMode.AUTHOR) },
-                    label = { Text("Author") },
-                )
-                FilterChip(
-                    selected = uiState.viewMode == ViewMode.GENRE,
-                    onClick = { onViewModeChanged(ViewMode.GENRE) },
-                    label = { Text("Genre") },
-                )
+                GatedControl(
+                    locked = !FreeTier.allowsViewMode(ViewMode.SERIES, isUnlocked),
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Series grouping",
+                ) {
+                    FilterChip(
+                        selected = uiState.viewMode == ViewMode.SERIES,
+                        onClick = { onViewModeChanged(ViewMode.SERIES) },
+                        label = { Text("Series") },
+                    )
+                }
+                GatedControl(
+                    locked = !FreeTier.allowsViewMode(ViewMode.AUTHOR, isUnlocked),
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Author grouping",
+                ) {
+                    FilterChip(
+                        selected = uiState.viewMode == ViewMode.AUTHOR,
+                        onClick = { onViewModeChanged(ViewMode.AUTHOR) },
+                        label = { Text("Author") },
+                    )
+                }
+                GatedControl(
+                    locked = !FreeTier.allowsViewMode(ViewMode.GENRE, isUnlocked),
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Genre grouping",
+                ) {
+                    FilterChip(
+                        selected = uiState.viewMode == ViewMode.GENRE,
+                        onClick = { onViewModeChanged(ViewMode.GENRE) },
+                        label = { Text("Genre") },
+                    )
+                }
 
                 Box {
                     AssistChip(
@@ -476,6 +505,35 @@ private fun LibraryFiltersRow(
                         modifier = Modifier.heightIn(max = 360.dp),
                     ) {
                         SortMode.entries.forEach { mode ->
+                            val sortLocked = !FreeTier.allowsSort(mode, isUnlocked)
+                            if (sortLocked) {
+                                // Greyed in place, never removed. A shorter menu
+                                // reads as an app that cannot sort by author,
+                                // rather than as a choice not yet bought.
+                                GatedControl(
+                                    locked = true,
+                                    onLockedTap = {
+                                        sortExpanded = false
+                                        onNavigateToUnlock()
+                                    },
+                                    label = mode.name.lowercase().replace('_', ' '),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = mode.name
+                                                    .lowercase()
+                                                    .replace('_', ' ')
+                                                    .replaceFirstChar { it.uppercase() },
+                                                color = NineLivesTheme.colors.archiveTextPrimary,
+                                            )
+                                        },
+                                        onClick = {},
+                                    )
+                                }
+                                return@forEach
+                            }
                             DropdownMenuItem(
                                 text = {
                                     Text(

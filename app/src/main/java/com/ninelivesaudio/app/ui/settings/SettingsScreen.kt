@@ -547,10 +547,25 @@ fun SettingsScreen(
             //  Group: Appearance
             // ═════════════════════════════════════════════════════════════
             SettingsGroup(title = "Appearance") {
-                ThemeSelectorSection(
-                    selected = uiState.themeMode,
-                    onThemeSelected = viewModel::setThemeMode,
-                )
+                // Gated as a whole rather than per-swatch. NOIR is free and is
+                // also the default, so a free install is never looking at a theme
+                // it cannot pick again, and the picker still shows the full
+                // palette rather than pretending three themes do not exist.
+                GatedControl(
+                    locked = gatesLocked,
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Themes",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    ThemeSelectorSection(
+                        // The user's stored choice, not the normalized one. A
+                        // downgraded user sees the palette they picked, greyed,
+                        // while the app actually renders NOIR. Showing the
+                        // clamped value would look like their choice was erased.
+                        selected = uiState.themeMode,
+                        onThemeSelected = viewModel::setThemeMode,
+                    )
+                }
             }
 
             // ═════════════════════════════════════════════════════════════

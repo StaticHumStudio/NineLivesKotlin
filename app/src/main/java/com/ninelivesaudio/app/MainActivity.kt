@@ -30,6 +30,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
+import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
@@ -59,6 +61,15 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var settingsManager: SettingsManager
 
+    /**
+     * The theme is a gated feature, so it is applied from the
+     * entitlement-clamped copy rather than from raw storage. The Settings picker
+     * keeps showing the user's stored choice, greyed, so a downgrade reads as
+     * "locked" rather than as "your choice was erased".
+     */
+    @Inject
+    lateinit var effectiveSettings: EffectiveSettingsRepository
+
     @Inject
     lateinit var connectivityMonitor: ConnectivityMonitor
 
@@ -82,7 +93,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             // Observe settings for Unhinged Mode
+            // Raw settings drive navigation. Routing off the normalized copy
+            // was wrong: `effective` is derived independently, so settingsLoaded
+            // could flip true while it still held construction-time defaults, and
+            // a returning user would briefly be routed to onboarding.
             val appSettings by settingsManager.settings.collectAsStateWithLifecycle()
+            // Only the theme is entitlement-gated, so only the theme is clamped.
+            val isUnlocked by effectiveSettings.isUnlocked.collectAsStateWithLifecycle()
             val settingsLoaded by settingsManager.isLoaded.collectAsStateWithLifecycle()
 
             // Detect system reduce motion preference
@@ -113,7 +130,9 @@ class MainActivity : ComponentActivity() {
                     "reduceMotion=${unhingedSettings.reduceMotionRequested}")
 
             NineLivesAudioTheme(
-                themeMode = appSettings.themeMode,
+                // The stored choice stays untouched and the picker keeps showing
+                // it, greyed. Only what gets APPLIED is clamped.
+                themeMode = if (isUnlocked) appSettings.themeMode else FreeTier.THEME,
                 unhingedSettings = unhingedSettings,
             ) {
                 if (!settingsLoaded) {

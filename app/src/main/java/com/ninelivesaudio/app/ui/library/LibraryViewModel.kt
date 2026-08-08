@@ -2,6 +2,8 @@ package com.ninelivesaudio.app.ui.library
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ninelivesaudio.app.entitlement.EntitlementRepository
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -74,6 +76,7 @@ class LibraryViewModel @Inject constructor(
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
+    private val entitlements: EntitlementRepository,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -353,12 +356,22 @@ class LibraryViewModel @Inject constructor(
             searchQuery = state.searchQuery.trim(),
         )
 
+        // Clamped at the point of consumption, not just in the UI. Gating the
+        // chips stops a free user CHOOSING a premium sort, but says nothing
+        // about one already selected before a downgrade, which would otherwise
+        // keep running behind a greyed control.
+        //
+        // The stored choice in uiState is left alone, so unlocking restores it.
+        val isUnlocked = entitlements.current.isUnlocked
+        val effectiveSort = FreeTier.effectiveSort(state.sortMode, isUnlocked)
+        val effectiveViewMode = FreeTier.effectiveViewMode(state.viewMode, isUnlocked)
+
         // Sort and group in-memory (complex logic stays in Kotlin)
-        val sortedBooks = sortBooks(books, state.sortMode)
+        val sortedBooks = sortBooks(books, effectiveSort)
         val groupedSections = buildGroupedSections(
             books = sortedBooks,
-            viewMode = state.viewMode,
-            sortMode = state.sortMode,
+            viewMode = effectiveViewMode,
+            sortMode = effectiveSort,
         )
 
         // Preserve expansions for existing groups; auto-expand newly appearing groups

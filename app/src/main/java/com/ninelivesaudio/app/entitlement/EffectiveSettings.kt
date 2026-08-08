@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.entitlement
 
 import com.ninelivesaudio.app.domain.model.AppSettings
+import com.ninelivesaudio.app.domain.model.ThemeMode
 
 /**
  * Clamps stored settings down to what the current entitlement allows.
@@ -53,6 +54,12 @@ object EffectiveSettings {
 
             // Silence skipping.
             skipSilenceEnabled = false,
+
+            // Theme. The stored choice is untouched, so unlocking restores the
+            // user's palette rather than leaving them on NOIR wondering where it
+            // went. NOIR is also the default, so a free install never sees a
+            // theme it cannot pick again.
+            themeMode = FreeTier.THEME,
 
             // Sleep timer extras. All three default premium-on, so all three
             // have to be normalized off rather than merely hidden.

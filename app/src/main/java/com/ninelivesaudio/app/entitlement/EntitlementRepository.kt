@@ -33,6 +33,9 @@ class EntitlementRepository @Inject constructor(
 
     val current: EntitlementState get() = _state.value
 
+    /** Whether the release-build force-free override is currently on. */
+    val isForceFree: Boolean get() = cache.forceFree
+
     /**
      * Record a Billing result.
      *

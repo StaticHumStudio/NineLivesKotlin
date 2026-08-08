@@ -74,6 +74,18 @@ class BillingManager @Inject constructor(
      */
     val unlockProduct: StateFlow<ProductDetails?> = _unlockProduct.asStateFlow()
 
+    private val _productLookupSettled = MutableStateFlow(false)
+
+    /**
+     * True once a product lookup has finished, whatever it found.
+     *
+     * Without this, a null [unlockProduct] is ambiguous: it means both "Play has
+     * not answered yet" and "Play answered and there is no such product". The
+     * unlock screen would spin forever on the second one, which is exactly the
+     * state a misconfigured or not-yet-created Console product produces.
+     */
+    val productLookupSettled: StateFlow<Boolean> = _productLookupSettled.asStateFlow()
+
     private val client: BillingClient = BillingClient.newBuilder(context)
         .setListener(this)
         // One-time products can go PENDING (cash payments, parental approval).
@@ -205,8 +217,19 @@ class BillingManager @Inject constructor(
 
         val result = withTimeoutOrNull(BILLING_TIMEOUT_MS) {
             billingCall { client.queryProductDetails(params) }
-        } ?: return
-        if (result.billingResult.responseCode != BillingClient.BillingResponseCode.OK) return
+        }
+
+        // Settled either way. A timeout, an error, and a successful lookup that
+        // found nothing are all answers, and the UI has to be able to stop
+        // waiting on each of them.
+        _productLookupSettled.value = true
+
+        if (result == null ||
+            result.billingResult.responseCode != BillingClient.BillingResponseCode.OK
+        ) {
+            Log.d(TAG, "product lookup failed or timed out")
+            return
+        }
 
         _unlockProduct.value = result.productDetailsList
             ?.firstOrNull { it.productId == PurchaseEvaluator.UNLOCK_PRODUCT_ID }

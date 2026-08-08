@@ -4,7 +4,9 @@ import android.app.Activity
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +46,7 @@ import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
+import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -53,13 +56,17 @@ import com.ninelivesaudio.app.ui.theme.unhinged.*
  */
 internal fun shouldShowLibrarySelector(libraryCount: Int): Boolean = libraryCount > 1
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SettingsScreen(
     onNavigateToDossier: () -> Unit = {},
     onNavigateToLicenses: () -> Unit = {},
+    onNavigateToUnlock: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val unlockViewModel: UnlockViewModel = hiltViewModel()
+    val forceFree by unlockViewModel.forceFree.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
 
@@ -514,6 +521,11 @@ fun SettingsScreen(
             // ═════════════════════════════════════════════════════════════
             //  Group 2: Experience
             // ═════════════════════════════════════════════════════════════
+            // ═════════════════════════════════════════════════════════════
+            //  Unlock
+            // ═════════════════════════════════════════════════════════════
+            UnlockSettingsGroup(onNavigateToUnlock = onNavigateToUnlock)
+
             SettingsGroup(title = "Experience") {
                 ArchivePreferencesSection(
                     anomaliesEnabled = uiState.anomaliesEnabled,
@@ -646,7 +658,22 @@ fun SettingsScreen(
             //  Group 5: About
             // ═════════════════════════════════════════════════════════════
             SettingsGroup(title = "About") {
-                DiagnosticRow("App Version", uiState.appVersion)
+                // Long-press is the force-free override. Deliberately hidden and
+                // deliberately present in RELEASE builds: the only physical test
+                // device carries the grandfather flag, so without this the free
+                // tier cannot be seen on real hardware during the internal-track
+                // pass. Suppresses the LEGACY_PAID source only, never a purchase.
+                Box(
+                    modifier = Modifier.combinedClickable(
+                        onClick = {},
+                        onLongClick = unlockViewModel::toggleForceFree,
+                    )
+                ) {
+                    DiagnosticRow(
+                        "App Version",
+                        uiState.appVersion + if (forceFree) "  (forced free)" else "",
+                    )
+                }
                 DiagnosticRow("Settings File", uiState.settingsFilePath.ifEmpty { "(default)" })
 
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
@@ -786,6 +813,84 @@ fun SettingsScreen(
 }
 
 // ─── Settings Group Card ──────────────────────────────────────────────────
+
+@Composable
+private fun UnlockSettingsGroup(
+    onNavigateToUnlock: () -> Unit,
+    viewModel: UnlockViewModel = hiltViewModel(),
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val restoreMessage by viewModel.restoreMessage.collectAsStateWithLifecycle()
+
+    SettingsGroup(title = "Unlock") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { onNavigateToUnlock() }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                if (uiState.isUnlocked) Icons.Outlined.LockOpen else Icons.Outlined.Lock,
+                contentDescription = null,
+                tint = NineLivesTheme.colors.goldFilament,
+                modifier = Modifier.size(20.dp),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = when {
+                        uiState.isGrandfathered -> "Unlocked, from the paid app"
+                        uiState.isUnlocked -> "Unlocked"
+                        else -> "Unlock Nine Lives"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
+                )
+                Text(
+                    text = when {
+                        uiState.isGrandfathered ->
+                            "You bought this before it was free. Nothing to do."
+                        uiState.isUnlocked -> "Every feature is open."
+                        else -> "One payment. Every speed, unlimited offline books, full timer."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NineLivesTheme.colors.archiveTextMuted,
+                )
+            }
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = NineLivesTheme.colors.archiveTextSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+
+        // Present even when already unlocked. Someone reinstalling looks here
+        // first, and a Restore button that disappears once it worked is a
+        // Restore button nobody can find when it has not.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = restoreMessage?.text ?: "Bought it on another device?",
+                style = MaterialTheme.typography.bodySmall,
+                color = NineLivesTheme.colors.archiveTextMuted,
+            )
+            Text(
+                text = "Restore",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    textDecoration = TextDecoration.Underline,
+                ),
+                color = NineLivesTheme.colors.goldFilament,
+                modifier = Modifier.clickable { viewModel.restorePurchases() },
+            )
+        }
+    }
+}
 
 @Composable
 private fun SettingsGroup(

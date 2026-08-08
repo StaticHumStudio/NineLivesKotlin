@@ -13,6 +13,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailScreen
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierScreen
+import com.ninelivesaudio.app.ui.unlock.UnlockScreen
 import com.ninelivesaudio.app.ui.downloads.DownloadsScreen
 import com.ninelivesaudio.app.ui.home.HomeScreen
 import com.ninelivesaudio.app.ui.library.LibraryScreen
@@ -34,6 +35,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val DOSSIER = "dossier"
     const val LICENSES = "licenses"
+    const val UNLOCK = "unlock"
     const val BOOK_DETAIL = "book_detail/{bookId}"
 
     fun bookDetail(bookId: String) = "book_detail/${Uri.encode(bookId)}"
@@ -109,6 +111,11 @@ fun NineLivesNavHost(
 
         composable(Routes.SETTINGS) {
             SettingsScreen(
+                onNavigateToUnlock = {
+                    navController.navigate(Routes.UNLOCK) {
+                        launchSingleTop = true
+                    }
+                },
                 onNavigateToDossier = {
                     navController.navigate(Routes.DOSSIER) {
                         launchSingleTop = true
@@ -119,6 +126,12 @@ fun NineLivesNavHost(
                         launchSingleTop = true
                     }
                 },
+            )
+        }
+
+        composable(Routes.UNLOCK) {
+            UnlockScreen(
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

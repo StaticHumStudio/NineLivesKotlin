@@ -437,69 +437,74 @@ fun SettingsScreen(
 
                     var libraryExpanded by remember { mutableStateOf(false) }
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { libraryExpanded = true }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Icon(
-                            @Suppress("DEPRECATION") Icons.Outlined.LibraryBooks,
-                            contentDescription = null,
-                            tint = NineLivesTheme.colors.goldFilament,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = uiState.selectedLibrary?.name ?: "Select Library",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = NineLivesTheme.colors.archiveTextPrimary,
+                    // The menu has to live inside a Box with its anchor. As a bare sibling
+                    // in this Column it anchored to its own zero-size placeholder node and
+                    // drew at the top of the window instead of under the row (issue #65).
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { libraryExpanded = true }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(
+                                @Suppress("DEPRECATION") Icons.Outlined.LibraryBooks,
+                                contentDescription = null,
+                                tint = NineLivesTheme.colors.goldFilament,
+                                modifier = Modifier.size(20.dp),
                             )
-                            Text(
-                                text = "${uiState.libraries.size} libraries available",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = NineLivesTheme.colors.archiveTextMuted,
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = uiState.selectedLibrary?.name ?: "Select Library",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = NineLivesTheme.colors.archiveTextPrimary,
+                                )
+                                Text(
+                                    text = "${uiState.libraries.size} libraries available",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = NineLivesTheme.colors.archiveTextMuted,
+                                )
+                            }
+                            Icon(
+                                if (libraryExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                                contentDescription = null,
+                                tint = NineLivesTheme.colors.archiveTextSecondary,
+                                modifier = Modifier.size(20.dp),
                             )
                         }
-                        Icon(
-                            if (libraryExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                            contentDescription = null,
-                            tint = NineLivesTheme.colors.archiveTextSecondary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
 
-                    DropdownMenu(
-                        expanded = libraryExpanded,
-                        onDismissRequest = { libraryExpanded = false },
-                        containerColor = NineLivesTheme.colors.archiveVoidSurface,
-                    ) {
-                        uiState.libraries.forEach { library ->
-                            val isSelected = library.id == uiState.selectedLibrary?.id
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = library.name,
-                                        color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    )
-                                },
-                                onClick = {
-                                    viewModel.onLibrarySelected(library)
-                                    libraryExpanded = false
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
-                                        contentDescription = null,
-                                        tint = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                },
-                            )
+                        DropdownMenu(
+                            expanded = libraryExpanded,
+                            onDismissRequest = { libraryExpanded = false },
+                            containerColor = NineLivesTheme.colors.archiveVoidSurface,
+                        ) {
+                            uiState.libraries.forEach { library ->
+                                val isSelected = library.id == uiState.selectedLibrary?.id
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = library.name,
+                                            color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        )
+                                    },
+                                    onClick = {
+                                        viewModel.onLibrarySelected(library)
+                                        libraryExpanded = false
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
+                                            contentDescription = null,
+                                            tint = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    },
+                                )
+                            }
                         }
                     }
                 }

@@ -468,6 +468,12 @@ private fun LibraryFiltersRow(
                         expanded = sortExpanded,
                         onDismissRequest = { sortExpanded = false },
                         containerColor = NineLivesTheme.colors.archiveVoidSurface,
+                        // Eleven entries make an uncapped menu taller than every
+                        // Material3 placement candidate. The provider then falls back
+                        // to "above the anchor", computes a negative y, and Compose
+                        // clamps it to the top of the window (issue #65). Capping the
+                        // height lets a candidate fit, and the menu scrolls instead.
+                        modifier = Modifier.heightIn(max = 360.dp),
                     ) {
                         SortMode.entries.forEach { mode ->
                             DropdownMenuItem(

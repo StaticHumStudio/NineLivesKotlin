@@ -6,6 +6,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.entitlement.BillingManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
@@ -36,6 +37,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var apiService: ApiService
+
+    @Inject
+    lateinit var billingManager: BillingManager
 
     // The app's OkHttpClient carries the auth token, self-signed cert config, and
     // dynamic base URL, so cover requests authenticate like every other call.
@@ -92,6 +96,11 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // this build would mark every post-flip install paid-for-life on first
         // launch and the paid tier would quietly stop existing. See
         // EntitlementPrefs. Do not add one back.
+
+        // Bring Billing up now rather than lazily. queryPurchasesAsync has to run
+        // on launch, and a lazily created manager would only exist once some
+        // screen happened to ask for it.
+        billingManager.start()
 
         // Load settings from disk FIRST, then bring up everything that depends
         // on them. Order matters: the server URL and auth token must be in

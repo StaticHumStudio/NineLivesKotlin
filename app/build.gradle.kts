@@ -209,6 +209,9 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    // ProcessLifecycleOwner: Billing must re-query on every foreground, because an
+    // out-of-app promo redemption produces no purchase-update callback here.
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.core)
@@ -263,6 +266,9 @@ dependencies {
 
     // WorkManager (background downloads, foreground-service notification)
     implementation(libs.androidx.work.runtime.ktx)
+
+    // Play Billing (one-time unlock)
+    implementation(libs.billing.ktx)
 
     // ACRA (Crash Reporting)
     implementation("ch.acra:acra-mail:5.11.4")

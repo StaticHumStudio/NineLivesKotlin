@@ -60,6 +60,47 @@
 -keep class androidx.media3.common.** { *; }
 -dontwarn androidx.media3.**
 
+# ─── WorkManager ──────────────────────────────────────────────────────────────
+# WorkManager builds an InputMerger by reflection in WorkerWrapper, before it
+# ever calls doWork():
+#     Class.forName(name).getDeclaredConstructor().newInstance()
+#
+# work-runtime's own consumer rules ship `-keep class * extends
+# androidx.work.InputMerger`, which keeps the CLASS and says nothing about its
+# MEMBERS. Nothing in our code calls that constructor directly, so R8 full mode
+# (the AGP default) removed it as dead code. Reflection then threw,
+# createInputMergerWithDefaultFallback() returned null, and WorkerWrapper called
+# setFailedAndResolve() before doWork() ever ran.
+#
+# That killed every WorkManager job in the app, which in practice meant downloads
+# never left "Queued" in any release build from 2.0.1 onward (issue #64). Debug
+# builds do not minify, so this was invisible until R8's own usage.txt was read.
+#
+# The `verifyWorkManagerKeepRules*` tasks in app/build.gradle.kts fail the build
+# if these rules ever stop taking. Do not delete one without the other.
+#
+# The base classes get their own rules on purpose. ProGuard's `extends` matches
+# subclasses only, never the named class itself, so the wildcard rules below
+# cover OverwritingInputMerger and ArrayCreatingInputMerger but not
+# androidx.work.InputMerger. In practice the base constructor survives anyway
+# because the kept subclass constructors call super(), but that is a transitive
+# side effect, not a guarantee, and InputMerger's own <init> was one of the three
+# R8 deleted in the broken build. Say it out loud instead of inheriting it.
+-keepclassmembers class androidx.work.InputMerger {
+    public <init>();
+}
+-keepclassmembers class * extends androidx.work.InputMerger {
+    public <init>();
+}
+-keepclassmembers class androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-keepclassmembers class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-keep class androidx.work.impl.background.systemjob.SystemJobService
+-keep class androidx.work.impl.foreground.SystemForegroundService
+
 # ─── Coil ─────────────────────────────────────────────────────────────────────
 -dontwarn coil.**
 

@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -28,3 +28,9 @@ jobs:
 
       - name: Run debug unit tests
         run: ./gradlew :app:testDebugUnitTest
+
+      # Debug builds do not minify, so nothing above this line can see an R8
+      # shrinking regression. Running the release R8 pass here (no signing needed)
+      # triggers verifyWorkManagerKeepRules against a real usage.txt. See issue #64.
+      - name: Verify R8 keep rules survive release shrinking
+        run: ./gradlew :app:minifyReleaseWithR8

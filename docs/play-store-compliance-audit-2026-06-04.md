@@ -15,7 +15,7 @@ Follow-up on 2026-06-05: release docs were updated after this audit. Data Safety
 Validation command:
 
 ```bash
-ANDROID_HOME=/home/static/.local/opt/android-sdk ANDROID_SDK_ROOT=/home/static/.local/opt/android-sdk ./gradlew :app:lintRelease :app:testDebugUnitTest :app:validateSigningRelease :app:assembleRelease :app:bundleRelease
+ANDROID_HOME=${HOME}/.local/opt/android-sdk ANDROID_SDK_ROOT=${HOME}/.local/opt/android-sdk ./gradlew :app:lintRelease :app:testDebugUnitTest :app:validateSigningRelease :app:assembleRelease :app:bundleRelease
 ```
 
 Result: pass after two narrow lint fixes.

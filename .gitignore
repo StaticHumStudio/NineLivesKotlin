@@ -27,3 +27,17 @@ git_commit.ps1
 git_commit.py
 code.txt
 build_output.txt
+
+# Agent instruction files (never public)
+AGENTS.md
+CLAUDE.md
+
+# Local planning scratch
+docs/bugfix-plan-*.md
+
+# Debug-only diagnostic harnesses
+app/src/debug/
+
+# Project Navigator generated state (local only, carries Console revenue data)
+.project-memory/
+PROJECT_CONTROL.md

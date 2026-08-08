@@ -1,10 +1,17 @@
 # Nine Lives Audio
 
-A feature-rich Android audiobook player for [Audiobookshelf](https://www.audiobookshelf.org/) servers. Built with Kotlin, Jetpack Compose, and Media3. Wrapped in **The Archive Beneath**, a deep indigo cosmic vault aesthetic with gold filament accents, fluorescent progress rings, stone surfaces, vintage book placeholders, and atmospheric anomalies that manifest when the Archive grows restless.
+A feature-rich Android audiobook player for audiobooks on your own device and on your own [Audiobookshelf](https://www.audiobookshelf.org/) server. Built with Kotlin, Jetpack Compose, and Media3. Wrapped in **The Archive Beneath**, a deep indigo cosmic vault aesthetic with gold filament accents, fluorescent progress rings, stone surfaces, vintage book placeholders, and atmospheric anomalies that manifest when the Archive grows restless.
 
 There is no "normal mode." The vault is the app. The app is the vault.
 
-**v1.0.1 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
+**v2.1.0 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
+
+Free, with a single one-time in-app unlock. The free tier plays everything, with
+no time limit and no ads: your local folders, your Audiobookshelf server,
+chapters, bookmarks, and a sleep timer. The unlock opens every playback speed,
+unlimited offline books, full sleep-timer control, silence skipping, the
+equalizer, every theme, and the Nightwatch Dossier. Anyone who bought the app
+while it was paid keeps everything, permanently.
 
 ---
 
@@ -154,7 +161,10 @@ A full listening analytics dashboard with shareable summary cards. The Nightwatc
 - Unique device ID. Randomly generated UUID per device, never based on hardware identifiers.
 - Self-signed certificate trust only when explicitly enabled by the user
 - ACRA crash reporting. Optional crash dialog with user comments, safe field collection (no auth tokens or preferences), delivered via email.
-- No analytics or tracking. Your listening data stays between you and your Audiobookshelf server. The Archive keeps its own counsel.
+- No analytics or tracking. Your listening data stays between you and your Audiobookshelf server, and local libraries never leave the device at all. The Archive keeps its own counsel.
+- No ads, in either tier. The in-app unlock is a one-time purchase, never a subscription.
+- No AI features. No chatbot, no summarizer, and nothing that ships your listening anywhere to train one.
+- Purchases are handled entirely by Google Play Billing. The app never sees or stores payment details.
 
 ---
 
@@ -225,7 +235,13 @@ Third-party dependency licenses are listed in [THIRD_PARTY_LICENSES](THIRD_PARTY
 
 ## Legal
 
-Nine Lives Audio is a trademark of Static Hum Studio. All rights reserved.
-See [TRADEMARK.md](./TRADEMARK.md) for full trademark notice.
+Nine Lives Audio is a trademark of Static Hum Studio. See [TRADEMARK.md](./TRADEMARK.md)
+for the full notice.
+
+What that reserves is the NAMES. This repository is GPLv3, so a fork may take the
+source and ship it ... it just cannot ship under the Nine Lives Audio or Static Hum
+Studio names, or anything confusingly similar. Trademark is a separate right the
+GPL never granted, which is why the name restriction holds. Nothing here retracts
+the GPL grant over anything already published under it.
 
 © Static Hum Studio — [statichum.studio](https://statichum.studio)

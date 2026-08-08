@@ -7,6 +7,7 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.entitlement.BillingManager
+import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
@@ -15,6 +16,9 @@ import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import org.acra.ReportField
@@ -44,6 +48,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var downloadManager: DownloadManager
+
+    @Inject
+    lateinit var entitlementRepository: EntitlementRepository
 
     // The app's OkHttpClient carries the auth token, self-signed cert config, and
     // dynamic base URL, so cover requests authenticate like every other call.
@@ -118,6 +125,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             // never promote itself, so it would otherwise hold the free tier's
             // only download slot forever.
             downloadManager.cleanupStrandedClaims()
+            // A persisted pause outlives the notification that carried its only
+            // Resume control, so put the control back.
+            downloadManager.restorePausedNotificationIfNeeded()
 
             settingsManager.loadSettings()
             // In LOCAL mode the app-wide selectedLibraryId must track the local
@@ -129,6 +139,19 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             // server and start syncing.
             connectivityMonitor.startMonitoring()
             syncManager.start()
+        }
+
+        // Re-resolve the download slot whenever entitlement is or becomes free.
+        // Deliberately includes the initial emission rather than transitions
+        // only, so a downgrade that happened while the app was dead is still
+        // handled. Resolution early-returns when there is nothing over cap, so
+        // the common case costs one query and never touches the worker.
+        appScope.launch {
+            entitlementRepository.state
+                .map { it.isUnlocked }
+                .distinctUntilChanged()
+                .filter { unlocked -> !unlocked }
+                .collect { downloadManager.resolveSlotAfterEntitlementDrop() }
         }
     }
 

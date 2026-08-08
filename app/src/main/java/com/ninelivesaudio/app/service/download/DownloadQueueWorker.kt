@@ -50,7 +50,18 @@ class DownloadQueueWorker(
         EntryPointAccessors.fromApplication(applicationContext, Deps::class.java)
     }
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = try {
+        deps.downloadManager().onDrainStarted()
+        drain()
+    } finally {
+        // Cleared on EVERY exit path, including cancellation. Entitlement-drop
+        // resolution waits on this before writing losing rows, because
+        // DownloadEngine writes unconditionally from a stale object and would
+        // otherwise clobber them straight back to Downloading.
+        deps.downloadManager().onDrainStopped()
+    }
+
+    private suspend fun drain(): Result {
         android.util.Log.d(TAG, "drain START")
         DownloadNotifications.ensureChannel(applicationContext)
 
@@ -72,7 +83,10 @@ class DownloadQueueWorker(
                 android.util.Log.d(TAG, "queue paused; stopping drain")
                 break
             }
-            val active = dao.getDownloadable().map { it.toDomain() }
+            // While free, the drain sees only the slot winner. selectNextDownload
+            // orders by age, so an unfiltered list would meet a PRESERVED loser
+            // first and start downloading a book the free tier cannot keep.
+            val active = manager.filterToSlotWinner(dao.getDownloadable().map { it.toDomain() })
             val item = selectNextDownload(active) ?: break
             android.util.Log.d(TAG, "next id=${item.id} status=${item.status} title=${item.title}")
 

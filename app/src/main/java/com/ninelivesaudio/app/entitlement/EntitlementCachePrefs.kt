@@ -67,8 +67,25 @@ class EntitlementCachePrefs @Inject constructor(
         get() = prefs.getString(KEY_SLOT_WINNER, null)
         set(value) = prefs.edit().putString(KEY_SLOT_WINNER, value).apply()
 
+    /**
+     * Whether the whole download queue is user-paused.
+     *
+     * Persisted, not in-memory. A paused queue is not downloading, which makes
+     * the process a prime kill candidate, so an in-memory flag is exactly the
+     * one that gets lost. Worse, it got lost ASYMMETRICALLY: the paused
+     * notification carrying the only Resume control died with the process too,
+     * leaving a user with a stopped queue and nothing to press.
+     *
+     * Device-local like everything else in this file, because a pause is a fact
+     * about this device's queue and has no business restoring onto new hardware.
+     */
+    var downloadsPaused: Boolean
+        get() = prefs.getBoolean(KEY_DOWNLOADS_PAUSED, false)
+        set(value) = prefs.edit().putBoolean(KEY_DOWNLOADS_PAUSED, value).apply()
+
     companion object {
         const val FILE_NAME = "nine_lives_entitlement_cache"
+        const val KEY_DOWNLOADS_PAUSED = "downloads_paused"
         const val KEY_SLOT_WINNER = "slot_winner_audiobook_id"
         const val KEY_PLAY_UNLOCK = "play_unlock_cached"
         const val KEY_FORCE_FREE = "force_free"

@@ -25,6 +25,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -65,15 +67,69 @@ class DownloadManager @Inject constructor(
     private val slotMutex = Mutex()
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
 
-    // Whether the whole download queue is paused (set from the notification's
-    // Pause action). In-memory: a paused queue isn't downloading, so the process
-    // is a kill candidate and the flag may be lost on death — acceptable, since
-    // Resume re-enqueues the drain and queuing/resuming a book restarts it anyway.
-    @Volatile
-    private var downloadsPaused = false
+    private companion object {
+        const val WORKER_STOP_TIMEOUT_MS = 10_000L
+        const val WORKER_STOP_POLL_MS = 100L
+    }
+
+    /**
+     * Whether the whole download queue is user-paused, persisted across process
+     * death.
+     *
+     * It used to be a @Volatile in-memory flag on the reasoning that a paused
+     * queue is not downloading, so losing the flag was harmless. It was not. The
+     * process is a prime kill candidate precisely BECAUSE it is idle, and the
+     * paused notification carrying the only Resume control died with it. That
+     * left a stopped queue, no notification, and no on-screen control to lift it.
+     */
+    private var downloadsPaused: Boolean
+        get() = slotStore.downloadsPaused
+        set(value) {
+            slotStore.downloadsPaused = value
+        }
 
     /** Whether the drain worker should hold (used by the worker to stop draining). */
     fun isDownloadsPaused(): Boolean = downloadsPaused
+
+    /**
+     * Whether a drain worker is actually inside doWork() in this process.
+     *
+     * Published by the worker rather than inferred from WorkInfo, because
+     * WorkInfo cannot answer this question. WorkManager reports CANCELLED the
+     * moment cancellation is RECORDED, not when the coroutine has unwound, so
+     * `state.isFinished` returning true is entirely compatible with
+     * DownloadEngine still writing rows a millisecond later.
+     *
+     * After process death this is false in a fresh process, which is correct:
+     * no worker is running here.
+     */
+    @Volatile
+    private var drainRunning = false
+
+    /** Called by [DownloadQueueWorker] on entry to doWork(). */
+    fun onDrainStarted() {
+        drainRunning = true
+    }
+
+    /** Called by [DownloadQueueWorker] from a finally, on every exit path. */
+    fun onDrainStopped() {
+        drainRunning = false
+    }
+
+    /**
+     * Re-show the paused notification when a persisted pause survived the
+     * process that owned its only Resume control.
+     *
+     * Without this a pause is a trap: the queue stays stopped, the notification
+     * carrying Resume died with the process, and there is nothing left to press.
+     */
+    suspend fun restorePausedNotificationIfNeeded() {
+        if (!downloadsPaused) return
+        val pending = downloadItemDao.getDownloadable().map { it.toDomain() }
+        if (pending.isEmpty()) return
+
+        DownloadNotifications.showPaused(context, selectNextDownload(pending)?.title ?: "")
+    }
 
     // ─── Progress Events ─────────────────────────────────────────────────────
 
@@ -230,6 +286,99 @@ class DownloadManager @Inject constructor(
     }
 
     /**
+     * Everything the drain is allowed to pick up right now.
+     *
+     * While free, that is the persisted slot winner and nothing else.
+     * `selectNextDownload` orders by age, so without this filter it would happily
+     * meet a PRESERVED loser first and start downloading a book the free tier is
+     * not entitled to keep.
+     */
+    suspend fun filterToSlotWinner(items: List<DownloadItem>): List<DownloadItem> {
+        if (!slotStore.slotApplies) return items
+
+        val winner = slotMutex.withLock { slotStore.currentWinner() }
+        // Fail open. A null winner with live rows present should not happen,
+        // since Queued and Downloading both occupy the slot. If it somehow does,
+        // letting the drain proceed is better than wedging the queue silently.
+        return if (winner == null) items else items.filter { it.audioBookId == winner }
+    }
+
+    /**
+     * Re-resolve the slot after entitlement drops, and stand down the losers.
+     *
+     * Order matters and is the whole point. The winner is resolved first, the
+     * running worker is cancelled, and the losing rows are only written AFTER
+     * the worker is confirmed stopped. DownloadEngine writes progress and
+     * terminal state unconditionally from a stale in-memory object and does not
+     * take the slot mutex, so a losing row written while it is still running gets
+     * clobbered straight back to Downloading.
+     *
+     * Losers are PAUSED, never deleted. Files stay, streaming keeps working, and
+     * deleting down to one book stays the user's call.
+     */
+    suspend fun resolveSlotAfterEntitlementDrop() {
+        if (!slotStore.slotApplies) return
+
+        val winner = slotMutex.withLock { slotStore.resolveAndPersistWinner() }
+
+        // Nothing downloading that should not be means nothing to stand down.
+        // This early return is what makes the whole function safe to call at
+        // cold start as well as on a transition: a free install emits its state
+        // on every launch, and cancelling a healthy drain each time would be
+        // worse than the problem being solved. It also means a downgrade that
+        // happened while the app was dead is still handled, which a
+        // transitions-only collector would miss.
+        val hasLosingDownload = slotMutex.withLock {
+            downloadItemDao.getAll().any {
+                it.status == DownloadStatus.Downloading.ordinal && it.audioBookId != winner
+            }
+        }
+        if (!hasLosingDownload) return
+
+        workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
+        awaitDrainStopped()
+
+        slotMutex.withLock {
+            downloadItemDao.getAll()
+                .filter {
+                    it.status == DownloadStatus.Downloading.ordinal && it.audioBookId != winner
+                }
+                .forEach { downloadItemDao.upsert(it.copy(status = DownloadStatus.Paused.ordinal)) }
+        }
+
+        // The winner may now be downloadable and unblocked, so restart. Honours
+        // the persisted pause: an automatic restart must never override a pause
+        // the user set.
+        if (!downloadsPaused) enqueueDrain(replace = false)
+    }
+
+    /**
+     * Wait for the drain worker to actually stop.
+     *
+     * cancelUniqueWork returns as soon as the cancellation is recorded, not when
+     * the worker has finished unwinding. Bounded, because a worker that will not
+     * stop must not hang entitlement resolution forever: past the ceiling this
+     * gives up and proceeds, which is the same risk profile as before this
+     * function existed.
+     */
+    private suspend fun awaitDrainStopped() {
+        val deadline = System.currentTimeMillis() + WORKER_STOP_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            // The worker's own flag is the authority. WorkInfo is consulted only
+            // as a second opinion for the case where the worker lives in another
+            // process and can never clear our in-memory flag.
+            if (!drainRunning) {
+                val stillScheduled = runCatching {
+                    workManager.getWorkInfosForUniqueWork(DOWNLOAD_WORK_NAME).await()
+                }.getOrNull()?.any { !it.state.isFinished } ?: false
+
+                if (!stillScheduled) return
+            }
+            delay(WORKER_STOP_POLL_MS)
+        }
+    }
+
+    /**
      * Delete provisional claims left behind by a process death mid-fetch.
      *
      * Runs before any queue, resume or drain path proceeds. A stranded Preparing
@@ -378,6 +527,13 @@ class DownloadManager @Inject constructor(
      * starts a fresh drain that skips the now paused/removed item and continues.
      */
     private fun enqueueDrain(replace: Boolean) {
+        // One gate for every automatic restart. pauseDownload, cancelDownload
+        // and deleteDownload all restart the drain on their own, and none of
+        // them knew about a queue-level pause, so any of them would silently
+        // override it. resumeQueue clears the flag before calling here, so the
+        // deliberate path is unaffected.
+        if (downloadsPaused) return
+
         val request = OneTimeWorkRequestBuilder<DownloadQueueWorker>()
             .setConstraints(
                 Constraints.Builder()

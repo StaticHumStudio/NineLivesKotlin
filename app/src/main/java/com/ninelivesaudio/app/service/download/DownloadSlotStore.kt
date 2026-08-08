@@ -39,6 +39,13 @@ class DownloadSlotStore @Inject constructor(
     /** Free installs have a slot at all. Unlocked ones do not. */
     val slotApplies: Boolean get() = !entitlements.current.isUnlocked
 
+    /** Persisted queue-level pause. See [EntitlementCachePrefs.downloadsPaused]. */
+    var downloadsPaused: Boolean
+        get() = cache.downloadsPaused
+        set(value) {
+            cache.downloadsPaused = value
+        }
+
     var persistedWinner: String?
         get() = cache.slotWinnerAudioBookId
         set(value) {

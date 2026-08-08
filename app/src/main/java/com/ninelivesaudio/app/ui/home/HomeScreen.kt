@@ -37,7 +37,9 @@ import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
+import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
+import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 @Composable
@@ -46,8 +48,11 @@ fun HomeScreen(
     onNavigateToBookDetail: (String) -> Unit = {},
     onNavigateToDossier: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToUnlock: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
+    unlockViewModel: UnlockViewModel = hiltViewModel(),
 ) {
+    val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     if (uiState.showEmptyState && !uiState.isLoading) {
@@ -85,7 +90,17 @@ fun HomeScreen(
             )
 
             // ─── The Dossier — Entry Banner ──────────────────────────────
-            DossierEntryBanner(onClick = onNavigateToDossier)
+            // Greyed, not removed. The banner rendered unconditionally before,
+            // and hiding it outright would make the Dossier look like something
+            // the app does not have rather than something not yet bought.
+            GatedControl(
+                locked = !unlockState.isUnlocked,
+                onLockedTap = onNavigateToUnlock,
+                label = "Nightwatch Dossier",
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                DossierEntryBanner(onClick = onNavigateToDossier)
+            }
 
             // Breathing room before MiniPlayer
             Spacer(modifier = Modifier.height(16.dp))

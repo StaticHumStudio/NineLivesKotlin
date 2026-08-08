@@ -48,6 +48,7 @@ import com.ninelivesaudio.app.R
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
+import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -59,8 +60,19 @@ import kotlin.time.Duration
 @Composable
 fun NightwatchDossierScreen(
     onNavigateBack: () -> Unit,
+    onLocked: () -> Unit = {},
     viewModel: NightwatchDossierViewModel = hiltViewModel(),
+    unlockViewModel: UnlockViewModel = hiltViewModel(),
 ) {
+    // Enforced on the screen rather than only at the entry points, so a deep
+    // link or a restored back stack cannot walk past the gate. Redirects to the
+    // unlock screen and pops itself, so Back does not bounce between the two.
+    val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(unlockState.isUnlocked) {
+        if (!unlockState.isUnlocked) onLocked()
+    }
+    if (!unlockState.isUnlocked) return
+
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(

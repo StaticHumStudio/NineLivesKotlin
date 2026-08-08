@@ -155,6 +155,8 @@ fun LibraryScreen(
                             selectedTab = uiState.selectedTab,
                             onTabSelected = viewModel::onLibraryTabChanged,
                             isLocalMode = uiState.isLocalMode,
+                            isUnlocked = isUnlocked,
+                            onNavigateToUnlock = onNavigateToUnlock,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         LibraryFiltersRow(
@@ -356,6 +358,8 @@ private fun StoneTabsRow(
     selectedTab: LibraryTab,
     onTabSelected: (LibraryTab) -> Unit,
     isLocalMode: Boolean,
+    isUnlocked: Boolean,
+    onNavigateToUnlock: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // The Archive tab is LOCAL-mode only (soft-delete is a LOCAL feature).
@@ -366,9 +370,22 @@ private fun StoneTabsRow(
     ) {
         tabs.forEach { tab ->
             val isSelected = tab == selectedTab
+            // Browsing the Archive Shelf is an unlock feature. Note what is NOT
+            // gated: automatic restoration still happens on rescan, because a
+            // returning file is filesystem truth and with the shelf locked there
+            // would otherwise be no free path to ever see that book again. And
+            // permanent deletion via the cleanup sweep stays free, because gating
+            // it would trap a free user's own data behind a paywall.
+            val tabLocked = tab == LibraryTab.Archive && !isUnlocked
+            GatedControl(
+                locked = tabLocked,
+                onLockedTap = onNavigateToUnlock,
+                label = tab.label,
+                modifier = Modifier.weight(1f),
+            ) {
             Surface(
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
                     .clickable { onTabSelected(tab) },
                 shape = RoundedCornerShape(8.dp),
@@ -388,6 +405,7 @@ private fun StoneTabsRow(
                     maxLines = 1,
                     fontSize = 11.sp,
                 )
+            }
             }
         }
     }

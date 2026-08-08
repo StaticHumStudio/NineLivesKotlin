@@ -837,6 +837,12 @@ fun SettingsScreen(
                 // Nightwatch Dossier
                 SectionLabel("Nightwatch Dossier")
 
+                GatedControl(
+                    locked = gatesLocked,
+                    onLockedTap = onNavigateToUnlock,
+                    label = "Nightwatch Dossier",
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                 Button(
                     onClick = onNavigateToDossier,
                     modifier = Modifier.fillMaxWidth(),
@@ -853,6 +859,7 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Open Dossier", fontWeight = FontWeight.SemiBold)
+                }
                 }
                 Text(
                     text = "Listening stats, behavioral patterns, and temporal analysis",

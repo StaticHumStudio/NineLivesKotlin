@@ -80,6 +80,11 @@ fun NineLivesNavHost(
                 onNavigateToBookDetail = { bookId ->
                     navController.navigate(Routes.bookDetail(bookId))
                 },
+                onNavigateToUnlock = {
+                    navController.navigate(Routes.UNLOCK) {
+                        launchSingleTop = true
+                    }
+                },
                 onNavigateToDossier = {
                     navController.navigate(Routes.DOSSIER) {
                         launchSingleTop = true
@@ -148,7 +153,16 @@ fun NineLivesNavHost(
 
         composable(Routes.DOSSIER) {
             NightwatchDossierScreen(
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                // Route guard. The gated banner and Settings row are the normal
+                // way in, but a deep link or a stale back stack entry is not, and
+                // a gate that only exists on the entry points is not a gate.
+                onLocked = {
+                    navController.navigate(Routes.UNLOCK) {
+                        popUpTo(Routes.DOSSIER) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

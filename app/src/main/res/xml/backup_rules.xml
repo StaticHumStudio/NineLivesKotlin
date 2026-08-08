@@ -2,7 +2,19 @@
 <!--
     Backup rules (API < 31): Exclude encrypted prefs and legacy settings
     from Google cloud backup. Auth tokens and server credentials must not
-    be backed up — they could be restored to a different device.
+    be backed up ... they could be restored to a different device.
+
+    Entitlement prefs go in OPPOSITE directions, on purpose:
+    - nine_lives_entitlement.xml (grandfather flag `legacy_paid`) MUST ride
+      Auto Backup so a paid install survives reinstall and device transfer.
+      It is deliberately NOT listed here: with no <include> rules, everything
+      not excluded is backed up by default. Do NOT add an explicit <include>
+      for it ... the first <include> flips this file to allowlist mode and
+      silently drops every other pref from backup.
+    - nine_lives_entitlement_cache.xml (cached Play grant, added in the free
+      build) MUST be excluded here and in data_extraction_rules.xml. A Play
+      purchase belongs to a Google account, not a device; backing up the
+      cache would turn it into a portable unlock for accounts that never paid.
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />

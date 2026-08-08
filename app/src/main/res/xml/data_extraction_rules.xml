@@ -3,6 +3,18 @@
     Data extraction rules (API 31+): Exclude encrypted prefs from cloud backup.
     Auth tokens and server credentials must not leave the device via backup.
     Device-to-device transfer allows non-sensitive prefs but excludes secrets.
+
+    Entitlement prefs go in OPPOSITE directions, on purpose:
+    - nine_lives_entitlement.xml (grandfather flag `legacy_paid`) MUST ride
+      both cloud backup and device transfer. Cloud backup covers it via
+      default-include (no <include> rules present ... adding one flips the
+      section to allowlist mode), and device transfer covers it via the
+      existing sharedpref include below.
+    - nine_lives_entitlement_cache.xml (cached Play grant, added in the free
+      build) MUST be excluded from BOTH sections when it lands. A backed-up
+      Play grant becomes a portable unlock on accounts that never paid, and
+      the revocation condition (successful empty query) can never fire while
+      Billing is unreachable.
 -->
 <data-extraction-rules>
     <cloud-backup>

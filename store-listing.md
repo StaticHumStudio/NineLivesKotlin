@@ -47,6 +47,13 @@ Android 11+ (API 30) required.
 
 ## What's New (Release Notes)
 
+v2.0.2
+
+A small housekeeping update.
+
+- Your purchase is now recorded on-device and included in Android's automatic backup, so future versions of the app can recognize it after a reinstall or device transfer that restores your backup
+- No feature changes
+
 v2.0.0
 
 Local playback is here. You can now load audiobooks straight from your device and listen with no Audiobookshelf server required.

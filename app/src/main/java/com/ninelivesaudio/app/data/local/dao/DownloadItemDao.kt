@@ -31,14 +31,25 @@ interface DownloadItemDao {
     @Query("DELETE FROM DownloadItems")
     suspend fun deleteAll()
 
-    /** Get active downloads (queued, downloading, paused). Status 0=Queued, 1=Downloading, 2=Paused */
-    @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1, 2) ORDER BY StartedAt DESC")
+    /**
+     * Active downloads. Status 0=Queued, 1=Downloading, 2=Paused, 6=Preparing.
+     *
+     * Preparing is included so a provisional slot claim stays VISIBLE while its
+     * metadata fetch is in flight. Leaving it out would make a book the user
+     * just asked for vanish from the Downloads screen for the length of a
+     * network round trip, which reads as the tap having done nothing.
+     */
+    @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1, 2, 6) ORDER BY StartedAt DESC")
     fun observeActive(): Flow<List<DownloadItemEntity>>
 
     /**
      * Downloadable items for the drain worker: Queued (0) or interrupted
      * Downloading (1). Paused/Completed/Failed/Cancelled are excluded so the
      * worker never auto-resumes a user-paused or finished download.
+     *
+     * Preparing (6) is excluded on purpose and must stay excluded. It is a slot
+     * claim taken BEFORE the metadata fetch returns, so it has no file list yet.
+     * Letting the drain pick it up would start a download of nothing.
      */
     @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1) ORDER BY StartedAt ASC")
     suspend fun getDownloadable(): List<DownloadItemEntity>

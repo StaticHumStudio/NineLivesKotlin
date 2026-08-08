@@ -9,6 +9,22 @@ enum class DownloadStatus {
     Completed,
     Failed,
     Cancelled,
+
+    /**
+     * A provisional claim on the free tier's single offline slot, taken BEFORE
+     * the network round trip that fetches book details.
+     *
+     * Appended at ordinal 6 on purpose. Room persists this enum by ordinal, so
+     * inserting anywhere above would silently rewrite the meaning of every
+     * existing row on every installed device. Queued through Cancelled keep 0
+     * to 5 forever.
+     *
+     * The drain's `Status IN (0, 1)` ignores it, so a provisional claim is never
+     * downloaded. It still counts against the slot, which is the entire point:
+     * without it, two concurrent queue attempts both see a free slot during the
+     * metadata fetch and both claim it.
+     */
+    Preparing,
 }
 
 data class DownloadItem(

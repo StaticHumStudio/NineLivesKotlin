@@ -165,6 +165,11 @@ class BookDetailViewModel @Inject constructor(
                 } else {
                     val item = entity.toDomain()
                     when (item.status) {
+                        // A provisional slot claim, taken before the metadata
+                        // fetch returns. It reads as Queued because that is what
+                        // it is from the user's side: the book is spoken for and
+                        // nothing has downloaded yet.
+                        DownloadStatus.Preparing -> DownloadButtonState.QUEUED
                         DownloadStatus.Queued -> DownloadButtonState.QUEUED
                         DownloadStatus.Downloading -> DownloadButtonState.DOWNLOADING
                         DownloadStatus.Paused -> DownloadButtonState.PAUSED

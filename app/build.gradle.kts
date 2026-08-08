@@ -115,6 +115,13 @@ val r8Guards = minifiedVariants.associateWith { variant ->
         val usageReport = layout.buildDirectory.file("outputs/mapping/$variant/usage.txt")
         outputs.upToDateWhen { false }
 
+        // Depend on R8 by name, not just hang off it as a finalizer. Two reasons.
+        // Running this task on its own now forces a fresh shrink instead of
+        // reading whatever usage.txt happens to be left on disk from an older
+        // build. And an AGP that renames the minify task fails here loudly rather
+        // than quietly leaving the guard wired to a task that no longer exists.
+        dependsOn("minify${suffix}WithR8")
+
         doLast {
             val report = usageReport.get().asFile
             if (!report.isFile) {
@@ -137,8 +144,20 @@ val r8Guards = minifiedVariants.associateWith { variant ->
             report.forEachLine { line ->
                 when {
                     line.isBlank() -> Unit
-                    !line.first().isWhitespace() ->
-                        owner = if (line.endsWith(":")) line.dropLast(1) else null
+                    !line.first().isWhitespace() -> {
+                        val name = line.removeSuffix(":")
+                        if (line.endsWith(":")) {
+                            owner = name
+                        } else {
+                            // No colon means R8 deleted the whole class. For a class
+                            // we only ever reach through Class.forName that is just
+                            // as fatal as losing the constructor, so it counts.
+                            owner = null
+                            if (reflectivelyConstructed.matches(name)) {
+                                stripped += "$name → whole class removed"
+                            }
+                        }
+                    }
                     line.contains("<init>") ->
                         owner?.takeIf(reflectivelyConstructed::matches)
                             ?.let { stripped += "$it → ${line.trim()}" }

@@ -6,7 +6,6 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
-import com.ninelivesaudio.app.entitlement.EntitlementPrefs
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
@@ -34,9 +33,6 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var settingsManager: SettingsManager
-
-    @Inject
-    lateinit var entitlementPrefs: EntitlementPrefs
 
     @Inject
     lateinit var apiService: ApiService
@@ -90,12 +86,12 @@ class NineLivesApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
 
-        // Grandfather latch: every install running this build predates the
-        // free switch, so mark it paid-for-life. UNCONDITIONAL writer, 2.0.2
-        // ONLY. The free build (2.1.0) must delete this call and keep only the
-        // reader plus the cutoff-guarded latch, or every post-flip install
-        // grandfathers itself.
-        entitlementPrefs.markLegacyPaid()
+        // No grandfather writer here, deliberately. The unconditional latch that
+        // shipped in 2.0.2 was deleted for the free build. With PAID_ERA_CUTOFF
+        // gone, `legacy_paid` is the only grandfather signal, so any writer in
+        // this build would mark every post-flip install paid-for-life on first
+        // launch and the paid tier would quietly stop existing. See
+        // EntitlementPrefs. Do not add one back.
 
         // Load settings from disk FIRST, then bring up everything that depends
         // on them. Order matters: the server URL and auth token must be in

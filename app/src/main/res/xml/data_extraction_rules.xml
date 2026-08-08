@@ -10,19 +10,23 @@
       default-include (no <include> rules present ... adding one flips the
       section to allowlist mode), and device transfer covers it via the
       existing sharedpref include below.
-    - nine_lives_entitlement_cache.xml (cached Play grant, added in the free
-      build) MUST be excluded from BOTH sections when it lands. A backed-up
-      Play grant becomes a portable unlock on accounts that never paid, and
-      the revocation condition (successful empty query) can never fire while
-      Billing is unreachable.
+    - nine_lives_entitlement_cache.xml (cached Play grant + the release-build
+      force-free test override) IS now excluded from BOTH sections below. A
+      backed-up Play grant becomes a portable unlock on accounts that never
+      paid, and the revocation condition (a SUCCESSFUL empty query) can never
+      fire while Billing is unreachable. device-transfer needs its own explicit
+      exclude because the <include domain="sharedpref" path="."/> below would
+      otherwise sweep the cache along with everything else.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
+        <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
         <exclude domain="file" path="NineLivesAudio/settings.json" />
     </cloud-backup>
     <device-transfer>
         <include domain="sharedpref" path="." />
         <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
+        <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
     </device-transfer>
 </data-extraction-rules>

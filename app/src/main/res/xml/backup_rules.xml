@@ -11,12 +11,20 @@
       not excluded is backed up by default. Do NOT add an explicit <include>
       for it ... the first <include> flips this file to allowlist mode and
       silently drops every other pref from backup.
-    - nine_lives_entitlement_cache.xml (cached Play grant, added in the free
-      build) MUST be excluded here and in data_extraction_rules.xml. A Play
-      purchase belongs to a Google account, not a device; backing up the
-      cache would turn it into a portable unlock for accounts that never paid.
+    - nine_lives_entitlement_cache.xml (cached Play grant + the release-build
+      force-free test override) IS excluded below, and is excluded in both
+      sections of data_extraction_rules.xml. A Play purchase belongs to a
+      Google account, not a device; backing up the cache would turn it into a
+      portable unlock for accounts that never paid, and the condition that
+      would revoke it (a SUCCESSFUL empty query) can never fire on an account
+      that never bought while Billing is unreachable.
+
+    Note the asymmetry below: exclude is safe to add here, include is not.
+    Adding the first <include> flips this whole file to allowlist mode and
+    silently drops the grandfather flag along with everything else.
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
     <exclude domain="file" path="NineLivesAudio/settings.json" />
 </full-backup-content>

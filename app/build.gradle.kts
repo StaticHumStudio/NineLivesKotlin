@@ -53,21 +53,30 @@ android {
                 "proguard-rules.pro"
             )
         }
-        // Minified exactly like release, but installable next to the Play build.
+        // The release build, installable next to the Play build.
         //
         // Issue #64 shipped twice because nothing in the pipeline could see it:
         // debug does not run R8, and the production package is signed by Play App
         // Signing, so a locally-signed release APK can never be installed over it
         // (INSTALL_FAILED_UPDATE_INCOMPATIBLE). That left release-only behavior
-        // untestable on the one real device we have.
+        // untestable on the one real device available.
         //
-        // Its own applicationId fixes that. Debuggable on purpose, so logcat and
-        // `adb run-as` work against a shrunk build. Never submit this variant.
+        // The only differences from `release` are the applicationId, the version
+        // name suffix, and the signing key. Everything R8 does is identical, which
+        // is the entire point: a variant that shrinks differently proves nothing
+        // about what ships.
+        //
+        // Do NOT set isDebuggable here. AGP silently disables optimization and
+        // obfuscation for debuggable builds ("All code optimizations and
+        // obfuscation are disabled for debuggable builds"), which leaves only
+        // tree-shaking and turns this into a variant that cannot see the class of
+        // bug it exists to catch. Stack traces deobfuscate against
+        // build/outputs/mapping/releaseTest/mapping.txt, and logcat needs no
+        // debuggable flag. Never submit this variant.
         create("releaseTest") {
             initWith(getByName("release"))
             applicationIdSuffix = ".r8test"
             versionNameSuffix = "-r8test"
-            isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
         }

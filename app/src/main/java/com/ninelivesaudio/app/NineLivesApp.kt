@@ -9,6 +9,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.entitlement.BillingManager
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.service.DownloadManager
+import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
@@ -48,6 +49,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var downloadManager: DownloadManager
+
+    @Inject
+    lateinit var playbackManager: PlaybackManager
 
     @Inject
     lateinit var entitlementRepository: EntitlementRepository
@@ -151,7 +155,14 @@ class NineLivesApp : Application(), ImageLoaderFactory {
                 .map { it.isUnlocked }
                 .distinctUntilChanged()
                 .filter { unlocked -> !unlocked }
-                .collect { downloadManager.resolveSlotAfterEntitlementDrop() }
+                .collect {
+                    downloadManager.resolveSlotAfterEntitlementDrop()
+                    // Revocation has to reach the LIVE player too. Without this
+                    // a downgrade mid-book leaves premium speed, EQ, boost and
+                    // silence skipping running until the next load. Rendering
+                    // parameters only, never a seek.
+                    playbackManager.applyEntitlementToActivePlayback()
+                }
         }
     }
 

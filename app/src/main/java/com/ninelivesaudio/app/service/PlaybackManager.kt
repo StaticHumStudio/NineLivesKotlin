@@ -176,6 +176,16 @@ class PlaybackManager @Inject constructor(
 
             val wrapper = ChapterAwareForwardingPlayer(player)
             wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
+            // Every media-session controller goes through the wrapper, so the
+            // entitlement clamp has to live there too, not only in setSpeed().
+            wrapper.speedClamp = { requested ->
+                val allowed = clampSpeed(requested)
+                // Publish it. A session controller never calls setSpeed(), so
+                // without this _speed drifts from the actual player and any
+                // later comparison against it is comparing to a lie.
+                _speed.value = allowed
+                allowed
+            }
             chapterPlayer = wrapper
         }
 
@@ -933,17 +943,24 @@ class PlaybackManager @Inject constructor(
     }
 
     fun setSpeed(speed: Float) {
-        // Clamped here as well as gated in the UI. A gated control can be
-        // bypassed by a stale callback or a media-session command from Android
-        // Auto, and speed is the most valuable thing behind the unlock.
-        val allowed = if (effectiveSettings.isUnlockedNow) {
+        val allowed = clampSpeed(speed)
+        _speed.value = allowed
+        exoPlayer?.playbackParameters = PlaybackParameters(allowed)
+    }
+
+    /**
+     * The single definition of what speed this install may play at.
+     *
+     * Used by [setSpeed] and by the ForwardingPlayer the MediaSession is built
+     * on, because those are two genuinely separate entry points: Android Auto
+     * and the notification never call setSpeed at all.
+     */
+    private fun clampSpeed(speed: Float): Float =
+        if (effectiveSettings.isUnlockedNow) {
             speed.coerceIn(0.5f, 3.0f)
         } else {
             EffectiveSettings.FREE_SPEED.toFloat()
         }
-        _speed.value = allowed
-        exoPlayer?.playbackParameters = PlaybackParameters(allowed)
-    }
 
     /**
      * Media3's built-in silence trimming.
@@ -962,8 +979,11 @@ class PlaybackManager @Inject constructor(
     }
 
     fun setEqEnabled(enabled: Boolean) {
-        _eqEnabled.value = enabled
-        equalizer?.enabled = enabled
+        // Enforced here, not only in the UI. This is public API on an injected
+        // singleton, so a gated control is not the last line of defence.
+        val allowed = enabled && effectiveSettings.isUnlockedNow
+        _eqEnabled.value = allowed
+        equalizer?.enabled = allowed
     }
 
     fun setEqBandGain(band: Int, gainMillibels: Int) {
@@ -994,11 +1014,50 @@ class PlaybackManager @Inject constructor(
     }
 
     fun setVolumeBoost(gainMb: Int) {
-        _volumeBoost.value = gainMb.coerceIn(0, 1000)
+        val allowed = if (effectiveSettings.isUnlockedNow) gainMb.coerceIn(0, 1000) else 0
+        _volumeBoost.value = allowed
         loudnessEnhancer?.let {
-            it.setTargetGain(_volumeBoost.value)
-            it.enabled = _volumeBoost.value > 0
+            it.setTargetGain(allowed)
+            it.enabled = allowed > 0
         }
+    }
+
+    /**
+     * Push effective settings onto the LIVE player after an entitlement change.
+     *
+     * Without this a revocation only takes effect at the next load, so someone
+     * who lost entitlement mid-book keeps premium speed, EQ, boost and silence
+     * skipping for the rest of that book.
+     *
+     * Touches only rendering parameters. Speed, EQ, boost and silence trimming
+     * all change what comes out of the speaker, never where the playhead is, so
+     * this satisfies the invariant that no entitlement transition may move
+     * playback position. Do not add a seek here.
+     */
+    fun applyEntitlementToActivePlayback() {
+        val effective = effectiveSettings.current
+
+        // Clamped against the PLAYER, not the cached value. A controller that
+        // set 2x through the media session may have left _speed at 1.0, and
+        // clamping a stale 1.0 would compute "already fine" and leave the real
+        // player running at 2x for a user who just lost entitlement.
+        //
+        // Written unconditionally. Assigning identical playback parameters is a
+        // no-op in ExoPlayer and never seeks.
+        val allowedSpeed = clampSpeed(exoPlayer?.playbackParameters?.speed ?: _speed.value)
+        _speed.value = allowedSpeed
+        exoPlayer?.playbackParameters = PlaybackParameters(allowedSpeed)
+
+        _eqEnabled.value = effective.eqEnabled
+        equalizer?.enabled = effective.eqEnabled
+
+        _volumeBoost.value = effective.volumeBoostGain
+        loudnessEnhancer?.let {
+            it.setTargetGain(effective.volumeBoostGain)
+            it.enabled = effective.volumeBoostGain > 0
+        }
+
+        exoPlayer?.skipSilenceEnabled = effective.skipSilenceEnabled
     }
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)

@@ -38,6 +38,28 @@ class ChapterAwareForwardingPlayer(
      */
     var seekHandler: ((Long) -> Unit)? = null
 
+    /**
+     * Clamps a requested speed by entitlement. Set by PlaybackManager.
+     *
+     * The MediaSession is built on THIS player, so Android Auto, the media
+     * notification, Assistant, and any other controller call straight through
+     * here and never touch PlaybackManager.setSpeed(). Without this the UI gate
+     * and the setter clamp are both bypassable by anyone with a car stereo.
+     */
+    var speedClamp: ((Float) -> Float) = { it }
+
+    override fun setPlaybackSpeed(speed: Float) {
+        super.setPlaybackSpeed(speedClamp(speed))
+    }
+
+    override fun setPlaybackParameters(playbackParameters: androidx.media3.common.PlaybackParameters) {
+        // Controllers can set speed either way. Clamping only one of them leaves
+        // the other as an open door.
+        super.setPlaybackParameters(
+            playbackParameters.withSpeed(speedClamp(playbackParameters.speed))
+        )
+    }
+
     // ─── Position / Duration Overrides ──────────────────────────────────
 
     override fun getCurrentPosition(): Long {

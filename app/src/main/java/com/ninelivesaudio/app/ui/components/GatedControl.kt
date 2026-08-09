@@ -1,12 +1,16 @@
 package com.ninelivesaudio.app.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +79,46 @@ fun GatedControl(
                 .size(14.dp),
         )
     }
+}
+
+/**
+ * A dropdown menu row the free tier cannot pick.
+ *
+ * Separate from [GatedControl] because a corner sigil does not work here. On a
+ * full-width menu row the lock ends up inches from the label it refers to, and
+ * reads as decoration rather than as an explanation. This puts the lock
+ * immediately after the text, where it is unmissable, and dims the label to
+ * match.
+ *
+ * Selecting it opens the unlock screen instead of doing nothing, which is the
+ * whole point: a control that silently ignores you is worse than one that says
+ * why.
+ */
+@Composable
+fun GatedMenuItem(
+    label: String,
+    onLockedTap: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = label,
+                    color = NineLivesTheme.colors.archiveTextPrimary.copy(alpha = DISABLED_ALPHA),
+                )
+                Icon(
+                    imageVector = Icons.Outlined.Lock,
+                    contentDescription = "Locked",
+                    tint = NineLivesTheme.colors.goldFilamentDim,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
+        },
+        onClick = onLockedTap,
+    )
 }
 
 private const val DISABLED_ALPHA = 0.38f

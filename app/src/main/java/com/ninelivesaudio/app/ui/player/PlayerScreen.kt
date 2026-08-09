@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.alpha
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.BookCoverImage
@@ -41,15 +42,22 @@ import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.domain.util.toClockString
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.BookWhisperCatalog
+import com.ninelivesaudio.app.entitlement.FreeTier
+import com.ninelivesaudio.app.ui.components.GatedMenuItem
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
+import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import kotlin.time.Duration
 
 @Composable
 fun PlayerScreen(
+    onNavigateToUnlock: () -> Unit = {},
     viewModel: PlayerViewModel = hiltViewModel(),
+    unlockViewModel: UnlockViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
+    val isUnlocked = unlockState.isUnlocked
 
     // EQ bottom sheet
     if (uiState.showEqSheet) {
@@ -383,6 +391,8 @@ fun PlayerScreen(
                 currentSpeed = uiState.speed,
                 options = viewModel.speedOptions,
                 onSpeedSelected = viewModel::setSpeed,
+                isUnlocked = isUnlocked,
+                onNavigateToUnlock = onNavigateToUnlock,
             )
 
             SleepTimerButton(
@@ -390,6 +400,8 @@ fun PlayerScreen(
                 timerText = uiState.sleepTimerText,
                 options = viewModel.sleepTimerOptions,
                 onTimerSelected = viewModel::setSleepTimer,
+                isUnlocked = isUnlocked,
+                onNavigateToUnlock = onNavigateToUnlock,
             )
 
             // Bookmark button
@@ -414,7 +426,10 @@ fun PlayerScreen(
             EqButton(
                 eqEnabled = uiState.eqEnabled,
                 onToggleEq = { viewModel.setEqEnabled(!uiState.eqEnabled) },
-                onOpenEq = { viewModel.toggleEqSheet() },
+                // The engine forces EQ off and boost to zero while free, so an
+                // ungated entry point opened a sheet whose controls did nothing.
+                onOpenEq = { if (isUnlocked) viewModel.toggleEqSheet() else onNavigateToUnlock() },
+                eqLocked = !isUnlocked,
             )
         }
 
@@ -572,10 +587,13 @@ private fun EqButton(
     eqEnabled: Boolean,
     onToggleEq: () -> Unit,
     onOpenEq: () -> Unit,
+    eqLocked: Boolean = false,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable(onClick = onOpenEq),
+        modifier = Modifier
+            .clickable(onClick = onOpenEq)
+            .alpha(if (eqLocked) 0.38f else 1f),
     ) {
         Icon(
             Icons.Outlined.Equalizer,
@@ -826,6 +844,8 @@ private fun SpeedButton(
     currentSpeed: Float,
     options: List<Float>,
     onSpeedSelected: (Float) -> Unit,
+    isUnlocked: Boolean,
+    onNavigateToUnlock: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -854,6 +874,19 @@ private fun SpeedButton(
             containerColor = NineLivesTheme.colors.archiveVoidSurface,
         ) {
             options.forEach { speed ->
+                if (!FreeTier.allowsSpeed(speed, isUnlocked)) {
+                    // The engine already refuses premium speeds, so leaving this
+                    // ungated meant tapping 2.0x visibly did nothing at all.
+                    // Silent refusal reads as a broken app, not as a paywall.
+                    GatedMenuItem(
+                        label = "${speed}x",
+                        onLockedTap = {
+                            expanded = false
+                            onNavigateToUnlock()
+                        },
+                    )
+                    return@forEach
+                }
                 DropdownMenuItem(
                     text = {
                         Text(
@@ -880,6 +913,8 @@ private fun SleepTimerButton(
     timerText: String,
     options: List<Int?>,
     onTimerSelected: (Int?) -> Unit,
+    isUnlocked: Boolean,
+    onNavigateToUnlock: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -908,6 +943,19 @@ private fun SleepTimerButton(
             containerColor = NineLivesTheme.colors.archiveVoidSurface,
         ) {
             options.forEach { minutes ->
+                if (!FreeTier.allowsSleepTimer(minutes, isUnlocked)) {
+                    // This was the reported bug: every preset was selectable on
+                    // a free install, so the 30-minute limit the store listing
+                    // promises did not exist anywhere in the app.
+                    GatedMenuItem(
+                        label = "$minutes min",
+                        onLockedTap = {
+                            expanded = false
+                            onNavigateToUnlock()
+                        },
+                    )
+                    return@forEach
+                }
                 DropdownMenuItem(
                     text = {
                         Text(

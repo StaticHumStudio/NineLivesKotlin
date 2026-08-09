@@ -49,6 +49,16 @@ class BookDetailViewModel @Inject constructor(
     }
 
     data class UiState(
+        /**
+         * Why the last download request did not start.
+         *
+         * Non-null means the UI owes the user an explanation. Covers both the
+         * free-tier slot refusal and a book with nothing downloadable, because
+         * both used to fail in total silence.
+         */
+        val downloadNotice: String? = null,
+        /** Whether [downloadNotice] should offer a route to the unlock screen. */
+        val downloadNoticeOffersUnlock: Boolean = false,
         val isLoading: Boolean = true,
         val book: AudioBook? = null,
         val title: String = "",
@@ -243,12 +253,62 @@ class BookDetailViewModel @Inject constructor(
         val book = _uiState.value.book ?: return
         if (book.isLocal) return
         viewModelScope.launch {
+            // Optimistic, then reconciled against the ACTUAL result. The
+            // previous version set QUEUED and discarded the return value, so a
+            // refused claim left the button reading "Queued..." forever with no
+            // row behind it. Room never emits for a write that did not happen,
+            // so nothing ever corrected it.
+            val previous = _uiState.value.downloadState
             _uiState.update { it.copy(downloadState = DownloadButtonState.QUEUED, downloadProgress = 0) }
-            downloadManager.queueDownload(book)
+
+            when (val result = downloadManager.queueDownload(book)) {
+                // Clear any previous notice. Leaving a stale "free keeps one
+                // book" warning up after a retry that WORKED, or after the user
+                // unlocked and came back, would be its own small lie.
+                is DownloadManager.QueueResult.Queued ->
+                    _uiState.update { it.copy(downloadNotice = null, downloadNoticeOffersUnlock = false) }
+
+                is DownloadManager.QueueResult.BlockedByFreeSlot -> {
+                    // The free tier holds one offline book. Say so, out loud,
+                    // and offer the way out. A cap enforced in silence reads as
+                    // a broken download button, which is exactly how this was
+                    // reported.
+                    _uiState.update {
+                        it.copy(
+                            downloadState = previous,
+                            downloadProgress = 0,
+                            downloadNotice = "Free keeps one downloaded book at a time. " +
+                                "Delete the one you have, or unlock for unlimited offline books.",
+                            downloadNoticeOffersUnlock = true,
+                        )
+                    }
+                }
+
+                is DownloadManager.QueueResult.Failed -> _uiState.update {
+                    it.copy(
+                        downloadState = previous,
+                        downloadProgress = 0,
+                        // Surface the engine's own reason rather than dropping
+                        // it. "No downloadable audio files found" is exactly the
+                        // sort of thing the user needs to see, and it was being
+                        // discarded here too.
+                        downloadNotice = result.item.errorMessage
+                            ?: "That book could not be queued for download.",
+                        downloadNoticeOffersUnlock = false,
+                    )
+                }
+
+                DownloadManager.QueueResult.NotApplicable ->
+                    _uiState.update { it.copy(downloadState = previous, downloadProgress = 0) }
+            }
         }
     }
 
     /** Delete the downloaded files for this book. */
+    fun dismissDownloadNotice() {
+        _uiState.update { it.copy(downloadNotice = null, downloadNoticeOffersUnlock = false) }
+    }
+
     fun deleteDownload() {
         viewModelScope.launch {
             downloadManager.deleteDownload(bookId)

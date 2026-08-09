@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.sync.Mutex
@@ -152,6 +153,33 @@ class DownloadManager @Inject constructor(
     // ─── Queue Operations ────────────────────────────────────────────────────
 
     /**
+     * What happened when a download was requested.
+     *
+     * Replaces a bare nullable return, which conflated "this is a local book",
+     * "the free slot is taken" and "this book has no downloadable files" into
+     * one indistinguishable null. Both callers discarded it, so the free-tier
+     * cap was enforced completely silently: the user tapped Download, the claim
+     * was refused, no row was written, and the button sat on an optimistic
+     * "Queued..." forever with nothing to correct it.
+     */
+    sealed interface QueueResult {
+        data class Queued(val item: DownloadItem) : QueueResult
+
+        /**
+         * The free tier already holds its one offline book.
+         *
+         * A refusal the user must be TOLD about. Silently declining is worse
+         * than not offering the button at all.
+         */
+        data class BlockedByFreeSlot(val heldBy: String?) : QueueResult
+
+        data class Failed(val item: DownloadItem) : QueueResult
+
+        /** Local-folder books are not downloadable and never were. */
+        data object NotApplicable : QueueResult
+    }
+
+    /**
      * Queue an audiobook for download.
      * Creates a DownloadItem, persists it Queued, and ensures the drain worker
      * is running so it gets picked up.
@@ -160,17 +188,21 @@ class DownloadManager @Inject constructor(
      * are short-circuited here (returns null) rather than attempting a fetch
      * that would 404 against ABS.
      */
-    suspend fun queueDownload(audioBook: AudioBook): DownloadItem? {
+    suspend fun queueDownload(audioBook: AudioBook): QueueResult {
         if (audioBook.isLocal) {
-            return null
+            return QueueResult.NotApplicable
         }
         val downloadId = UUID.randomUUID().toString()
 
         // Claim the slot BEFORE the network round trip. fetchFullBookDetails can
         // take seconds, and an unclaimed window that long is one a second queue
         // attempt walks straight through.
+        var blockedBy: String? = null
         val claimed = slotMutex.withLock {
-            if (!slotStore.canClaim(audioBook.id)) return@withLock false
+            if (!slotStore.canClaim(audioBook.id)) {
+                blockedBy = slotStore.currentWinner()
+                return@withLock false
+            }
 
             downloadItemDao.upsert(
                 DownloadItem(
@@ -184,7 +216,7 @@ class DownloadManager @Inject constructor(
             if (slotStore.slotApplies) slotStore.persistedWinner = audioBook.id
             true
         }
-        if (!claimed) return null
+        if (!claimed) return QueueResult.BlockedByFreeSlot(blockedBy)
 
         // Everything from here to promotion runs with a claim held. An exception
         // or a cancelled coroutine in that window would otherwise strand a
@@ -218,7 +250,7 @@ class DownloadManager @Inject constructor(
                 }
                 claimSettled = true
                 _downloadFailed.tryEmit(failedItem)
-                return failedItem
+                return QueueResult.Failed(failedItem)
             }
 
             val downloadItem = DownloadItem(
@@ -256,15 +288,22 @@ class DownloadManager @Inject constructor(
                 true
             }
             claimSettled = true
-            if (!promoted) return null
+            if (!promoted) return QueueResult.BlockedByFreeSlot(slotStore.persistedWinner)
 
             // Respect a paused queue: the book waits until the user resumes.
             if (!downloadsPaused) enqueueDrain(replace = false)
 
-            return downloadItem
+            return QueueResult.Queued(downloadItem)
 
         } finally {
-            if (!claimSettled) releaseClaim(downloadId)
+            // NonCancellable is load-bearing. This whole function runs in the
+            // caller's coroutine, and BookDetailViewModel's scope dies the moment
+            // the user navigates away. Without it, releaseClaim suspends on the
+            // slot mutex, immediately throws CancellationException, and the
+            // Preparing row is never deleted... which silently consumes the free
+            // tier's only download slot until the next cold start. A cleanup
+            // path that is itself cancellable is not a cleanup path.
+            if (!claimSettled) withContext(NonCancellable) { releaseClaim(downloadId) }
         }
     }
 

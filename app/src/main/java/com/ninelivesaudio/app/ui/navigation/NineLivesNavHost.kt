@@ -112,7 +112,13 @@ fun NineLivesNavHost(
         }
 
         composable(Routes.PLAYER) {
-            PlayerScreen()
+            PlayerScreen(
+                onNavigateToUnlock = {
+                    navController.navigate(Routes.UNLOCK) {
+                        launchSingleTop = true
+                    }
+                },
+            )
         }
 
         composable(Routes.DOWNLOADS) {
@@ -174,6 +180,11 @@ fun NineLivesNavHost(
         ) { backStackEntry ->
             val bookId = backStackEntry.arguments?.getString("bookId") ?: return@composable
             BookDetailScreen(
+                onNavigateToUnlock = {
+                    navController.navigate(Routes.UNLOCK) {
+                        launchSingleTop = true
+                    }
+                },
                 bookId = bookId,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToPlayer = {

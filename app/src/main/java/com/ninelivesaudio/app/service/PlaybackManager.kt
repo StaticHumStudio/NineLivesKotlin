@@ -16,6 +16,7 @@ import androidx.media3.common.*
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import android.media.MediaMetadataRetriever
 import androidx.media3.exoplayer.ExoPlayer
 import com.ninelivesaudio.app.entitlement.EffectiveSettings
 import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
@@ -609,7 +610,7 @@ class PlaybackManager @Inject constructor(
     }
 
     @OptIn(UnstableApi::class)
-    private fun loadLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
+    private suspend fun loadLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
         // Scanned local-library books store SAF content:// URIs, not filesystem paths.
         // They must be parsed as URIs; File()/Uri.fromFile() would produce invalid file:///content:/... URIs.
         if (book.isLocal) {
@@ -638,6 +639,12 @@ class PlaybackManager @Inject constructor(
                         .build()
                 )
             } else {
+                // Same all-or-nothing rule as the scan branch below. The server
+                // does not always populate per-file durations, and a ladder of
+                // zeroes is the dangerous case: non-empty enough to defeat the
+                // missing-durations guard, wrong enough to seek the absolute
+                // position into the last track.
+                val perTrack = mutableListOf<Double>()
                 for (af in book.audioFiles.sortedBy { it.index }) {
                     val path = af.localPath
                         ?: localDir?.let { File(it, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath }
@@ -649,8 +656,16 @@ class PlaybackManager @Inject constructor(
                             .setMediaMetadata(metadata)
                             .build()
                     )
-                    cumulative += af.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
-                    durations.add(cumulative)
+                    perTrack.add(af.duration.toDouble(kotlin.time.DurationUnit.SECONDS))
+                }
+
+                if (perTrack.isNotEmpty() && perTrack.all { it > 0.0 }) {
+                    for (seconds in perTrack) {
+                        cumulative += seconds
+                        durations.add(cumulative)
+                    }
+                } else {
+                    Log.w(TAG, "server metadata has ${perTrack.count { it <= 0.0 }} of ${perTrack.size} zero durations; seek will start from the beginning")
                 }
             }
         } else if (localDir != null && localDir.isDirectory) {
@@ -661,6 +676,27 @@ class PlaybackManager @Inject constructor(
                 ?.sortedBy { it.name }
                 ?: emptyList()
 
+            // Durations MUST be built here, even though ExoPlayer will work them
+            // out for playback. seekToPosition needs them BEFORE prepare to pick
+            // the right track, and leaving trackDurations empty sends it down the
+            // single-track branch, where it seeks an absolute book position into
+            // track 1. On a resumed book that reads past the end of the file and
+            // ExoPlayer fails the whole source with
+            // ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE.
+            //
+            // That bug was invisible for months because downloads never ran in a
+            // release build at all (issue #64), so this branch was unreachable.
+            //
+            // Only this fallback branch needs the retriever. The branch above
+            // already has per-file durations from the server metadata.
+            // Read every duration OFF the main thread before touching the
+            // player. loadAudioBook runs on Main because ExoPlayer requires it,
+            // and forty-odd synchronous MediaMetadataRetriever opens there is an
+            // ANR waiting to happen on a cold cache.
+            val fileDurations = withContext(Dispatchers.IO) {
+                files.map { readDurationSeconds(it) }
+            }
+
             for (file in files) {
                 mediaItems.add(
                     MediaItem.Builder()
@@ -668,7 +704,21 @@ class PlaybackManager @Inject constructor(
                         .setMediaMetadata(metadata)
                         .build()
                 )
-                // No duration metadata available — ExoPlayer will determine it
+            }
+
+            // All or nothing. A partial ladder is WORSE than none: any file we
+            // could not read contributes zero, which leaves trackDurations
+            // non-empty so the missing-durations guard never fires, while the
+            // cumulative values are wrong enough to seek the absolute position
+            // into the last track and reproduce the exact out-of-range crash
+            // this is here to prevent.
+            if (fileDurations.isNotEmpty() && fileDurations.all { it > 0.0 }) {
+                for (seconds in fileDurations) {
+                    cumulative += seconds
+                    durations.add(cumulative)
+                }
+            } else {
+                Log.w(TAG, "incomplete local durations (${fileDurations.count { it <= 0.0 }} of ${fileDurations.size} unreadable); seek will start from the beginning")
             }
         } else if (localFile?.isFile == true) {
             // localPath is a single file
@@ -1140,9 +1190,43 @@ class PlaybackManager @Inject constructor(
 
     // ─── Position Calculation (multi-track aware) ─────────────────────────
 
+    /**
+     * Best-effort duration of one local audio file, in seconds.
+     *
+     * Returns 0 rather than throwing. A file we cannot read the duration of
+     * contributes nothing to the cumulative ladder, which makes the seek land
+     * early rather than past the end of a file, and landing early is recoverable
+     * while overshooting kills the whole source.
+     */
+    private fun readDurationSeconds(file: File): Double {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?.let { it / 1000.0 }
+                ?: 0.0
+        } catch (e: Exception) {
+            Log.w(TAG, "could not read duration for ${file.name}: ${e.message}")
+            0.0
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
     private fun seekToPosition(position: Duration) {
         val player = exoPlayer ?: return
         val posSeconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
+
+        if (trackDurations.isEmpty() && player.mediaItemCount > 1) {
+            // Defence in depth. An absolute seek into track 1 of a multi-file
+            // book is the exact move that reads past EOF and fails the source,
+            // so refuse it. Starting the book from the beginning loses the place,
+            // which is bad, but it is recoverable and a dead player is not.
+            Log.w(TAG, "no track durations for ${player.mediaItemCount} items; seeking to start")
+            player.seekTo(0, 0)
+            return
+        }
 
         if (trackDurations.size <= 1) {
             // Single track

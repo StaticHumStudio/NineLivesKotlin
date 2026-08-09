@@ -67,6 +67,28 @@ object FreeTier {
     fun effectiveSort(stored: SortMode, isUnlocked: Boolean): SortMode =
         if (allowsSort(stored, isUnlocked)) stored else SortMode.RECENTLY_PLAYED
 
+    /**
+     * The only sleep-timer duration a free install can set, in minutes.
+     *
+     * Matches the store listing exactly, which promises "a 30-minute sleep
+     * timer" and nothing else. If this number and that sentence ever disagree,
+     * the sentence is what people paid attention to.
+     */
+    const val SLEEP_TIMER_MINUTES = 30
+
+    /**
+     * Whether a sleep-timer option is selectable.
+     *
+     * null means "Off" and is always allowed. Being unable to CANCEL a timer
+     * would be a trap, not a paywall.
+     */
+    fun allowsSleepTimer(minutes: Int?, isUnlocked: Boolean): Boolean =
+        isUnlocked || minutes == null || minutes == SLEEP_TIMER_MINUTES
+
+    /** Whether a playback speed is selectable. Free is normal speed only. */
+    fun allowsSpeed(speed: Float, isUnlocked: Boolean): Boolean =
+        isUnlocked || speed == EffectiveSettings.FREE_SPEED.toFloat()
+
     /** The grouping actually applied, clamped by entitlement. */
     fun effectiveViewMode(stored: ViewMode, isUnlocked: Boolean): ViewMode =
         if (allowsViewMode(stored, isUnlocked)) stored else ViewMode.ALL

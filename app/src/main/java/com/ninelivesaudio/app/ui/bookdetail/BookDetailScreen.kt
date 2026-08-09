@@ -34,6 +34,7 @@ import com.ninelivesaudio.app.ui.theme.unhinged.*
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.text.style.TextDecoration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -46,6 +47,7 @@ fun BookDetailScreen(
     bookId: String,
     onNavigateBack: () -> Unit = {},
     onNavigateToPlayer: () -> Unit = {},
+    onNavigateToUnlock: () -> Unit = {},
     viewModel: BookDetailViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -98,6 +100,7 @@ fun BookDetailScreen(
                     uiState = uiState,
                     onPlayBook = { viewModel.playBook(onReady = onNavigateToPlayer) },
                     onDownload = { viewModel.downloadBook() },
+                    onNavigateToUnlock = onNavigateToUnlock,
                     onDeleteDownload = { viewModel.deleteDownload() },
                     onToggleHistory = { viewModel.toggleHistoryExpanded() },
                     onJumpToSession = { session ->
@@ -120,6 +123,7 @@ private fun BookDetailContent(
     onToggleHistory: () -> Unit,
     onJumpToSession: (ListeningSession) -> Unit,
     onDeleteForever: () -> Unit,
+    onNavigateToUnlock: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -386,6 +390,32 @@ private fun BookDetailContent(
                         onDownload = onDownload,
                         onDeleteDownload = onDeleteDownload,
                     )
+
+                    // Shown only when a download was actually refused. The cap
+                    // used to be enforced in total silence, which is how it got
+                    // reported as a broken download button.
+                    uiState.downloadNotice?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        // Only offered when unlocking would actually help. A
+                        // book with no downloadable files is not a paywall.
+                        if (uiState.downloadNoticeOffersUnlock) {
+                            Text(
+                                text = "Unlock unlimited downloads",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    textDecoration = TextDecoration.Underline,
+                                ),
+                                color = NineLivesTheme.colors.goldFilament,
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .clickable { onNavigateToUnlock() },
+                            )
+                        }
+                    }
                 }
             }
         }

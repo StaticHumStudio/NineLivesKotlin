@@ -134,6 +134,63 @@ class FreeTierTest {
         assertTrue(FreeTier.effectiveViewMode(ViewMode.GENRE, false) in FreeTier.VIEW_MODES)
     }
 
+    // ─── Sleep timer and speed, the reported gap ──────────────────────────────
+
+    /**
+     * The bug Jeff found on device: every preset was selectable on a free
+     * install, so the 30-minute limit the store listing promises did not exist
+     * anywhere in the app.
+     */
+    @Test
+    fun `free gets exactly one sleep timer duration`() {
+        val presets = listOf(5, 10, 15, 30, 45, 60)
+
+        val allowed = presets.filter { FreeTier.allowsSleepTimer(it, isUnlocked = false) }
+
+        assertEquals(listOf(FreeTier.SLEEP_TIMER_MINUTES), allowed)
+    }
+
+    /**
+     * Off must always be selectable. Being unable to CANCEL a timer is a trap,
+     * not a paywall, and it would strand a free user in a sleep timer they set.
+     */
+    @Test
+    fun `turning the sleep timer off is always allowed`() {
+        assertTrue(FreeTier.allowsSleepTimer(null, isUnlocked = false))
+        assertTrue(FreeTier.allowsSleepTimer(null, isUnlocked = true))
+    }
+
+    @Test
+    fun `unlocking opens every sleep timer duration`() {
+        listOf(null, 5, 10, 15, 30, 45, 60).forEach {
+            assertTrue("$it should open on unlock", FreeTier.allowsSleepTimer(it, isUnlocked = true))
+        }
+    }
+
+    /** The free duration must match what the store listing promises. */
+    @Test
+    fun `the free sleep timer is thirty minutes`() {
+        assertEquals(30, FreeTier.SLEEP_TIMER_MINUTES)
+    }
+
+    @Test
+    fun `free gets normal speed only`() {
+        val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+
+        val allowed = speeds.filter { FreeTier.allowsSpeed(it, isUnlocked = false) }
+
+        assertEquals(listOf(1.0f), allowed)
+        speeds.forEach { assertTrue(FreeTier.allowsSpeed(it, isUnlocked = true)) }
+    }
+
+    /** The UI gate and the engine clamp must name the same speed. */
+    @Test
+    fun `the free speed agrees with the normalization layer`() {
+        assertTrue(
+            FreeTier.allowsSpeed(EffectiveSettings.FREE_SPEED.toFloat(), isUnlocked = false)
+        )
+    }
+
     // ─── Normalization agrees with the catalog ────────────────────────────────
 
     /**

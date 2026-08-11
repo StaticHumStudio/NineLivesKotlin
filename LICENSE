@@ -1,3 +1,32 @@
+NINE LIVES AUDIO
+ADDITIONAL PERMISSION UNDER GNU GPL VERSION 3 SECTION 7
+
+Copyright (C) Static Hum Studio
+
+Nine Lives Audio is licensed under the GNU General Public License version 3,
+reproduced in full below. As the sole copyright holder, Static Hum Studio
+grants the following additional permission under section 7 of that license:
+
+  If you modify this Program, or any covered work, by linking or combining
+  it with the Google Play Billing Library or the Google Play In-App Review
+  Library (or modified versions of those libraries), you are granted
+  additional permission to convey the resulting work. The Corresponding
+  Source for a non-source form of such a combination need not include the
+  source for those libraries.
+
+This permission exists because the Google Play build of Nine Lives Audio
+links against these two proprietary Google libraries for the one-time unlock
+purchase and the in-app review prompt. It removes any doubt that such a
+build may be conveyed under the GPL. Forks may rely on this permission for
+the material it covers. Material added to a fork by other contributors is
+covered only if those contributors extend the same permission.
+
+Nothing else in this repository is affected. As permitted by section 7, any
+recipient may remove this additional permission from their own copy.
+
+--------------------------------------------------------------------------
+
+
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

@@ -1,3 +1,10 @@
+/*
+ * Nine Lives Audio is licensed under the GNU GPL version 3 with an additional
+ * permission under section 7 covering the combination with the proprietary
+ * Google Play Billing Library, which this file links against. The full terms
+ * of that additional permission are stated at the top of the LICENSE file in
+ * the repository root.
+ */
 package com.ninelivesaudio.app.entitlement
 
 import android.app.Activity

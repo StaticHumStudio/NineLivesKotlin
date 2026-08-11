@@ -229,6 +229,14 @@ All colors tuned for WCAG AA contrast (4.5:1 body text, 3:1 large text).
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
 
+The Google Play build links against the proprietary Play Billing and Play
+In-App Review libraries for the one-time unlock and the ratings prompt. The
+[LICENSE](LICENSE) file opens with an additional permission under GPLv3
+section 7 covering exactly those two libraries, so the Play build (and forks
+of the material this permission covers) can be conveyed under the GPL
+without ambiguity. Nothing else is affected, and any recipient may drop the
+permission from their own copy.
+
 Third-party dependency licenses are listed in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
 
 ---

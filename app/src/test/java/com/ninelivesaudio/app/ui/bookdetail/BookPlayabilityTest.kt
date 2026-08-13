@@ -12,11 +12,16 @@ class BookPlayabilityTest {
 
     @Test
     fun `a live book is playable`() {
-        assertTrue(canPlayBook(isArchived = false))
+        assertTrue(canPlayBook(isArchived = false, sourceAccessible = true))
     }
 
     @Test
     fun `archived book is never playable`() {
-        assertFalse(canPlayBook(isArchived = true))
+        assertFalse(canPlayBook(isArchived = true, sourceAccessible = true))
+    }
+
+    @Test
+    fun `missing folder access blocks playback`() {
+        assertFalse(canPlayBook(isArchived = false, sourceAccessible = false))
     }
 }

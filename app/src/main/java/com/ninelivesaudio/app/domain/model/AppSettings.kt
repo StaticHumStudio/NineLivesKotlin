@@ -46,7 +46,14 @@ data class AppSettings(
     val sleepTimerRewindSeconds: Int = 15,   // rewind on timer stop: 0–60, step 5
     // Dossier: count archived (LOCAL soft-deleted) books in listening stats.
     val includeArchivedInStats: Boolean = true,
-)
+) {
+    /** The selected library for the current source mode. The two modes never share a fallback. */
+    val activeLibraryId: String?
+        get() = when (appMode) {
+            AppMode.LOCAL -> selectedLocalLibraryId
+            AppMode.AUDIOBOOKSHELF -> selectedLibraryId
+        }
+}
 
 @Serializable
 data class ServerProfile(

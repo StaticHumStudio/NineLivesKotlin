@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -147,31 +146,13 @@ class SettingsManager @Inject constructor(
         saveSettings(updated)
     }
 
-    /**
-     * Heal the app-wide selected library after loading settings: in LOCAL mode
-     * `selectedLibraryId` must track the selected local library. A prior
-     * Audiobookshelf session (or the ABS library selector) could leave a server
-     * id there, which makes Home/Library show server books in local mode. Call
-     * once on startup, after [loadSettings].
-     */
-    suspend fun reconcileSelectedLibraryForMode() {
-        val s = _settings.value
-        val target = reconciledSelectedLibraryId(
-            s.appMode,
-            s.selectedLibraryId,
-            s.selectedLocalLibraryId,
-        )
-        if (target != null) {
-            updateSettings { it.copy(selectedLibraryId = target) }
-        }
-    }
-
     // ─── Auth Token ──────────────────────────────────────────────────────
 
     companion object {
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_SETTINGS = "app_settings"
         private const val KEY_DEVICE_ID = "device_id"
+        private const val KEY_CURRENT_PLAYBACK_BOOK_ID = "current_playback_book_id"
         private const val KEY_TRUSTED_CERT_FINGERPRINT_PREFIX = "trusted_cert_fingerprint_"
     }
 
@@ -215,6 +196,17 @@ class SettingsManager @Inject constructor(
         encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).commit()
     }
 
+    fun getCurrentPlaybackBookId(): String? =
+        encryptedPrefs.getString(KEY_CURRENT_PLAYBACK_BOOK_ID, null)
+
+    fun saveCurrentPlaybackBookId(bookId: String) {
+        encryptedPrefs.edit().putString(KEY_CURRENT_PLAYBACK_BOOK_ID, bookId).commit()
+    }
+
+    fun clearCurrentPlaybackBookId() {
+        encryptedPrefs.edit().remove(KEY_CURRENT_PLAYBACK_BOOK_ID).commit()
+    }
+
     // ─── Device ID ────────────────────────────────────────────────────────
 
     /**
@@ -244,23 +236,3 @@ class SettingsManager @Inject constructor(
     val settingsFilePath: String
         get() = "encrypted://nine_lives_secure_prefs/app_settings"
 }
-
-/**
- * The value `selectedLibraryId` should be corrected to, or null when no change
- * is needed. In LOCAL mode the app-wide selection must equal the selected local
- * library; otherwise (ABS mode, no local library selected, or already
- * consistent) it is left untouched.
- */
-internal fun reconciledSelectedLibraryId(
-    appMode: AppMode,
-    selectedLibraryId: String?,
-    selectedLocalLibraryId: String?,
-): String? =
-    if (appMode == AppMode.LOCAL &&
-        selectedLocalLibraryId != null &&
-        selectedLocalLibraryId != selectedLibraryId
-    ) {
-        selectedLocalLibraryId
-    } else {
-        null
-    }

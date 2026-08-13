@@ -28,6 +28,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.graphicsLayer
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
@@ -181,6 +182,7 @@ fun SettingsScreen(
                     LocalFoldersSection(
                         localLibraries = uiState.localLibraries,
                         selectedLocalLibrary = uiState.selectedLocalLibrary,
+                        inaccessibleLocalLibraryIds = uiState.inaccessibleLocalLibraryIds,
                         isScanning = uiState.isScanning,
                         lastScanMessage = uiState.lastScanMessage,
                         onAddFolder = {
@@ -189,6 +191,18 @@ fun SettingsScreen(
                                 addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                                 addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                                 addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+                            }
+                            folderPickerLauncher.launch(intent)
+                        },
+                        onRecoverFolder = { library ->
+                            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                                addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                                addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+                                library.folderUri?.let {
+                                    putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(it))
+                                }
                             }
                             folderPickerLauncher.launch(intent)
                         },
@@ -1285,9 +1299,11 @@ private fun ServerConnectionGuide(
 private fun LocalFoldersSection(
     localLibraries: List<Library>,
     selectedLocalLibrary: Library?,
+    inaccessibleLocalLibraryIds: Set<String>,
     isScanning: Boolean,
     lastScanMessage: String?,
     onAddFolder: () -> Unit,
+    onRecoverFolder: (Library) -> Unit,
     onRescan: (Library) -> Unit,
     onRemove: (Library) -> Unit,
     onSelect: (Library) -> Unit,
@@ -1341,6 +1357,7 @@ private fun LocalFoldersSection(
 
             localLibraries.forEach { library ->
                 val isSelected = library.id == selectedLocalLibrary?.id
+                val needsRecovery = library.id in inaccessibleLocalLibraryIds
                 var showConfirmRemove by remember { mutableStateOf(false) }
 
                 Row(
@@ -1381,17 +1398,32 @@ private fun LocalFoldersSection(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        if (needsRecovery) {
+                            Text(
+                                text = "Folder access lost",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = NineLivesTheme.colors.archiveWarning,
+                            )
+                            TextButton(
+                                onClick = { onRecoverFolder(library) },
+                                contentPadding = PaddingValues(0.dp),
+                            ) {
+                                Text("Reconnect folder")
+                            }
+                        }
                     }
 
                     // Rescan button
                     IconButton(
-                        onClick = { onRescan(library) },
+                        onClick = {
+                            if (needsRecovery) onRecoverFolder(library) else onRescan(library)
+                        },
                         enabled = !isScanning,
                         modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
-                            Icons.Outlined.Refresh,
-                            contentDescription = "Rescan",
+                            if (needsRecovery) Icons.Outlined.FolderOpen else Icons.Outlined.Refresh,
+                            contentDescription = if (needsRecovery) "Reconnect folder" else "Rescan",
                             tint = NineLivesTheme.colors.archiveTextSecondary,
                             modifier = Modifier.size(18.dp),
                         )

@@ -48,6 +48,7 @@ fun BookDetailScreen(
     onNavigateBack: () -> Unit = {},
     onNavigateToPlayer: () -> Unit = {},
     onNavigateToUnlock: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {},
     viewModel: BookDetailViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -101,6 +102,7 @@ fun BookDetailScreen(
                     onPlayBook = { viewModel.playBook(onReady = onNavigateToPlayer) },
                     onDownload = { viewModel.downloadBook() },
                     onNavigateToUnlock = onNavigateToUnlock,
+                    onNavigateToSettings = onNavigateToSettings,
                     onDeleteDownload = { viewModel.deleteDownload() },
                     onToggleHistory = { viewModel.toggleHistoryExpanded() },
                     onJumpToSession = { session ->
@@ -124,6 +126,7 @@ private fun BookDetailContent(
     onJumpToSession: (ListeningSession) -> Unit,
     onDeleteForever: () -> Unit,
     onNavigateToUnlock: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -328,7 +331,7 @@ private fun BookDetailContent(
                 // Continue / Play button
                 Button(
                     onClick = onPlayBook,
-                    enabled = canPlayBook(uiState.isArchived),
+                    enabled = canPlayBook(uiState.isArchived, uiState.sourceAccessible),
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = NineLivesTheme.colors.goldFilament,
@@ -348,6 +351,34 @@ private fun BookDetailContent(
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                     )
+                }
+
+                if (uiState.needsFolderRecovery) {
+                    Text(
+                        text = "Nine Lives no longer has permission to read this folder.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveWarning,
+                    )
+                    OutlinedButton(
+                        onClick = onNavigateToSettings,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Restore Folder Access")
+                    }
+                }
+
+                uiState.playbackNotice?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveWarning,
+                    )
+                    TextButton(onClick = onNavigateToSettings) {
+                        Text("Check connection settings")
+                    }
                 }
 
                 // Archived: the source folder was unscanned, so the audio file is

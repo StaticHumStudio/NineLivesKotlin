@@ -26,10 +26,14 @@ import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
+import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
+import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
@@ -65,6 +69,34 @@ enum class PlaybackState {
     STOPPED, LOADING, PLAYING, PAUSED, BUFFERING
 }
 
+internal fun playbackStateForReadyPlayer(playWhenReady: Boolean): PlaybackState =
+    if (playWhenReady) PlaybackState.PLAYING else PlaybackState.PAUSED
+
+internal enum class ListeningSessionKind { NONE, LOCAL, SERVER }
+
+internal fun listeningSessionToOpen(
+    playbackStarting: Boolean,
+    isScannedLocalBook: Boolean,
+    hasServerSession: Boolean,
+    hasLocalSession: Boolean,
+): ListeningSessionKind = when {
+    !playbackStarting -> ListeningSessionKind.NONE
+    isScannedLocalBook && !hasLocalSession -> ListeningSessionKind.LOCAL
+    !isScannedLocalBook && !hasServerSession -> ListeningSessionKind.SERVER
+    else -> ListeningSessionKind.NONE
+}
+
+internal enum class PlaybackItemPersistence { KEEP, SAVE, CLEAR }
+
+internal fun playbackItemPersistenceAction(
+    naturalCompletion: Boolean,
+    playbackStarting: Boolean,
+): PlaybackItemPersistence = when {
+    naturalCompletion -> PlaybackItemPersistence.CLEAR
+    playbackStarting -> PlaybackItemPersistence.SAVE
+    else -> PlaybackItemPersistence.KEEP
+}
+
 /**
  * Core playback engine wrapping Media3 ExoPlayer.
  * Ports AndroidAudioPlaybackService logic: multi-track, streaming with auth,
@@ -84,10 +116,12 @@ class PlaybackManager @Inject constructor(
     private val progressRepository: ProgressRepository,
     private val audioBookDao: AudioBookDao,
     private val audioBookRepository: AudioBookRepository,
+    private val libraryRepository: LibraryRepository,
     private val sessionRepository: ListeningSessionRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
     private val connectivityMonitor: ConnectivityMonitor,
     private val okHttpClient: OkHttpClient,
+    private val localFolderAccess: LocalFolderAccess,
 ) {
     companion object {
         private const val TAG = "PlaybackManager"
@@ -250,6 +284,40 @@ class PlaybackManager @Inject constructor(
         }
     }
 
+    /** Restore the last current item after ordinary process death, always paused. */
+    suspend fun restoreCurrentItem(): Boolean {
+        val persistedBookId = settingsManager.getCurrentPlaybackBookId() ?: return false
+        val storedBook = withContext(Dispatchers.IO) {
+            audioBookRepository.getById(persistedBookId)
+        }
+        val savedPosition = withContext(Dispatchers.IO) {
+            progressRepository.getPlaybackProgress(persistedBookId)?.first
+        }
+        val plan = resolvePlaybackRestore(
+            persistedBookId = persistedBookId,
+            storedBook = storedBook,
+            settings = settingsManager.currentSettings,
+            savedPosition = savedPosition,
+        )
+        if (plan == null) {
+            settingsManager.clearCurrentPlaybackBookId()
+            return false
+        }
+
+        if (
+            shouldProbeServerBeforeRestore(
+                book = plan.book,
+                connectionStatus = connectivityMonitor.connectionStatus.value,
+            )
+        ) {
+            connectivityMonitor.checkServerReachable()
+        }
+
+        return withContext(Dispatchers.Main) {
+            loadAudioBook(plan.book, autoPlay = plan.playWhenReady)
+        }
+    }
+
     // ─── Coroutine Scope ──────────────────────────────────────────────────
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var positionPollingJob: Job? = null
@@ -321,6 +389,7 @@ class PlaybackManager @Inject constructor(
 
     private var cachedChapters: List<Chapter> = emptyList()
     private val sessionMutex = Mutex()
+    private val listeningSessionStartMutex = Mutex()
     private var currentSession: PlaybackSessionInfo? = null
     private var accumulatedListenTime: Double = 0.0
     private var lastSyncTimestamp: Long = 0L
@@ -354,10 +423,38 @@ class PlaybackManager @Inject constructor(
     // ─── Load ─────────────────────────────────────────────────────────────
 
     @OptIn(UnstableApi::class)
-    suspend fun loadAudioBook(book: AudioBook, skipServiceStart: Boolean = false): Boolean {
+    suspend fun loadAudioBook(
+        book: AudioBook,
+        skipServiceStart: Boolean = false,
+        autoPlay: Boolean = true,
+    ): Boolean {
         // ExoPlayer must be created and accessed from the Main thread
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBook must be called from the Main thread"
+        }
+        if (!book.isInActiveLibrary(settingsManager.currentSettings)) {
+            _events.tryEmit(PlaybackEvent.Error("That book is not in the active library."))
+            return false
+        }
+        if (book.isLocal) {
+            val library = book.libraryId?.let { libraryRepository.getById(it) }
+            val access = reconcileLocalBookAccess(
+                book,
+                localFolderAccess.accessibleLibraryIds(listOfNotNull(library)),
+            )
+            if (!access.isPlayable) {
+                _events.tryEmit(PlaybackEvent.Error("Folder access was lost. Reconnect it in Settings."))
+                return false
+            }
+        }
+        val remoteAccess = remoteMediaAccessDecision(
+            book = book,
+            serverUrl = settingsManager.currentSettings.serverUrl,
+            connectionStatus = connectivityMonitor.connectionStatus.value,
+        )
+        if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
+            _events.tryEmit(PlaybackEvent.Error(remoteAccess.message))
+            return false
         }
         var effectiveBook = book
         try {
@@ -416,24 +513,19 @@ class PlaybackManager @Inject constructor(
 
             val isScannedLocalBook = book.isLocal
 
-            // Start server session for Audiobookshelf books. Scanned local-library
-            // books must stay fully local and never ask the server for a session.
+            // A paused process restore prepares media without creating listening
+            // history. Normal autoplay loads still open the server session here,
+            // while restored playback opens it when Play actually begins.
             sessionMutex.withLock { currentSession = null }
-            if (!isScannedLocalBook) {
-                withContext(Dispatchers.IO) {
-                    try {
-                        val session = apiService.startPlaybackSession(book.id)
-                        if (session != null) {
-                            sessionMutex.withLock { currentSession = session }
-                            if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
-                                cachedChapters = session.chapters.sortedBy { it.start }
-                                _chapters.value = cachedChapters
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "loadAudioBook: session error: ${e.message}", e)
-                    }
-                }
+            if (
+                listeningSessionToOpen(
+                    playbackStarting = autoPlay,
+                    isScannedLocalBook = isScannedLocalBook,
+                    hasServerSession = false,
+                    hasLocalSession = currentLocalSessionId != null,
+                ) == ListeningSessionKind.SERVER
+            ) {
+                openServerListeningSession(book)
             }
 
             // If no session audio tracks AND no local audio files, fetch full book details
@@ -495,7 +587,7 @@ class PlaybackManager @Inject constructor(
             }
 
             // Determine source and load
-            val isLocal = effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty()
+            val isLocal = remoteAccess.usesLocalTracks()
             _isLocalFile.value = isLocal
 
             // Reuse the persistent ExoPlayer — load new media items into it
@@ -529,6 +621,9 @@ class PlaybackManager @Inject constructor(
             if (startPosition > Duration.ZERO) {
                 seekToPosition(startPosition)
             }
+            // A paused process-death restore has no polling loop to publish the
+            // ExoPlayer position, so seed the observable playhead immediately.
+            _position.value = startPosition
 
             // Eagerly set the initial chapter so ChapterAwareForwardingPlayer
             // returns chapter-relative duration/position from the very first
@@ -561,7 +656,7 @@ class PlaybackManager @Inject constructor(
             // Prepare and play — the persistent MediaSession already wraps this player.
             // prepare() first so state listeners don't fire before media is loaded.
             player.prepare()
-            player.playWhenReady = true
+            player.playWhenReady = autoPlay
 
             // Update duration
             _duration.value = calculateTotalDuration(effectiveBook)
@@ -571,32 +666,20 @@ class PlaybackManager @Inject constructor(
             // Notify SyncManager of active playback item (prevents sync overwriting position)
             syncManager.setActivePlaybackItem(effectiveBook.id)
 
+            settingsManager.saveCurrentPlaybackBookId(effectiveBook.id)
+
             // Open a local listening session for scanned local-library books so the
             // Nightwatch Dossier has rows to aggregate. Heartbeats in syncProgressNow
             // accumulate timeListening; loadAudioBook itself just creates the row.
-            if (isScannedLocalBook) {
-                val startSec = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
-                val newSessionId = withContext(Dispatchers.IO) {
-                    try {
-                        sessionRepository.startLocalSession(
-                            audioBookId = effectiveBook.id,
-                            libraryId = effectiveBook.libraryId.orEmpty(),
-                            displayTitle = effectiveBook.title,
-                            startPositionSec = startSec,
-                        ).takeIf { it > 0L }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "loadAudioBook: failed to open local session: ${e.message}")
-                        null
-                    }
-                }
-                currentLocalSessionId = newSessionId
-                localSessionAccumSec = 0.0
-                // Seed the heartbeat baseline at session-open time so a close before
-                // the first sync tick computes a real tail (~0s) instead of inheriting
-                // a stale or zero baseline that would inflate TimeListening.
-                if (newSessionId != null) {
-                    lastSyncTimestamp = System.currentTimeMillis()
-                }
+            if (
+                listeningSessionToOpen(
+                    playbackStarting = autoPlay,
+                    isScannedLocalBook = isScannedLocalBook,
+                    hasServerSession = sessionMutex.withLock { currentSession != null },
+                    hasLocalSession = currentLocalSessionId != null,
+                ) == ListeningSessionKind.LOCAL
+            ) {
+                openLocalListeningSession(effectiveBook, startPosition)
             }
 
             Log.d(TAG, "loadAudioBook: OK local=$isLocal pos=$startPosition dur=${_duration.value} tracks=${player.mediaItemCount}")
@@ -606,6 +689,75 @@ class PlaybackManager @Inject constructor(
             _playbackState.value = PlaybackState.STOPPED
             _events.tryEmit(PlaybackEvent.Error("Failed to load: ${e.message}"))
             return false
+        }
+    }
+
+    private fun ensureListeningSessionStarted() {
+        val requestedBook = _currentBook.value ?: return
+        if (
+            playbackItemPersistenceAction(
+                naturalCompletion = false,
+                playbackStarting = true,
+            ) == PlaybackItemPersistence.SAVE
+        ) {
+            settingsManager.saveCurrentPlaybackBookId(requestedBook.id)
+        }
+        scope.launch {
+            listeningSessionStartMutex.withLock {
+                val book = _currentBook.value ?: return@withLock
+                if (book.id != requestedBook.id) return@withLock
+                val kind = listeningSessionToOpen(
+                    playbackStarting = true,
+                    isScannedLocalBook = book.isLocal,
+                    hasServerSession = sessionMutex.withLock { currentSession != null },
+                    hasLocalSession = currentLocalSessionId != null,
+                )
+                when (kind) {
+                    ListeningSessionKind.LOCAL -> openLocalListeningSession(book, _position.value)
+                    ListeningSessionKind.SERVER -> openServerListeningSession(book)
+                    ListeningSessionKind.NONE -> Unit
+                }
+            }
+        }
+    }
+
+    private suspend fun openServerListeningSession(book: AudioBook) {
+        withContext(Dispatchers.IO) {
+            try {
+                val session = apiService.startPlaybackSession(book.id)
+                if (session != null) {
+                    sessionMutex.withLock { currentSession = session }
+                    if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
+                        cachedChapters = session.chapters.sortedBy { it.start }
+                        _chapters.value = cachedChapters
+                    }
+                    lastSyncTimestamp = System.currentTimeMillis()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "openServerListeningSession: ${e.message}", e)
+            }
+        }
+    }
+
+    private suspend fun openLocalListeningSession(book: AudioBook, startPosition: Duration) {
+        val startSec = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
+        val newSessionId = withContext(Dispatchers.IO) {
+            try {
+                sessionRepository.startLocalSession(
+                    audioBookId = book.id,
+                    libraryId = book.libraryId.orEmpty(),
+                    displayTitle = book.title,
+                    startPositionSec = startSec,
+                ).takeIf { it > 0L }
+            } catch (e: Exception) {
+                Log.w(TAG, "openLocalListeningSession: ${e.message}")
+                null
+            }
+        }
+        currentLocalSessionId = newSessionId
+        localSessionAccumSec = 0.0
+        if (newSessionId != null) {
+            lastSyncTimestamp = System.currentTimeMillis()
         }
     }
 
@@ -886,6 +1038,7 @@ class PlaybackManager @Inject constructor(
             // If already in STATE_READY, start immediately
             if (player.playbackState == Player.STATE_READY) {
                 _playbackState.value = PlaybackState.PLAYING
+                ensureListeningSessionStarted()
                 startPositionPolling()
                 startSessionSync()
             }
@@ -923,6 +1076,7 @@ class PlaybackManager @Inject constructor(
         val book = _currentBook.value
         val pos = _position.value
         val dur = _duration.value
+        settingsManager.clearCurrentPlaybackBookId()
 
         // Release player and update state immediately so the UI reflects stopped state.
         releasePlayer()
@@ -1183,6 +1337,7 @@ class PlaybackManager @Inject constructor(
             exoPlayer?.prepare()
             exoPlayer?.playWhenReady = true
             _playbackState.value = PlaybackState.PLAYING
+            ensureListeningSessionStarted()
             startPositionPolling()
             startSessionSync()
         }
@@ -1299,13 +1454,7 @@ class PlaybackManager @Inject constructor(
                     _playbackState.value = PlaybackState.BUFFERING
                 }
                 Player.STATE_READY -> {
-                    if (exoPlayer?.playWhenReady == true) {
-                        _playbackState.value = PlaybackState.PLAYING
-                        startPositionPolling()
-                        startSessionSync()
-                    } else {
-                        _playbackState.value = PlaybackState.PAUSED
-                    }
+                    updateReadyPlaybackState(exoPlayer?.playWhenReady == true)
                 }
                 Player.STATE_ENDED -> {
                     // End of all tracks
@@ -1313,6 +1462,14 @@ class PlaybackManager @Inject constructor(
                     stopSessionSync()
                     _playbackState.value = PlaybackState.STOPPED
                     stopPlaybackService()
+                    if (
+                        playbackItemPersistenceAction(
+                            naturalCompletion = true,
+                            playbackStarting = false,
+                        ) == PlaybackItemPersistence.CLEAR
+                    ) {
+                        settingsManager.clearCurrentPlaybackBookId()
+                    }
 
                     val book = _currentBook.value
                     val finalLocalSessionId = currentLocalSessionId
@@ -1353,6 +1510,16 @@ class PlaybackManager @Inject constructor(
             }
         }
 
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // MediaSession controllers can pause or resume without changing
+            // ExoPlayer's READY state. onPlaybackStateChanged does not fire for
+            // that transition, so mirror it explicitly for the app UI and its
+            // polling and sync jobs.
+            if (exoPlayer?.playbackState == Player.STATE_READY) {
+                updateReadyPlaybackState(playWhenReady)
+            }
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val idx = exoPlayer?.currentMediaItemIndex ?: 0
             val reasonStr = when (reason) {
@@ -1373,6 +1540,32 @@ class PlaybackManager @Inject constructor(
             _playbackState.value = PlaybackState.STOPPED
             stopPlaybackService()
             _events.tryEmit(PlaybackEvent.Error("Playback error: ${error.message}"))
+        }
+    }
+
+    private fun updateReadyPlaybackState(playWhenReady: Boolean) {
+        val previous = _playbackState.value
+        val resolved = playbackStateForReadyPlayer(playWhenReady)
+        if (previous == resolved) return
+
+        _playbackState.value = resolved
+        when (resolved) {
+            PlaybackState.PLAYING -> {
+                ensureListeningSessionStarted()
+                startPositionPolling()
+                startSessionSync()
+            }
+
+            PlaybackState.PAUSED -> {
+                stopPositionPolling()
+                stopSessionSync()
+                if (previous == PlaybackState.PLAYING) {
+                    pausedAtTimestamp = System.currentTimeMillis()
+                    scope.launch(Dispatchers.IO) { syncProgressNow() }
+                }
+            }
+
+            else -> Unit
         }
     }
 

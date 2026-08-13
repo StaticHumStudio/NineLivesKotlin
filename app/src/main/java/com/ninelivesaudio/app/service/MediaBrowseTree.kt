@@ -7,8 +7,10 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,6 +28,7 @@ import javax.inject.Singleton
 class MediaBrowseTree @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val audioBookRepository: AudioBookRepository,
+    private val settingsManager: SettingsManager,
 ) {
     companion object {
         const val ROOT_ID = "root"
@@ -54,25 +57,26 @@ class MediaBrowseTree @Inject constructor(
 
     /** Resolve children for a given [parentId]. */
     suspend fun getChildren(parentId: String, page: Int = 0, pageSize: Int = 50): List<MediaItem> {
+        val settings = resolveActiveScope()
         return when {
             parentId == ROOT_ID -> getRootItems()
 
             parentId == RECENTLY_PLAYED_ID -> {
-                // getRecentlyPlayed already excludes archived books in SQL (so
-                // the limit is filled with live ones), consistent with the
-                // by-library/search filters below.
-                audioBookRepository.getRecentlyPlayed(limit = 20)
-                    .map { (book, _) -> bookToMediaItem(book) }
+                recentBooksInActiveScope(settings, limit = 20) { libraryId, limit ->
+                    audioBookRepository.getRecentlyPlayedByLibrary(libraryId, limit)
+                        .map { (book, _) -> book }
+                }
+                    .map(::bookToMediaItem)
             }
 
             parentId == LIBRARIES_ID -> {
-                libraryRepository.getAll().map { libraryToMediaItem(it) }
+                browseLibrariesInActiveScope(libraryRepository.getAll(), settings)
+                    .map(::libraryToMediaItem)
             }
 
             parentId.startsWith(LIB_PREFIX) -> {
                 val libId = parentId.removePrefix(LIB_PREFIX)
-                audioBookRepository.getByLibrary(libId)
-                    .filterNot { it.isArchived }
+                browseBooksInActiveScope(audioBookRepository.getByLibrary(libId), settings)
                     .sortedBy { it.title.lowercase() }
                     .drop(page * pageSize)
                     .take(pageSize)
@@ -85,6 +89,7 @@ class MediaBrowseTree @Inject constructor(
 
     /** Get a single item by its media ID. */
     suspend fun getItem(mediaId: String): MediaItem? {
+        val settings = resolveActiveScope()
         return when {
             mediaId == ROOT_ID -> buildBrowsableItem(ROOT_ID, "Nine Lives Audio", null)
             mediaId == RECENTLY_PLAYED_ID -> buildBrowsableItem(RECENTLY_PLAYED_ID, "Recently Played", "Continue listening")
@@ -92,7 +97,9 @@ class MediaBrowseTree @Inject constructor(
 
             mediaId.startsWith(LIB_PREFIX) -> {
                 val libId = mediaId.removePrefix(LIB_PREFIX)
-                libraryRepository.getById(libId)?.let { libraryToMediaItem(it) }
+                libraryRepository.getById(libId)
+                    ?.takeIf { browseLibrariesInActiveScope(listOf(it), settings).isNotEmpty() }
+                    ?.let(::libraryToMediaItem)
             }
 
             mediaId.startsWith(BOOK_PREFIX) -> {
@@ -100,8 +107,8 @@ class MediaBrowseTree @Inject constructor(
                 // An archived book has no source, so don't resolve it as a
                 // playable Auto item (e.g. from a stale queued media id).
                 audioBookRepository.getById(bookId)
-                    ?.takeUnless { it.isArchived }
-                    ?.let { bookToMediaItem(it) }
+                    ?.takeIf { browseBooksInActiveScope(listOf(it), settings).isNotEmpty() }
+                    ?.let(::bookToMediaItem)
             }
 
             else -> null
@@ -110,14 +117,25 @@ class MediaBrowseTree @Inject constructor(
 
     /** Search books by title/author. */
     suspend fun search(query: String): List<MediaItem> {
-        return audioBookRepository.search(query)
-            .filterNot { it.isArchived }
-            .map { bookToMediaItem(it) }
+        val settings = resolveActiveScope()
+        return browseBooksInActiveScope(audioBookRepository.search(query), settings)
+            .map(::bookToMediaItem)
     }
 
     /** Extract the original AudioBook ID from a media ID like "book_{id}". */
     fun extractBookId(mediaId: String): String? {
         return if (mediaId.startsWith(BOOK_PREFIX)) mediaId.removePrefix(BOOK_PREFIX) else null
+    }
+
+    private suspend fun resolveActiveScope(): AppSettings {
+        val libraries = libraryRepository.getAll()
+        val resolution = resolveActiveLibrarySelection(libraries, settingsManager.currentSettings)
+        if (resolution.requiresPersistence) {
+            settingsManager.updateSettings { latest ->
+                resolveActiveLibrarySelection(libraries, latest).settings
+            }
+        }
+        return settingsManager.currentSettings
     }
 
     // ─── Builders ──────────────────────────────────────────────────────
@@ -194,4 +212,28 @@ class MediaBrowseTree @Inject constructor(
             .setMediaMetadata(metadataBuilder.build())
             .build()
     }
+}
+
+internal fun browseLibrariesInActiveScope(
+    libraries: List<Library>,
+    settings: AppSettings,
+): List<Library> = libraries.filter { library ->
+    library.id == settings.activeLibraryId &&
+        library.isLocal == (settings.appMode == com.ninelivesaudio.app.domain.model.AppMode.LOCAL)
+}
+
+internal fun browseBooksInActiveScope(
+    books: List<AudioBook>,
+    settings: AppSettings,
+): List<AudioBook> = books.filter { book ->
+    !book.isArchived && book.isInActiveLibrary(settings)
+}
+
+internal suspend fun recentBooksInActiveScope(
+    settings: AppSettings,
+    limit: Int,
+    loadByLibrary: suspend (libraryId: String, limit: Int) -> List<AudioBook>,
+): List<AudioBook> {
+    val activeLibraryId = settings.activeLibraryId ?: return emptyList()
+    return browseBooksInActiveScope(loadByLibrary(activeLibraryId, limit), settings)
 }

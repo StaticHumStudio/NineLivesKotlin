@@ -187,6 +187,11 @@ fun NineLivesNavHost(
                 },
                 bookId = bookId,
                 onNavigateBack = { navController.popBackStack() },
+                onNavigateToSettings = {
+                    navController.navigate(Routes.SETTINGS) {
+                        launchSingleTop = true
+                    }
+                },
                 onNavigateToPlayer = {
                     navController.navigate(Routes.PLAYER) {
                         popUpTo(navController.graph.findStartDestination().id) {

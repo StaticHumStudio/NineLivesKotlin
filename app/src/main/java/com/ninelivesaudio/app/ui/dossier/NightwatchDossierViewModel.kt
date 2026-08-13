@@ -6,6 +6,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.service.SettingsManager
@@ -232,7 +233,8 @@ class NightwatchDossierViewModel @Inject constructor(
         loadJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
 
-            val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL
+            val settings = settingsManager.currentSettings
+            val isLocalMode = settings.appMode == AppMode.LOCAL
 
             // In AUDIOBOOKSHELF mode the Dossier needs a server session; in LOCAL mode
             // the data comes from on-device session rows and no auth is required.
@@ -249,11 +251,8 @@ class NightwatchDossierViewModel @Inject constructor(
 
             try {
                 val allSessions = sessionRepository.getAllSessions()
-                val selectedLibraryId = settingsManager.currentSettings.selectedLibraryId
-                val allBooks = audioBookRepository.getAll().let { books ->
-                    if (selectedLibraryId != null) books.filter { it.libraryId == selectedLibraryId }
-                    else books
-                }
+                val selectedLibraryId = settings.activeLibraryId
+                val allBooks = dossierBooksInActiveScope(audioBookRepository.getAll(), settings)
                 val bookMap = allBooks.associateBy { it.id }
 
                 // Time period window
@@ -725,3 +724,11 @@ internal fun statsBookIds(
     archivedBookIds: Set<String>,
     includeArchived: Boolean,
 ): Set<String> = if (includeArchived) allBookIds else allBookIds - archivedBookIds
+
+internal fun dossierBooksInActiveScope(
+    books: List<AudioBook>,
+    settings: AppSettings,
+): List<AudioBook> {
+    val activeLibraryId = settings.activeLibraryId ?: return books
+    return books.filter { it.libraryId == activeLibraryId }
+}

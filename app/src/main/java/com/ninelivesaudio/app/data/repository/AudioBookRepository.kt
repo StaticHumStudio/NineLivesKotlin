@@ -84,6 +84,16 @@ class AudioBookRepository @Inject constructor(
             book to lastPlayed
         }
 
+    suspend fun getRecentlyPlayedByLibrary(
+        libraryId: String,
+        limit: Int = 9,
+    ): List<Pair<AudioBook, Long>> =
+        audioBookDao.getRecentlyPlayedByLibrary(libraryId, limit).map { result ->
+            val book = result.audioBook.toDomain()
+            val lastPlayed = result.lastPlayedAt?.toEpochMillis() ?: 0L
+            book to lastPlayed
+        }
+
     /** Observe recently played audiobooks (reactive). */
     fun observeRecentlyPlayed(limit: Int = 9): Flow<List<Pair<AudioBook, Long>>> =
         audioBookDao.observeRecentlyPlayed(limit).map { results ->

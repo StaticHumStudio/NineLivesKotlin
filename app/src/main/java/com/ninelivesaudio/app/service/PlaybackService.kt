@@ -26,6 +26,11 @@ import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+internal fun shouldReturnPlayerQueueToAuto(
+    loadSucceeded: Boolean,
+    playerItemCount: Int,
+): Boolean = loadSucceeded && playerItemCount > 0
+
 /**
  * Foreground service for audio playback and Android Auto browsing.
  * Extends Media3 MediaLibraryService (which itself extends MediaSessionService)
@@ -361,18 +366,20 @@ class PlaybackService : MediaLibraryService() {
                     Log.d(TAG, "onSetMediaItems: resolved bookId=$bookId, loading async…")
                     // Load the book asynchronously, then return the player's real media items
                     return serviceScope.future(Dispatchers.Main) {
-                        try {
+                        val loadSucceeded = try {
                             val success = playbackManager.loadBookByIdForAuto(bookId)
                             Log.d(TAG, "onSetMediaItems: loadBookById=$success")
+                            success
                         } catch (e: Exception) {
                             Log.e(TAG, "onSetMediaItems: failed to load book $bookId", e)
+                            false
                         }
                         // After loading, the player has the real tracks — return them
                         // so Android Auto knows what's playing
                         val player = playbackManager.getPlayer()
                         val itemCount = player?.mediaItemCount ?: 0
                         Log.d(TAG, "onSetMediaItems: returning $itemCount items to controller, pos=${player?.currentPosition}")
-                        if (player != null && itemCount > 0) {
+                        if (player != null && shouldReturnPlayerQueueToAuto(loadSucceeded, itemCount)) {
                             val items = (0 until itemCount).map {
                                 player.getMediaItemAt(it)
                             }
@@ -385,9 +392,9 @@ class PlaybackService : MediaLibraryService() {
                                 items, player.currentMediaItemIndex, player.currentPosition
                             )
                         } else {
-                            Log.w(TAG, "onSetMediaItems: player empty after load, falling back to original items")
+                            Log.w(TAG, "onSetMediaItems: rejected or empty load, returning no playable items")
                             MediaSession.MediaItemsWithStartPosition(
-                                mediaItems, startIndex, startPositionMs
+                                emptyList(), 0, 0L
                             )
                         }
                     }

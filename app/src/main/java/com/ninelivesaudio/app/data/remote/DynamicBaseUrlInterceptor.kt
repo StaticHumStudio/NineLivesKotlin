@@ -5,6 +5,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.Response
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,13 +36,8 @@ class DynamicBaseUrlInterceptor @Inject constructor(
             return chain.proceed(originalRequest)
         }
 
-        val serverUrl = settingsManager.currentSettings.serverUrl
-
-        if (serverUrl.isEmpty()) {
-            return chain.proceed(originalRequest)
-        }
-
-        val newBaseUrl = serverUrl.trimEnd('/').toHttpUrlOrNull() ?: return chain.proceed(originalRequest)
+        val newBaseUrl = validatedServerBaseUrl(settingsManager.currentSettings.serverUrl)
+            ?: throw IOException("Audiobookshelf server is not configured")
 
         // Rebuild URL with server scheme/host/port and optional base path segments.
         val combinedPathSegments = buildList {
@@ -76,4 +72,9 @@ class DynamicBaseUrlInterceptor @Inject constructor(
 
         return chain.proceed(newRequest)
     }
+}
+
+fun validatedServerBaseUrl(serverUrl: String): HttpUrl? {
+    val parsed = serverUrl.trim().trimEnd('/').toHttpUrlOrNull() ?: return null
+    return parsed.takeIf { it.scheme == "http" || it.scheme == "https" }
 }

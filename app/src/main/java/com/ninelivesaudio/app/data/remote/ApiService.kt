@@ -57,7 +57,8 @@ class ApiService @Inject constructor(
     @Volatile private var lastValidationResult: TokenValidationResult? = null
 
     val isAuthenticated: Boolean
-        get() = authInterceptor.hasToken() && settingsManager.currentSettings.serverUrl.isNotEmpty()
+        get() = authInterceptor.hasToken() &&
+            validatedServerBaseUrl(settingsManager.currentSettings.serverUrl) != null
 
     // ─── Auth ────────────────────────────────────────────────────────────
 

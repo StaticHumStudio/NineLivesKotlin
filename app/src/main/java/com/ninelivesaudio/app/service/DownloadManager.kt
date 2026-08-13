@@ -53,6 +53,8 @@ class DownloadManager @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val engine: DownloadEngine,
     private val slotStore: DownloadSlotStore,
+    private val settingsManager: SettingsManager,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) {
     /**
      * Guards check-and-claim on the free tier's single offline slot.
@@ -175,6 +177,8 @@ class DownloadManager @Inject constructor(
 
         data class Failed(val item: DownloadItem) : QueueResult
 
+        data class ServerUnavailable(val message: String) : QueueResult
+
         /** Local-folder books are not downloadable and never were. */
         data object NotApplicable : QueueResult
     }
@@ -191,6 +195,14 @@ class DownloadManager @Inject constructor(
     suspend fun queueDownload(audioBook: AudioBook): QueueResult {
         if (audioBook.isLocal) {
             return QueueResult.NotApplicable
+        }
+        val remoteAccess = remoteMediaAccessDecision(
+            book = audioBook.copy(isDownloaded = false, localPath = null),
+            serverUrl = settingsManager.currentSettings.serverUrl,
+            connectionStatus = connectivityMonitor.connectionStatus.value,
+        )
+        if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
+            return QueueResult.ServerUnavailable(remoteAccess.message)
         }
         val downloadId = UUID.randomUUID().toString()
 

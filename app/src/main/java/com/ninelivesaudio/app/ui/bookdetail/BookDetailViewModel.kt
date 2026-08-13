@@ -7,12 +7,21 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
+import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.model.ListeningSession
+import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.service.DownloadManager
+import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
+import com.ninelivesaudio.app.service.RemoteMediaAccessDecision
+import com.ninelivesaudio.app.service.remoteMediaAccessDecision
+import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -28,6 +37,10 @@ class BookDetailViewModel @Inject constructor(
     private val downloadManager: DownloadManager,
     private val downloadItemDao: DownloadItemDao,
     private val listeningSessionRepository: ListeningSessionRepository,
+    private val settingsManager: SettingsManager,
+    private val libraryRepository: LibraryRepository,
+    private val localFolderAccess: LocalFolderAccess,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
     private val bookId: String = savedStateHandle["bookId"] ?: ""
@@ -59,6 +72,7 @@ class BookDetailViewModel @Inject constructor(
         val downloadNotice: String? = null,
         /** Whether [downloadNotice] should offer a route to the unlock screen. */
         val downloadNoticeOffersUnlock: Boolean = false,
+        val playbackNotice: String? = null,
         val isLoading: Boolean = true,
         val book: AudioBook? = null,
         val title: String = "",
@@ -75,6 +89,8 @@ class BookDetailViewModel @Inject constructor(
         val isDownloaded: Boolean = false,
         val isLocal: Boolean = false,
         val isArchived: Boolean = false,
+        val sourceAccessible: Boolean = true,
+        val needsFolderRecovery: Boolean = false,
         val chapters: List<Chapter> = emptyList(),
         val addedAt: Long? = null,
         val errorMessage: String? = null,
@@ -102,11 +118,14 @@ class BookDetailViewModel @Inject constructor(
 
             try {
                 // Load from local DB
+                val settings = settingsManager.currentSettings
                 var book = audioBookRepository.getById(bookId)
+                    ?.takeIf { it.isInActiveLibrary(settings) }
 
                 // If not found locally, try server
-                if (book == null) {
+                if (book == null && settings.appMode == AppMode.AUDIOBOOKSHELF) {
                     book = audioBookRepository.fetchFromServer(bookId)
+                        ?.takeIf { it.isInActiveLibrary(settings) }
                     if (book != null) {
                         audioBookRepository.save(book)
                     }
@@ -119,7 +138,16 @@ class BookDetailViewModel @Inject constructor(
                     return@launch
                 }
 
-                populateFromBook(book)
+                val library = book.libraryId?.let { libraryRepository.getById(it) }
+                val access = reconcileLocalBookAccess(
+                    book,
+                    localFolderAccess.accessibleLibraryIds(listOfNotNull(library)),
+                )
+                populateFromBook(
+                    book = access.book,
+                    sourceAccessible = access.isPlayable || access.book.isArchived,
+                    needsFolderRecovery = access.needsFolderRecovery,
+                )
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isLoading = false, errorMessage = "Failed to load: ${e.message}")
@@ -128,7 +156,11 @@ class BookDetailViewModel @Inject constructor(
         }
     }
 
-    private fun populateFromBook(book: AudioBook) {
+    private fun populateFromBook(
+        book: AudioBook,
+        sourceAccessible: Boolean,
+        needsFolderRecovery: Boolean,
+    ) {
         val seriesDisplay = if (!book.seriesName.isNullOrEmpty()) {
             if (book.seriesSequence.isNullOrEmpty()) {
                 book.seriesName
@@ -155,6 +187,8 @@ class BookDetailViewModel @Inject constructor(
                 isDownloaded = book.isDownloaded,
                 isLocal = book.isLocal,
                 isArchived = book.isArchived,
+                sourceAccessible = sourceAccessible,
+                needsFolderRecovery = needsFolderRecovery,
                 chapters = book.chapters.sortedBy { c -> c.start },
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
@@ -239,11 +273,25 @@ class BookDetailViewModel @Inject constructor(
         val book = _uiState.value.book ?: return
         // Backstop symmetric with jumpToSession: the Play button is already
         // disabled for archived books, but never load a missing source.
-        if (_uiState.value.isArchived) return
+        if (!canPlayBook(_uiState.value.isArchived, _uiState.value.sourceAccessible)) return
+        val remoteAccess = remoteMediaAccessDecision(
+            book = book,
+            serverUrl = settingsManager.currentSettings.serverUrl,
+            connectionStatus = connectivityMonitor.connectionStatus.value,
+        )
+        if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
+            _uiState.update { it.copy(playbackNotice = remoteAccess.message) }
+            return
+        }
         viewModelScope.launch {
+            _uiState.update { it.copy(playbackNotice = null) }
             val loaded = playbackManager.loadAudioBook(book)
             if (loaded) {
                 onReady()
+            } else {
+                _uiState.update {
+                    it.copy(playbackNotice = "That book could not be loaded. Check its source in Settings.")
+                }
             }
         }
     }
@@ -294,6 +342,15 @@ class BookDetailViewModel @Inject constructor(
                         // discarded here too.
                         downloadNotice = result.item.errorMessage
                             ?: "That book could not be queued for download.",
+                        downloadNoticeOffersUnlock = false,
+                    )
+                }
+
+                is DownloadManager.QueueResult.ServerUnavailable -> _uiState.update {
+                    it.copy(
+                        downloadState = previous,
+                        downloadProgress = 0,
+                        downloadNotice = result.message,
                         downloadNoticeOffersUnlock = false,
                     )
                 }
@@ -354,7 +411,16 @@ class BookDetailViewModel @Inject constructor(
         // An archived book's source file is gone; jumping would try to load a
         // missing URI. History stays visible (read-only), so tapping a row is a
         // no-op rather than a doomed load.
-        if (_uiState.value.isArchived) return
+        if (!canPlayBook(_uiState.value.isArchived, _uiState.value.sourceAccessible)) return
+        val remoteAccess = remoteMediaAccessDecision(
+            book = book,
+            serverUrl = settingsManager.currentSettings.serverUrl,
+            connectionStatus = connectivityMonitor.connectionStatus.value,
+        )
+        if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
+            _uiState.update { it.copy(playbackNotice = remoteAccess.message) }
+            return
+        }
         viewModelScope.launch {
             val loaded = playbackManager.loadAudioBook(book)
             if (loaded) {
@@ -388,4 +454,5 @@ class BookDetailViewModel @Inject constructor(
  * disk, and a normal server book streams on demand (isLocal=false,
  * isDownloaded=false is the common Audiobookshelf online case).
  */
-internal fun canPlayBook(isArchived: Boolean): Boolean = !isArchived
+internal fun canPlayBook(isArchived: Boolean, sourceAccessible: Boolean): Boolean =
+    !isArchived && sourceAccessible

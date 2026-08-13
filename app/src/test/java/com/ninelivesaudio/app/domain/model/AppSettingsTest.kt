@@ -3,6 +3,8 @@ package com.ninelivesaudio.app.domain.model
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppSettingsTest {
@@ -32,5 +34,63 @@ class AppSettingsTest {
         val original = AppSettings(onboardingComplete = true)
         val decoded = json.decodeFromString<AppSettings>(json.encodeToString(original))
         assertEquals(true, decoded.onboardingComplete)
+    }
+
+    @Test
+    fun `local mode uses only the local library selection`() {
+        val settings = AppSettings(
+            appMode = AppMode.LOCAL,
+            selectedLibraryId = "server-library",
+            selectedLocalLibraryId = "local-library",
+        )
+
+        assertEquals("local-library", settings.activeLibraryId)
+    }
+
+    @Test
+    fun `local mode never falls back to a stale server selection`() {
+        val settings = AppSettings(
+            appMode = AppMode.LOCAL,
+            selectedLibraryId = "server-library",
+            selectedLocalLibraryId = null,
+        )
+
+        assertNull(settings.activeLibraryId)
+    }
+
+    @Test
+    fun `server mode uses only the server library selection`() {
+        val settings = AppSettings(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            selectedLibraryId = "server-library",
+            selectedLocalLibraryId = "local-library",
+        )
+
+        assertEquals("server-library", settings.activeLibraryId)
+    }
+
+    @Test
+    fun `book scope matches mode and active library`() {
+        val localSettings = AppSettings(
+            appMode = AppMode.LOCAL,
+            selectedLibraryId = "server-library",
+            selectedLocalLibraryId = "local-library",
+        )
+        val serverSettings = localSettings.copy(appMode = AppMode.AUDIOBOOKSHELF)
+
+        assertTrue(AudioBook(libraryId = "local-library", isLocal = true).isInActiveLibrary(localSettings))
+        assertFalse(AudioBook(libraryId = "server-library", isLocal = false).isInActiveLibrary(localSettings))
+        assertTrue(AudioBook(libraryId = "server-library", isLocal = false).isInActiveLibrary(serverSettings))
+        assertFalse(AudioBook(libraryId = "local-library", isLocal = true).isInActiveLibrary(serverSettings))
+    }
+
+    @Test
+    fun `orphan book is rejected when no active library is selected`() {
+        val settings = AppSettings(
+            appMode = AppMode.LOCAL,
+            selectedLocalLibraryId = null,
+        )
+
+        assertFalse(AudioBook(libraryId = null, isLocal = true).isInActiveLibrary(settings))
     }
 }

@@ -107,6 +107,14 @@ data class AudioBook(
         }
 }
 
+/** True only when this book belongs to the selected library and source mode. */
+fun AudioBook.isInActiveLibrary(settings: AppSettings): Boolean {
+    val activeLibraryId = settings.activeLibraryId ?: return false
+    val bookLibraryId = libraryId ?: return false
+    return bookLibraryId == activeLibraryId &&
+        isLocal == (settings.appMode == AppMode.LOCAL)
+}
+
 data class AudioFile(
     val id: String = "",
     val ino: String = "", // AudioBookshelf internal reference

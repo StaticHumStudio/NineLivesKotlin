@@ -13,6 +13,9 @@ import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.resolveActiveLibrarySelection
+import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -77,6 +80,7 @@ class LibraryViewModel @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
     private val entitlements: EntitlementRepository,
+    private val localFolderAccess: LocalFolderAccess,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -158,12 +162,11 @@ class LibraryViewModel @Inject constructor(
                 loadAudiobookshelfLibraries()
             }
 
-            val savedId = if (settings.appMode == AppMode.LOCAL) {
-                settings.selectedLocalLibraryId ?: settings.selectedLibraryId
-            } else {
-                settings.selectedLibraryId
+            val selection = resolveActiveLibrarySelection(libs, settings)
+            if (selection.requiresPersistence) {
+                settingsManager.saveSettings(selection.settings)
             }
-            val selected = libs.firstOrNull { it.id == savedId } ?: libs.firstOrNull()
+            val selected = selection.library
 
             _uiState.update {
                 it.copy(
@@ -227,10 +230,7 @@ class LibraryViewModel @Inject constructor(
             // Persist selection so the whole app picks it up
             settingsManager.updateSettings {
                 if (library.isLocal) {
-                    it.copy(
-                        selectedLibraryId = library.id,
-                        selectedLocalLibraryId = library.id,
-                    )
+                    it.copy(selectedLocalLibraryId = library.id)
                 } else {
                     it.copy(selectedLibraryId = library.id)
                 }
@@ -348,13 +348,20 @@ class LibraryViewModel @Inject constructor(
             // shelf is not silently empty.
             LibraryTab.Archive -> if (state.isLocalMode) 4 else 0
         }
-        val books = audioBookRepository.getFilteredBooks(
+        val storedBooks = audioBookRepository.getFilteredBooks(
             libraryId = libraryId,
             tab = tab,
             hideFinished = state.hideFinished,
             downloadedOnly = state.showDownloadedOnly,
             searchQuery = state.searchQuery.trim(),
         )
+        val accessibleLocalIds = localFolderAccess.accessibleLibraryIds(state.libraries)
+        val books = storedBooks
+            .map { reconcileLocalBookAccess(it, accessibleLocalIds).book }
+            .filterNot {
+                !it.isDownloaded &&
+                    (state.selectedTab == LibraryTab.Downloaded || state.showDownloadedOnly)
+            }
 
         // Clamped at the point of consumption, not just in the UI. Gating the
         // chips stops a free user CHOOSING a premium sort, but says nothing

@@ -6,6 +6,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.entitlement.BillingManager
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.service.DownloadManager
@@ -13,6 +14,7 @@ import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
+import com.ninelivesaudio.app.service.repairedLibrarySelections
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +42,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var settingsManager: SettingsManager
+
+    @Inject
+    lateinit var libraryRepository: LibraryRepository
 
     @Inject
     lateinit var apiService: ApiService
@@ -134,14 +139,24 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             downloadManager.restorePausedNotificationIfNeeded()
 
             settingsManager.loadSettings()
-            // In LOCAL mode the app-wide selectedLibraryId must track the local
-            // library; heal any server id a prior ABS session left behind so the
-            // Home/Library shelves show local books on launch, not server ones.
-            settingsManager.reconcileSelectedLibraryForMode()
+            // Older builds healed Local mode by copying selectedLocalLibraryId
+            // into selectedLibraryId. That destroyed the independent server
+            // selection on existing installs. Repair only values that still
+            // resolve to a known Local row, preserving valid and temporarily
+            // uncached Audiobookshelf selections.
+            val loadedSettings = settingsManager.currentSettings
+            val repairedSettings = repairedLibrarySelections(
+                settings = loadedSettings,
+                libraries = libraryRepository.getAll(),
+            )
+            if (repairedSettings != loadedSettings) {
+                settingsManager.saveSettings(repairedSettings)
+            }
             apiService.initializeFromSettings()
             // serverUrl + token are now loaded, so it is safe to probe the
             // server and start syncing.
             connectivityMonitor.startMonitoring()
+            playbackManager.restoreCurrentItem()
             syncManager.start()
         }
 

@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalLibraryScanner
+import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.LocalMetadataExtractor
 import com.ninelivesaudio.app.service.local.toAudioBook
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
@@ -50,6 +51,7 @@ class SettingsViewModel @Inject constructor(
     private val playbackManager: PlaybackManager,
     private val localScanner: LocalLibraryScanner,
     private val localMetadataExtractor: LocalMetadataExtractor,
+    private val localFolderAccess: LocalFolderAccess,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -76,6 +78,7 @@ class SettingsViewModel @Inject constructor(
         // Local Libraries
         val localLibraries: List<Library> = emptyList(),
         val selectedLocalLibrary: Library? = null,
+        val inaccessibleLocalLibraryIds: Set<String> = emptySet(),
         val isScanning: Boolean = false,
         val lastScanMessage: String? = null,
 
@@ -209,6 +212,9 @@ class SettingsViewModel @Inject constructor(
                     it.copy(
                         localLibraries = locals,
                         selectedLocalLibrary = selected,
+                        inaccessibleLocalLibraryIds = locals
+                            .map { library -> library.id }
+                            .toSet() - localFolderAccess.accessibleLibraryIds(locals),
                     )
                 }
             }
@@ -318,13 +324,7 @@ class SettingsViewModel @Inject constructor(
         playbackManager.stop()
         _uiState.update { it.copy(appMode = mode) }
         viewModelScope.launch {
-            val selectedLibraryId = selectedLibraryIdForMode(mode)
-            settingsManager.updateSettings {
-                it.copy(
-                    appMode = mode,
-                    selectedLibraryId = selectedLibraryId,
-                )
-            }
+            settingsManager.updateSettings { it.copy(appMode = mode) }
         }
     }
 
@@ -364,14 +364,7 @@ class SettingsViewModel @Inject constructor(
 
                 // Select this library
                 settingsManager.updateSettings {
-                    it.copy(
-                        selectedLocalLibraryId = library.id,
-                        selectedLibraryId = if (it.appMode == AppMode.LOCAL) {
-                            library.id
-                        } else {
-                            it.selectedLibraryId
-                        },
-                    )
+                    it.copy(selectedLocalLibraryId = library.id)
                 }
 
                 val msg = "${scanResult.books.size} books imported" +
@@ -382,6 +375,7 @@ class SettingsViewModel @Inject constructor(
                         isScanning = false,
                         lastScanMessage = msg,
                         selectedLocalLibrary = library,
+                        inaccessibleLocalLibraryIds = it.inaccessibleLocalLibraryIds - library.id,
                         successMessage = msg,
                     )
                 }
@@ -468,19 +462,8 @@ class SettingsViewModel @Inject constructor(
     private suspend fun moveSelectionOffLibrary(library: Library) {
         if (_uiState.value.selectedLocalLibrary?.id != library.id) return
         val fallbackLocal = _uiState.value.localLibraries.firstOrNull { it.id != library.id }
-        val fallbackSelectedLibraryId = selectedLibraryIdForMode(
-            settingsManager.currentSettings.appMode,
-            fallbackLocal,
-        )
         settingsManager.updateSettings {
-            it.copy(
-                selectedLocalLibraryId = fallbackLocal?.id,
-                selectedLibraryId = if (it.selectedLibraryId == library.id) {
-                    fallbackSelectedLibraryId
-                } else {
-                    it.selectedLibraryId
-                },
-            )
+            it.copy(selectedLocalLibraryId = fallbackLocal?.id)
         }
         _uiState.update { it.copy(selectedLocalLibrary = null) }
     }
@@ -600,25 +583,8 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(selectedLocalLibrary = library) }
         viewModelScope.launch {
             settingsManager.updateSettings {
-                it.copy(
-                    selectedLocalLibraryId = library.id,
-                    selectedLibraryId = library.id,
-                )
+                it.copy(selectedLocalLibraryId = library.id)
             }
-        }
-    }
-
-    private suspend fun selectedLibraryIdForMode(
-        mode: AppMode,
-        fallbackLocal: Library? = null,
-    ): String? {
-        return when (mode) {
-            AppMode.LOCAL -> fallbackLocal?.id
-                ?: _uiState.value.selectedLocalLibrary?.id
-                ?: settingsManager.currentSettings.selectedLocalLibraryId
-
-            AppMode.AUDIOBOOKSHELF -> _uiState.value.selectedLibrary?.id
-                ?: libraryRepository.getAudiobookshelf().firstOrNull()?.id
         }
     }
 

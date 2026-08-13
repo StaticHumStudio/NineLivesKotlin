@@ -6,10 +6,12 @@ import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -23,6 +25,8 @@ class HomeViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
+    private val libraryRepository: LibraryRepository,
+    private val localFolderAccess: LocalFolderAccess,
 ) : ViewModel() {
 
     // ─── Data Model ──────────────────────────────────────────────────────────
@@ -79,15 +83,14 @@ class HomeViewModel @Inject constructor(
         // Observe selected library from settings and reload recently played
         viewModelScope.launch {
             settingsManager.settings
-                .map { it.selectedLibraryId }
+                .map { it.activeLibraryId }
                 .distinctUntilChanged()
                 .collectLatest { libraryId ->
                     if (libraryId != null) {
                         audioBookDao.observeRecentlyPlayedByLibrary(libraryId, 9)
                             .collect { results -> processRecentlyPlayed(results) }
                     } else {
-                        audioBookDao.observeRecentlyPlayed(9)
-                            .collect { results -> processRecentlyPlayed(results) }
+                        processRecentlyPlayed(emptyList())
                     }
                 }
         }
@@ -98,11 +101,11 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             try {
-                val libraryId = settingsManager.currentSettings.selectedLibraryId
+                val libraryId = settingsManager.currentSettings.activeLibraryId
                 val results = if (libraryId != null) {
                     audioBookDao.getRecentlyPlayedByLibrary(libraryId, 9)
                 } else {
-                    audioBookDao.getRecentlyPlayed(9)
+                    emptyList()
                 }
                 processRecentlyPlayed(results)
             } catch (e: Exception) {
@@ -122,7 +125,16 @@ class HomeViewModel @Inject constructor(
         // Future: unlock hidden lore, achievement, or atmospheric event.
     }
 
-    private fun processRecentlyPlayed(results: List<RecentlyPlayedResult>) {
+    private suspend fun processRecentlyPlayed(results: List<RecentlyPlayedResult>) {
+        val settings = settingsManager.currentSettings
+        val accessibleLocalIds = if (settings.appMode == AppMode.LOCAL) {
+            settings.activeLibraryId
+                ?.let { libraryRepository.getById(it) }
+                ?.let { localFolderAccess.accessibleLibraryIds(listOf(it)) }
+                ?: emptySet()
+        } else {
+            emptySet()
+        }
         val lives = results.mapIndexed { idx, result ->
             val book = result.audioBook
             val durationHours = book.durationSeconds / 3600.0
@@ -139,7 +151,8 @@ class HomeViewModel @Inject constructor(
                 coverPath = book.effectiveCoverPath,
                 progressPercent = normalizedProgress.coerceIn(0.0, 100.0),
                 isMostRecent = idx == 0,
-                isDownloaded = book.isDownloaded == 1,
+                isDownloaded = book.isDownloaded == 1 &&
+                    (book.isLocal == 0 || book.libraryId in accessibleLocalIds),
                 isBookmarked = false, // TODO: wire to bookmark data when available
                 hoursListened = currentTimeHours,
                 lifeIndex = idx,

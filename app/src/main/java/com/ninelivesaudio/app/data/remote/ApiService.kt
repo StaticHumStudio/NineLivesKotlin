@@ -60,14 +60,19 @@ internal class AuthReadiness {
     private val initializationMutex = Mutex()
     @Volatile private var initialized = false
 
-    suspend fun awaitOrInitialize(initializer: suspend () -> Unit) {
+    suspend fun awaitOrInitialize(initializer: suspend () -> Boolean) {
         if (initialized) return
         initializationMutex.withLock {
             if (!initialized) {
-                initializer()
-                // Set only after success. Failure or cancellation leaves the
-                // gate retryable for the next service or app request.
-                initialized = true
+                // Latch only on a fully successful restore. A false return
+                // (degraded startup: storage unavailable or token unreadable)
+                // leaves the gate retryable, exactly like failure or
+                // cancellation, so the next service or app request reruns the
+                // whole restore once storage recovers. Latching a degraded
+                // init would strand the interceptor tokenless while a valid
+                // token sits in recovered storage, and the next validation
+                // would 401 unauthenticated and clear that valid credential.
+                initialized = initializer()
             }
         }
     }
@@ -547,16 +552,22 @@ class ApiService @Inject constructor(
                 // Cancellation must escape so AuthReadiness stays retryable;
                 // a swallowed CancellationException here would latch the gate
                 // with a null token and poison every later validation.
+                var tokenReadable = true
                 val token = try {
                     settingsManager.getAuthToken()
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (e: Exception) {
                     Log.e(TAG, "initializeFromSettings: Auth token unreadable, starting logged out", e)
+                    tokenReadable = false
                     null
                 }
                 authInterceptor.setToken(token)
                 recordAuthMutation()
+                // Latch readiness only when the restore ran against healthy
+                // storage. A degraded run must stay retryable so the token
+                // reaches the interceptor once storage recovers.
+                tokenReadable && !settingsManager.storageUnavailable.value
             }
         }
     }

@@ -22,11 +22,15 @@ class AuthReadinessTest {
             readiness.awaitOrInitialize {
                 initializationCount++
                 releaseInitialization.await()
+                true
             }
             returned.complete(Unit)
         }
         val secondWaiter = async {
-            readiness.awaitOrInitialize { initializationCount++ }
+            readiness.awaitOrInitialize {
+                initializationCount++
+                true
+            }
         }
 
         yield()
@@ -37,7 +41,10 @@ class AuthReadinessTest {
         secondWaiter.await()
         assertTrue(returned.isCompleted)
 
-        readiness.awaitOrInitialize { initializationCount++ }
+        readiness.awaitOrInitialize {
+            initializationCount++
+            true
+        }
         assertEquals(1, initializationCount)
     }
 
@@ -56,7 +63,41 @@ class AuthReadinessTest {
             // Expected. The readiness gate must remain open for a retry.
         }
 
-        readiness.awaitOrInitialize { attempts++ }
+        readiness.awaitOrInitialize {
+            attempts++
+            true
+        }
         assertEquals(2, attempts)
+    }
+
+    @Test
+    fun `degraded restoration keeps the gate open until storage recovers`() = runBlocking {
+        val readiness = AuthReadiness()
+        var attempts = 0
+
+        // Storage unavailable: the initializer completes without throwing but
+        // reports a degraded restore. The gate must NOT latch, or the
+        // interceptor stays tokenless forever while a valid token sits in
+        // recovered storage and the next validation 401s it away.
+        readiness.awaitOrInitialize {
+            attempts++
+            false
+        }
+        readiness.awaitOrInitialize {
+            attempts++
+            false
+        }
+        assertEquals(2, attempts)
+
+        // Storage recovered: a successful restore latches, later calls no-op.
+        readiness.awaitOrInitialize {
+            attempts++
+            true
+        }
+        readiness.awaitOrInitialize {
+            attempts++
+            true
+        }
+        assertEquals(3, attempts)
     }
 }

@@ -874,13 +874,29 @@ class SettingsViewModel @Inject constructor(
 
                 if (authUiGeneration.get() != uiGeneration) return@withLock
                 if (success) {
+                    // RETAINED_SESSION means the typed server never answered and
+                    // the session that validated belongs to the STORED server
+                    // (login() already rolled settings back to it). Persisting or
+                    // displaying the typed URL would pair that server's token
+                    // with a different host, and the next validation against the
+                    // wrong host could 401 and clear a still-valid credential.
+                    val retained = passwordOutcome == PasswordLoginOutcome.RETAINED_SESSION
+                    val (sessionServerUrl, sessionUsername) = sessionIdentityForOutcome(
+                        retained = retained,
+                        typedServerUrl = s.serverUrl,
+                        typedUsername = s.username,
+                        storedServerUrl = settingsManager.currentSettings.serverUrl,
+                        storedUsername = settingsManager.currentSettings.username,
+                    )
                     updateAuthUi(uiGeneration) {
                         it.copy(
                             appMode = AppMode.AUDIOBOOKSHELF,
                             isConnected = true,
                             isConnecting = false,
-                            connectionStatusText = "Connected to ${s.serverUrl}",
-                            successMessage = if (passwordOutcome == PasswordLoginOutcome.RETAINED_SESSION) {
+                            serverUrl = sessionServerUrl,
+                            username = sessionUsername,
+                            connectionStatusText = "Connected to $sessionServerUrl",
+                            successMessage = if (retained) {
                                 "Connected with saved session"
                             } else {
                                 "Successfully connected!"
@@ -899,9 +915,9 @@ class SettingsViewModel @Inject constructor(
                                 settingsManager.updateSettings {
                                     it.copy(
                                         appMode = AppMode.AUDIOBOOKSHELF,
-                                        serverUrl = s.serverUrl,
-                                        username = if (s.useApiToken) "" else s.username,
-                                        useApiToken = s.useApiToken,
+                                        serverUrl = sessionServerUrl,
+                                        username = if (s.useApiToken) "" else sessionUsername,
+                                        useApiToken = if (retained) it.useApiToken else s.useApiToken,
                                     )
                                 }
                             }
@@ -1436,6 +1452,26 @@ internal suspend fun syncAfterLogin(
 ) {
     syncNow()
     checkServerReachable()
+}
+
+/**
+ * The server URL and username a successful connection may persist and display.
+ * A retained session validated against the STORED server (login() rolled
+ * settings back to it after the typed server never answered), so its identity
+ * is the stored one. Pairing the retained token with the typed URL would let a
+ * later validation against the wrong host 401 and clear a still-valid
+ * credential. Only a genuinely new login owns the typed identity.
+ */
+internal fun sessionIdentityForOutcome(
+    retained: Boolean,
+    typedServerUrl: String,
+    typedUsername: String,
+    storedServerUrl: String,
+    storedUsername: String,
+): Pair<String, String> = if (retained) {
+    storedServerUrl to storedUsername
+} else {
+    typedServerUrl to typedUsername
 }
 
 internal enum class PasswordLoginOutcome {

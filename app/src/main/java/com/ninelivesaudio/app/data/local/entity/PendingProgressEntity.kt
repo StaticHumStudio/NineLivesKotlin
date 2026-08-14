@@ -26,6 +26,9 @@ data class PendingProgressEntity(
     @ColumnInfo(name = "Duration", defaultValue = "0")
     val duration: Double = 0.0,
 
+    @ColumnInfo(name = "IsAtomic", defaultValue = "0")
+    val isAtomic: Int = 0,
+
     @ColumnInfo(name = "Timestamp")
     val timestamp: String, // ISO 8601
 )

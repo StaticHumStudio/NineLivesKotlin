@@ -87,6 +87,17 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
     }
 }
 
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Rows created before atomic durable-plus-queue delivery cannot use a
+        // durable mismatch as proof that the queued snapshot was superseded.
+        // Keep them marked as legacy so the first queue flush can rebuild one
+        // atomic snapshot from durable local progress plus queued duration.
+        // Until then they continue blocking stale server imports.
+        db.execSQL("ALTER TABLE PendingProgressUpdates ADD COLUMN IsAtomic INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -98,4 +109,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_4_5,
     MIGRATION_5_6,
     MIGRATION_6_7,
+    MIGRATION_7_8,
 )

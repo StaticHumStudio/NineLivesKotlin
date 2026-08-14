@@ -3,7 +3,6 @@ package com.ninelivesaudio.app.service
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
-import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -18,6 +17,10 @@ import com.ninelivesaudio.app.domain.util.toIso8601
 import kotlin.time.Duration.Companion.seconds
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val MIN_POSITION_SYNC_INTERVAL_MS = 30_000L
+private const val MIN_POSITION_DELTA = 2.0
+private const val MIN_PROGRESS_DELTA = 0.01
 
 /**
  * Manages periodic synchronization with the Audiobookshelf server.
@@ -36,29 +39,24 @@ class SyncManager @Inject constructor(
     private val audioBookRepository: AudioBookRepository,
     private val progressRepository: ProgressRepository,
     private val audioBookDao: AudioBookDao,
-    private val playbackProgressDao: PlaybackProgressDao,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
 ) {
     companion object {
         private const val INITIAL_DELAY_MS = 500L             // 0.5s — populate home screen fast
         private const val DEFAULT_SYNC_INTERVAL_MS = 300_000L // 5 minutes
-        private const val MIN_SYNC_INTERVAL_MS = 30_000L     // 30 seconds between position pushes
-        private const val MIN_POSITION_DELTA = 2.0            // seconds
-        private const val MIN_PROGRESS_DELTA = 0.01           // 1%
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncMutex = Mutex()
+    private val activeItemMutationMutex = Mutex()
 
     // Sync state
     private var syncJob: Job? = null
     private var connectivityJob: Job? = null
     @Volatile private var activeItemId: String? = null
 
-    // Throttle state for position reporting
-    private var lastSyncedTime: Double = 0.0
-    private var lastSyncTimestamp: Long = 0L
+    private val playbackThrottleOwner = PlaybackThrottleOwner()
 
     // ─── Events ──────────────────────────────────────────────────────────────
 
@@ -195,15 +193,14 @@ class SyncManager @Inject constructor(
      */
     private suspend fun syncProgress() {
         try {
+            val importToken = progressRepository.progressImportToken()
             val serverProgressList = progressRepository.fetchAllProgressFromServer()
             if (serverProgressList.isEmpty()) return
 
-            val activeId = activeItemId
-
             for (progress in serverProgressList) {
-                // Skip the actively-playing item — the session owns its progress
-                if (progress.libraryItemId == activeId) continue
-
+                // Active playback and queued local writes own progress. In
+                // particular, never compare server and phone wall clocks to
+                // decide whether an unsent offline write survives.
                 try {
                     var book = audioBookDao.getById(progress.libraryItemId)
                     if (book == null) {
@@ -226,26 +223,30 @@ class SyncManager @Inject constructor(
 
                     val updatedAtStr = progress.lastUpdate?.toIso8601()
 
-                    // Save server progress to local DB
-                    playbackProgressDao.upsert(
+                    // The repository checks the queue while holding the same
+                    // per-book ownership used by enqueue and flush. A pending
+                    // local write wins regardless of server clock skew.
+                    val imported = progressRepository.importServerProgressIfNoPending(
                         PlaybackProgressEntity(
                             audioBookId = progress.libraryItemId,
                             positionSeconds = positionSeconds,
                             isFinished = if (progress.isFinished) 1 else 0,
                             updatedAt = updatedAtStr,
-                        )
+                        ),
+                        importToken = importToken,
+                        onImported = {
+                            if (book != null) {
+                                audioBookDao.upsert(
+                                    book.copy(
+                                        currentTimeSeconds = positionSeconds,
+                                        progress = progress.progress,
+                                        isFinished = if (progress.isFinished) 1 else 0,
+                                    )
+                                )
+                            }
+                        },
                     )
-
-                    // Also update audiobook entity progress
-                    if (book != null) {
-                        audioBookDao.upsert(
-                            book.copy(
-                                currentTimeSeconds = positionSeconds,
-                                progress = progress.progress,
-                                isFinished = if (progress.isFinished) 1 else 0,
-                            )
-                        )
-                    }
+                    if (!imported) continue
                 } catch (_: Exception) {
                     // Continue with next item
                 }
@@ -261,11 +262,21 @@ class SyncManager @Inject constructor(
      * Mark the currently playing item.
      * Called by PlaybackManager when a new audiobook starts playing.
      */
-    fun setActivePlaybackItem(itemId: String?) {
-        activeItemId = itemId
-        lastSyncedTime = 0.0
-        lastSyncTimestamp = 0L
+    suspend fun setActivePlaybackItem(
+        itemId: String?,
+        isCurrent: () -> Boolean = { true },
+    ): Boolean = activeItemMutationMutex.withLock {
+        val claimed = progressRepository.setActiveProgressItem(itemId, isCurrent)
+        if (claimed) activeItemId = itemId
+        claimed
     }
+
+    private suspend fun clearActivePlaybackItemIf(itemId: String): Boolean =
+        activeItemMutationMutex.withLock {
+            val cleared = progressRepository.clearActiveProgressItemIf(itemId)
+            if (cleared) activeItemId = null
+            cleared
+        }
 
     /**
      * Report playback position with throttling.
@@ -282,53 +293,60 @@ class SyncManager @Inject constructor(
         // Only auto-mark as finished if position is within 1 second of the end.
         // Exact >= comparison can fire prematurely during seeks near the end.
         val computedFinished = isFinished || (safeDuration > 0.0 && safeDuration - safeCurrentTime < 1.0)
-        val progress = if (safeDuration > 0) (safeCurrentTime / safeDuration).coerceIn(0.0, 1.0) else 0.0
-
-        // Always save locally (crash safety)
-        progressRepository.savePlaybackProgress(
-            audioBookId = itemId,
-            position = safeCurrentTime.seconds,
+        val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL
+        val now = System.currentTimeMillis()
+        val shouldSync = !isLocalMode && shouldPushPlaybackPosition(
+            throttle = playbackThrottleOwner.snapshot(itemId),
+            currentTime = safeCurrentTime,
+            duration = safeDuration,
             isFinished = computedFinished,
+            now = now,
         )
 
-        // Update audiobook entity
-        try {
-            val book = audioBookDao.getById(itemId)
-            if (book != null) {
-                audioBookDao.upsert(
-                    book.copy(
-                        currentTimeSeconds = safeCurrentTime,
-                        progress = progress,
-                        isFinished = if (computedFinished) 1 else 0,
-                    )
-                )
-            }
-        } catch (e: Exception) {
-            // Non-fatal: progress already saved to PlaybackProgress table
+        val updateShelf: suspend () -> Unit = {
+            readAndWriteShelfProgressIfCurrent(
+                isCurrent = { true },
+                read = { audioBookDao.getById(itemId) },
+                write = { book ->
+                    if (book != null) {
+                        audioBookDao.upsert(
+                            book.copy(
+                                currentTimeSeconds = safeCurrentTime,
+                                progress = shelfProgress(
+                                    currentTime = safeCurrentTime,
+                                    duration = safeDuration,
+                                    isFinished = computedFinished,
+                                    existingProgress = book.progress,
+                                ),
+                                isFinished = if (computedFinished) 1 else 0,
+                            ),
+                        )
+                    }
+                },
+            )
         }
 
-        // LOCAL mode: progress is saved locally above; never push to the Audiobookshelf server.
-        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
+        val pushed = if (isLocalMode) {
+            progressRepository.savePlaybackProgress(
+                audioBookId = itemId,
+                position = safeCurrentTime.seconds,
+                isFinished = computedFinished,
+                onPersisted = updateShelf,
+            )
+            false
+        } else {
+            progressRepository.savePushOrEnqueueProgress(
+                itemId = itemId,
+                currentTime = safeCurrentTime,
+                isFinished = computedFinished,
+                duration = safeDuration,
+                pushToServer = shouldSync && connectivityMonitor.isOnline.value,
+                onPersisted = updateShelf,
+            )
+        }
 
-        // Throttle network pushes
-        val now = System.currentTimeMillis()
-        val timeSinceLastSync = now - lastSyncTimestamp
-        val positionDelta = kotlin.math.abs(safeCurrentTime - lastSyncedTime)
-        val lastSyncedProgress = lastSyncedTime / safeDuration.coerceAtLeast(1.0)
-        val shouldSync = computedFinished ||
-                (timeSinceLastSync >= MIN_SYNC_INTERVAL_MS &&
-                        (positionDelta >= MIN_POSITION_DELTA || (progress - lastSyncedProgress) >= MIN_PROGRESS_DELTA))
-
-        if (shouldSync && connectivityMonitor.isOnline.value) {
-            try {
-                val success = progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
-                if (success) {
-                    lastSyncedTime = safeCurrentTime
-                    lastSyncTimestamp = now
-                }
-            } catch (_: Exception) {
-                // Non-fatal: will sync later
-            }
+        if (pushed) {
+            playbackThrottleOwner.recordSuccess(itemId, safeCurrentTime, now)
         }
     }
 
@@ -341,43 +359,36 @@ class SyncManager @Inject constructor(
         currentTime: Double,
         isFinished: Boolean,
         duration: Double = 0.0,
+        onPersisted: suspend () -> Unit = {},
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
         val computedFinished = isFinished
 
-        // Always save locally first
-        progressRepository.savePlaybackProgress(
-            audioBookId = itemId,
-            position = safeCurrentTime.seconds,
-            isFinished = computedFinished,
-        )
-
         // LOCAL mode: local save above is the source of truth. Skip server push and
         // do NOT enqueue. Local item IDs would 404 against the server and poison the queue.
         if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
-            if (activeItemId == itemId) {
-                activeItemId = null
-            }
+            progressRepository.savePlaybackProgress(
+                audioBookId = itemId,
+                position = safeCurrentTime.seconds,
+                isFinished = computedFinished,
+                onPersisted = onPersisted,
+            )
+            clearActivePlaybackItemIf(itemId)
             return
         }
 
-        if (connectivityMonitor.isOnline.value) {
-            try {
-                progressRepository.pushProgressToServer(itemId, safeCurrentTime, computedFinished, safeDuration)
-            } catch (_: Exception) {
-                // Failed → enqueue
-                progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished, safeDuration)
-            }
-        } else {
-            // Offline → enqueue for later
-            progressRepository.enqueuePendingProgress(itemId, safeCurrentTime, computedFinished, safeDuration)
-        }
+        progressRepository.savePushOrEnqueueProgress(
+            itemId = itemId,
+            currentTime = safeCurrentTime,
+            isFinished = computedFinished,
+            duration = safeDuration,
+            pushToServer = connectivityMonitor.isOnline.value,
+            onPersisted = onPersisted,
+        )
 
         // Clear active item
-        if (activeItemId == itemId) {
-            activeItemId = null
-        }
+        clearActivePlaybackItemIf(itemId)
     }
 
     // ─── Offline Queue ───────────────────────────────────────────────────────
@@ -418,3 +429,64 @@ internal fun shouldRunSync(
     isLocalMode: Boolean,
     hasAuth: Boolean,
 ): Boolean = isOnline && !isLocalMode && hasAuth
+
+internal data class PlaybackThrottleSnapshot(
+    val lastSyncedTime: Double = 0.0,
+    val lastSyncTimestamp: Long = 0L,
+)
+
+internal class PlaybackThrottleOwner {
+    private val lock = Any()
+    private val states = mutableMapOf<String, PlaybackThrottleSnapshot>()
+
+    fun snapshot(itemId: String): PlaybackThrottleSnapshot = synchronized(lock) {
+        states[itemId] ?: PlaybackThrottleSnapshot()
+    }
+
+    fun recordSuccess(itemId: String, currentTime: Double, timestamp: Long) {
+        synchronized(lock) {
+            states[itemId] = PlaybackThrottleSnapshot(currentTime, timestamp)
+        }
+    }
+}
+
+
+internal fun shouldPushPlaybackPosition(
+    throttle: PlaybackThrottleSnapshot,
+    currentTime: Double,
+    duration: Double,
+    isFinished: Boolean,
+    now: Long,
+): Boolean {
+    if (duration <= 0.0 && !isFinished) return false
+    val progress = if (duration > 0.0) (currentTime / duration).coerceIn(0.0, 1.0) else 0.0
+    val timeSinceLastSync = now - throttle.lastSyncTimestamp
+    val positionDelta = kotlin.math.abs(currentTime - throttle.lastSyncedTime)
+    val lastSyncedProgress = throttle.lastSyncedTime / duration.coerceAtLeast(1.0)
+    return isFinished ||
+        (timeSinceLastSync >= MIN_POSITION_SYNC_INTERVAL_MS &&
+            (positionDelta >= MIN_POSITION_DELTA || progress - lastSyncedProgress >= MIN_PROGRESS_DELTA))
+}
+
+internal fun shelfProgress(
+    currentTime: Double,
+    duration: Double,
+    isFinished: Boolean,
+    existingProgress: Double,
+): Double = when {
+    isFinished -> 1.0
+    duration > 0.0 -> (currentTime / duration).coerceIn(0.0, 1.0)
+    else -> existingProgress
+}
+
+internal suspend fun <T> readAndWriteShelfProgressIfCurrent(
+    isCurrent: () -> Boolean,
+    read: suspend () -> T,
+    write: suspend (T) -> Unit,
+): Boolean {
+    if (!isCurrent()) return false
+    val current = read()
+    if (!isCurrent()) return false
+    write(current)
+    return true
+}

@@ -9,6 +9,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.ListeningSession
+import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -251,7 +252,6 @@ class NightwatchDossierViewModel @Inject constructor(
 
             try {
                 val allSessions = sessionRepository.getAllSessions()
-                val selectedLibraryId = settings.activeLibraryId
                 val allBooks = dossierBooksInActiveScope(audioBookRepository.getAll(), settings)
                 val bookMap = allBooks.associateBy { it.id }
 
@@ -261,13 +261,7 @@ class NightwatchDossierViewModel @Inject constructor(
                 val endMillis = period.endMillis()
                 val recentSessions = allSessions
                     .filter { it.startedAt in cutoffMillis..endMillis }
-                    .let { sessions ->
-                        // Scope sessions to the selected library's books
-                        if (selectedLibraryId != null) {
-                            val libraryBookIds = bookMap.keys
-                            sessions.filter { it.libraryItemId in libraryBookIds }
-                        } else sessions
-                    }
+                    .let { dossierSessionsInActiveScope(it, bookMap.keys) }
 
                 // Sanitize session durations: cap timeListening at wall-clock span
                 val sanitizedSessions = recentSessions.map { session ->
@@ -728,7 +722,9 @@ internal fun statsBookIds(
 internal fun dossierBooksInActiveScope(
     books: List<AudioBook>,
     settings: AppSettings,
-): List<AudioBook> {
-    val activeLibraryId = settings.activeLibraryId ?: return books
-    return books.filter { it.libraryId == activeLibraryId }
-}
+): List<AudioBook> = books.filter { it.isInActiveLibrary(settings) }
+
+internal fun dossierSessionsInActiveScope(
+    sessions: List<ListeningSession>,
+    scopedBookIds: Set<String>,
+): List<ListeningSession> = sessions.filter { it.libraryItemId in scopedBookIds }

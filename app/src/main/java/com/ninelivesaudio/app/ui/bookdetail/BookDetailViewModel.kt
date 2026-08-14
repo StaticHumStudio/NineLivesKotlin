@@ -29,6 +29,13 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 
+/** Tracks resumes for one ViewModel lifetime, never across process recreation. */
+internal class BookDetailResumeTracker {
+    private var hasResumed = false
+
+    fun shouldRefresh(): Boolean = hasResumed.also { hasResumed = true }
+}
+
 @HiltViewModel
 class BookDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -103,6 +110,7 @@ class BookDetailViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val resumeTracker = BookDetailResumeTracker()
 
     init {
         if (bookId.isNotEmpty()) {
@@ -259,6 +267,12 @@ class BookDetailViewModel @Inject constructor(
     }
 
     // ─── Actions ─────────────────────────────────────────────────────────────
+
+    fun onScreenResumed() {
+        if (resumeTracker.shouldRefresh()) {
+            refresh()
+        }
+    }
 
     fun refresh() {
         loadBook()

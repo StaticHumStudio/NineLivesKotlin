@@ -27,6 +27,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.data.repository.PendingProgressQueueOwner
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
@@ -46,6 +47,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -54,6 +56,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -69,8 +72,385 @@ enum class PlaybackState {
     STOPPED, LOADING, PLAYING, PAUSED, BUFFERING
 }
 
-internal fun playbackStateForReadyPlayer(playWhenReady: Boolean): PlaybackState =
-    if (playWhenReady) PlaybackState.PLAYING else PlaybackState.PAUSED
+internal data class PlaybackIntentTransition(
+    val state: PlaybackState,
+    val startPlaybackWork: Boolean,
+    val stopPlaybackWork: Boolean,
+    val syncPause: Boolean,
+)
+
+internal fun playbackIntentTransition(
+    playerReady: Boolean,
+    playWhenReady: Boolean,
+    playbackWorkActive: Boolean,
+): PlaybackIntentTransition {
+    val state = when {
+        !playWhenReady -> PlaybackState.PAUSED
+        playerReady -> PlaybackState.PLAYING
+        else -> PlaybackState.BUFFERING
+    }
+    val startPlaybackWork = state == PlaybackState.PLAYING && !playbackWorkActive
+    val stopPlaybackWork = state == PlaybackState.PAUSED && playbackWorkActive
+    return PlaybackIntentTransition(
+        state = state,
+        startPlaybackWork = startPlaybackWork,
+        stopPlaybackWork = stopPlaybackWork,
+        syncPause = stopPlaybackWork,
+    )
+}
+
+internal fun playbackWorkActive(
+    positionPollingJob: Job?,
+    sessionSyncJob: Job?,
+): Boolean = positionPollingJob?.isActive == true || sessionSyncJob?.isActive == true
+
+internal fun shouldReportPolledPosition(hasBook: Boolean, @Suppress("UNUSED_PARAMETER") duration: Duration): Boolean =
+    hasBook
+
+internal class PlaybackLoadOwner {
+    private val ownerLock = Any()
+    private var nextRequest = 0L
+    private var activeRequest: Long? = null
+    private val pendingRequests = sortedSetOf<Long>()
+    private val requestChanges = MutableStateFlow(0L)
+
+    fun newRequest(): Long = synchronized(ownerLock) {
+        (++nextRequest).also(pendingRequests::add)
+    }
+
+    suspend fun claim(request: Long): Boolean {
+        while (true) {
+            val observedChange = requestChanges.value
+            synchronized(ownerLock) {
+                if (request !in pendingRequests) return false
+                if (pendingRequests.lastOrNull() == request) {
+                    pendingRequests.removeAll { it <= request }
+                    activeRequest = request
+                    requestChanges.value += 1L
+                    return true
+                }
+            }
+            requestChanges.first { it != observedChange }
+        }
+    }
+
+    fun abandon(request: Long): Boolean = synchronized(ownerLock) {
+        val wasNewest = pendingRequests.lastOrNull() == request
+        if (pendingRequests.remove(request)) {
+            requestChanges.value += 1L
+        }
+        wasNewest
+    }
+
+    fun isCurrent(request: Long): Boolean = synchronized(ownerLock) {
+        request == activeRequest
+    }
+}
+
+internal data class PolledProgressReport(
+    val bookId: String,
+    val currentTime: Double,
+    val duration: Double,
+)
+
+private class StaleProgressWriteException : Exception()
+
+internal fun newPolledProgressReportChannel(): Channel<PolledProgressReport> =
+    Channel(Channel.CONFLATED)
+
+internal class PlaybackProgressOwner {
+    private val ownerLock = Any()
+    private val mutexes = mutableMapOf<String, Mutex>()
+    private val snapshotGenerations = mutableMapOf<String, Long>()
+
+    data class SnapshotToken(val bookId: String, val generation: Long)
+
+    private fun mutexFor(bookId: String): Mutex = synchronized(ownerLock) {
+        mutexes.getOrPut(bookId, ::Mutex)
+    }
+
+    fun snapshotToken(bookId: String): SnapshotToken = synchronized(ownerLock) {
+        val generation = (snapshotGenerations[bookId] ?: 0L) + 1L
+        snapshotGenerations[bookId] = generation
+        SnapshotToken(bookId, generation)
+    }
+
+    fun invalidateSnapshots(bookId: String) {
+        synchronized(ownerLock) {
+            snapshotGenerations[bookId] = (snapshotGenerations[bookId] ?: 0L) + 1L
+        }
+    }
+
+    suspend fun report(bookId: String, block: suspend () -> Unit) {
+        mutexFor(bookId).withLock { block() }
+    }
+
+    suspend fun <T> sync(bookId: String, block: suspend () -> T): T =
+        mutexFor(bookId).withLock { block() }
+
+    suspend fun syncSnapshot(token: SnapshotToken, block: suspend () -> Unit) {
+        mutexFor(token.bookId).withLock {
+            if (synchronized(ownerLock) { token.generation == snapshotGenerations[token.bookId] }) {
+                block()
+            }
+        }
+    }
+
+    suspend fun finalFlushSnapshot(
+        token: SnapshotToken,
+        syncTerminal: suspend () -> Unit,
+        flushProgress: suspend () -> Unit,
+    ) {
+        mutexFor(token.bookId).withLock {
+            if (synchronized(ownerLock) { token.generation == snapshotGenerations[token.bookId] }) {
+                flushProgress()
+                syncTerminal()
+            }
+        }
+    }
+}
+
+internal suspend fun PlaybackProgressOwner.resolveAndSavePlaybackPosition(
+    bookId: String,
+    candidate: Duration,
+    readDurable: suspend () -> Duration?,
+    save: suspend (Duration) -> Unit,
+): Duration = sync(bookId) {
+    val durable = readDurable()
+    val resolved = if (durable != null && durable > candidate) durable else candidate
+    save(resolved)
+    resolved
+}
+
+internal class PendingTerminalOwner {
+    private val lock = Any()
+    private val jobs = mutableMapOf<String, MutableSet<Job>>()
+
+    fun launch(
+        scope: CoroutineScope,
+        bookId: String,
+        block: suspend () -> Unit,
+    ): Job {
+        lateinit var job: Job
+        job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                block()
+            } finally {
+                synchronized(lock) {
+                    jobs[bookId]?.let { pending ->
+                        pending.remove(job)
+                        if (pending.isEmpty()) jobs.remove(bookId)
+                    }
+                }
+            }
+        }
+        synchronized(lock) { jobs.getOrPut(bookId, ::mutableSetOf).add(job) }
+        job.start()
+        return job
+    }
+
+    suspend fun await(bookId: String) {
+        while (true) {
+            val pending = synchronized(lock) { jobs[bookId]?.toList().orEmpty() }
+            if (pending.isEmpty()) return
+            pending.joinAll()
+        }
+    }
+
+    suspend fun runAfterPending(
+        bookId: String,
+        isCurrent: () -> Boolean,
+        block: () -> Unit,
+    ): Boolean {
+        await(bookId)
+        if (!isCurrent()) return false
+        block()
+        return true
+    }
+}
+
+internal data class TerminalPlaybackSnapshot(
+    val bookId: String,
+    val position: Duration,
+    val duration: Duration,
+    val isFinished: Boolean,
+    val serverSessionId: String?,
+    val timeListened: Double,
+)
+
+internal fun terminalPlaybackSnapshot(
+    bookId: String,
+    position: Duration,
+    duration: Duration,
+    isFinished: Boolean,
+    serverSessionId: String?,
+    timeListened: Double,
+): TerminalPlaybackSnapshot = TerminalPlaybackSnapshot(
+    bookId = bookId,
+    position = position,
+    duration = duration,
+    isFinished = isFinished,
+    serverSessionId = serverSessionId,
+    timeListened = timeListened,
+)
+
+internal data class PlaybackProgressSnapshot(
+    val bookId: String,
+    val isLocal: Boolean,
+    val position: Duration,
+    val duration: Duration,
+    val serverSessionId: String?,
+    val serverTimeListened: Double,
+    val localSessionId: Long?,
+    val localTimeListened: Double,
+)
+
+internal fun playbackProgressSnapshot(
+    bookId: String,
+    isLocal: Boolean,
+    position: Duration,
+    duration: Duration,
+    serverSessionId: String?,
+    serverTimeListened: Double,
+    localSessionId: Long?,
+    localTimeListened: Double,
+): PlaybackProgressSnapshot = PlaybackProgressSnapshot(
+    bookId = bookId,
+    isLocal = isLocal,
+    position = position,
+    duration = duration,
+    serverSessionId = serverSessionId,
+    serverTimeListened = serverTimeListened,
+    localSessionId = localSessionId,
+    localTimeListened = localTimeListened,
+)
+
+internal fun foldListeningTime(
+    accumulatedSeconds: Double,
+    lastTimestampMs: Long,
+    nowTimestampMs: Long,
+    maxElapsedSeconds: Double? = null,
+): Double {
+    if (lastTimestampMs == 0L) return accumulatedSeconds
+    val rawElapsed = (nowTimestampMs - lastTimestampMs).coerceAtLeast(0L) / 1000.0
+    val elapsed = maxElapsedSeconds?.let(rawElapsed::coerceAtMost) ?: rawElapsed
+    return accumulatedSeconds + elapsed
+}
+
+internal fun sessionResultIsCurrent(
+    requestedGeneration: Long,
+    currentGeneration: Long,
+    requestedBookId: String,
+    currentBookId: String?,
+): Boolean = requestedGeneration == currentGeneration && requestedBookId == currentBookId
+
+internal fun loadSessionResultIsCurrent(
+    loadRequestIsCurrent: Boolean,
+    requestedGeneration: Long,
+    currentGeneration: Long,
+    requestedBookId: String,
+    currentBookId: String?,
+): Boolean =
+    loadRequestIsCurrent &&
+        sessionResultIsCurrent(requestedGeneration, currentGeneration, requestedBookId, currentBookId)
+
+internal fun heartbeatSessionIsCurrent(
+    requestedGeneration: Long,
+    currentGeneration: Long,
+    requestedBookId: String,
+    currentBookId: String?,
+    requestedSessionId: String?,
+    currentSessionId: String?,
+): Boolean =
+    sessionResultIsCurrent(requestedGeneration, currentGeneration, requestedBookId, currentBookId) &&
+        requestedSessionId != null &&
+        requestedSessionId == currentSessionId
+
+internal fun playbackSyncLifetimeIsCurrent(
+    requestedGeneration: Long,
+    currentGeneration: Long,
+    requestedBookId: String,
+    currentBookId: String?,
+    requestedServerSessionId: String?,
+    currentServerSessionId: String?,
+    requestedLocalSessionId: Long?,
+    currentLocalSessionId: Long?,
+): Boolean =
+    sessionResultIsCurrent(requestedGeneration, currentGeneration, requestedBookId, currentBookId) &&
+        requestedServerSessionId == currentServerSessionId &&
+        requestedLocalSessionId == currentLocalSessionId
+
+private data class PlaybackSyncLifetime(
+    val bookId: String,
+    val generation: Long,
+    val serverSessionId: String?,
+    val localSessionId: Long?,
+    val pendingProgressToken: PendingProgressQueueOwner.Token,
+)
+
+internal data class StaleSessionProbe(
+    val requestedGeneration: Long,
+    val bookId: String,
+    val sessionId: String,
+    val position: Duration,
+    val duration: Duration,
+)
+
+private data class DetachedLocalSession(
+    val sessionId: Long?,
+    val timeListened: Double,
+    val updatedAt: Long,
+)
+
+internal fun staleSessionProbe(
+    requestedGeneration: Long,
+    bookId: String,
+    sessionId: String,
+    position: Duration,
+    duration: Duration,
+): StaleSessionProbe = StaleSessionProbe(
+    requestedGeneration = requestedGeneration,
+    bookId = bookId,
+    sessionId = sessionId,
+    position = position,
+    duration = duration,
+)
+
+internal class PlaybackIntentOwner(
+    private val currentState: () -> PlaybackState,
+    private val playbackWorkActive: () -> Boolean,
+    private val publishState: (PlaybackState) -> Unit,
+    private val startPlaybackWork: () -> Unit,
+    private val stopPlaybackWork: () -> Unit,
+    private val markPaused: () -> Unit,
+    private val syncPause: () -> Unit,
+    private val pausePlaybackLifetime: (playbackWorkWasActive: Boolean) -> Unit = {},
+) {
+    fun update(playerReady: Boolean, playWhenReady: Boolean) {
+        val transition = playbackIntentTransition(
+            playerReady = playerReady,
+            playWhenReady = playWhenReady,
+            playbackWorkActive = playbackWorkActive(),
+        )
+        val stateChanged = currentState() != transition.state
+        if (stateChanged) {
+            publishState(transition.state)
+        }
+        if (stateChanged && transition.state == PlaybackState.PAUSED) {
+            pausePlaybackLifetime(transition.stopPlaybackWork)
+        }
+        if (transition.startPlaybackWork) {
+            startPlaybackWork()
+        }
+        if (transition.stopPlaybackWork) {
+            stopPlaybackWork()
+            if (transition.syncPause) {
+                markPaused()
+                syncPause()
+            }
+        }
+    }
+}
 
 internal enum class ListeningSessionKind { NONE, LOCAL, SERVER }
 
@@ -248,17 +628,19 @@ class PlaybackManager @Inject constructor(
      * Load and play a book by its ID. Used by the phone UI.
      */
     suspend fun loadBookById(bookId: String): Boolean {
-        val book = withContext(Dispatchers.IO) {
-            audioBookRepository.getById(bookId)
-                ?: audioBookRepository.fetchFromServer(bookId)
-        } ?: return false
+        return withNewLoadRequest { loadRequest ->
+            val book = withContext(Dispatchers.IO) {
+                audioBookRepository.getById(bookId)
+                    ?: audioBookRepository.fetchFromServer(bookId)
+            } ?: return@withNewLoadRequest false
 
-        // Archived books have no source file; refuse to load one (mirrors
-        // loadBookByIdForAuto) so this stays safe if wired to a UI entry point.
-        if (book.isArchived) return false
+            // Archived books have no source file; refuse to load one (mirrors
+            // loadBookByIdForAuto) so this stays safe if wired to a UI entry point.
+            if (book.isArchived) return@withNewLoadRequest false
 
-        return withContext(Dispatchers.Main) {
-            loadAudioBook(book)
+            withContext(Dispatchers.Main) {
+                loadAudioBookOwned(loadRequest, book)
+            }
         }
     }
 
@@ -269,59 +651,78 @@ class PlaybackManager @Inject constructor(
      * same service would deadlock.
      */
     suspend fun loadBookByIdForAuto(bookId: String): Boolean {
-        val book = withContext(Dispatchers.IO) {
-            audioBookRepository.getById(bookId)
-                ?: audioBookRepository.fetchFromServer(bookId)
-        } ?: return false
+        return withNewLoadRequest { loadRequest ->
+            val book = withContext(Dispatchers.IO) {
+                audioBookRepository.getById(bookId)
+                    ?: audioBookRepository.fetchFromServer(bookId)
+            } ?: return@withNewLoadRequest false
 
-        // Refuse archived books: the source file is gone, so loading would
-        // attach a dead SAF URI. Browse/search already hide them, but a stale
-        // Auto queue entry could still request one by id.
-        if (book.isArchived) return false
+            // Refuse archived books: the source file is gone, so loading would
+            // attach a dead SAF URI. Browse/search already hide them, but a stale
+            // Auto queue entry could still request one by id.
+            if (book.isArchived) return@withNewLoadRequest false
 
-        return withContext(Dispatchers.Main) {
-            loadAudioBook(book, skipServiceStart = true)
+            withContext(Dispatchers.Main) {
+                loadAudioBookOwned(loadRequest, book, skipServiceStart = true)
+            }
         }
     }
 
     /** Restore the last current item after ordinary process death, always paused. */
     suspend fun restoreCurrentItem(): Boolean {
-        val persistedBookId = settingsManager.getCurrentPlaybackBookId() ?: return false
-        val storedBook = withContext(Dispatchers.IO) {
-            audioBookRepository.getById(persistedBookId)
-        }
-        val savedPosition = withContext(Dispatchers.IO) {
-            progressRepository.getPlaybackProgress(persistedBookId)?.first
-        }
-        val plan = resolvePlaybackRestore(
-            persistedBookId = persistedBookId,
-            storedBook = storedBook,
-            settings = settingsManager.currentSettings,
-            savedPosition = savedPosition,
-        )
-        if (plan == null) {
-            settingsManager.clearCurrentPlaybackBookId()
-            return false
-        }
-
-        if (
-            shouldProbeServerBeforeRestore(
-                book = plan.book,
-                connectionStatus = connectivityMonitor.connectionStatus.value,
+        return withNewLoadRequest { loadRequest ->
+            val persistedBookId = settingsManager.getCurrentPlaybackBookId()
+                ?: return@withNewLoadRequest false
+            val storedBook = withContext(Dispatchers.IO) {
+                audioBookRepository.getById(persistedBookId)
+            }
+            val savedPosition = withContext(Dispatchers.IO) {
+                progressRepository.getPlaybackProgress(persistedBookId)?.first
+            }
+            val plan = resolvePlaybackRestore(
+                persistedBookId = persistedBookId,
+                storedBook = storedBook,
+                settings = settingsManager.currentSettings,
+                savedPosition = savedPosition,
             )
-        ) {
-            connectivityMonitor.checkServerReachable()
-        }
+            if (plan == null) {
+                settingsManager.clearCurrentPlaybackBookId()
+                return@withNewLoadRequest false
+            }
 
-        return withContext(Dispatchers.Main) {
-            loadAudioBook(plan.book, autoPlay = plan.playWhenReady)
+            if (
+                shouldProbeServerBeforeRestore(
+                    book = plan.book,
+                    connectionStatus = connectivityMonitor.connectionStatus.value,
+                )
+            ) {
+                connectivityMonitor.checkServerReachable()
+            }
+
+            withContext(Dispatchers.Main) {
+                loadAudioBookOwned(loadRequest, plan.book, autoPlay = plan.playWhenReady)
+            }
+        }
+    }
+
+    private suspend fun withNewLoadRequest(block: suspend (Long) -> Boolean): Boolean {
+        val loadRequest = playbackLoadOwner.newRequest()
+        return try {
+            block(loadRequest)
+        } finally {
+            playbackLoadOwner.abandon(loadRequest)
         }
     }
 
     // ─── Coroutine Scope ──────────────────────────────────────────────────
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var positionPollingJob: Job? = null
+    private var progressReportingJob: Job? = null
+    private var progressReportingChannel: Channel<PolledProgressReport>? = null
     private var sessionSyncJob: Job? = null
+    private val playbackProgressOwner = PlaybackProgressOwner()
+    private val pendingTerminalOwner = PendingTerminalOwner()
+    private val playbackLoadOwner = PlaybackLoadOwner()
 
     // Auto-rewind: timestamp of last pause
     private var pausedAtTimestamp: Long? = null
@@ -330,6 +731,49 @@ class PlaybackManager @Inject constructor(
 
     private val _playbackState = MutableStateFlow(PlaybackState.STOPPED)
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
+
+    private val playbackIntentOwner by lazy(LazyThreadSafetyMode.NONE) {
+        PlaybackIntentOwner(
+            currentState = { _playbackState.value },
+            playbackWorkActive = { playbackWorkActive(positionPollingJob, sessionSyncJob) },
+            publishState = { _playbackState.value = it },
+            startPlaybackWork = {
+                _currentBook.value?.id?.let(playbackProgressOwner::invalidateSnapshots)
+                val requestedGeneration = nextPlaybackGeneration()
+                applyResumeBookkeeping()
+                ensureListeningSessionStarted(requestedGeneration)
+                startPositionPolling()
+                startSessionSync()
+            },
+            stopPlaybackWork = {
+                stopPositionPolling()
+                stopSessionSync()
+            },
+            pausePlaybackLifetime = { playbackWorkWasActive ->
+                invalidatePlaybackGeneration()
+                if (!playbackWorkWasActive) {
+                    synchronized(sessionLock) {
+                        lastSyncTimestamp = 0L
+                    }
+                }
+            },
+            markPaused = {
+                pausedAtTimestamp = System.currentTimeMillis()
+                pendingPauseSnapshot = capturePlaybackProgressSnapshot()
+            },
+            syncPause = {
+                val snapshot = pendingPauseSnapshot.also { pendingPauseSnapshot = null }
+                if (snapshot != null) {
+                    val snapshotToken = playbackProgressOwner.snapshotToken(snapshot.bookId)
+                    scope.launch(Dispatchers.IO) {
+                        playbackProgressOwner.syncSnapshot(snapshotToken) {
+                            syncPlaybackProgress(snapshot)
+                        }
+                    }
+                }
+            },
+        )
+    }
 
     private val _currentBook = MutableStateFlow<AudioBook?>(null)
     val currentBook: StateFlow<AudioBook?> = _currentBook.asStateFlow()
@@ -388,9 +832,10 @@ class PlaybackManager @Inject constructor(
     // ─── Internal State ───────────────────────────────────────────────────
 
     private var cachedChapters: List<Chapter> = emptyList()
-    private val sessionMutex = Mutex()
+    private val sessionLock = Any()
     private val listeningSessionStartMutex = Mutex()
     private var currentSession: PlaybackSessionInfo? = null
+    @Volatile private var playbackGeneration: Long = 0L
     private var accumulatedListenTime: Double = 0.0
     private var lastSyncTimestamp: Long = 0L
 
@@ -398,23 +843,90 @@ class PlaybackManager @Inject constructor(
     // above so the Nightwatch Dossier can read local sessions through the same model.
     private var currentLocalSessionId: Long? = null
     private var localSessionAccumSec: Double = 0.0
+    private var pendingPauseSnapshot: PlaybackProgressSnapshot? = null
     // Cap to ignore long gaps (background, doze) between heartbeats. 60s ≫ the 12s normal interval.
     private val localSessionMaxTickSec: Double = 60.0
 
-    /**
-     * Elapsed seconds since the last heartbeat tick, capped. Used at session-close
-     * moments (book switch, end-of-book) to add the tail interval that the 12s
-     * heartbeat hasn't folded into [localSessionAccumSec] yet.
-     *
-     * Returns 0 when no heartbeat baseline has been set yet — without this guard,
-     * a session closed before its first heartbeat would compute `now - 0` and add
-     * a capped 60s phantom to TimeListening.
-     */
-    private fun finalLocalSessionTickSec(): Double {
+    private fun finalServerSessionTickSec(): Double {
         if (lastSyncTimestamp == 0L) return 0.0
+        return (System.currentTimeMillis() - lastSyncTimestamp).coerceAtLeast(0L) / 1000.0
+    }
+
+    private fun nextPlaybackGeneration(nextBookId: String? = _currentBook.value?.id): Long {
+        listOfNotNull(_currentBook.value?.id, nextBookId)
+            .distinct()
+            .forEach(progressRepository::invalidatePendingProgressLifetime)
+        return synchronized(sessionLock) { ++playbackGeneration }
+    }
+
+    private fun invalidatePlaybackGeneration() {
+        _currentBook.value?.id?.let(progressRepository::invalidatePendingProgressLifetime)
+        synchronized(sessionLock) { playbackGeneration++ }
+    }
+
+    private fun capturePlaybackProgressSnapshot(): PlaybackProgressSnapshot? {
+        val book = _currentBook.value ?: return null
         val now = System.currentTimeMillis()
-        val raw = (now - lastSyncTimestamp).coerceAtLeast(0L) / 1000.0
-        return raw.coerceAtMost(localSessionMaxTickSec)
+        data class PauseTiming(
+            val serverSessionId: String?,
+            val serverTimeListened: Double,
+            val localSessionId: Long?,
+            val localTimeListened: Double,
+        )
+        val timing = synchronized(sessionLock) {
+            if (book.isLocal && currentLocalSessionId != null) {
+                localSessionAccumSec = foldListeningTime(
+                    accumulatedSeconds = localSessionAccumSec,
+                    lastTimestampMs = lastSyncTimestamp,
+                    nowTimestampMs = now,
+                    maxElapsedSeconds = localSessionMaxTickSec,
+                )
+                lastSyncTimestamp = 0L
+            } else if (!book.isLocal && currentSession != null) {
+                accumulatedListenTime = foldListeningTime(
+                    accumulatedSeconds = accumulatedListenTime,
+                    lastTimestampMs = lastSyncTimestamp,
+                    nowTimestampMs = now,
+                )
+                lastSyncTimestamp = 0L
+            }
+            PauseTiming(
+                serverSessionId = currentSession?.id,
+                serverTimeListened = accumulatedListenTime,
+                localSessionId = currentLocalSessionId,
+                localTimeListened = localSessionAccumSec,
+            )
+        }
+        return playbackProgressSnapshot(
+            bookId = book.id,
+            isLocal = book.isLocal,
+            position = _position.value,
+            duration = _duration.value,
+            serverSessionId = timing.serverSessionId,
+            serverTimeListened = timing.serverTimeListened,
+            localSessionId = timing.localSessionId,
+            localTimeListened = timing.localTimeListened,
+        )
+    }
+
+    private fun detachLocalSession(): DetachedLocalSession {
+        val now = System.currentTimeMillis()
+        return synchronized(sessionLock) {
+            val sessionId = currentLocalSessionId
+            val timeListened = if (sessionId == null) {
+                localSessionAccumSec
+            } else {
+                foldListeningTime(
+                    accumulatedSeconds = localSessionAccumSec,
+                    lastTimestampMs = lastSyncTimestamp,
+                    nowTimestampMs = now,
+                    maxElapsedSeconds = localSessionMaxTickSec,
+                )
+            }
+            currentLocalSessionId = null
+            localSessionAccumSec = 0.0
+            DetachedLocalSession(sessionId, timeListened, now)
+        }
     }
 
     // Track durations for position calculation
@@ -432,8 +944,25 @@ class PlaybackManager @Inject constructor(
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBook must be called from the Main thread"
         }
+        return withNewLoadRequest { loadRequest ->
+            loadAudioBookOwned(loadRequest, book, skipServiceStart, autoPlay)
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private suspend fun loadAudioBookOwned(
+        loadRequest: Long,
+        book: AudioBook,
+        skipServiceStart: Boolean = false,
+        autoPlay: Boolean = true,
+    ): Boolean {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "loadAudioBookOwned must be called from the Main thread"
+        }
         if (!book.isInActiveLibrary(settingsManager.currentSettings)) {
-            _events.tryEmit(PlaybackEvent.Error("That book is not in the active library."))
+            if (playbackLoadOwner.abandon(loadRequest)) {
+                _events.tryEmit(PlaybackEvent.Error("That book is not in the active library."))
+            }
             return false
         }
         if (book.isLocal) {
@@ -443,7 +972,9 @@ class PlaybackManager @Inject constructor(
                 localFolderAccess.accessibleLibraryIds(listOfNotNull(library)),
             )
             if (!access.isPlayable) {
-                _events.tryEmit(PlaybackEvent.Error("Folder access was lost. Reconnect it in Settings."))
+                if (playbackLoadOwner.abandon(loadRequest)) {
+                    _events.tryEmit(PlaybackEvent.Error("Folder access was lost. Reconnect it in Settings."))
+                }
                 return false
             }
         }
@@ -453,11 +984,25 @@ class PlaybackManager @Inject constructor(
             connectionStatus = connectivityMonitor.connectionStatus.value,
         )
         if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
-            _events.tryEmit(PlaybackEvent.Error(remoteAccess.message))
+            if (playbackLoadOwner.abandon(loadRequest)) {
+                _events.tryEmit(PlaybackEvent.Error(remoteAccess.message))
+            }
             return false
         }
+        pendingTerminalOwner.await(book.id)
+        if (!playbackLoadOwner.claim(loadRequest)) return false
         var effectiveBook = book
         try {
+            playbackProgressOwner.invalidateSnapshots(book.id)
+            val requestedGeneration = nextPlaybackGeneration(book.id)
+            val priorServerSession = synchronized(sessionLock) {
+                currentSession.also { currentSession = null }
+            }
+            if (priorServerSession != null) {
+                scope.launch(Dispatchers.IO) {
+                    closeSession(priorServerSession.id)
+                }
+            }
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
             _currentBook.value = book
@@ -480,23 +1025,21 @@ class PlaybackManager @Inject constructor(
             // Persist a final state for any prior local listening session, then drop the id.
             // Add the tail elapsed-since-last-heartbeat to the accumulator so book-switches
             // don't undercount the partial interval between the last heartbeat and now.
-            val priorLocalSessionId = currentLocalSessionId
-            if (priorLocalSessionId != null) {
+            val priorLocalSession = detachLocalSession()
+            if (priorLocalSession.sessionId != null) {
                 val priorPosSec = _position.value.toDouble(kotlin.time.DurationUnit.SECONDS)
-                val priorAccum = localSessionAccumSec + finalLocalSessionTickSec()
-                val priorUpdatedAt = System.currentTimeMillis()
                 scope.launch(Dispatchers.IO) {
                     try {
                         sessionRepository.updateLocalSession(
-                            id = priorLocalSessionId,
-                            timeListeningSec = priorAccum,
+                            id = priorLocalSession.sessionId,
+                            timeListeningSec = priorLocalSession.timeListened,
                             currentTimeSec = priorPosSec,
-                            updatedAt = priorUpdatedAt,
+                            updatedAt = priorLocalSession.updatedAt,
                         )
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
                     } catch (_: Exception) {}
                 }
-                currentLocalSessionId = null
-                localSessionAccumSec = 0.0
                 // Do not reset lastSyncTimestamp here. The next session's open path
                 // (local) or startSessionSync (server) will seed it correctly.
             }
@@ -516,67 +1059,88 @@ class PlaybackManager @Inject constructor(
             // A paused process restore prepares media without creating listening
             // history. Normal autoplay loads still open the server session here,
             // while restored playback opens it when Play actually begins.
-            sessionMutex.withLock { currentSession = null }
             if (
                 listeningSessionToOpen(
                     playbackStarting = autoPlay,
                     isScannedLocalBook = isScannedLocalBook,
                     hasServerSession = false,
-                    hasLocalSession = currentLocalSessionId != null,
+                    hasLocalSession = synchronized(sessionLock) { currentLocalSessionId != null },
                 ) == ListeningSessionKind.SERVER
             ) {
-                openServerListeningSession(book)
+                openServerListeningSession(book, requestedGeneration, loadRequest)
+                if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             }
 
             // If no session audio tracks AND no local audio files, fetch full book details
-            val sessionHasTracks = sessionMutex.withLock { currentSession?.audioTracks?.isNotEmpty() == true }
+            val sessionHasTracks = synchronized(sessionLock) { currentSession?.audioTracks?.isNotEmpty() == true }
             if (!isScannedLocalBook && !sessionHasTracks && effectiveBook.audioFiles.isEmpty() && !(effectiveBook.isDownloaded && !effectiveBook.localPath.isNullOrEmpty())) {
-                withContext(Dispatchers.IO) {
+                val fullBook = withContext(Dispatchers.IO) {
                     try {
-                        val fullBook = apiService.getAudioBook(book.id)
-                        if (fullBook != null && fullBook.audioFiles.isNotEmpty()) {
-                            effectiveBook = fullBook.copy(currentTime = book.currentTime, progress = book.progress)
-                            _currentBook.value = effectiveBook
-                            if (cachedChapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
-                                cachedChapters = fullBook.chapters.sortedBy { it.start }
-                                _chapters.value = cachedChapters
-                            }
-                        }
+                        apiService.getAudioBook(book.id)
                     } catch (e: Exception) {
                         Log.e(TAG, "loadAudioBook: failed to fetch full book: ${e.message}", e)
+                        null
+                    }
+                }
+                if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+                if (fullBook != null && fullBook.audioFiles.isNotEmpty()) {
+                    effectiveBook = fullBook.copy(currentTime = book.currentTime, progress = book.progress)
+                    _currentBook.value = effectiveBook
+                    if (cachedChapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
+                        cachedChapters = fullBook.chapters.sortedBy { it.start }
+                        _chapters.value = cachedChapters
                     }
                 }
             }
+
+            // Claim sync ownership before resolving or saving position. This
+            // keeps a concurrent server import from replacing the new
+            // playback lifetime during load.
+            val activeItemClaimed = syncManager.setActivePlaybackItem(effectiveBook.id) {
+                playbackLoadOwner.isCurrent(loadRequest)
+            }
+            if (!activeItemClaimed) return false
 
             // Resolve the best known position from all sources
             var startPosition = effectiveBook.currentTime
             withContext(Dispatchers.IO) {
                 // Check server session for a more recent position
-                val sessionTime = sessionMutex.withLock { (currentSession?.currentTime ?: 0.0).seconds }
+                val sessionTime = synchronized(sessionLock) { (currentSession?.currentTime ?: 0.0).seconds }
                 if (sessionTime > startPosition) {
                     startPosition = sessionTime
                 }
 
-                // Check local PlaybackProgress table for an even newer position
+                // Re-read durable progress and save the resolved position under
+                // one per-book gate. Polling cannot advance between the read and
+                // write and then get overwritten by this load snapshot.
                 try {
-                    val localProgress = progressRepository.getPlaybackProgress(effectiveBook.id)
-                    if (localProgress != null) {
-                        val (localPos, _) = localProgress
-                        if (localPos > startPosition) {
-                            startPosition = localPos
-                        }
-                    }
-                } catch (_: Exception) {}
-
-                // Save the resolved position
-                try {
-                    progressRepository.savePlaybackProgress(
-                        audioBookId = effectiveBook.id,
-                        position = startPosition,
-                        isFinished = false,
+                    startPosition = playbackProgressOwner.resolveAndSavePlaybackPosition(
+                        bookId = effectiveBook.id,
+                        candidate = startPosition,
+                        readDurable = {
+                            progressRepository.getPlaybackProgress(effectiveBook.id)?.first
+                        },
+                        save = { resolvedPosition ->
+                            progressRepository.savePlaybackProgress(
+                                audioBookId = effectiveBook.id,
+                                position = resolvedPosition,
+                                isFinished = false,
+                                onPersisted = {
+                                    updateAudioBookProgress(
+                                        bookId = effectiveBook.id,
+                                        positionSeconds = resolvedPosition.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                        durationSeconds = effectiveBook.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                        isFinished = false,
+                                    )
+                                },
+                            )
+                        },
                     )
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
                 } catch (_: Exception) {}
             }
+            if (!playbackLoadOwner.isCurrent(loadRequest)) return false
 
             // If the resolved position is at or beyond the book's duration (finished book),
             // reset to the beginning so the player doesn't immediately trigger STATE_ENDED.
@@ -595,11 +1159,17 @@ class PlaybackManager @Inject constructor(
 
             // Build media items with metadata baked in (avoids replaceMediaItem resets)
             val metadata = buildMediaMetadata(effectiveBook)
-            if (isLocal) {
-                loadLocalTracks(player, effectiveBook, metadata)
+            if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+            val tracksLoaded = if (isLocal) {
+                loadLocalTracks(player, effectiveBook, metadata) {
+                    playbackLoadOwner.isCurrent(loadRequest)
+                }
             } else {
-                loadStreamTracks(player, effectiveBook, metadata)
+                loadStreamTracks(player, effectiveBook, metadata) {
+                    playbackLoadOwner.isCurrent(loadRequest)
+                }
             }
+            if (!tracksLoaded || !playbackLoadOwner.isCurrent(loadRequest)) return false
 
             // Set playback parameters
             player.playbackParameters = PlaybackParameters(_speed.value)
@@ -663,36 +1233,24 @@ class PlaybackManager @Inject constructor(
 
             _events.tryEmit(PlaybackEvent.BookLoaded(effectiveBook))
 
-            // Notify SyncManager of active playback item (prevents sync overwriting position)
-            syncManager.setActivePlaybackItem(effectiveBook.id)
-
             settingsManager.saveCurrentPlaybackBookId(effectiveBook.id)
-
-            // Open a local listening session for scanned local-library books so the
-            // Nightwatch Dossier has rows to aggregate. Heartbeats in syncProgressNow
-            // accumulate timeListening; loadAudioBook itself just creates the row.
-            if (
-                listeningSessionToOpen(
-                    playbackStarting = autoPlay,
-                    isScannedLocalBook = isScannedLocalBook,
-                    hasServerSession = sessionMutex.withLock { currentSession != null },
-                    hasLocalSession = currentLocalSessionId != null,
-                ) == ListeningSessionKind.LOCAL
-            ) {
-                openLocalListeningSession(effectiveBook, startPosition)
-            }
 
             Log.d(TAG, "loadAudioBook: OK local=$isLocal pos=$startPosition dur=${_duration.value} tracks=${player.mediaItemCount}")
             return true
         } catch (e: Exception) {
+            if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             Log.e(TAG, "loadAudioBook: FAILED: ${e.message}", e)
+            val cleanupOwned = syncManager.setActivePlaybackItem(null) {
+                playbackLoadOwner.isCurrent(loadRequest)
+            }
+            if (!cleanupOwned) return false
             _playbackState.value = PlaybackState.STOPPED
             _events.tryEmit(PlaybackEvent.Error("Failed to load: ${e.message}"))
             return false
         }
     }
 
-    private fun ensureListeningSessionStarted() {
+    private fun ensureListeningSessionStarted(requestedGeneration: Long) {
         val requestedBook = _currentBook.value ?: return
         if (
             playbackItemPersistenceAction(
@@ -709,37 +1267,71 @@ class PlaybackManager @Inject constructor(
                 val kind = listeningSessionToOpen(
                     playbackStarting = true,
                     isScannedLocalBook = book.isLocal,
-                    hasServerSession = sessionMutex.withLock { currentSession != null },
-                    hasLocalSession = currentLocalSessionId != null,
+                    hasServerSession = synchronized(sessionLock) { currentSession != null },
+                    hasLocalSession = synchronized(sessionLock) { currentLocalSessionId != null },
                 )
                 when (kind) {
-                    ListeningSessionKind.LOCAL -> openLocalListeningSession(book, _position.value)
-                    ListeningSessionKind.SERVER -> openServerListeningSession(book)
+                    ListeningSessionKind.LOCAL -> openLocalListeningSession(book, _position.value, requestedGeneration)
+                    ListeningSessionKind.SERVER -> openServerListeningSession(book, requestedGeneration)
                     ListeningSessionKind.NONE -> Unit
                 }
             }
         }
     }
 
-    private suspend fun openServerListeningSession(book: AudioBook) {
+    private suspend fun openServerListeningSession(
+        book: AudioBook,
+        requestedGeneration: Long,
+        loadRequest: Long? = null,
+    ) {
         withContext(Dispatchers.IO) {
             try {
                 val session = apiService.startPlaybackSession(book.id)
                 if (session != null) {
-                    sessionMutex.withLock { currentSession = session }
-                    if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
-                        cachedChapters = session.chapters.sortedBy { it.start }
-                        _chapters.value = cachedChapters
+                    val accepted = synchronized(sessionLock) {
+                        if (
+                            loadSessionResultIsCurrent(
+                                loadRequestIsCurrent = loadRequest?.let(playbackLoadOwner::isCurrent) != false,
+                                requestedGeneration = requestedGeneration,
+                                currentGeneration = playbackGeneration,
+                                requestedBookId = book.id,
+                                currentBookId = _currentBook.value?.id,
+                            )
+                        ) {
+                            currentSession = session
+                            progressRepository.invalidatePendingProgressLifetime(book.id)
+                            lastSyncTimestamp = System.currentTimeMillis()
+                            if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
+                                cachedChapters = session.chapters.sortedBy { it.start }
+                                _chapters.value = cachedChapters
+                            }
+                            true
+                        } else {
+                            false
+                        }
                     }
-                    lastSyncTimestamp = System.currentTimeMillis()
+                    if (!accepted) {
+                        try {
+                            apiService.closeSession(session.id)
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: Exception) {}
+                        return@withContext
+                    }
                 }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (e: Exception) {
                 Log.e(TAG, "openServerListeningSession: ${e.message}", e)
             }
         }
     }
 
-    private suspend fun openLocalListeningSession(book: AudioBook, startPosition: Duration) {
+    private suspend fun openLocalListeningSession(
+        book: AudioBook,
+        startPosition: Duration,
+        requestedGeneration: Long,
+    ) {
         val startSec = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
         val newSessionId = withContext(Dispatchers.IO) {
             try {
@@ -749,28 +1341,49 @@ class PlaybackManager @Inject constructor(
                     displayTitle = book.title,
                     startPositionSec = startSec,
                 ).takeIf { it > 0L }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (e: Exception) {
                 Log.w(TAG, "openLocalListeningSession: ${e.message}")
                 null
             }
         }
-        currentLocalSessionId = newSessionId
-        localSessionAccumSec = 0.0
         if (newSessionId != null) {
-            lastSyncTimestamp = System.currentTimeMillis()
+            val accepted = synchronized(sessionLock) {
+                if (
+                    sessionResultIsCurrent(requestedGeneration, playbackGeneration, book.id, _currentBook.value?.id) &&
+                    currentLocalSessionId == null
+                ) {
+                    currentLocalSessionId = newSessionId
+                    localSessionAccumSec = 0.0
+                    lastSyncTimestamp = System.currentTimeMillis()
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!accepted) {
+                withContext(Dispatchers.IO) { sessionRepository.discardLocalSession(newSessionId) }
+            }
         }
     }
 
     @OptIn(UnstableApi::class)
-    private suspend fun loadLocalTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
+    private suspend fun loadLocalTracks(
+        player: ExoPlayer,
+        book: AudioBook,
+        metadata: MediaMetadata,
+        isCurrent: () -> Boolean,
+    ): Boolean {
         // Scanned local-library books store SAF content:// URIs, not filesystem paths.
         // They must be parsed as URIs; File()/Uri.fromFile() would produce invalid file:///content:/... URIs.
         if (book.isLocal) {
+            if (!isCurrent()) return false
             loadScannedLocalTracks(player, book, metadata)
-            return
+            return true
         }
 
-        val localPath = book.localPath ?: return
+        val localPath = book.localPath ?: return true
         val localFile = fileFromLocalPath(localPath)
 
         val mediaItems = mutableListOf<MediaItem>()
@@ -848,6 +1461,7 @@ class PlaybackManager @Inject constructor(
             val fileDurations = withContext(Dispatchers.IO) {
                 files.map { readDurationSeconds(it) }
             }
+            if (!isCurrent()) return false
 
             for (file in files) {
                 mediaItems.add(
@@ -882,8 +1496,10 @@ class PlaybackManager @Inject constructor(
             )
         }
 
+        if (!isCurrent()) return false
         trackDurations = durations
         player.setMediaItems(mediaItems)
+        return true
     }
 
     private fun uriFromLocalPath(path: String): Uri {
@@ -939,10 +1555,16 @@ class PlaybackManager @Inject constructor(
     }
 
     @OptIn(UnstableApi::class)
-    private suspend fun loadStreamTracks(player: ExoPlayer, book: AudioBook, metadata: MediaMetadata) {
-        val session = sessionMutex.withLock { currentSession }
+    private suspend fun loadStreamTracks(
+        player: ExoPlayer,
+        book: AudioBook,
+        metadata: MediaMetadata,
+        isCurrent: () -> Boolean,
+    ): Boolean {
+        val session = synchronized(sessionLock) { currentSession }
         val serverUrl = settingsManager.currentSettings.serverUrl.trimEnd('/')
         val token = settingsManager.getAuthToken() ?: ""
+        if (!isCurrent()) return false
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(
@@ -987,62 +1609,70 @@ class PlaybackManager @Inject constructor(
             }
         }
 
-        trackDurations = durations
-
         val mediaSources: List<MediaSource> = mediaItems.map { item ->
             mediaSourceFactory.createMediaSource(item)
         }
 
+        if (!isCurrent()) return false
+        trackDurations = durations
         player.setMediaSources(mediaSources)
+        return true
     }
 
     // ─── Playback Controls ────────────────────────────────────────────────
 
     fun play() {
         exoPlayer?.let { player ->
-            // ── Auto-Rewind ───────────────────────────────────────────
-            // Effective, not stored. A free install resumes exactly where
-            // playback stopped, and the user's chosen rewind mode survives on
-            // disk for when they unlock.
-            val settings = effectiveSettings.current
-            if (settings.autoRewindEnabled) {
-                val pausedAt = pausedAtTimestamp
-                if (pausedAt != null) {
-                    val pausedMs = System.currentTimeMillis() - pausedAt
-                    val rewindSeconds = when (settings.autoRewindMode) {
-                        "flat" -> settings.autoRewindSeconds
-                        else -> smartRewindSeconds(pausedMs)
-                    }
-                    if (rewindSeconds > 0) {
-                        val current = _position.value
-                        val target = (current - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
-                        seekToPosition(target)
-                        _position.value = target
-                        updateCurrentChapter(target)
-                    }
-                }
-                pausedAtTimestamp = null
-            }
             // ── Resume ────────────────────────────────────────────────
             if (player.playbackState == Player.STATE_ENDED) {
-                // Player reached end-of-book — re-prepare to allow seeking/playing
+                val bookId = _currentBook.value?.id
+                if (bookId != null) {
+                    scope.launch {
+                        pendingTerminalOwner.runAfterPending(
+                            bookId = bookId,
+                            isCurrent = {
+                                _currentBook.value?.id == bookId &&
+                                    exoPlayer === player &&
+                                    player.playbackState == Player.STATE_ENDED
+                            },
+                        ) {
+                            player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                            player.prepare()
+                            player.playWhenReady = true
+                        }
+                    }
+                    return
+                }
                 player.seekTo(player.currentMediaItemIndex, player.currentPosition)
                 player.prepare()
-                // prepare() moves the player to BUFFERING, so the STATE_READY
-                // branch below is skipped and the listener takes over. Reflect the
-                // resume immediately so the UI does not stay showing STOPPED while
-                // it buffers.
-                _playbackState.value = PlaybackState.BUFFERING
             }
             player.playWhenReady = true
-            // If already in STATE_READY, start immediately
-            if (player.playbackState == Player.STATE_READY) {
-                _playbackState.value = PlaybackState.PLAYING
-                ensureListeningSessionStarted()
-                startPositionPolling()
-                startSessionSync()
+            // Player callbacks own app state and transition side effects.
+        }
+    }
+
+    private fun applyResumeBookkeeping() {
+        // Effective, not stored. A free install resumes exactly where playback
+        // stopped, and the user's chosen rewind mode survives on disk for when
+        // they unlock.
+        val settings = effectiveSettings.current
+        if (settings.autoRewindEnabled) {
+            val pausedAt = pausedAtTimestamp
+            if (pausedAt != null) {
+                val pausedMs = System.currentTimeMillis() - pausedAt
+                val rewindSeconds = when (settings.autoRewindMode) {
+                    "flat" -> settings.autoRewindSeconds
+                    else -> smartRewindSeconds(pausedMs)
+                }
+                if (rewindSeconds > 0) {
+                    val current = _position.value
+                    val target = (current - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
+                    seekToPosition(target)
+                    _position.value = target
+                    updateCurrentChapter(target)
+                }
             }
-            // Otherwise the player listener will handle the transition when ready
+            pausedAtTimestamp = null
         }
     }
 
@@ -1057,25 +1687,39 @@ class PlaybackManager @Inject constructor(
     }
 
     fun pause() {
-        exoPlayer?.let { player ->
-            player.playWhenReady = false
-            _playbackState.value = PlaybackState.PAUSED
-            pausedAtTimestamp = System.currentTimeMillis()
-            stopPositionPolling()
-            stopSessionSync()
-            scope.launch(Dispatchers.IO) { syncProgressNow() }
-        }
+        exoPlayer?.pause()
     }
 
     fun stop() {
         Log.d(TAG, "stop: book=${_currentBook.value?.title} pos=${_position.value}")
         pausedAtTimestamp = null
+        invalidatePlaybackGeneration()
+        val book = _currentBook.value
+        val terminalToken = book?.id?.let {
+            playbackProgressOwner.invalidateSnapshots(it)
+            playbackProgressOwner.snapshotToken(it)
+        }
         stopPositionPolling()
         stopSessionSync()
 
-        val book = _currentBook.value
         val pos = _position.value
         val dur = _duration.value
+        val capturedServerTerminal = synchronized(sessionLock) {
+            Pair(
+                currentSession.also { currentSession = null },
+                accumulatedListenTime + finalServerSessionTickSec(),
+            )
+        }
+        val terminal = book?.let {
+            terminalPlaybackSnapshot(
+                bookId = it.id,
+                position = pos,
+                duration = dur,
+                isFinished = dur > Duration.ZERO && pos >= (dur - 1.seconds).coerceAtLeast(Duration.ZERO),
+                serverSessionId = capturedServerTerminal.first?.id,
+                timeListened = capturedServerTerminal.second,
+            )
+        }
         settingsManager.clearCurrentPlaybackBookId()
 
         // Release player and update state immediately so the UI reflects stopped state.
@@ -1089,38 +1733,40 @@ class PlaybackManager @Inject constructor(
         // would wipe the NEW session's id and silently break its heartbeat.
         // Do NOT touch lastSyncTimestamp here — the launched syncProgressNow
         // below still uses it to compute the server session's final elapsed tick.
-        val capturedLocalSessionId = currentLocalSessionId
-        val capturedLocalAccum = localSessionAccumSec + finalLocalSessionTickSec()
-        val capturedLocalUpdatedAt = System.currentTimeMillis()
-        currentLocalSessionId = null
-        localSessionAccumSec = 0.0
+        val capturedLocalSession = detachLocalSession()
 
         // Flush progress in the background AFTER releasing the player.
         // All values were captured above so no player access is needed.
-        if (book != null) {
-            val isFinished = dur > Duration.ZERO && pos >= (dur - 1.seconds).coerceAtLeast(Duration.ZERO)
-            scope.launch(Dispatchers.IO) {
-                try {
-                    syncProgressNow()
-                } catch (_: Exception) {}
-                // Flush progress through SyncManager (handles offline queue)
-                syncManager.flushPlaybackProgress(
-                    itemId = book.id,
-                    currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
-                    isFinished = isFinished,
-                    duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                )
-                closeSession()
+        if (terminal != null && terminalToken != null) {
+            pendingTerminalOwner.launch(scope, terminal.bookId) {
+                progressRepository.withTerminalProgressOwnership(terminal.bookId) {
+                    playbackProgressOwner.finalFlushSnapshot(
+                        token = terminalToken,
+                        syncTerminal = { syncTerminalSession(terminal) },
+                        flushProgress = {
+                            syncManager.flushPlaybackProgress(
+                                itemId = terminal.bookId,
+                                currentTime = terminal.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                isFinished = terminal.isFinished,
+                                duration = terminal.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                onPersisted = { updateAudioBookProgress(terminal) },
+                            )
+                        },
+                    )
+                }
+                closeSession(terminal.serverSessionId)
                 // Explicit final write for the captured local session (syncProgressNow
                 // above no longer touches it because currentLocalSessionId is null).
-                if (capturedLocalSessionId != null) {
+                if (capturedLocalSession.sessionId != null) {
                     try {
                         sessionRepository.updateLocalSession(
-                            id = capturedLocalSessionId,
-                            timeListeningSec = capturedLocalAccum,
+                            id = capturedLocalSession.sessionId,
+                            timeListeningSec = capturedLocalSession.timeListened,
                             currentTimeSec = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
-                            updatedAt = capturedLocalUpdatedAt,
+                            updatedAt = capturedLocalSession.updatedAt,
                         )
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
                     } catch (_: Exception) {}
                 }
             }
@@ -1128,6 +1774,25 @@ class PlaybackManager @Inject constructor(
     }
 
     fun seekTo(position: Duration) {
+        val player = exoPlayer
+        val bookId = _currentBook.value?.id
+        if (player?.playbackState == Player.STATE_ENDED && bookId != null) {
+            scope.launch {
+                pendingTerminalOwner.runAfterPending(
+                    bookId = bookId,
+                    isCurrent = {
+                        _currentBook.value?.id == bookId &&
+                            exoPlayer === player &&
+                            player.playbackState == Player.STATE_ENDED
+                    },
+                ) {
+                    seekToPosition(position)
+                    _position.value = position
+                    updateCurrentChapter(position)
+                }
+            }
+            return
+        }
         seekToPosition(position)
         _position.value = position
         updateCurrentChapter(position)
@@ -1325,22 +1990,40 @@ class PlaybackManager @Inject constructor(
         if (chapterIndex < 0 || chapterIndex >= cachedChapters.size) return
         val chapter = cachedChapters[chapterIndex]
 
-        // If the player is in STATE_ENDED (book finished), re-prepare before seeking
+        // If the player is in STATE_ENDED, finish the terminal handoff before
+        // READY can invalidate its snapshot and begin a new playback lifetime.
         val wasEnded = exoPlayer?.playbackState == Player.STATE_ENDED
+        if (wasEnded) {
+            val bookId = _currentBook.value?.id ?: return
+            val player = exoPlayer ?: return
+            scope.launch {
+                pendingTerminalOwner.runAfterPending(
+                    bookId = bookId,
+                    isCurrent = {
+                        _currentBook.value?.id == bookId &&
+                            exoPlayer === player &&
+                            player.playbackState == Player.STATE_ENDED
+                    },
+                ) {
+                    seekToPosition(chapter.startTime)
+                    _position.value = chapter.startTime
+                    updateCurrentChapter(chapter.startTime)
+                    _currentChapter.value = chapter
+                    _currentChapterIndex.value = chapterIndex
+                    chapterPlayer?.currentChapter = chapter
+                    chapterPlayer?.currentChapterIndex = chapterIndex
+                    player.prepare()
+                    player.playWhenReady = true
+                }
+            }
+            return
+        }
         seekTo(chapter.startTime)
         _currentChapter.value = chapter
         _currentChapterIndex.value = chapterIndex
         chapterPlayer?.currentChapter = chapter
         chapterPlayer?.currentChapterIndex = chapterIndex
 
-        if (wasEnded) {
-            exoPlayer?.prepare()
-            exoPlayer?.playWhenReady = true
-            _playbackState.value = PlaybackState.PLAYING
-            ensureListeningSessionStarted()
-            startPositionPolling()
-            startSessionSync()
-        }
     }
 
     // ─── Position Calculation (multi-track aware) ─────────────────────────
@@ -1451,13 +2134,25 @@ class PlaybackManager @Inject constructor(
             Log.d(TAG, "onPlaybackStateChanged: $stateName playWhenReady=${exoPlayer?.playWhenReady} items=${exoPlayer?.mediaItemCount}")
             when (playbackState) {
                 Player.STATE_BUFFERING -> {
-                    _playbackState.value = PlaybackState.BUFFERING
+                    playbackIntentOwner.update(
+                        playerReady = false,
+                        playWhenReady = exoPlayer?.playWhenReady == true,
+                    )
                 }
                 Player.STATE_READY -> {
-                    updateReadyPlaybackState(exoPlayer?.playWhenReady == true)
+                    playbackIntentOwner.update(
+                        playerReady = true,
+                        playWhenReady = exoPlayer?.playWhenReady == true,
+                    )
                 }
                 Player.STATE_ENDED -> {
                     // End of all tracks
+                    invalidatePlaybackGeneration()
+                    val book = _currentBook.value
+                    val terminalToken = book?.id?.let {
+                        playbackProgressOwner.invalidateSnapshots(it)
+                        playbackProgressOwner.snapshotToken(it)
+                    }
                     stopPositionPolling()
                     stopSessionSync()
                     _playbackState.value = PlaybackState.STOPPED
@@ -1471,52 +2166,75 @@ class PlaybackManager @Inject constructor(
                         settingsManager.clearCurrentPlaybackBookId()
                     }
 
-                    val book = _currentBook.value
-                    val finalLocalSessionId = currentLocalSessionId
-                    // Include the partial interval since the last heartbeat so end-of-book
-                    // doesn't drop up to one tick worth of listen time.
-                    val finalLocalAccum = localSessionAccumSec + finalLocalSessionTickSec()
-                    val finalLocalUpdatedAt = System.currentTimeMillis()
-                    if (book != null) {
+                    val capturedServerTerminal = synchronized(sessionLock) {
+                        Pair(
+                            currentSession.also { currentSession = null },
+                            accumulatedListenTime + finalServerSessionTickSec(),
+                        )
+                    }
+                    val finalLocalSession = detachLocalSession()
+                    if (book != null && terminalToken != null) {
                         val durSecs = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS)
-                        scope.launch(Dispatchers.IO) {
+                        val terminal = terminalPlaybackSnapshot(
+                            bookId = book.id,
+                            position = _duration.value,
+                            duration = _duration.value,
+                            isFinished = true,
+                            serverSessionId = capturedServerTerminal.first?.id,
+                            timeListened = capturedServerTerminal.second,
+                        )
+                        pendingTerminalOwner.launch(scope, terminal.bookId) {
                             // Flush through SyncManager (handles both local save + server/offline queue)
-                            syncManager.flushPlaybackProgress(
-                                itemId = book.id,
-                                currentTime = durSecs,
-                                isFinished = true,
-                                duration = durSecs,
-                            )
-                            _bookCompleted.tryEmit(book.id)
-                            closeSession()
+                            progressRepository.withTerminalProgressOwnership(terminal.bookId) {
+                                playbackProgressOwner.finalFlushSnapshot(
+                                    token = terminalToken,
+                                    syncTerminal = { syncTerminalSession(terminal) },
+                                    flushProgress = {
+                                        syncManager.flushPlaybackProgress(
+                                            itemId = terminal.bookId,
+                                            currentTime = durSecs,
+                                            isFinished = true,
+                                            duration = durSecs,
+                                            onPersisted = { updateAudioBookProgress(terminal) },
+                                        )
+                                    },
+                                )
+                            }
+                            _bookCompleted.tryEmit(terminal.bookId)
+                            closeSession(terminal.serverSessionId)
                             // Persist a final state for the local session, if any.
-                            if (finalLocalSessionId != null) {
+                            if (finalLocalSession.sessionId != null) {
                                 try {
                                     sessionRepository.updateLocalSession(
-                                        id = finalLocalSessionId,
-                                        timeListeningSec = finalLocalAccum,
+                                        id = finalLocalSession.sessionId,
+                                        timeListeningSec = finalLocalSession.timeListened,
                                         currentTimeSec = durSecs,
-                                        updatedAt = finalLocalUpdatedAt,
+                                        updatedAt = finalLocalSession.updatedAt,
                                     )
+                                } catch (cancellation: CancellationException) {
+                                    throw cancellation
                                 } catch (_: Exception) {}
                             }
                         }
                     }
-                    // Drop the active local session id so subsequent playback opens a fresh row.
-                    currentLocalSessionId = null
-                    localSessionAccumSec = 0.0
                     _events.tryEmit(PlaybackEvent.BookFinished)
                 }
             }
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-            // MediaSession controllers can pause or resume without changing
-            // ExoPlayer's READY state. onPlaybackStateChanged does not fire for
-            // that transition, so mirror it explicitly for the app UI and its
-            // polling and sync jobs.
-            if (exoPlayer?.playbackState == Player.STATE_READY) {
-                updateReadyPlaybackState(playWhenReady)
+            // Controller intent can change without a playback-state callback.
+            // Apply it in both READY and BUFFERING so a pause during a network
+            // stall stops active playback work exactly once.
+            when (exoPlayer?.playbackState) {
+                Player.STATE_READY -> playbackIntentOwner.update(
+                    playerReady = true,
+                    playWhenReady = playWhenReady,
+                )
+                Player.STATE_BUFFERING -> playbackIntentOwner.update(
+                    playerReady = false,
+                    playWhenReady = playWhenReady,
+                )
             }
         }
 
@@ -1535,6 +2253,7 @@ class PlaybackManager @Inject constructor(
 
         override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "onPlayerError: ${error.errorCodeName} — ${error.message}", error)
+            invalidatePlaybackGeneration()
             stopPositionPolling()
             stopSessionSync()
             _playbackState.value = PlaybackState.STOPPED
@@ -1543,36 +2262,30 @@ class PlaybackManager @Inject constructor(
         }
     }
 
-    private fun updateReadyPlaybackState(playWhenReady: Boolean) {
-        val previous = _playbackState.value
-        val resolved = playbackStateForReadyPlayer(playWhenReady)
-        if (previous == resolved) return
-
-        _playbackState.value = resolved
-        when (resolved) {
-            PlaybackState.PLAYING -> {
-                ensureListeningSessionStarted()
-                startPositionPolling()
-                startSessionSync()
-            }
-
-            PlaybackState.PAUSED -> {
-                stopPositionPolling()
-                stopSessionSync()
-                if (previous == PlaybackState.PLAYING) {
-                    pausedAtTimestamp = System.currentTimeMillis()
-                    scope.launch(Dispatchers.IO) { syncProgressNow() }
-                }
-            }
-
-            else -> Unit
-        }
-    }
-
     // ─── Position Polling ─────────────────────────────────────────────────
 
     private fun startPositionPolling() {
-        positionPollingJob?.cancel()
+        stopPositionPolling()
+
+        val reportChannel = newPolledProgressReportChannel()
+        progressReportingChannel = reportChannel
+        progressReportingJob = scope.launch {
+            for (report in reportChannel) {
+                try {
+                    playbackProgressOwner.report(report.bookId) {
+                        syncManager.reportPlaybackPosition(
+                            itemId = report.bookId,
+                            currentTime = report.currentTime,
+                            duration = report.duration,
+                            isFinished = false,
+                        )
+                    }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {}
+            }
+        }
+
         positionPollingJob = scope.launch {
             while (isActive) {
                 delay(500)
@@ -1581,20 +2294,20 @@ class PlaybackManager @Inject constructor(
                 chapterPlayer?.absolutePositionMs = pos.inWholeMilliseconds
                 updateCurrentChapter(pos)
 
-                // Report position to SyncManager for throttled server pushes.
-                // Calling sequentially (not launch) prevents unbounded coroutine accumulation.
-                // Room and network calls inside reportPlaybackPosition handle their own dispatchers.
+                // Keep the 500 ms playback clock independent from slow server I/O.
+                // The single reporting worker stays sequential while this conflated
+                // channel retains only the newest unsent sample.
                 val book = _currentBook.value
                 val dur = _duration.value
-                if (book != null && dur > Duration.ZERO) {
-                    try {
-                        syncManager.reportPlaybackPosition(
-                            itemId = book.id,
+                if (shouldReportPolledPosition(hasBook = book != null, duration = dur)) {
+                    val reportBook = book ?: continue
+                    reportChannel.trySend(
+                        PolledProgressReport(
+                            bookId = reportBook.id,
                             currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                             duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                            isFinished = false,
-                        )
-                    } catch (_: Exception) {}
+                        ),
+                    )
                 }
             }
         }
@@ -1603,6 +2316,10 @@ class PlaybackManager @Inject constructor(
     private fun stopPositionPolling() {
         positionPollingJob?.cancel()
         positionPollingJob = null
+        progressReportingChannel?.close()
+        progressReportingChannel = null
+        progressReportingJob?.cancel()
+        progressReportingJob = null
     }
 
     // ─── Chapter Tracking ─────────────────────────────────────────────────
@@ -1644,7 +2361,9 @@ class PlaybackManager @Inject constructor(
 
     private fun startSessionSync() {
         stopSessionSync()
-        lastSyncTimestamp = System.currentTimeMillis()
+        synchronized(sessionLock) {
+            lastSyncTimestamp = System.currentTimeMillis()
+        }
         sessionSyncJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(12_000)
@@ -1659,50 +2378,109 @@ class PlaybackManager @Inject constructor(
     }
 
     private suspend fun syncProgressNow() {
-        val book = _currentBook.value ?: return
+        val bookId = _currentBook.value?.id ?: return
+        val lifetime = synchronized(sessionLock) {
+            PlaybackSyncLifetime(
+                bookId = bookId,
+                generation = playbackGeneration,
+                serverSessionId = currentSession?.id,
+                localSessionId = currentLocalSessionId,
+                pendingProgressToken = progressRepository.pendingProgressToken(bookId),
+            )
+        }
+        playbackProgressOwner.sync(bookId) {
+            if (sessionResultIsCurrent(lifetime.generation, playbackGeneration, bookId, _currentBook.value?.id)) {
+                syncProgressNowLocked(lifetime)
+            }
+        }
+    }
+
+    private suspend fun syncProgressNowLocked(lifetime: PlaybackSyncLifetime) {
+        val book = _currentBook.value?.takeIf { it.id == lifetime.bookId } ?: return
         val pos = _position.value
         val dur = _duration.value
         val posSec = pos.toDouble(kotlin.time.DurationUnit.SECONDS)
         val durSec = dur.toDouble(kotlin.time.DurationUnit.SECONDS)
-        val progressFraction = if (durSec > 0) (posSec / durSec).coerceIn(0.0, 1.0) else 0.0
+
+        fun lifetimeIsCurrent(): Boolean = synchronized(sessionLock) {
+            playbackSyncLifetimeIsCurrent(
+                requestedGeneration = lifetime.generation,
+                currentGeneration = playbackGeneration,
+                requestedBookId = lifetime.bookId,
+                currentBookId = _currentBook.value?.id,
+                requestedServerSessionId = lifetime.serverSessionId,
+                currentServerSessionId = currentSession?.id,
+                requestedLocalSessionId = lifetime.localSessionId,
+                currentLocalSessionId = currentLocalSessionId,
+            )
+        }
 
         // Save to PlaybackProgress table
+        if (!lifetimeIsCurrent()) return
         try {
             progressRepository.savePlaybackProgress(
                 audioBookId = book.id,
                 position = pos,
                 isFinished = false,
+                onPersisted = {
+                    if (
+                        !updateAudioBookProgress(
+                            bookId = book.id,
+                            positionSeconds = posSec,
+                            durationSeconds = durSec,
+                            isFinished = false,
+                            isCurrent = ::lifetimeIsCurrent,
+                        )
+                    ) throw StaleProgressWriteException()
+                },
             )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (_: Exception) {}
 
-        // Also update AudioBook entity so position persists across loads
-        try {
-            audioBookDao.updateProgress(
-                id = book.id,
-                currentTimeSeconds = posSec,
-                progress = progressFraction,
-                isFinished = 0,
-            )
-        } catch (_: Exception) {}
+        if (!lifetimeIsCurrent()) return
 
         // Local-mode session heartbeat: accumulate listen time on the open local session row.
         // Same elapsed-since-last-tick math as the server path below; uses the shared
         // lastSyncTimestamp so we never double-count when switching between server and local.
-        val localSessionId = currentLocalSessionId
-        if (book.isLocal && localSessionId != null) {
-            try {
+        data class LocalSyncTick(
+            val sessionId: Long,
+            val timeListened: Double,
+            val updatedAt: Long,
+        )
+        val localTick = synchronized(sessionLock) {
+            val sessionId = currentLocalSessionId
+            if (
+                !book.isLocal ||
+                playbackGeneration != lifetime.generation ||
+                _currentBook.value?.id != lifetime.bookId ||
+                sessionId != lifetime.localSessionId ||
+                sessionId == null ||
+                _playbackState.value !in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+            ) {
+                null
+            } else {
                 val now = System.currentTimeMillis()
-                val rawElapsed = (now - lastSyncTimestamp).coerceAtLeast(0) / 1000.0
-                // Cap individual ticks to ignore background gaps / doze sleep.
-                val elapsed = rawElapsed.coerceAtMost(localSessionMaxTickSec)
-                lastSyncTimestamp = now
-                localSessionAccumSec += elapsed
-                sessionRepository.updateLocalSession(
-                    id = localSessionId,
-                    timeListeningSec = localSessionAccumSec,
-                    currentTimeSec = posSec,
-                    updatedAt = now,
+                localSessionAccumSec = foldListeningTime(
+                    accumulatedSeconds = localSessionAccumSec,
+                    lastTimestampMs = lastSyncTimestamp,
+                    nowTimestampMs = now,
+                    maxElapsedSeconds = localSessionMaxTickSec,
                 )
+                lastSyncTimestamp = now
+                LocalSyncTick(sessionId, localSessionAccumSec, now)
+            }
+        }
+        if (localTick != null) {
+            try {
+                sessionRepository.updateLocalSession(
+                    id = localTick.sessionId,
+                    timeListeningSec = localTick.timeListened,
+                    currentTimeSec = posSec,
+                    updatedAt = localTick.updatedAt,
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (_: Exception) {}
         }
 
@@ -1715,46 +2493,186 @@ class PlaybackManager @Inject constructor(
         // clobbered (phantom/duplicated listen time on the wrong session). The
         // network call stays outside the lock so it is held only briefly.
         data class ServerSyncTick(val sessionId: String, val timeListened: Double)
-        val tick: ServerSyncTick? = sessionMutex.withLock {
-            val session = currentSession
-            if (session == null) {
+        val tick: ServerSyncTick? = synchronized(sessionLock) {
+            val sessionId = currentSession?.id
+            if (
+                sessionId == null ||
+                !heartbeatSessionIsCurrent(
+                    requestedGeneration = lifetime.generation,
+                    currentGeneration = playbackGeneration,
+                    requestedBookId = lifetime.bookId,
+                    currentBookId = _currentBook.value?.id,
+                    requestedSessionId = lifetime.serverSessionId,
+                    currentSessionId = sessionId,
+                ) ||
+                _playbackState.value !in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+            ) {
                 null
             } else {
                 val now = System.currentTimeMillis()
                 val elapsed = (now - lastSyncTimestamp).coerceAtLeast(0) / 1000.0
                 lastSyncTimestamp = now
                 accumulatedListenTime += elapsed
-                ServerSyncTick(session.id, accumulatedListenTime)
+                ServerSyncTick(sessionId, accumulatedListenTime)
             }
         }
         if (tick != null) {
             try {
-                apiService.syncSessionProgress(
+                progressRepository.syncSessionProgressIfCurrent(
+                    itemId = book.id,
                     sessionId = tick.sessionId,
                     currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                     duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
                     timeListened = tick.timeListened,
+                    isCurrent = {
+                        lifetimeIsCurrent() &&
+                            _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                    },
                 )
-            } catch (_: Exception) {}
-        } else {
-            // Enqueue for later sync
-            try {
-                progressRepository.enqueuePendingProgress(
-                    book.id,
-                    pos.toDouble(kotlin.time.DurationUnit.SECONDS),
-                    isFinished = false,
-                    duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (_: Exception) {}
         }
     }
 
-    private suspend fun closeSession() {
-        val session = sessionMutex.withLock { currentSession } ?: return
+    private suspend fun syncTerminalProgress(snapshot: TerminalPlaybackSnapshot) {
         try {
-            apiService.closeSession(session.id)
+            val sessionId = snapshot.serverSessionId
+            if (sessionId == null) {
+                progressRepository.savePlaybackProgress(
+                    audioBookId = snapshot.bookId,
+                    position = snapshot.position,
+                    isFinished = snapshot.isFinished,
+                    onPersisted = { updateAudioBookProgress(snapshot) },
+                )
+            } else {
+                progressRepository.saveSessionProgressOrEnqueue(
+                    itemId = snapshot.bookId,
+                    sessionId = sessionId,
+                    currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    isFinished = snapshot.isFinished,
+                    duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    timeListened = snapshot.timeListened,
+                    onPersisted = { updateAudioBookProgress(snapshot) },
+                )
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (_: Exception) {}
-        sessionMutex.withLock { currentSession = null }
+    }
+
+    private suspend fun syncTerminalSession(snapshot: TerminalPlaybackSnapshot) {
+        val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
+        val durSec = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
+        if (snapshot.serverSessionId != null) {
+            try {
+                progressRepository.syncSessionProgress(
+                    itemId = snapshot.bookId,
+                    sessionId = snapshot.serverSessionId,
+                    currentTime = posSec,
+                    duration = durSec,
+                    timeListened = snapshot.timeListened,
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun updateAudioBookProgress(snapshot: TerminalPlaybackSnapshot): Boolean =
+        updateAudioBookProgress(
+            bookId = snapshot.bookId,
+            positionSeconds = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+            durationSeconds = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+            isFinished = snapshot.isFinished,
+        )
+
+    private suspend fun updateAudioBookProgress(
+        bookId: String,
+        positionSeconds: Double,
+        durationSeconds: Double,
+        isFinished: Boolean,
+        isCurrent: () -> Boolean = { true },
+    ): Boolean =
+        readAndWriteShelfProgressIfCurrent(
+            isCurrent = isCurrent,
+            read = { audioBookDao.getById(bookId)?.progress ?: 0.0 },
+            write = { existingProgress ->
+                audioBookDao.updateProgress(
+                    id = bookId,
+                    currentTimeSeconds = positionSeconds,
+                    progress = shelfProgress(
+                        currentTime = positionSeconds,
+                        duration = durationSeconds,
+                        isFinished = isFinished,
+                        existingProgress = existingProgress,
+                    ),
+                    isFinished = if (isFinished) 1 else 0,
+                )
+            },
+        )
+
+    private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot) {
+        val terminal = terminalPlaybackSnapshot(
+            bookId = snapshot.bookId,
+            position = snapshot.position,
+            duration = snapshot.duration,
+            isFinished = false,
+            serverSessionId = snapshot.serverSessionId,
+            timeListened = snapshot.serverTimeListened,
+        )
+        val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
+        val writePlan = playbackProgressWritePlan(
+            isLocal = snapshot.isLocal,
+            hasServerSession = snapshot.serverSessionId != null,
+        )
+        if (writePlan.useAtomicDelivery) {
+            try {
+                progressRepository.savePushOrEnqueueProgress(
+                    itemId = snapshot.bookId,
+                    currentTime = posSec,
+                    isFinished = false,
+                    duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    pushToServer = false,
+                    onPersisted = {
+                        if (writePlan.updateAudioBook) updateAudioBookProgress(terminal)
+                    },
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {}
+        } else if (writePlan.useTerminalPath) {
+            progressRepository.withTerminalProgressOwnership(terminal.bookId) {
+                syncTerminalProgress(terminal)
+            }
+        }
+
+        if (snapshot.localSessionId != null) {
+            try {
+                sessionRepository.updateLocalSession(
+                    id = snapshot.localSessionId,
+                    timeListeningSec = snapshot.localTimeListened,
+                    currentTimeSec = posSec,
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun closeSession(sessionId: String?) {
+        if (sessionId == null) return
+        try {
+            apiService.closeSession(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {}
+        synchronized(sessionLock) {
+            if (currentSession?.id == sessionId) {
+                currentSession = null
+                _currentBook.value?.id?.let(progressRepository::invalidatePendingProgressLifetime)
+            }
+        }
     }
 
     // ─── Foreground Recovery (stale session after sleep) ──────────────────
@@ -1776,27 +2694,64 @@ class PlaybackManager @Inject constructor(
      */
     private fun recoverIfSessionStale() {
         val book = _currentBook.value ?: return
-        if (_playbackState.value == PlaybackState.STOPPED) return
+        if (_playbackState.value !in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)) return
+        val requestedGeneration = playbackGeneration
+        val probe = synchronized(sessionLock) {
+            val session = currentSession ?: return
+            staleSessionProbe(
+                requestedGeneration = requestedGeneration,
+                bookId = book.id,
+                sessionId = session.id,
+                position = _position.value,
+                duration = _duration.value,
+            )
+        }
 
         scope.launch(Dispatchers.IO) {
-            val session = sessionMutex.withLock { currentSession } ?: return@launch
-            Log.d(TAG, "recoverIfSessionStale: testing session ${session.id} for '${book.title}'")
+            val probeIsCurrent = synchronized(sessionLock) {
+                sessionResultIsCurrent(
+                    probe.requestedGeneration,
+                    playbackGeneration,
+                    probe.bookId,
+                    _currentBook.value?.id,
+                ) &&
+                    currentSession?.id == probe.sessionId &&
+                    _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+            }
+            if (!probeIsCurrent) return@launch
+
+            Log.d(TAG, "recoverIfSessionStale: testing session ${probe.sessionId} for '${book.title}'")
 
             try {
-                val success = apiService.syncSessionProgress(
-                    sessionId = session.id,
-                    currentTime = _position.value.toDouble(kotlin.time.DurationUnit.SECONDS),
-                    duration = _duration.value.toDouble(kotlin.time.DurationUnit.SECONDS),
-                )
+                val success = progressRepository.syncSessionProgressIfCurrent(
+                    itemId = probe.bookId,
+                    sessionId = probe.sessionId,
+                    currentTime = probe.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    duration = probe.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    isCurrent = {
+                        synchronized(sessionLock) {
+                            sessionResultIsCurrent(
+                                probe.requestedGeneration,
+                                playbackGeneration,
+                                probe.bookId,
+                                _currentBook.value?.id,
+                            ) &&
+                                currentSession?.id == probe.sessionId &&
+                                _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                        }
+                    },
+                ) ?: return@launch
                 if (success) {
                     Log.d(TAG, "recoverIfSessionStale: session still valid")
                 } else {
                     Log.w(TAG, "recoverIfSessionStale: session stale, recovering...")
-                    recoverStaleSession(book)
+                    recoverStaleSession(book, probe.sessionId, probe.requestedGeneration)
                 }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (e: Exception) {
                 Log.w(TAG, "recoverIfSessionStale: sync failed (${e.message}), recovering...")
-                recoverStaleSession(book)
+                recoverStaleSession(book, probe.sessionId, probe.requestedGeneration)
             }
         }
     }
@@ -1806,23 +2761,63 @@ class PlaybackManager @Inject constructor(
      * If the server is still unreachable, clear the session so progress
      * falls back to the offline queue (SyncManager / PendingProgress).
      */
-    private suspend fun recoverStaleSession(book: AudioBook) {
+    private suspend fun recoverStaleSession(
+        book: AudioBook,
+        staleSessionId: String,
+        requestedGeneration: Long,
+    ) {
         try {
             val newSession = apiService.startPlaybackSession(book.id)
             if (newSession != null) {
-                sessionMutex.withLock {
-                    currentSession = newSession
-                    accumulatedListenTime = 0.0
-                    lastSyncTimestamp = System.currentTimeMillis()
+                val accepted = synchronized(sessionLock) {
+                    if (
+                        sessionResultIsCurrent(requestedGeneration, playbackGeneration, book.id, _currentBook.value?.id) &&
+                        currentSession?.id == staleSessionId &&
+                        _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                    ) {
+                        currentSession = newSession
+                        progressRepository.invalidatePendingProgressLifetime(book.id)
+                        accumulatedListenTime = 0.0
+                        lastSyncTimestamp = System.currentTimeMillis()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (!accepted) {
+                    try {
+                        apiService.closeSession(newSession.id)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (_: Exception) {}
+                    return
                 }
                 Log.d(TAG, "recoverStaleSession: OK newSessionId=${newSession.id}")
             } else {
                 Log.w(TAG, "recoverStaleSession: server returned null — falling back to offline queue")
-                sessionMutex.withLock { currentSession = null }
+                synchronized(sessionLock) {
+                    if (
+                        sessionResultIsCurrent(requestedGeneration, playbackGeneration, book.id, _currentBook.value?.id) &&
+                        currentSession?.id == staleSessionId
+                    ) {
+                        currentSession = null
+                        progressRepository.invalidatePendingProgressLifetime(book.id)
+                    }
+                }
             }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (e: Exception) {
             Log.e(TAG, "recoverStaleSession: failed (${e.message}) — falling back to offline queue")
-            sessionMutex.withLock { currentSession = null }
+            synchronized(sessionLock) {
+                if (
+                    sessionResultIsCurrent(requestedGeneration, playbackGeneration, book.id, _currentBook.value?.id) &&
+                    currentSession?.id == staleSessionId
+                ) {
+                    currentSession = null
+                    progressRepository.invalidatePendingProgressLifetime(book.id)
+                }
+            }
         }
     }
 
@@ -2102,6 +3097,29 @@ class PlaybackManager @Inject constructor(
             Log.e(TAG, "Failed to release media controller: ${e.message}", e)
         }
     }
+}
+
+internal data class PlaybackProgressWritePlan(
+    val useAtomicDelivery: Boolean,
+    val updateAudioBook: Boolean,
+    val useTerminalPath: Boolean,
+)
+
+internal fun playbackProgressWritePlan(
+    isLocal: Boolean,
+    hasServerSession: Boolean,
+): PlaybackProgressWritePlan = if (!isLocal && !hasServerSession) {
+    PlaybackProgressWritePlan(
+        useAtomicDelivery = true,
+        updateAudioBook = true,
+        useTerminalPath = false,
+    )
+} else {
+    PlaybackProgressWritePlan(
+        useAtomicDelivery = false,
+        updateAudioBook = true,
+        useTerminalPath = true,
+    )
 }
 
 // ─── Bounded InputStream ──────────────────────────────────────────────────

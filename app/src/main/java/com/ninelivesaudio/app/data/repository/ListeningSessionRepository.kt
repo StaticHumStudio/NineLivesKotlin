@@ -86,6 +86,10 @@ class ListeningSessionRepository @Inject constructor(
         )
     }
 
+    suspend fun discardLocalSession(id: Long) {
+        sessionDao.deleteById(id)
+    }
+
     private fun LocalListeningSessionEntity.toDomain(): ListeningSession = ListeningSession(
         id = "local-$id",
         libraryItemId = audioBookId,

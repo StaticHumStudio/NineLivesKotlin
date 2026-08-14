@@ -11,17 +11,25 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
@@ -128,6 +136,7 @@ class MainActivity : ComponentActivity() {
             // Only the theme is entitlement-gated, so only the theme is clamped.
             val isUnlocked by effectiveSettings.isUnlocked.collectAsStateWithLifecycle()
             val settingsLoaded by settingsManager.isLoaded.collectAsStateWithLifecycle()
+            val storageUnavailable by settingsManager.storageUnavailable.collectAsStateWithLifecycle()
 
             // Detect system reduce motion preference
             val systemReduceMotion = try {
@@ -166,6 +175,17 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.fillMaxSize()) {
                         CosmicBackgroundGradient()
                     }
+                    return@NineLivesAudioTheme
+                }
+
+                // Storage failure is a destructive/critical-adjacent state, so it
+                // stays plain-language rather than in the app's usual voice.
+                if (storageUnavailable) {
+                    SettingsStorageUnavailableScreen(
+                        onRetry = {
+                            lifecycleScope.launch { settingsManager.loadSettings() }
+                        },
+                    )
                     return@NineLivesAudioTheme
                 }
 
@@ -268,5 +288,44 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val NOTIFICATION_PERMISSION_CODE = 1001
+    }
+}
+
+/**
+ * Full-screen fallback when [SettingsManager] cannot read encrypted storage.
+ * Deliberately plain language, no lore voice — destructive/critical flows stay
+ * literal per repo convention. Retry re-runs the same load rather than the app
+ * silently falling back to defaults, which would risk clobbering retained
+ * server, source, and library selections.
+ */
+@Composable
+private fun SettingsStorageUnavailableScreen(onRetry: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "Settings storage is unavailable",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = "Nine Lives could not read its settings. Your data has not been changed.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center,
+            )
+            Button(onClick = onRetry) {
+                Text("Retry")
+            }
+        }
     }
 }

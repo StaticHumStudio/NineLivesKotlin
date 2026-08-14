@@ -1,6 +1,8 @@
 package com.ninelivesaudio.app.ui.settings
 
 import com.ninelivesaudio.app.data.remote.TokenValidationResult
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,6 +15,59 @@ import org.junit.Test
  * there is nothing to select.
  */
 class SettingsLibraryLoadGateTest {
+
+    @Test
+    fun `validation dispatcher clears only invalid and preserves unreachable`() = runBlocking {
+        suspend fun eventsFor(
+            result: TokenValidationResult,
+            clearSucceeds: Boolean = true,
+        ): List<String> {
+            val events = mutableListOf<String>()
+            dispatchStoredValidation(
+                result = result,
+                onValid = { events += "valid" },
+                clearInvalidSession = {
+                    events += "clear"
+                    clearSucceeds
+                },
+                onInvalidCleared = { events += "invalid" },
+                onUnreachable = { events += "unreachable" },
+            )
+            return events
+        }
+
+        assertEquals(listOf("valid"), eventsFor(TokenValidationResult.VALID))
+        assertEquals(listOf("clear", "invalid"), eventsFor(TokenValidationResult.INVALID))
+        assertEquals(listOf("clear"), eventsFor(TokenValidationResult.INVALID, clearSucceeds = false))
+        assertEquals(listOf("unreachable"), eventsFor(TokenValidationResult.UNREACHABLE))
+    }
+
+    @Test
+    fun `stale session blocks every validation verdict`() {
+        TokenValidationResult.entries.forEach { result ->
+            assertFalse(
+                shouldApplyStoredValidation(
+                    result = result,
+                    uiGenerationUnchanged = false,
+                    authSessionCurrent = true,
+                ),
+            )
+            assertFalse(
+                shouldApplyStoredValidation(
+                    result = result,
+                    uiGenerationUnchanged = true,
+                    authSessionCurrent = false,
+                ),
+            )
+            assertTrue(
+                shouldApplyStoredValidation(
+                    result = result,
+                    uiGenerationUnchanged = true,
+                    authSessionCurrent = true,
+                ),
+            )
+        }
+    }
 
     @Test
     fun `loads libraries when token is valid`() {

@@ -149,7 +149,10 @@ class NineLivesApp : Application(), ImageLoaderFactory {
                 settings = loadedSettings,
                 libraries = libraryRepository.getAll(),
             )
-            if (repairedSettings != loadedSettings) {
+            // Never repair on top of a degraded load: currentSettings would be
+            // in-memory defaults, and saving a "repair" of those could replace
+            // the real settings still sitting on disk.
+            if (repairedSettings != loadedSettings && !settingsManager.storageUnavailable.value) {
                 settingsManager.saveSettings(repairedSettings)
             }
             apiService.initializeFromSettings()

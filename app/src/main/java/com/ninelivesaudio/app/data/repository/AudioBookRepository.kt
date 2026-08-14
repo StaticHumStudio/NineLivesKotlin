@@ -94,6 +94,21 @@ class AudioBookRepository @Inject constructor(
             book to lastPlayed
         }
 
+    suspend fun getRecentlyPlayedForAuto(
+        libraryId: String,
+        isLocal: Boolean,
+        limit: Int,
+    ): List<Pair<AudioBook, Long>> =
+        audioBookDao.getRecentlyPlayedByLibraryAndSource(
+            libraryId = libraryId,
+            isLocal = if (isLocal) 1 else 0,
+            limit = limit,
+        ).map { result ->
+            val book = result.audioBook.toDomain()
+            val lastPlayed = result.lastPlayedAt?.toEpochMillis() ?: 0L
+            book to lastPlayed
+        }
+
     /** Observe recently played audiobooks (reactive). */
     fun observeRecentlyPlayed(limit: Int = 9): Flow<List<Pair<AudioBook, Long>>> =
         audioBookDao.observeRecentlyPlayed(limit).map { results ->
@@ -139,6 +154,15 @@ class AudioBookRepository @Inject constructor(
     /** Count all audiobooks in a library. */
     suspend fun countByLibrary(libraryId: String): Int =
         audioBookDao.countByLibrary(libraryId)
+
+    suspend fun countForAuto(libraryId: String, isLocal: Boolean): Int =
+        audioBookDao.countByLibraryAndSource(libraryId, if (isLocal) 1 else 0)
+
+    suspend fun countDownloadedForAuto(libraryId: String, isLocal: Boolean): Int =
+        audioBookDao.countDownloadedByLibrary(libraryId, if (isLocal) 1 else 0)
+
+    suspend fun countRecentlyPlayedForAuto(libraryId: String, isLocal: Boolean): Int =
+        audioBookDao.countRecentlyPlayedByLibrary(libraryId, if (isLocal) 1 else 0)
 
     /** Get distinct series names for a library. */
     suspend fun getDistinctSeries(libraryId: String): List<String> =

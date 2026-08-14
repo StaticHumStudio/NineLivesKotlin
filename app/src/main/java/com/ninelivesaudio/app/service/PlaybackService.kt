@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.service
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.os.Bundle
 import android.os.Process
 import android.util.Log
 import androidx.annotation.VisibleForTesting
@@ -12,7 +13,9 @@ import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
+import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -22,6 +25,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -84,6 +90,12 @@ class PlaybackService : MediaLibraryService() {
     @Inject
     lateinit var sleepTimerManager: SleepTimerManager
 
+    @Inject
+    lateinit var syncManager: SyncManager
+
+    @Inject
+    lateinit var settingsManager: SettingsManager
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var shakeDetector: ShakeDetector? = null
 
@@ -108,6 +120,42 @@ class PlaybackService : MediaLibraryService() {
         // Create persistent MediaLibrarySession so Android Auto can browse
         // even before any book is loaded from the phone
         playbackManager.initSession()
+
+        // Android Auto caches browse results aggressively. Refresh both shelves
+        // after database sync and whenever the phone changes source/library so
+        // the car never keeps exposing the previous selection.
+        //
+        // Both collectors below go through getChildCount() -> awaitAuthReady() /
+        // resolveActiveScope(), which can throw (e.g. a storage fault). serviceScope
+        // has no CoroutineExceptionHandler, so an uncaught throw here would crash
+        // the whole foreground media service. Each emission is wrapped so one bad
+        // count skips that emission instead of taking playback down with it.
+        serviceScope.launch {
+            syncManager.syncCompleted.collect {
+                try {
+                    notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync())
+                } catch (e: Exception) {
+                    Log.e(TAG, "syncCompleted collector: failed to refresh Auto browse parents", e)
+                }
+            }
+        }
+        serviceScope.launch {
+            combine(
+                settingsManager.settings,
+                settingsManager.hasAuthToken,
+            ) { settings, hasAuthToken ->
+                listOf(settings.appMode, settings.activeLibraryId, settings.serverUrl, hasAuthToken)
+            }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    try {
+                        notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSourceChange())
+                    } catch (e: Exception) {
+                        Log.e(TAG, "source-change collector: failed to refresh Auto browse parents", e)
+                    }
+                }
+        }
 
         // Create shake detector and wire to SleepTimerManager
         shakeDetector = ShakeDetector(
@@ -142,6 +190,15 @@ class PlaybackService : MediaLibraryService() {
      */
     fun createLibraryCallback(): MediaLibrarySession.Callback {
         return LibraryCallback()
+    }
+
+    @OptIn(UnstableApi::class)
+    private suspend fun notifyAutoBrowseParentsChanged(parentIds: List<String>) {
+        val session = playbackManager.getMediaSession() as? MediaLibrarySession ?: return
+        for (parentId in parentIds) {
+            val itemCount = mediaBrowseTree.getChildCount(parentId)
+            session.notifyChildrenChanged(parentId, itemCount, null)
+        }
     }
 
     private fun isTrustedController(controller: MediaSession.ControllerInfo): Boolean {
@@ -210,10 +267,35 @@ class PlaybackService : MediaLibraryService() {
             // Explicitly grant all session + library browse commands so Android Auto
             // can discover and browse the media tree (the default super.onConnect()
             // does not include library-specific commands).
+            val mediaButtons = audiobookMediaButtonPreferences()
             val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                .buildUpon()
+                .addSessionCommands(audiobookSessionCommands())
+                .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(sessionCommands)
+                .setMediaButtonPreferences(mediaButtons)
+                .setCustomLayout(mediaButtons)
                 .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            return when (val seconds = autoSeekSeconds(customCommand.customAction)) {
+                null -> super.onCustomCommand(session, controller, customCommand, args)
+                in Int.MIN_VALUE until 0 -> {
+                    playbackManager.skipBackward(-seconds)
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                else -> {
+                    playbackManager.skipForward(seconds)
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+            }
         }
 
         override fun onDisconnected(
@@ -230,6 +312,10 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
             Log.d(TAG, "onGetLibraryRoot: pkg=${browser.packageName} params=$params")
+            if (!isTrustedController(browser)) {
+                Log.w(TAG, "onGetLibraryRoot: denied untrusted browser pkg=${browser.packageName} uid=${browser.uid}")
+                return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_PERMISSION_DENIED))
+            }
             val rootItem = MediaItem.Builder()
                 .setMediaId(MediaBrowseTree.ROOT_ID)
                 .setMediaMetadata(
@@ -277,6 +363,10 @@ class PlaybackService : MediaLibraryService() {
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> {
             Log.d(TAG, "onGetItem: mediaId=$mediaId pkg=${browser.packageName}")
+            if (!isTrustedController(browser)) {
+                Log.w(TAG, "onGetItem: denied untrusted browser pkg=${browser.packageName} uid=${browser.uid}")
+                return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_PERMISSION_DENIED))
+            }
             return serviceScope.future(Dispatchers.IO) {
                 try {
                     val item = mediaBrowseTree.getItem(mediaId)
@@ -301,6 +391,10 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> {
             Log.d(TAG, "onSearch: query='$query' pkg=${browser.packageName}")
+            if (!isTrustedController(browser)) {
+                Log.w(TAG, "onSearch: denied untrusted browser pkg=${browser.packageName} uid=${browser.uid}")
+                return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_PERMISSION_DENIED))
+            }
             // Trigger async search; results delivered via onGetSearchResult
             serviceScope.launch(Dispatchers.IO) {
                 try {
@@ -324,6 +418,10 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
             Log.d(TAG, "onGetSearchResult: query='$query' page=$page pkg=${browser.packageName}")
+            if (!isTrustedController(browser)) {
+                Log.w(TAG, "onGetSearchResult: denied untrusted browser pkg=${browser.packageName} uid=${browser.uid}")
+                return Futures.immediateFuture(LibraryResult.ofError(SessionError.ERROR_PERMISSION_DENIED))
+            }
             return serviceScope.future(Dispatchers.IO) {
                 try {
                     val results = mediaBrowseTree.search(query)

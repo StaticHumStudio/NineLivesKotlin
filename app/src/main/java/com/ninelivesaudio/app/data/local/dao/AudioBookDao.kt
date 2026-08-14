@@ -115,6 +115,21 @@ interface AudioBookDao {
     """)
     suspend fun getRecentlyPlayedByLibrary(libraryId: String, limit: Int = 9): List<RecentlyPlayedResult>
 
+    /** Android Auto variant applies source scope before LIMIT. */
+    @Query("""
+        SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
+        FROM AudioBooks ab
+        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
+        ORDER BY pp.UpdatedAt DESC
+        LIMIT :limit
+    """)
+    suspend fun getRecentlyPlayedByLibraryAndSource(
+        libraryId: String,
+        isLocal: Int,
+        limit: Int,
+    ): List<RecentlyPlayedResult>
+
     /** Nine Lives — observable recently played books filtered by library. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
@@ -157,6 +172,20 @@ interface AudioBookDao {
      *  excludes archived books — an archive-only library reads as empty). */
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL")
     suspend fun countByLibrary(libraryId: String): Int
+
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL")
+    suspend fun countByLibraryAndSource(libraryId: String, isLocal: Int): Int
+
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL AND IsDownloaded = 1")
+    suspend fun countDownloadedByLibrary(libraryId: String, isLocal: Int): Int
+
+    @Query("""
+        SELECT COUNT(DISTINCT ab.Id)
+        FROM AudioBooks ab
+        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
+    """)
+    suspend fun countRecentlyPlayedByLibrary(libraryId: String, isLocal: Int): Int
 
     /** Distinct series names for a library. */
     @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")

@@ -5,11 +5,12 @@ import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
+import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
-import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -20,8 +21,8 @@ import javax.inject.Singleton
  * Media ID scheme:
  *   "root"                → browse root (shown when the user opens the app in Auto)
  *   "recently_played"     → recently played books
- *   "libraries"           → list of all libraries
- *   "lib_{id}"            → books in a specific library
+ *   "library"             → all books in the active library or folder
+ *   "downloaded"          → downloaded books in the active library or folder
  *   "book_{id}"           → a single playable book
  */
 @Singleton
@@ -29,85 +30,127 @@ class MediaBrowseTree @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val audioBookRepository: AudioBookRepository,
     private val settingsManager: SettingsManager,
+    private val apiService: ApiService,
 ) {
     companion object {
         const val ROOT_ID = "root"
         const val RECENTLY_PLAYED_ID = "recently_played"
-        const val LIBRARIES_ID = "libraries"
-        private const val LIB_PREFIX = "lib_"
+        const val LIBRARY_ID = "library"
+        const val DOWNLOADED_ID = "downloaded"
+        const val SETUP_REQUIRED_ID = "setup_required"
         private const val BOOK_PREFIX = "book_"
+
+        internal fun rootItemIds(): List<String> =
+            listOf(RECENTLY_PLAYED_ID, LIBRARY_ID, DOWNLOADED_ID)
     }
 
     // ─── Public API ────────────────────────────────────────────────────
 
     /** Top-level items shown when the user opens the app in Android Auto. */
     @OptIn(UnstableApi::class)
-    fun getRootItems(): List<MediaItem> = listOf(
-        buildBrowsableItem(
-            mediaId = RECENTLY_PLAYED_ID,
-            title = "Recently Played",
-            subtitle = "Continue listening",
-        ),
-        buildBrowsableItem(
-            mediaId = LIBRARIES_ID,
-            title = "Libraries",
-            subtitle = "Browse your collection",
-        ),
-    )
+    fun getRootItems(canBrowse: Boolean = true): List<MediaItem> = autoRootItemIds(canBrowse).map { mediaId ->
+        when (mediaId) {
+            RECENTLY_PLAYED_ID -> buildBrowsableItem(mediaId, "Recently Played", "Continue listening")
+            LIBRARY_ID -> buildBrowsableItem(mediaId, "Library", "Browse the active source")
+            DOWNLOADED_ID -> buildBrowsableItem(mediaId, "Downloaded", "Available offline")
+            SETUP_REQUIRED_ID -> buildBrowsableItem(
+                mediaId,
+                "Open Nine Lives on your phone",
+                "Connect a server or choose Local Files",
+            )
+            else -> error("Unknown Android Auto root item: $mediaId")
+        }
+    }
 
     /** Resolve children for a given [parentId]. */
     suspend fun getChildren(parentId: String, page: Int = 0, pageSize: Int = 50): List<MediaItem> {
+        apiService.awaitAuthReady()
         val settings = resolveActiveScope()
+        val canBrowse = canBrowseAuto(settings, apiService.isAuthenticated)
+        if (parentId == ROOT_ID) return getRootItems(canBrowse)
+        if (!canBrowse) return emptyList()
         return when {
-            parentId == ROOT_ID -> getRootItems()
-
             parentId == RECENTLY_PLAYED_ID -> {
-                recentBooksInActiveScope(settings, limit = 20) { libraryId, limit ->
-                    audioBookRepository.getRecentlyPlayedByLibrary(libraryId, limit)
-                        .map { (book, _) -> book }
-                }
+                recentBooksForAuto(
+                    settings = settings,
+                    maxItems = 20,
+                    page = page,
+                    pageSize = pageSize,
+                    loadByLibrary = { libraryId, isLocal, limit ->
+                        audioBookRepository.getRecentlyPlayedForAuto(libraryId, isLocal, limit)
+                            .map { (book, _) -> book }
+                    },
+                )
                     .map(::bookToMediaItem)
             }
 
-            parentId == LIBRARIES_ID -> {
-                browseLibrariesInActiveScope(libraryRepository.getAll(), settings)
-                    .map(::libraryToMediaItem)
-            }
-
-            parentId.startsWith(LIB_PREFIX) -> {
-                val libId = parentId.removePrefix(LIB_PREFIX)
-                browseBooksInActiveScope(audioBookRepository.getByLibrary(libId), settings)
+            parentId == DOWNLOADED_ID -> {
+                val libraryId = settings.activeLibraryId ?: return emptyList()
+                downloadedBooksForAuto(
+                    audioBookRepository.getFilteredBooks(libraryId, downloadedOnly = true),
+                    settings,
+                )
                     .sortedBy { it.title.lowercase() }
                     .drop(page * pageSize)
                     .take(pageSize)
-                    .map { bookToMediaItem(it) }
+                    .map(::bookToMediaItem)
+            }
+
+            parentId == LIBRARY_ID -> {
+                val libraryId = settings.activeLibraryId ?: return emptyList()
+                browseBooksForAuto(
+                    audioBookRepository.getFilteredBooks(libraryId),
+                    settings,
+                )
+                    .sortedBy { it.title.lowercase() }
+                    .drop(page * pageSize)
+                    .take(pageSize)
+                    .map(::bookToMediaItem)
             }
 
             else -> emptyList()
         }
     }
 
+    /** Count children for Media3 invalidation without constructing browse items. */
+    suspend fun getChildCount(parentId: String): Int {
+        apiService.awaitAuthReady()
+        val settings = resolveActiveScope()
+        return autoBrowseChildCount(
+            parentId = parentId,
+            canBrowse = canBrowseAuto(settings, apiService.isAuthenticated),
+            activeLibraryId = settings.activeLibraryId,
+            activeIsLocal = settings.appMode == AppMode.LOCAL,
+            countRecent = audioBookRepository::countRecentlyPlayedForAuto,
+            countLibrary = audioBookRepository::countForAuto,
+            countDownloaded = audioBookRepository::countDownloadedForAuto,
+        )
+    }
+
     /** Get a single item by its media ID. */
     suspend fun getItem(mediaId: String): MediaItem? {
+        apiService.awaitAuthReady()
         val settings = resolveActiveScope()
+        if (mediaId != ROOT_ID && mediaId != SETUP_REQUIRED_ID &&
+            !canBrowseAuto(settings, apiService.isAuthenticated)
+        ) return null
         return when {
             mediaId == ROOT_ID -> buildBrowsableItem(ROOT_ID, "Nine Lives Audio", null)
+            mediaId == SETUP_REQUIRED_ID -> buildBrowsableItem(
+                SETUP_REQUIRED_ID,
+                "Open Nine Lives on your phone",
+                "Connect a server or choose Local Files",
+            )
             mediaId == RECENTLY_PLAYED_ID -> buildBrowsableItem(RECENTLY_PLAYED_ID, "Recently Played", "Continue listening")
-            mediaId == LIBRARIES_ID -> buildBrowsableItem(LIBRARIES_ID, "Libraries", "Browse your collection")
-
-            mediaId.startsWith(LIB_PREFIX) -> {
-                val libId = mediaId.removePrefix(LIB_PREFIX)
-                libraryRepository.getById(libId)
-                    ?.takeIf { browseLibrariesInActiveScope(listOf(it), settings).isNotEmpty() }
-                    ?.let(::libraryToMediaItem)
-            }
+            mediaId == LIBRARY_ID -> buildBrowsableItem(LIBRARY_ID, "Library", "Browse the active source")
+            mediaId == DOWNLOADED_ID -> buildBrowsableItem(DOWNLOADED_ID, "Downloaded", "Available offline")
 
             mediaId.startsWith(BOOK_PREFIX) -> {
                 val bookId = mediaId.removePrefix(BOOK_PREFIX)
                 // An archived book has no source, so don't resolve it as a
                 // playable Auto item (e.g. from a stale queued media id).
                 audioBookRepository.getById(bookId)
-                    ?.takeIf { browseBooksInActiveScope(listOf(it), settings).isNotEmpty() }
+                    ?.takeIf { browseBooksForAuto(listOf(it), settings).isNotEmpty() }
                     ?.let(::bookToMediaItem)
             }
 
@@ -117,8 +160,10 @@ class MediaBrowseTree @Inject constructor(
 
     /** Search books by title/author. */
     suspend fun search(query: String): List<MediaItem> {
+        apiService.awaitAuthReady()
         val settings = resolveActiveScope()
-        return browseBooksInActiveScope(audioBookRepository.search(query), settings)
+        if (!canBrowseAuto(settings, apiService.isAuthenticated)) return emptyList()
+        return browseBooksForAuto(audioBookRepository.search(query), settings)
             .map(::bookToMediaItem)
     }
 
@@ -177,21 +222,6 @@ class MediaBrowseTree @Inject constructor(
     }
 
     @OptIn(UnstableApi::class)
-    private fun libraryToMediaItem(library: Library): MediaItem {
-        val metadata = MediaMetadata.Builder()
-            .setTitle(library.name)
-            .setIsPlayable(false)
-            .setIsBrowsable(true)
-            .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_AUDIO_BOOKS)
-            .build()
-
-        return MediaItem.Builder()
-            .setMediaId("$LIB_PREFIX${library.id}")
-            .setMediaMetadata(metadata)
-            .build()
-    }
-
-    @OptIn(UnstableApi::class)
     private fun buildBrowsableItem(
         mediaId: String,
         title: String,
@@ -214,26 +244,72 @@ class MediaBrowseTree @Inject constructor(
     }
 }
 
-internal fun browseLibrariesInActiveScope(
-    libraries: List<Library>,
-    settings: AppSettings,
-): List<Library> = libraries.filter { library ->
-    library.id == settings.activeLibraryId &&
-        library.isLocal == (settings.appMode == com.ninelivesaudio.app.domain.model.AppMode.LOCAL)
-}
-
-internal fun browseBooksInActiveScope(
+internal fun browseBooksForAuto(
     books: List<AudioBook>,
     settings: AppSettings,
 ): List<AudioBook> = books.filter { book ->
     !book.isArchived && book.isInActiveLibrary(settings)
 }
 
-internal suspend fun recentBooksInActiveScope(
+internal fun downloadedBooksForAuto(
+    books: List<AudioBook>,
     settings: AppSettings,
-    limit: Int,
-    loadByLibrary: suspend (libraryId: String, limit: Int) -> List<AudioBook>,
+): List<AudioBook> = browseBooksForAuto(books, settings).filter { it.isDownloaded }
+
+internal suspend fun recentBooksForAuto(
+    settings: AppSettings,
+    maxItems: Int,
+    page: Int,
+    pageSize: Int,
+    loadByLibrary: suspend (libraryId: String, isLocal: Boolean, limit: Int) -> List<AudioBook>,
 ): List<AudioBook> {
     val activeLibraryId = settings.activeLibraryId ?: return emptyList()
-    return browseBooksInActiveScope(loadByLibrary(activeLibraryId, limit), settings)
+    if (maxItems <= 0 || page < 0 || pageSize <= 0) return emptyList()
+    val offset = page.toLong() * pageSize.toLong()
+    if (offset >= maxItems) return emptyList()
+    val loadLimit = minOf(maxItems.toLong(), offset + pageSize.toLong()).toInt()
+    val isLocal = settings.appMode == AppMode.LOCAL
+    return browseBooksForAuto(loadByLibrary(activeLibraryId, isLocal, loadLimit), settings)
+        .take(maxItems)
+        .drop(offset.toInt())
+        .take(pageSize)
+}
+
+internal fun canBrowseAuto(settings: AppSettings, isAuthenticated: Boolean): Boolean =
+    when (settings.appMode) {
+        AppMode.AUDIOBOOKSHELF -> isAuthenticated && settings.selectedLibraryId != null
+        AppMode.LOCAL -> settings.selectedLocalLibraryId != null
+    }
+
+internal fun autoBrowseParentsChangedAfterSync(): List<String> =
+    listOf(
+        MediaBrowseTree.RECENTLY_PLAYED_ID,
+        MediaBrowseTree.LIBRARY_ID,
+        MediaBrowseTree.DOWNLOADED_ID,
+    )
+
+internal fun autoBrowseParentsChangedAfterSourceChange(): List<String> =
+    listOf(MediaBrowseTree.ROOT_ID) + autoBrowseParentsChangedAfterSync()
+
+internal fun autoRootItemIds(canBrowse: Boolean): List<String> =
+    if (canBrowse) MediaBrowseTree.rootItemIds() else listOf(MediaBrowseTree.SETUP_REQUIRED_ID)
+
+internal suspend fun autoBrowseChildCount(
+    parentId: String,
+    canBrowse: Boolean,
+    activeLibraryId: String?,
+    activeIsLocal: Boolean,
+    countRecent: suspend (String, Boolean) -> Int,
+    countLibrary: suspend (String, Boolean) -> Int,
+    countDownloaded: suspend (String, Boolean) -> Int,
+): Int {
+    if (parentId == MediaBrowseTree.ROOT_ID) return autoRootItemIds(canBrowse).size
+    if (!canBrowse) return 0
+    val libraryId = activeLibraryId ?: return 0
+    return when (parentId) {
+        MediaBrowseTree.RECENTLY_PLAYED_ID -> minOf(20, countRecent(libraryId, activeIsLocal))
+        MediaBrowseTree.LIBRARY_ID -> countLibrary(libraryId, activeIsLocal)
+        MediaBrowseTree.DOWNLOADED_ID -> countDownloaded(libraryId, activeIsLocal)
+        else -> 0
+    }
 }

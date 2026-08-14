@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
+import android.os.Bundle
 import android.os.Looper
 import android.util.Log
 import android.graphics.Bitmap
@@ -15,7 +16,9 @@ import androidx.annotation.VisibleForTesting
 import androidx.media3.common.*
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import android.media.MediaMetadataRetriever
 import androidx.media3.exoplayer.ExoPlayer
 import com.ninelivesaudio.app.entitlement.EffectiveSettings
@@ -29,6 +32,8 @@ import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.PendingProgressQueueOwner
 import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
@@ -37,8 +42,10 @@ import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
@@ -71,6 +78,81 @@ import kotlin.time.Duration.Companion.seconds
 enum class PlaybackState {
     STOPPED, LOADING, PLAYING, PAUSED, BUFFERING
 }
+
+@OptIn(UnstableApi::class)
+internal fun createPlaybackDataSourceFactory(
+    context: Context,
+    okHttpClient: OkHttpClient,
+): DataSource.Factory = DefaultDataSource.Factory(
+    context,
+    OkHttpDataSource.Factory(okHttpClient),
+)
+
+internal const val AUTO_SEEK_BACK_10 = "com.ninelivesaudio.app.AUTO_SEEK_BACK_10"
+internal const val AUTO_SEEK_FORWARD_30 = "com.ninelivesaudio.app.AUTO_SEEK_FORWARD_30"
+
+internal fun autoSeekSeconds(customAction: String): Int? = when (customAction) {
+    AUTO_SEEK_BACK_10 -> -10
+    AUTO_SEEK_FORWARD_30 -> 30
+    else -> null
+}
+
+internal fun audiobookSessionCommands(): List<SessionCommand> = listOf(
+    SessionCommand(AUTO_SEEK_BACK_10, Bundle.EMPTY),
+    SessionCommand(AUTO_SEEK_FORWARD_30, Bundle.EMPTY),
+)
+
+internal data class AudiobookButtonSpec(
+    val icon: Int,
+    val displayName: String,
+    // List<Int>, not IntArray: a data class' generated equals()/hashCode()
+    // uses IntArray's identity equality, which silently broke structural
+    // comparisons of AudiobookButtonSpec (and anything containing one).
+    val slots: List<Int>,
+    val playerCommand: Int? = null,
+    val customAction: String? = null,
+)
+
+internal fun audiobookButtonSpecs(): List<AudiobookButtonSpec> = listOf(
+    AudiobookButtonSpec(
+        icon = CommandButton.ICON_SKIP_BACK_10,
+        displayName = "Back 10 seconds",
+        slots = listOf(CommandButton.SLOT_BACK),
+        customAction = AUTO_SEEK_BACK_10,
+    ),
+    AudiobookButtonSpec(
+        icon = CommandButton.ICON_SKIP_FORWARD_30,
+        displayName = "Forward 30 seconds",
+        slots = listOf(CommandButton.SLOT_FORWARD),
+        customAction = AUTO_SEEK_FORWARD_30,
+    ),
+    AudiobookButtonSpec(
+        icon = CommandButton.ICON_PREVIOUS,
+        displayName = "Previous chapter",
+        slots = listOf(CommandButton.SLOT_BACK_SECONDARY, CommandButton.SLOT_OVERFLOW),
+        playerCommand = Player.COMMAND_SEEK_TO_PREVIOUS,
+    ),
+    AudiobookButtonSpec(
+        icon = CommandButton.ICON_NEXT,
+        displayName = "Next chapter",
+        slots = listOf(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW),
+        playerCommand = Player.COMMAND_SEEK_TO_NEXT,
+    ),
+)
+
+@OptIn(UnstableApi::class)
+internal fun audiobookMediaButtonPreferences(): List<CommandButton> =
+    audiobookButtonSpecs().map { spec ->
+        val builder = CommandButton.Builder(spec.icon)
+            .setDisplayName(spec.displayName)
+            .setSlots(*spec.slots.toIntArray())
+        if (spec.customAction != null) {
+            builder.setSessionCommand(SessionCommand(spec.customAction, Bundle.EMPTY))
+        } else {
+            builder.setPlayerCommand(checkNotNull(spec.playerCommand))
+        }
+        builder.build()
+    }
 
 internal data class PlaybackIntentTransition(
     val state: PlaybackState,
@@ -477,6 +559,14 @@ internal fun playbackItemPersistenceAction(
     else -> PlaybackItemPersistence.KEEP
 }
 
+internal fun autoBookLoadAllowed(
+    book: AudioBook,
+    settings: AppSettings,
+    isAuthenticated: Boolean,
+): Boolean = !book.isArchived &&
+    canBrowseAuto(settings, isAuthenticated) &&
+    book.isInActiveLibrary(settings)
+
 /**
  * Core playback engine wrapping Media3 ExoPlayer.
  * Ports AndroidAudioPlaybackService logic: multi-track, streaming with auth,
@@ -532,6 +622,8 @@ class PlaybackManager @Inject constructor(
     private var playbackService: PlaybackService? = null
     private var chapterPlayer: ChapterAwareForwardingPlayer? = null
     private var sessionInitialized = false
+    private val playbackDataSourceFactory = createPlaybackDataSourceFactory(context, okHttpClient)
+    private val playbackMediaSourceFactory = DefaultMediaSourceFactory(playbackDataSourceFactory)
 
     /** Expose the current ExoPlayer instance. */
     fun getPlayer(): ExoPlayer? = exoPlayer
@@ -583,6 +675,9 @@ class PlaybackManager @Inject constructor(
                 .build()
 
             val player = ExoPlayer.Builder(context)
+                .setMediaSourceFactory(playbackMediaSourceFactory)
+                .setSeekBackIncrementMs(10_000L)
+                .setSeekForwardIncrementMs(30_000L)
                 .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
                 .setHandleAudioBecomingNoisy(true)
                 .build()
@@ -591,6 +686,8 @@ class PlaybackManager @Inject constructor(
 
             val wrapper = ChapterAwareForwardingPlayer(player)
             wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
+            wrapper.seekBackHandler = { skipBackward(seconds = 10) }
+            wrapper.seekForwardHandler = { skipForward(seconds = 30) }
             // Every media-session controller goes through the wrapper, so the
             // entitlement clamp has to live there too, not only in setSpeed().
             wrapper.speedClamp = { requested ->
@@ -610,10 +707,14 @@ class PlaybackManager @Inject constructor(
         mediaSession = if (isLibrarySession) {
             MediaLibrarySession.Builder(context, wrapper, libraryCallback!!)
                 .setSessionActivity(createSessionPendingIntent())
+                .setMediaButtonPreferences(audiobookMediaButtonPreferences())
+                .setCustomLayout(audiobookMediaButtonPreferences())
                 .build()
         } else {
             MediaSession.Builder(context, wrapper)
                 .setSessionActivity(createSessionPendingIntent())
+                .setMediaButtonPreferences(audiobookMediaButtonPreferences())
+                .setCustomLayout(audiobookMediaButtonPreferences())
                 .build()
         }
 
@@ -651,16 +752,29 @@ class PlaybackManager @Inject constructor(
      * same service would deadlock.
      */
     suspend fun loadBookByIdForAuto(bookId: String): Boolean {
+        apiService.awaitAuthReady()
+        if (!canBrowseAuto(settingsManager.currentSettings, apiService.isAuthenticated)) {
+            return false
+        }
         return withNewLoadRequest { loadRequest ->
+            val initialSettings = settingsManager.currentSettings
             val book = withContext(Dispatchers.IO) {
                 audioBookRepository.getById(bookId)
-                    ?: audioBookRepository.fetchFromServer(bookId)
+                    ?: if (initialSettings.appMode == AppMode.AUDIOBOOKSHELF) {
+                        audioBookRepository.fetchFromServer(bookId)
+                    } else {
+                        null
+                    }
             } ?: return@withNewLoadRequest false
 
-            // Refuse archived books: the source file is gone, so loading would
-            // attach a dead SAF URI. Browse/search already hide them, but a stale
-            // Auto queue entry could still request one by id.
-            if (book.isArchived) return@withNewLoadRequest false
+            // Re-check after the lookup because logout or source selection can
+            // change while a stale controller request is being resolved.
+            if (!autoBookLoadAllowed(
+                    book = book,
+                    settings = settingsManager.currentSettings,
+                    isAuthenticated = apiService.isAuthenticated,
+                )
+            ) return@withNewLoadRequest false
 
             withContext(Dispatchers.Main) {
                 loadAudioBookOwned(loadRequest, book, skipServiceStart = true)
@@ -1563,18 +1677,7 @@ class PlaybackManager @Inject constructor(
     ): Boolean {
         val session = synchronized(sessionLock) { currentSession }
         val serverUrl = settingsManager.currentSettings.serverUrl.trimEnd('/')
-        val token = settingsManager.getAuthToken() ?: ""
         if (!isCurrent()) return false
-
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setDefaultRequestProperties(
-                if (token.isNotEmpty()) mapOf("Authorization" to "Bearer $token")
-                else emptyMap()
-            )
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
-
-        val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
 
         val mediaItems = mutableListOf<MediaItem>()
         val durations = mutableListOf<Double>()
@@ -1610,7 +1713,7 @@ class PlaybackManager @Inject constructor(
         }
 
         val mediaSources: List<MediaSource> = mediaItems.map { item ->
-            mediaSourceFactory.createMediaSource(item)
+            playbackMediaSourceFactory.createMediaSource(item)
         }
 
         if (!isCurrent()) return false

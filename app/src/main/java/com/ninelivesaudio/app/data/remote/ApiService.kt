@@ -1,9 +1,11 @@
 package com.ninelivesaudio.app.data.remote
 
 import android.net.Uri
+import android.util.Log
 import com.ninelivesaudio.app.data.remote.dto.*
 import com.ninelivesaudio.app.domain.model.*
 import com.ninelivesaudio.app.service.SettingsManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -23,6 +25,55 @@ import kotlin.time.Duration.Companion.seconds
 enum class TokenValidationResult { VALID, INVALID, UNREACHABLE }
 
 /**
+ * Outcome of an explicit username/password login attempt.
+ *
+ * The distinction between [REJECTED] and [UNREACHABLE] is load-bearing the
+ * same way it is for [TokenValidationResult]: only [REJECTED] (the server
+ * actively rejected the credentials) is a real login failure. [UNREACHABLE]
+ * means no verdict was reached, and retained-session repair may still apply.
+ */
+enum class CredentialLoginResult { SUCCESS, REJECTED, UNREACHABLE }
+
+/**
+ * Classifies a non-2xx login HTTP status. 4xx is the server rejecting the
+ * credentials (auth-shaped codes like 401/403 included); anything else (5xx,
+ * unexpected codes) is a transient inability to reach a verdict.
+ */
+internal fun classifyLoginHttpFailure(code: Int): CredentialLoginResult = when (code) {
+    in 400..499 -> CredentialLoginResult.REJECTED
+    else -> CredentialLoginResult.UNREACHABLE
+}
+
+internal data class AuthSessionIdentity(
+    val generation: Long,
+    val token: String,
+    val serverUrl: String,
+)
+
+internal data class StoredTokenValidation(
+    val session: AuthSessionIdentity,
+    val result: TokenValidationResult,
+)
+
+/** Barrier for components, such as Android Auto, that can start before app initialization. */
+internal class AuthReadiness {
+    private val initializationMutex = Mutex()
+    @Volatile private var initialized = false
+
+    suspend fun awaitOrInitialize(initializer: suspend () -> Unit) {
+        if (initialized) return
+        initializationMutex.withLock {
+            if (!initialized) {
+                initializer()
+                // Set only after success. Failure or cancellation leaves the
+                // gate retryable for the next service or app request.
+                initialized = true
+            }
+        }
+    }
+}
+
+/**
  * Classifies an HTTP status code from a token-validation endpoint.
  * 2xx means the server accepted the token, 401/403 means it rejected it, and
  * anything else (5xx, unexpected codes) is treated as a transient inability to
@@ -32,6 +83,65 @@ internal fun classifyValidationStatus(code: Int): TokenValidationResult = when {
     code in 200..299 -> TokenValidationResult.VALID
     code == 401 || code == 403 -> TokenValidationResult.INVALID
     else -> TokenValidationResult.UNREACHABLE
+}
+
+/** Stored-token validation must wait for secure storage restoration. */
+internal fun validationNeedsStoredAuth(tokenOverride: String?): Boolean = tokenOverride == null
+
+internal fun authSessionMatches(
+    expected: AuthSessionIdentity,
+    current: AuthSessionIdentity?,
+): Boolean = expected == current
+
+/** Runtime auth and cache identity must change before fallible secure storage. */
+internal suspend fun applyAuthTokenMutation(
+    updateRuntimeAuth: () -> Unit,
+    recordMutation: () -> Unit,
+    persistSecureStorage: suspend () -> Unit,
+) {
+    updateRuntimeAuth()
+    recordMutation()
+    persistSecureStorage()
+}
+
+/**
+ * Restores settings (and the auth generation) after a password login attempt
+ * that did not succeed, mirroring [rollbackFailedTokenLogin]'s intent for the
+ * password flow: a failed attempt against a new URL must not leave settings
+ * pointing at the new, never-authenticated server — that would later validate
+ * the OLD token against the NEW server, and a 401 there would wipe a token
+ * still valid for the original server.
+ *
+ * Wrapped so a rollback failure (e.g. the encrypted store itself is
+ * unavailable) never clobbers the real error the caller is about to surface.
+ */
+internal suspend fun rollbackFailedPasswordLogin(
+    restoreSettings: suspend () -> Unit,
+    recordMutation: () -> Unit,
+    onRollbackFailure: (Throwable) -> Unit = {},
+) {
+    runCatching {
+        restoreSettings()
+        recordMutation()
+    }.onFailure(onRollbackFailure)
+}
+
+internal suspend fun rollbackFailedTokenLogin(
+    previousToken: String?,
+    attemptedToken: String,
+    readStoredToken: suspend () -> String?,
+    replaceStoredToken: suspend (expected: String, replacement: String?) -> Unit,
+    restorePreviousSettings: suspend () -> Unit = {},
+    restoreRuntimeAuth: (String?) -> Unit,
+    recordMutation: () -> Unit,
+): Boolean {
+    val storedToken = readStoredToken()
+    if (storedToken != attemptedToken && storedToken != previousToken) return false
+    restorePreviousSettings()
+    if (storedToken == attemptedToken) replaceStoredToken(attemptedToken, previousToken)
+    restoreRuntimeAuth(previousToken)
+    recordMutation()
+    return true
 }
 
 /**
@@ -45,6 +155,7 @@ class ApiService @Inject constructor(
     private val settingsManager: SettingsManager,
 ) {
     companion object {
+        private const val TAG = "ApiService"
         private const val TOKEN_VALIDATION_DEBOUNCE_MS = 15_000L
     }
 
@@ -52,6 +163,9 @@ class ApiService @Inject constructor(
         private set
 
     private val tokenValidationMutex = Mutex()
+    private val authMutationMutex = Mutex()
+    private val authReadiness = AuthReadiness()
+    private var authGeneration: Long = 0L
     @Volatile private var lastValidatedToken: String? = null
     @Volatile private var lastValidationAtMs: Long = 0L
     @Volatile private var lastValidationResult: TokenValidationResult? = null
@@ -62,80 +176,156 @@ class ApiService @Inject constructor(
 
     // ─── Auth ────────────────────────────────────────────────────────────
 
-    suspend fun login(serverUrl: String, username: String, password: String): Boolean {
+    suspend fun login(serverUrl: String, username: String, password: String): CredentialLoginResult {
         return withContext(Dispatchers.IO) {
-            try {
-                val normalizedUrl = normalizeServerUrl(serverUrl)
-                val normalizedUsername = username.trim()
+            authMutationMutex.withLock {
+                // Snapshot so a failed attempt can restore the PREVIOUS server/
+                // username instead of leaving settings pointing at the new,
+                // never-authenticated server. Without this, validateRetainedSession
+                // would validate the old token against the new server and a 401
+                // there would wipe a token still valid for the original server.
+                val previousSettings = settingsManager.currentSettings
+                try {
+                    val normalizedUrl = normalizeServerUrl(serverUrl)
+                    val normalizedUsername = username.trim()
 
-                // Update settings with server URL first (so Retrofit uses it)
-                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, username = normalizedUsername) }
+                    // Update settings with server URL first (so Retrofit uses it)
+                    settingsManager.updateSettings {
+                        it.copy(serverUrl = normalizedUrl, username = normalizedUsername)
+                    }
+                    recordAuthMutation()
 
-                val response = api.login(LoginRequest(normalizedUsername, password))
+                    val response = api.login(LoginRequest(normalizedUsername, password))
 
-                if (!response.isSuccessful) {
-                    lastError = "Login failed: ${response.code()} - ${response.errorBody()?.string()}"
-                    return@withContext false
+                    if (!response.isSuccessful) {
+                        lastError = "Login failed: ${response.code()} - ${response.errorBody()?.string()}"
+                        rollbackFailedPasswordLogin(
+                            restoreSettings = { settingsManager.saveSettings(previousSettings) },
+                            recordMutation = { recordAuthMutation() },
+                            onRollbackFailure = { e ->
+                                Log.e(TAG, "login: Failed to roll back settings after a rejected login", e)
+                            },
+                        )
+                        return@withLock classifyLoginHttpFailure(response.code())
+                    }
+
+                    val loginResponse = response.body()
+                    val token = loginResponse?.user?.token
+
+                    if (token.isNullOrEmpty()) {
+                        lastError = "Server response did not contain authentication token"
+                        rollbackFailedPasswordLogin(
+                            restoreSettings = { settingsManager.saveSettings(previousSettings) },
+                            recordMutation = { recordAuthMutation() },
+                            onRollbackFailure = { e ->
+                                Log.e(TAG, "login: Failed to roll back settings after a rejected login", e)
+                            },
+                        )
+                        return@withLock CredentialLoginResult.REJECTED
+                    }
+
+                    // Save token and update interceptor
+                    applyAuthTokenMutation(
+                        updateRuntimeAuth = { authInterceptor.setToken(token) },
+                        recordMutation = { recordAuthMutation() },
+                        persistSecureStorage = { settingsManager.saveAuthToken(token) },
+                    )
+
+                    lastError = null
+                    CredentialLoginResult.SUCCESS
+                } catch (e: Exception) {
+                    lastError = formatConnectionError(e)
+                    rollbackFailedPasswordLogin(
+                        restoreSettings = { settingsManager.saveSettings(previousSettings) },
+                        recordMutation = { recordAuthMutation() },
+                        onRollbackFailure = { rollbackError ->
+                            Log.e(TAG, "login: Failed to roll back settings after an unreachable login", rollbackError)
+                        },
+                    )
+                    CredentialLoginResult.UNREACHABLE
                 }
-
-                val loginResponse = response.body()
-                val token = loginResponse?.user?.token
-
-                if (token.isNullOrEmpty()) {
-                    lastError = "Server response did not contain authentication token"
-                    return@withContext false
-                }
-
-                // Save token and update interceptor
-                authInterceptor.setToken(token)
-                settingsManager.saveAuthToken(token)
-
-                lastError = null
-                true
-            } catch (e: Exception) {
-                lastError = formatConnectionError(e)
-                false
             }
         }
     }
 
     suspend fun loginWithToken(serverUrl: String, token: String): Boolean {
         return withContext(Dispatchers.IO) {
-            try {
-                val normalizedUrl = normalizeServerUrl(serverUrl)
+            authMutationMutex.withLock {
+                val previousSettings = settingsManager.currentSettings
+                val previousToken = settingsManager.getAuthToken()
+                val normalizedToken = token.trim()
+                try {
+                    val normalizedUrl = normalizeServerUrl(serverUrl)
 
-                // Set server URL so Retrofit uses it
-                settingsManager.updateSettings { it.copy(serverUrl = normalizedUrl, useApiToken = true) }
+                    // Set server URL so Retrofit uses it
+                    settingsManager.updateSettings {
+                        it.copy(serverUrl = normalizedUrl, useApiToken = true)
+                    }
 
-                // Set token and validate it
-                authInterceptor.setToken(token)
-                settingsManager.saveAuthToken(token)
+                    // Set token and validate it
+                    applyAuthTokenMutation(
+                        updateRuntimeAuth = { authInterceptor.setToken(normalizedToken) },
+                        recordMutation = { recordAuthMutation() },
+                        persistSecureStorage = { settingsManager.saveAuthToken(normalizedToken) },
+                    )
 
-                when (validateTokenDetailed(forceRefresh = true, tokenOverride = token)) {
-                    TokenValidationResult.VALID -> {
-                        lastError = null
-                        true
+                    when (validateTokenDetailed(forceRefresh = true, tokenOverride = normalizedToken)) {
+                        TokenValidationResult.VALID -> {
+                            lastError = null
+                            true
+                        }
+                        TokenValidationResult.INVALID -> {
+                            // Wrapped in runCatching: an uncaught rollback failure
+                            // here (e.g. the check() below) falls through to the
+                            // outer catch, which re-runs rollback and replaces the
+                            // real "Invalid API token" verdict with a confusing
+                            // "Auth session changed during token rollback" message.
+                            runCatching {
+                                rollbackFailedTokenLogin(
+                                    previousToken = previousToken,
+                                    attemptedToken = normalizedToken,
+                                    readStoredToken = { settingsManager.getAuthToken() },
+                                    replaceStoredToken = { expected, replacement ->
+                                        check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement)) {
+                                            "Auth session changed during token rollback"
+                                        }
+                                    },
+                                    restorePreviousSettings = { settingsManager.saveSettings(previousSettings) },
+                                    restoreRuntimeAuth = { authInterceptor.setToken(it) },
+                                    recordMutation = { recordAuthMutation() },
+                                )
+                            }.onFailure { e ->
+                                Log.e(TAG, "loginWithToken: Rollback failed after an invalid token", e)
+                            }
+                            lastError = "Invalid API token"
+                            false
+                        }
+                        TokenValidationResult.UNREACHABLE -> {
+                            // Could not reach the server to verify. Keep the token
+                            // so the session works once the server is reachable.
+                            lastError = "Could not reach server to verify the token. Check the URL and your connection, then try again."
+                            false
+                        }
                     }
-                    TokenValidationResult.INVALID -> {
-                        // Server actively rejected the token — discard it.
-                        authInterceptor.setToken(null)
-                        settingsManager.clearAuthToken()
-                        lastError = "Invalid API token"
-                        false
-                    }
-                    TokenValidationResult.UNREACHABLE -> {
-                        // Could not reach the server to verify. Keep the token
-                        // (it may be perfectly valid) so the session works once
-                        // the server is reachable, but report the failure.
-                        lastError = "Could not reach server to verify the token. Check the URL and your connection, then try again."
-                        false
-                    }
+                } catch (e: Exception) {
+                    runCatching {
+                        rollbackFailedTokenLogin(
+                            previousToken = previousToken,
+                            attemptedToken = normalizedToken,
+                            readStoredToken = { settingsManager.getAuthToken() },
+                            replaceStoredToken = { expected, replacement ->
+                                check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement)) {
+                                    "Auth session changed during token rollback"
+                                }
+                            },
+                            restorePreviousSettings = { settingsManager.saveSettings(previousSettings) },
+                            restoreRuntimeAuth = { authInterceptor.setToken(it) },
+                            recordMutation = { recordAuthMutation() },
+                        )
+                    }.exceptionOrNull()?.let(e::addSuppressed)
+                    lastError = formatConnectionError(e)
+                    false
                 }
-            } catch (e: Exception) {
-                authInterceptor.setToken(null)
-                settingsManager.clearAuthToken()
-                lastError = formatConnectionError(e)
-                false
             }
         }
     }
@@ -163,8 +353,85 @@ class ApiService @Inject constructor(
     }
 
     suspend fun logout() {
-        authInterceptor.setToken(null)
-        settingsManager.clearAuthToken()
+        authMutationMutex.withLock {
+            applyAuthTokenMutation(
+                updateRuntimeAuth = { authInterceptor.setToken(null) },
+                recordMutation = { recordAuthMutation() },
+                persistSecureStorage = { settingsManager.clearAuthToken() },
+            )
+        }
+    }
+
+    /**
+     * Validates one stable stored session. The HTTP call itself runs OUTSIDE
+     * authMutationMutex — it can take 30s+ to time out, and holding the lock
+     * across it blocked login/logout for that whole window. Session identity
+     * is captured under the lock before the call and re-compared under the
+     * lock after, so a verdict computed against a session that a concurrent
+     * login/logout has since replaced is discarded rather than applied.
+     */
+    internal suspend fun validateStoredTokenSession(
+        forceRefresh: Boolean = false,
+    ): StoredTokenValidation? {
+        awaitAuthReady()
+        val session = authMutationMutex.withLock {
+            val token = settingsManager.getAuthToken()?.takeIf { it.isNotEmpty() }
+                ?: return@withLock null
+            currentAuthSessionLocked(token)
+        } ?: return null
+
+        val result = validateTokenDetailed(forceRefresh, tokenOverride = session.token)
+
+        return authMutationMutex.withLock {
+            if (!authSessionMatches(session, currentAuthSessionLocked(settingsManager.getAuthToken()))) {
+                return@withLock null
+            }
+            StoredTokenValidation(session = session, result = result)
+        }
+    }
+
+    internal suspend fun isCurrentAuthSession(expected: AuthSessionIdentity): Boolean =
+        authMutationMutex.withLock {
+            authSessionMatches(expected, currentAuthSessionLocked(settingsManager.getAuthToken()))
+        }
+
+    /** Clears an invalid session only if no newer auth mutation replaced it. */
+    internal suspend fun logoutIfCurrentSession(expected: AuthSessionIdentity): Boolean =
+        authMutationMutex.withLock {
+            if (!authSessionMatches(expected, currentAuthSessionLocked(settingsManager.getAuthToken()))) {
+                return@withLock false
+            }
+            applyAuthTokenMutation(
+                updateRuntimeAuth = { authInterceptor.setToken(null) },
+                recordMutation = { recordAuthMutation() },
+                persistSecureStorage = { settingsManager.clearAuthToken() },
+            )
+            true
+        }
+
+    private fun currentAuthSessionLocked(token: String?): AuthSessionIdentity? =
+        token?.takeIf { it.isNotEmpty() }?.let {
+            AuthSessionIdentity(
+                generation = authGeneration,
+                token = it,
+                serverUrl = settingsManager.currentSettings.serverUrl,
+            )
+        }
+
+    suspend fun awaitAuthReady() {
+        initializeFromSettings()
+    }
+
+    private fun clearValidationCache() {
+        lastValidatedToken = null
+        lastValidationAtMs = 0L
+        lastValidationResult = null
+    }
+
+    /** Validation verdicts belong to one exact auth generation and server. */
+    private fun recordAuthMutation() {
+        authGeneration++
+        clearValidationCache()
     }
 
     /**
@@ -186,6 +453,13 @@ class ApiService @Inject constructor(
         forceRefresh: Boolean = false,
         tokenOverride: String? = null,
     ): TokenValidationResult {
+        // Explicit-token login already owns authMutationMutex and has installed
+        // its token. Stored-token validation must first let serialized startup
+        // restoration install the current token into the interceptor.
+        if (validationNeedsStoredAuth(tokenOverride)) {
+            awaitAuthReady()
+        }
+
         return withContext(Dispatchers.IO) {
             try {
                 val token = tokenOverride ?: settingsManager.getAuthToken()
@@ -199,8 +473,6 @@ class ApiService @Inject constructor(
                 if (settingsManager.currentSettings.serverUrl.isBlank()) {
                     return@withContext TokenValidationResult.UNREACHABLE
                 }
-
-                authInterceptor.setToken(token)
 
                 tokenValidationMutex.withLock {
                     getCachedValidation(token, forceRefresh)?.let { return@withContext it }
@@ -262,9 +534,30 @@ class ApiService @Inject constructor(
 
     /** Restore token from secure storage on app startup. */
     suspend fun initializeFromSettings() {
-        val token = settingsManager.getAuthToken()
-        if (!token.isNullOrEmpty()) {
-            authInterceptor.setToken(token)
+        authReadiness.awaitOrInitialize {
+            // A service can start before NineLivesApp's initialization coroutine.
+            // Load settings here too so Android Auto can safely trigger the same
+            // idempotent startup path instead of waiting on app-owned work.
+            authMutationMutex.withLock {
+                settingsManager.loadSettings()
+                // A corrupt token entry must degrade to logged-out networking,
+                // not crash the app scope or the media service that got here
+                // first. loadSettings already published hasAuthToken = false
+                // for this case.
+                // Cancellation must escape so AuthReadiness stays retryable;
+                // a swallowed CancellationException here would latch the gate
+                // with a null token and poison every later validation.
+                val token = try {
+                    settingsManager.getAuthToken()
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (e: Exception) {
+                    Log.e(TAG, "initializeFromSettings: Auth token unreadable, starting logged out", e)
+                    null
+                }
+                authInterceptor.setToken(token)
+                recordAuthMutation()
+            }
         }
     }
 

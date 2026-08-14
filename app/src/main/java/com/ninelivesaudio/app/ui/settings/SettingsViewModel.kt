@@ -11,6 +11,8 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.CredentialLoginResult
+import com.ninelivesaudio.app.data.remote.StoredTokenValidation
 import com.ninelivesaudio.app.data.remote.TokenValidationResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -32,8 +34,11 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.net.URI
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 
 @HiltViewModel
@@ -153,6 +158,8 @@ class SettingsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val authUiGeneration = AtomicLong()
+    private val authUiOperationMutex = Mutex()
 
     // ─── Init ─────────────────────────────────────────────────────────────
 
@@ -264,56 +271,93 @@ class SettingsViewModel @Inject constructor(
         // explicit INVALID verdict (server rejected the token) clears it — a
         // transient UNREACHABLE must keep the token so the user stays signed in
         // and reconnects automatically once the server is back.
-        val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
-        if (hasToken) {
+        val uiGeneration = authUiGeneration.get()
+        authUiOperationMutex.withLock {
+            if (authUiGeneration.get() != uiGeneration) return@withLock
             try {
-                val result = apiService.validateTokenDetailed()
+                val validation = apiService.validateStoredTokenSession() ?: return@withLock
+                if (!validationResultIsCurrent(uiGeneration, validation)) return@withLock
+                val result = validation.result
                 when (result) {
                     TokenValidationResult.VALID -> {
-                        _uiState.update {
-                            it.copy(
-                                isConnected = true,
-                                connectionStatusText = "Connected to ${settings.serverUrl}",
-                            )
+                        _uiState.update { state ->
+                            if (authUiGeneration.get() != uiGeneration) state else {
+                                state.copy(
+                                    isConnected = true,
+                                    connectionStatusText = "Connected to ${validation.session.serverUrl}",
+                                )
+                            }
                         }
                     }
                     TokenValidationResult.INVALID -> {
-                        _uiState.update {
-                            it.copy(
-                                isConnected = false,
-                                connectionStatusText = "Session expired — please reconnect",
-                            )
+                        if (apiService.logoutIfCurrentSession(validation.session)) {
+                            _uiState.update { state ->
+                                if (authUiGeneration.get() != uiGeneration) state else {
+                                    state.copy(
+                                        isConnected = false,
+                                        connectionStatusText = "Session expired — please reconnect",
+                                    )
+                                }
+                            }
                         }
-                        apiService.logout()
                     }
                     TokenValidationResult.UNREACHABLE -> {
                         // Keep the token; just reflect that we couldn't reach the server.
-                        _uiState.update {
-                            it.copy(
-                                isConnected = false,
-                                connectionStatusText = "Server unreachable — will retry automatically",
-                            )
+                        _uiState.update { state ->
+                            if (authUiGeneration.get() != uiGeneration) state else {
+                                state.copy(
+                                    isConnected = false,
+                                    connectionStatusText = "Server unreachable — will retry automatically",
+                                )
+                            }
                         }
                     }
                 }
 
-                // Populate the cached library selector unless the token was
-                // rejected. loadLibraries() reads the local cache first and only
-                // then attempts a server sync that fails gracefully, so it is
-                // safe offline — without this the selector never appears when
-                // Settings is opened in airplane mode (UNREACHABLE).
-                if (shouldLoadCachedLibrariesAfterValidation(result)) {
+                // Keep validation and its library side effect in one serialized
+                // auth UI operation. A newer Connect or Disconnect cannot enter
+                // between the current-session check and loadLibraries().
+                if (
+                    shouldLoadCachedLibrariesAfterValidation(result) &&
+                    validationResultIsCurrent(uiGeneration, validation)
+                ) {
                     loadLibraries()
                 }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isConnected = false,
-                        connectionStatusText = "Connection check failed: ${e.message}",
-                    )
+                _uiState.update { state ->
+                    if (authUiGeneration.get() != uiGeneration) state else {
+                        state.copy(
+                            isConnected = false,
+                            connectionStatusText = "Connection check failed: ${e.message}",
+                        )
+                    }
                 }
             }
         }
+    }
+
+    private suspend fun validationResultIsCurrent(
+        uiGeneration: Long,
+        validation: StoredTokenValidation,
+    ): Boolean = shouldApplyStoredValidation(
+        result = validation.result,
+        uiGenerationUnchanged = authUiGeneration.get() == uiGeneration,
+        authSessionCurrent = apiService.isCurrentAuthSession(validation.session),
+    )
+
+    private fun updateAuthUi(uiGeneration: Long, transform: (UiState) -> UiState) {
+        _uiState.update { state ->
+            if (authUiGeneration.get() == uiGeneration) transform(state) else state
+        }
+    }
+
+    private suspend fun validateRetainedSession(): TokenValidationResult {
+        val validation = apiService.validateStoredTokenSession(forceRefresh = true)
+            ?: return TokenValidationResult.UNREACHABLE
+        if (validation.result == TokenValidationResult.INVALID) {
+            apiService.logoutIfCurrentSession(validation.session)
+        }
+        return validation.result
     }
 
     // ─── Mode Switching ───────────────────────────────────────────────────
@@ -773,8 +817,22 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
+        // Invalidates every startup validation side effect before the new login
+        // coroutine can yield, including same-token reconnects.
+        val uiGeneration = authUiGeneration.incrementAndGet()
+
         viewModelScope.launch {
-            _uiState.update {
+            // Login, the settings activation, and loadLibraries stay inside the
+            // lock so Connect/Disconnect/Refresh stay mutually exclusive for
+            // those steps. syncNow() (a full library sync) and
+            // checkServerReachable() run AFTER the lock is released — holding
+            // the mutex across them left Disconnect dead for minutes. Both are
+            // still generation-guarded, so a superseded Connect never runs them.
+            var runPostLoginSync = false
+
+            authUiOperationMutex.withLock {
+                if (authUiGeneration.get() != uiGeneration) return@withLock
+            updateAuthUi(uiGeneration) {
                 it.copy(
                     isConnecting = true,
                     errorMessage = null,
@@ -790,52 +848,93 @@ class SettingsViewModel @Inject constructor(
             val s = _uiState.value
 
             try {
-                val success = if (s.useApiToken) {
-                    apiService.loginWithToken(s.serverUrl, s.apiToken)
+                val passwordOutcome = if (s.useApiToken) {
+                    null
                 } else {
-                    apiService.login(s.serverUrl, s.username, s.password)
+                    val hadStoredToken = !settingsManager.getAuthToken().isNullOrBlank()
+                    // Snapshot the stored username BEFORE the login attempt —
+                    // ApiService.login writes the attempted username into
+                    // settings up front, so reading it afterward would always
+                    // match trivially.
+                    val storedUsername = settingsManager.currentSettings.username
+                    resolvePasswordLogin(
+                        credentialLogin = {
+                            apiService.login(s.serverUrl, s.username, s.password)
+                        },
+                        hadStoredToken = hadStoredToken,
+                        usernameMatchesStored = s.username.trim() == storedUsername.trim(),
+                        validateRetainedToken = {
+                            validateRetainedSession()
+                        },
+                    )
                 }
+                val success = passwordOutcome == PasswordLoginOutcome.NEW_SESSION ||
+                    passwordOutcome == PasswordLoginOutcome.RETAINED_SESSION ||
+                    (s.useApiToken && apiService.loginWithToken(s.serverUrl, s.apiToken))
 
+                if (authUiGeneration.get() != uiGeneration) return@withLock
                 if (success) {
-                    _uiState.update {
+                    updateAuthUi(uiGeneration) {
                         it.copy(
+                            appMode = AppMode.AUDIOBOOKSHELF,
                             isConnected = true,
                             isConnecting = false,
                             connectionStatusText = "Connected to ${s.serverUrl}",
-                            successMessage = "Successfully connected!",
+                            successMessage = if (passwordOutcome == PasswordLoginOutcome.RETAINED_SESSION) {
+                                "Connected with saved session"
+                            } else {
+                                "Successfully connected!"
+                            },
                             password = "",
                             apiToken = "", // Clear token after successful login
                         )
                     }
 
-                    // Save settings
-                    settingsManager.updateSettings {
-                        it.copy(
-                            serverUrl = s.serverUrl,
-                            username = if (s.useApiToken) "" else s.username,
-                            useApiToken = s.useApiToken,
-                        )
-                    }
-
-                    // Load libraries for the selector
-                    loadLibraries()
-
-                    // Check server reachability
-                    connectivityMonitor.checkServerReachable()
+                    activateSessionAfterLogin(
+                        // Persist server mode before choosing a library. Otherwise
+                        // loadLibraries deliberately refuses to replace the active
+                        // local-folder selection and fresh login stays on Local.
+                        activateAudiobookshelf = {
+                            if (authUiGeneration.get() == uiGeneration) {
+                                settingsManager.updateSettings {
+                                    it.copy(
+                                        appMode = AppMode.AUDIOBOOKSHELF,
+                                        serverUrl = s.serverUrl,
+                                        username = if (s.useApiToken) "" else s.username,
+                                        useApiToken = s.useApiToken,
+                                    )
+                                }
+                            }
+                        },
+                        // Establish the active library before importing progress so
+                        // Home observes the correct library as the database fills.
+                        loadLibraries = {
+                            if (authUiGeneration.get() == uiGeneration) loadLibraries()
+                        },
+                    )
+                    runPostLoginSync = true
                 } else {
-                    _uiState.update {
+                    updateAuthUi(uiGeneration) {
                         it.copy(
                             isConnected = false,
                             isConnecting = false,
-                            connectionStatusText = "Connection failed",
-                            errorMessage = apiService.lastError
-                                ?: if (s.useApiToken) "Invalid API token."
-                                   else "Login failed. Check your credentials and server URL.",
+                            connectionStatusText = if (passwordOutcome == PasswordLoginOutcome.UNREACHABLE) {
+                                "Server unreachable"
+                            } else {
+                                "Connection failed"
+                            },
+                            errorMessage = when (passwordOutcome) {
+                                PasswordLoginOutcome.UNREACHABLE ->
+                                    "Could not reach the server. Your saved session was kept."
+                                else -> apiService.lastError
+                                    ?: if (s.useApiToken) "Invalid API token."
+                                       else "Login failed. Check your credentials and server URL."
+                            },
                         )
                     }
                 }
             } catch (e: Exception) {
-                _uiState.update {
+                updateAuthUi(uiGeneration) {
                     it.copy(
                         isConnected = false,
                         isConnecting = false,
@@ -844,14 +943,39 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             }
+            }
+
+            if (runPostLoginSync) {
+                try {
+                    syncAfterLogin(
+                        syncNow = {
+                            if (authUiGeneration.get() == uiGeneration) syncManager.syncNow()
+                        },
+                        checkServerReachable = {
+                            if (authUiGeneration.get() == uiGeneration) {
+                                connectivityMonitor.checkServerReachable()
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    // The connection itself already succeeded and the UI already
+                    // reflects that — a failure here is a background sync hiccup,
+                    // not a login failure, so it is logged rather than surfaced
+                    // as a connection error.
+                    Log.e("SettingsViewModel", "connect: Post-login sync failed", e)
+                }
+            }
         }
     }
 
     fun disconnect() {
+        val uiGeneration = authUiGeneration.incrementAndGet()
         viewModelScope.launch {
+            authUiOperationMutex.withLock {
+                if (authUiGeneration.get() != uiGeneration) return@withLock
             try {
                 apiService.logout()
-                _uiState.update {
+                updateAuthUi(uiGeneration) {
                     it.copy(
                         isConnected = false,
                         connectionStatusText = "Not connected",
@@ -861,54 +985,98 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             } catch (e: Exception) {
-                _uiState.update {
+                updateAuthUi(uiGeneration) {
                     it.copy(errorMessage = "Error disconnecting: ${e.message}")
                 }
+            }
             }
         }
     }
 
     fun refreshConnection() {
+        // Refresh observes the current auth intent. It must not supersede an
+        // explicit queued Connect or Disconnect operation.
+        val uiGeneration = authUiGeneration.get()
         viewModelScope.launch {
-            _uiState.update {
+            authUiOperationMutex.withLock {
+                if (authUiGeneration.get() != uiGeneration) return@withLock
+            updateAuthUi(uiGeneration) {
                 it.copy(errorMessage = null, successMessage = null, isConnecting = true)
             }
             try {
                 val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
                 if (!hasToken) {
-                    _uiState.update {
+                    updateAuthUi(uiGeneration) {
                         it.copy(
                             isConnecting = false,
                             isConnected = false,
                             connectionStatusText = "No auth token — please reconnect",
                         )
                     }
-                    return@launch
+                    return@withLock
                 }
-                val valid = apiService.validateToken()
-                _uiState.update {
-                    it.copy(
-                        isConnecting = false,
-                        isConnected = valid,
-                        connectionStatusText = if (valid) {
-                            "Connected to ${settingsManager.currentSettings.serverUrl}"
-                        } else {
-                            "Session expired — please reconnect"
-                        },
-                        successMessage = if (valid) "Connection refreshed" else null,
-                        errorMessage = if (!valid) "Token expired — please reconnect" else null,
-                    )
-                }
-                if (valid) {
-                    loadLibraries()
-                }
+                // validateStoredTokenSession() returning null (no stored token,
+                // or a verdict discarded because a concurrent auth mutation
+                // moved the session) and a superseded uiGeneration both used to
+                // bail out here with isConnecting left true forever — the
+                // finally below is what actually resets it.
+                val validation = apiService.validateStoredTokenSession() ?: return@withLock
+                if (!validationResultIsCurrent(uiGeneration, validation)) return@withLock
+                dispatchStoredValidation(
+                    result = validation.result,
+                    onValid = {
+                        updateAuthUi(uiGeneration) {
+                            it.copy(
+                                isConnecting = false,
+                                isConnected = true,
+                                connectionStatusText = "Connected to ${validation.session.serverUrl}",
+                                successMessage = "Connection refreshed",
+                                errorMessage = null,
+                            )
+                        }
+                        if (validationResultIsCurrent(uiGeneration, validation)) {
+                            loadLibraries()
+                        }
+                    },
+                    clearInvalidSession = {
+                        apiService.logoutIfCurrentSession(validation.session)
+                    },
+                    onInvalidCleared = {
+                        updateAuthUi(uiGeneration) {
+                            it.copy(
+                                isConnecting = false,
+                                isConnected = false,
+                                connectionStatusText = "Session expired — please reconnect",
+                                successMessage = null,
+                                errorMessage = "Token expired — please reconnect",
+                            )
+                        }
+                    },
+                    onUnreachable = {
+                        updateAuthUi(uiGeneration) {
+                            it.copy(
+                                isConnecting = false,
+                                isConnected = false,
+                                connectionStatusText = "Server unreachable — will retry automatically",
+                                successMessage = null,
+                                errorMessage = "Could not reach the server. Your saved session was kept.",
+                            )
+                        }
+                    },
+                )
             } catch (e: Exception) {
-                _uiState.update {
+                updateAuthUi(uiGeneration) {
                     it.copy(
                         isConnecting = false,
                         errorMessage = "Refresh failed: ${e.message}",
                     )
                 }
+            } finally {
+                // Belt-and-suspenders for the two early-return paths above: no
+                // matter how this block exits, isConnecting must not stay true.
+                // A no-op for every path that already set it false explicitly.
+                updateAuthUi(uiGeneration) { it.copy(isConnecting = false) }
+            }
             }
         }
     }
@@ -919,26 +1087,51 @@ class SettingsViewModel @Inject constructor(
             return
         }
 
+        // A connection test is observational too. Only Connect and Disconnect
+        // advance the generation that determines the winning auth intent.
+        val uiGeneration = authUiGeneration.get()
         viewModelScope.launch {
-            _uiState.update { it.copy(errorMessage = null, successMessage = null) }
+            authUiOperationMutex.withLock {
+                if (authUiGeneration.get() != uiGeneration) return@withLock
+            updateAuthUi(uiGeneration) { it.copy(errorMessage = null, successMessage = null) }
 
             try {
-                val valid = apiService.validateToken()
-                if (valid) {
-                    _uiState.update { it.copy(successMessage = "Connection test successful!") }
-                } else {
-                    _uiState.update {
-                        it.copy(
-                            errorMessage = "Connection test failed. Token may be expired.",
-                            isConnected = false,
-                            connectionStatusText = "Disconnected (token expired)",
-                        )
-                    }
-                }
+                val validation = apiService.validateStoredTokenSession() ?: return@launch
+                if (!validationResultIsCurrent(uiGeneration, validation)) return@launch
+                dispatchStoredValidation(
+                    result = validation.result,
+                    onValid = {
+                        updateAuthUi(uiGeneration) {
+                            it.copy(successMessage = "Connection test successful!")
+                        }
+                    },
+                    clearInvalidSession = {
+                        apiService.logoutIfCurrentSession(validation.session)
+                    },
+                    onInvalidCleared = {
+                        updateAuthUi(uiGeneration) {
+                            it.copy(
+                                errorMessage = "Connection test failed. Token expired.",
+                                isConnected = false,
+                                connectionStatusText = "Disconnected (token expired)",
+                            )
+                        }
+                    },
+                    onUnreachable = {
+                        updateAuthUi(uiGeneration) {
+                            it.copy(
+                                errorMessage = "Connection test could not reach the server. Your saved session was kept.",
+                                isConnected = false,
+                                connectionStatusText = "Server unreachable — will retry automatically",
+                            )
+                        }
+                    },
+                )
             } catch (e: Exception) {
-                _uiState.update {
+                updateAuthUi(uiGeneration) {
                     it.copy(errorMessage = "Connection test error: ${e.message}")
                 }
+            }
             }
         }
     }
@@ -1186,6 +1379,107 @@ class SettingsViewModel @Inject constructor(
  */
 internal fun shouldLoadCachedLibrariesAfterValidation(result: TokenValidationResult): Boolean =
     result != TokenValidationResult.INVALID
+
+internal fun shouldApplyStoredValidation(
+    result: TokenValidationResult,
+    uiGenerationUnchanged: Boolean,
+    authSessionCurrent: Boolean,
+): Boolean = when (result) {
+    TokenValidationResult.VALID,
+    TokenValidationResult.INVALID,
+    TokenValidationResult.UNREACHABLE -> uiGenerationUnchanged && authSessionCurrent
+}
+
+internal suspend fun dispatchStoredValidation(
+    result: TokenValidationResult,
+    onValid: suspend () -> Unit,
+    clearInvalidSession: suspend () -> Boolean,
+    onInvalidCleared: suspend () -> Unit,
+    onUnreachable: suspend () -> Unit,
+) {
+    when (result) {
+        TokenValidationResult.VALID -> onValid()
+        TokenValidationResult.INVALID -> {
+            if (clearInvalidSession()) onInvalidCleared()
+        }
+        TokenValidationResult.UNREACHABLE -> onUnreachable()
+    }
+}
+
+/**
+ * Populate a fresh authenticated session immediately instead of waiting for
+ * the periodic sync that may have already run before credentials existed.
+ */
+/**
+ * The mutex-held half of a successful login: persisting the server mode
+ * before choosing a library, then establishing the active library. Kept
+ * inside authUiOperationMutex so Connect/Disconnect/Refresh stay mutually
+ * exclusive for these two steps.
+ */
+internal suspend fun activateSessionAfterLogin(
+    activateAudiobookshelf: suspend () -> Unit,
+    loadLibraries: suspend () -> Unit,
+) {
+    activateAudiobookshelf()
+    loadLibraries()
+}
+
+/**
+ * The long-running tail of a successful login: a full library sync and a
+ * reachability probe. Deliberately run AFTER authUiOperationMutex is
+ * released — holding it across a full sync left Disconnect dead for the
+ * sync's whole duration.
+ */
+internal suspend fun syncAfterLogin(
+    syncNow: suspend () -> Unit,
+    checkServerReachable: suspend () -> Unit,
+) {
+    syncNow()
+    checkServerReachable()
+}
+
+internal enum class PasswordLoginOutcome {
+    NEW_SESSION,
+    RETAINED_SESSION,
+    FAILED,
+    UNREACHABLE,
+}
+
+/**
+ * A settings-load race in older builds could erase the server URL while the
+ * encrypted auth token survived. Once the user restores that URL, prefer a
+ * server-accepted retained token over a failed password attempt. This repairs
+ * the session without discarding credentials that are actively playing media.
+ *
+ * Retained-session repair only ever runs for [CredentialLoginResult.UNREACHABLE]
+ * — no verdict was reached, so the stored session might still be good. A
+ * [CredentialLoginResult.REJECTED] attempt (wrong password, wrong user) is a
+ * real answer from the server and must FAIL outright, even with a token
+ * stored: falling back to the retained session there would silently report
+ * success under the PREVIOUS user's session. The attempted username must also
+ * match the stored one — an unreachable attempt against a different account
+ * has no business repairing someone else's session.
+ */
+internal suspend fun resolvePasswordLogin(
+    credentialLogin: suspend () -> CredentialLoginResult,
+    hadStoredToken: Boolean,
+    usernameMatchesStored: Boolean,
+    validateRetainedToken: suspend () -> TokenValidationResult,
+): PasswordLoginOutcome {
+    return when (credentialLogin()) {
+        CredentialLoginResult.SUCCESS -> PasswordLoginOutcome.NEW_SESSION
+        CredentialLoginResult.REJECTED -> PasswordLoginOutcome.FAILED
+        CredentialLoginResult.UNREACHABLE -> {
+            if (!hadStoredToken || !usernameMatchesStored) return PasswordLoginOutcome.FAILED
+
+            when (validateRetainedToken()) {
+                TokenValidationResult.VALID -> PasswordLoginOutcome.RETAINED_SESSION
+                TokenValidationResult.INVALID -> PasswordLoginOutcome.FAILED
+                TokenValidationResult.UNREACHABLE -> PasswordLoginOutcome.UNREACHABLE
+            }
+        }
+    }
+}
 
 /**
  * Whether the Audiobookshelf library selector may persist [selectedId] as the

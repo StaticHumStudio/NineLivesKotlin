@@ -38,6 +38,10 @@ class ChapterAwareForwardingPlayer(
      */
     var seekHandler: ((Long) -> Unit)? = null
 
+    /** Book-aware skip callbacks used by Android Auto and other controllers. */
+    var seekBackHandler: (() -> Unit)? = null
+    var seekForwardHandler: (() -> Unit)? = null
+
     /**
      * Clamps a requested speed by entitlement. Set by PlaybackManager.
      *
@@ -122,6 +126,14 @@ class ChapterAwareForwardingPlayer(
         }
     }
 
+    override fun seekBack() {
+        seekBackHandler?.invoke() ?: super.seekBack()
+    }
+
+    override fun seekForward() {
+        seekForwardHandler?.invoke() ?: super.seekForward()
+    }
+
     // ─── Chapter Skip (Android Auto next/previous buttons) ─────────────
 
     override fun seekToNext() {
@@ -172,6 +184,8 @@ class ChapterAwareForwardingPlayer(
 
     override fun isCommandAvailable(command: Int): Boolean {
         if (command == Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) return true
+        if (command == Player.COMMAND_SEEK_BACK) return true
+        if (command == Player.COMMAND_SEEK_FORWARD) return true
         if (command == Player.COMMAND_SEEK_TO_NEXT) return chapters.isNotEmpty()
         if (command == Player.COMMAND_SEEK_TO_PREVIOUS) return chapters.isNotEmpty()
         return super.isCommandAvailable(command)
@@ -181,6 +195,8 @@ class ChapterAwareForwardingPlayer(
         val builder = super.getAvailableCommands()
             .buildUpon()
             .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+            .add(Player.COMMAND_SEEK_BACK)
+            .add(Player.COMMAND_SEEK_FORWARD)
         if (chapters.isNotEmpty()) {
             builder.add(Player.COMMAND_SEEK_TO_NEXT)
             builder.add(Player.COMMAND_SEEK_TO_PREVIOUS)

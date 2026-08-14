@@ -80,13 +80,18 @@ class HomeViewModel @Inject constructor(
                 }
         }
 
-        // Observe selected library from settings and reload recently played
+        // Observe selected source and auth state. Cached server rows are useful
+        // offline only when a real configured session still exists. An orphaned
+        // token or blank server URL must not make Home impersonate a login.
         viewModelScope.launch {
-            settingsManager.settings
-                .map { it.activeLibraryId }
+            combine(
+                settingsManager.settings,
+                settingsManager.hasAuthToken,
+            ) { settings, hasAuthToken -> settings to hasAuthToken }
                 .distinctUntilChanged()
-                .collectLatest { libraryId ->
-                    if (libraryId != null) {
+                .collectLatest { (settings, hasAuthToken) ->
+                    val libraryId = settings.activeLibraryId
+                    if (libraryId != null && canShowHomeBooks(settings, hasAuthToken)) {
                         audioBookDao.observeRecentlyPlayedByLibrary(libraryId, 9)
                             .collect { results -> processRecentlyPlayed(results) }
                     } else {
@@ -102,7 +107,12 @@ class HomeViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = true) }
             try {
                 val libraryId = settingsManager.currentSettings.activeLibraryId
-                val results = if (libraryId != null) {
+                val results = if (
+                    libraryId != null && canShowHomeBooks(
+                        settingsManager.currentSettings,
+                        settingsManager.hasAuthToken.value,
+                    )
+                ) {
                     audioBookDao.getRecentlyPlayedByLibrary(libraryId, 9)
                 } else {
                     emptyList()
@@ -269,4 +279,13 @@ class HomeViewModel @Inject constructor(
             ""
         }
     }
+}
+
+internal fun canShowHomeBooks(
+    settings: com.ninelivesaudio.app.domain.model.AppSettings,
+    hasAuthToken: Boolean,
+): Boolean = when (settings.appMode) {
+    AppMode.AUDIOBOOKSHELF ->
+        hasAuthToken && settings.serverUrl.isNotBlank() && settings.selectedLibraryId != null
+    AppMode.LOCAL -> settings.selectedLocalLibraryId != null
 }

@@ -9,10 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
 import android.util.Log
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.annotation.OptIn
-import androidx.annotation.VisibleForTesting
 import androidx.media3.common.*
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
@@ -65,10 +62,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import java.io.File
-import java.io.BufferedInputStream
-import java.io.ByteArrayOutputStream
-import java.io.FilterInputStream
-import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -568,6 +561,18 @@ internal fun autoBookLoadAllowed(
     book.isInActiveLibrary(settings)
 
 /**
+ * Whether a just-landed async artwork fetch should still be applied. False
+ * once the user has switched to a different book (or nothing is loaded) —
+ * applying it anyway is exactly how Android Auto ended up showing a
+ * previous book's cover after a switch (issue #89).
+ */
+internal fun shouldRepublishArtwork(
+    currentBookId: String?,
+    fetchedForBookId: String,
+    currentMediaItemCount: Int,
+): Boolean = currentBookId == fetchedForBookId && currentMediaItemCount > 0
+
+/**
  * Core playback engine wrapping Media3 ExoPlayer.
  * Ports AndroidAudioPlaybackService logic: multi-track, streaming with auth,
  * chapter tracking, session sync, speed/volume control.
@@ -596,22 +601,9 @@ class PlaybackManager @Inject constructor(
     companion object {
         private const val TAG = "PlaybackManager"
         private const val ARTWORK_MAX_DOWNLOAD_BYTES = 3L * 1024 * 1024 // 3MB
-        private const val ARTWORK_MAX_DIMENSION = 768
+        private const val ARTWORK_MAX_DIMENSION = 512
         private const val ARTWORK_MAX_EMBED_BYTES = 300 * 1024
         private const val ARTWORK_MIN_JPEG_QUALITY = 50
-
-        /**
-         * Cover URI for the session metadata of the actively-playing item.
-         * Out-of-process controllers (Android Auto/Automotive, Wear OS)
-         * resolve this URI themselves and can't read a downloaded book's
-         * app-private file:// cover under scoped storage — same constraint
-         * as MediaBrowseTree's browse-item covers, so this is always the
-         * remote URL, never AudioBook.effectiveCoverPath. The embedded
-         * artworkData bytes (set alongside this) carry the actual image for
-         * those clients instead.
-         */
-        @VisibleForTesting
-        internal fun sessionArtworkUri(book: AudioBook): String? = book.coverPath
     }
 
     private val syncManager: SyncManager get() = syncManagerLazy.get()
@@ -1271,8 +1263,12 @@ class PlaybackManager @Inject constructor(
             // Reuse the persistent ExoPlayer — load new media items into it
             val player = exoPlayer!!
 
-            // Build media items with metadata baked in (avoids replaceMediaItem resets)
-            val metadata = buildMediaMetadata(effectiveBook)
+            // Build media items with metadata baked in (avoids replaceMediaItem resets).
+            // Artwork embedding only blocks on a fast local-disk read here — a slow or
+            // absent remote cover must never delay playback start. See the
+            // scheduleRemoteArtworkFetch() call below for the async completion.
+            val builtMetadata = buildMediaMetadata(effectiveBook)
+            val metadata = builtMetadata.metadata
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             val tracksLoaded = if (isLocal) {
                 loadLocalTracks(player, effectiveBook, metadata) {
@@ -1348,6 +1344,13 @@ class PlaybackManager @Inject constructor(
             _events.tryEmit(PlaybackEvent.BookLoaded(effectiveBook))
 
             settingsManager.saveCurrentPlaybackBookId(effectiveBook.id)
+
+            // The cover wasn't available on fast local disk, so fetch it through the
+            // authenticated client in the background and republish once it lands —
+            // never block playback start on a network round trip.
+            if (builtMetadata.needsRemoteArtwork) {
+                scheduleRemoteArtworkFetch(effectiveBook)
+            }
 
             Log.d(TAG, "loadAudioBook: OK local=$isLocal pos=$startPosition dur=${_duration.value} tracks=${player.mediaItemCount}")
             return true
@@ -2974,7 +2977,27 @@ class PlaybackManager @Inject constructor(
 
     // ─── Media Metadata ───────────────────────────────────────────────────────
 
-    private suspend fun buildMediaMetadata(book: AudioBook): MediaMetadata {
+    private data class BuiltMediaMetadata(
+        val metadata: MediaMetadata,
+        // True when no local cover was available to embed synchronously, so a
+        // remote fetch is needed after this book starts playing.
+        val needsRemoteArtwork: Boolean,
+    )
+
+    /**
+     * Never sets artworkUri. Android Auto's MediaDataLoader rejects cleartext
+     * http outright, and even https can't carry the Authorization header a
+     * token-protected server needs — so a server URL there is deterministically
+     * dead and the fallback path it forces is exactly the stale/delayed-cover
+     * symptom from issue #89. Every surface gets embedded artworkData bytes
+     * instead, fetched through the app's own authenticated client.
+     *
+     * Only does a fast local-disk read here (downloaded-book cover, or a
+     * scanned local book's loose/embedded cover file). A remote cover is
+     * fetched asynchronously by the caller via [scheduleRemoteArtworkFetch] so
+     * a slow network never delays playback start.
+     */
+    private suspend fun buildMediaMetadata(book: AudioBook): BuiltMediaMetadata {
         val builder = MediaMetadata.Builder()
             .setTitle(book.title)
             .setArtist(book.author)
@@ -2982,148 +3005,144 @@ class PlaybackManager @Inject constructor(
             .setDisplayTitle(book.title)
             .setSubtitle(book.author)
 
-        // Set cover art URI so the notification and lock screen show album art.
-        // Prefer the locally persisted cover (downloaded books) so artwork shows
-        // offline.
+        var needsRemoteArtwork = false
         if (!book.effectiveCoverPath.isNullOrEmpty()) {
-            sessionArtworkUri(book)?.let { builder.setArtworkUri(Uri.parse(it)) }
-
-            // Also embed cover bytes for Android Auto, which can't fetch
-            // authenticated URLs or self-signed cert servers.
-            val artworkBytes = withContext(Dispatchers.IO) {
-                loadArtworkBytes(book.localCoverPath, book.coverPath)
-            }
-            if (artworkBytes != null) {
-                builder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            // Off Main: this is a synchronous disk/ContentResolver read, and
+            // loadAudioBookOwned runs on Main (ExoPlayer requirement).
+            val localArtwork = withContext(Dispatchers.IO) { loadLocalArtworkBytes(book) }
+            if (localArtwork != null) {
+                builder.setArtworkData(localArtwork, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            } else {
+                needsRemoteArtwork = true
             }
         }
 
-        return builder.build()
+        return BuiltMediaMetadata(builder.build(), needsRemoteArtwork)
     }
 
     /**
-     * Cover bytes for embedding (Android Auto / lock screen). Reads the locally
-     * persisted cover file first so it works offline, falling back to the remote
-     * authenticated URL. Returns null on any failure — artwork is optional.
+     * Cover bytes from a local file:// (downloaded ABS cover) or content://
+     * (scanned local-library cover) source. Never touches the network.
+     * Returns null on any failure or if the cover isn't local — artwork is
+     * optional, and a null result here just means the caller falls back to a
+     * remote fetch.
      */
-    private fun loadArtworkBytes(localCoverPath: String?, remoteCoverUrl: String?): ByteArray? {
-        val localFile = localCoverPath
-            ?.let { runCatching { Uri.parse(it).path }.getOrNull() }
-            ?.let { File(it) }
-        if (localFile != null && localFile.exists()) {
-            return try {
-                BufferedInputStream(localFile.inputStream()).use { stream ->
-                    decodeAndCompressArtwork(stream, localFile.length())
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "buildMediaMetadata: local artwork read failed: ${e.message}")
-                null
+    private fun loadLocalArtworkBytes(book: AudioBook): ByteArray? {
+        val source = book.localCoverPath ?: book.coverPath ?: return null
+        val uri = runCatching { Uri.parse(source) }.getOrNull() ?: return null
+        // A factory, not an already-open stream: ArtworkCodec may need to
+        // re-open on a rare bounds-mark overrun (see its kdoc).
+        val opener: (() -> java.io.InputStream)? = when (uri.scheme?.lowercase()) {
+            "file" -> uri.path?.let(::File)?.takeIf { it.exists() }?.let { file -> { file.inputStream() } }
+            "content" -> {
+                { context.contentResolver.openInputStream(uri) ?: throw java.io.IOException("openInputStream returned null for $uri") }
             }
+            else -> null
         }
-
-        if (remoteCoverUrl.isNullOrEmpty()) return null
+        opener ?: return null
         return try {
-            val request = Request.Builder().url(remoteCoverUrl).build()
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "buildMediaMetadata: artwork skipped reason=http_${response.code}")
-                    return null
-                }
-                val body = response.body ?: run {
-                    Log.w(TAG, "buildMediaMetadata: artwork skipped reason=empty_body")
-                    return null
-                }
-                val contentLength = body.contentLength()
-                if (contentLength > ARTWORK_MAX_DOWNLOAD_BYTES) {
-                    Log.w(
-                        TAG,
-                        "buildMediaMetadata: artwork skipped reason=content_length contentLength=$contentLength maxBytes=$ARTWORK_MAX_DOWNLOAD_BYTES",
-                    )
-                    return null
-                }
-                // Wrap in BoundedInputStream to enforce the byte cap even when
-                // Content-Length is unknown (-1) e.g. chunked transfer encoding.
-                val boundedStream = BoundedInputStream(body.byteStream(), ARTWORK_MAX_DOWNLOAD_BYTES)
-                decodeAndCompressArtwork(boundedStream, contentLength)
-            }
+            ArtworkCodec.decodeAndCompress(
+                opener,
+                ARTWORK_MAX_DIMENSION,
+                ARTWORK_MAX_EMBED_BYTES,
+                ARTWORK_MIN_JPEG_QUALITY,
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "buildMediaMetadata: cover download failed: ${e.message}")
+            Log.w(TAG, "loadLocalArtworkBytes: read failed bookId=${book.id}: ${e.message}")
             null
         }
     }
 
-    private fun decodeAndCompressArtwork(inputStream: java.io.InputStream, contentLength: Long): ByteArray? {
-        val bufferedStream = BufferedInputStream(inputStream)
-        bufferedStream.mark((ARTWORK_MAX_DOWNLOAD_BYTES + 1).toInt())
-
-        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeStream(bufferedStream, null, boundsOptions)
-
-        try {
-            bufferedStream.reset()
+    /**
+     * Fetches the remote cover through the authenticated OkHttp client,
+     * downscales, and compresses. Runs entirely off the calling coroutine's
+     * caller — must be launched on Dispatchers.IO. Returns null on any
+     * failure; artwork is always optional.
+     */
+    private fun fetchRemoteArtworkBytes(book: AudioBook): ByteArray? {
+        val remoteCoverUrl = book.coverPath
+        if (remoteCoverUrl.isNullOrEmpty()) return null
+        // A factory rather than a single execute(): ArtworkCodec may need to
+        // re-issue the request on a rare bounds-mark overrun (see its kdoc).
+        // Each call opens its own response/body, closed by BoundedInputStream
+        // delegating close() through to the underlying byte stream.
+        val opener = {
+            val request = Request.Builder().url(remoteCoverUrl).build()
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                val code = response.code
+                response.close()
+                throw java.io.IOException("http $code")
+            }
+            val body = response.body
+            if (body == null) {
+                response.close()
+                throw java.io.IOException("empty body")
+            }
+            val contentLength = body.contentLength()
+            if (contentLength > ARTWORK_MAX_DOWNLOAD_BYTES) {
+                response.close()
+                throw java.io.IOException("content length $contentLength exceeds cap $ARTWORK_MAX_DOWNLOAD_BYTES")
+            }
+            // Wrap in BoundedInputStream to enforce the byte cap even when
+            // Content-Length is unknown (-1) e.g. chunked transfer encoding.
+            BoundedInputStream(body.byteStream(), ARTWORK_MAX_DOWNLOAD_BYTES)
+        }
+        return try {
+            ArtworkCodec.decodeAndCompress(
+                opener,
+                ARTWORK_MAX_DIMENSION,
+                ARTWORK_MAX_EMBED_BYTES,
+                ARTWORK_MIN_JPEG_QUALITY,
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "buildMediaMetadata: artwork skipped reason=stream_reset contentLength=$contentLength")
-            return null
+            Log.w(TAG, "fetchRemoteArtworkBytes: download failed bookId=${book.id}: ${e.message}")
+            null
         }
-
-        val width = boundsOptions.outWidth
-        val height = boundsOptions.outHeight
-        if (width <= 0 || height <= 0) {
-            Log.w(TAG, "buildMediaMetadata: artwork skipped reason=decode_bounds width=$width height=$height")
-            return null
-        }
-
-        val sampleSize = calculateInSampleSize(width, height, ARTWORK_MAX_DIMENSION)
-        val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.RGB_565
-        }
-
-        val bitmap = BitmapFactory.decodeStream(bufferedStream, null, decodeOptions)
-        if (bitmap == null) {
-            Log.w(
-                TAG,
-                "buildMediaMetadata: artwork skipped reason=decode_bitmap width=$width height=$height sampleSize=$sampleSize",
-            )
-            return null
-        }
-
-        val compressed = ByteArrayOutputStream()
-        var quality = 85
-        do {
-            compressed.reset()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, compressed)
-            quality -= 10
-        } while (compressed.size() > ARTWORK_MAX_EMBED_BYTES && quality >= ARTWORK_MIN_JPEG_QUALITY)
-        bitmap.recycle()
-
-        if (compressed.size() > ARTWORK_MAX_EMBED_BYTES) {
-            Log.w(
-                TAG,
-                "buildMediaMetadata: artwork skipped reason=compressed_too_large width=$width height=$height sampleSize=$sampleSize compressedBytes=${compressed.size()} maxBytes=$ARTWORK_MAX_EMBED_BYTES",
-            )
-            return null
-        }
-
-        Log.d(
-            TAG,
-            "buildMediaMetadata: artwork embedded contentLength=$contentLength width=$width height=$height sampleSize=$sampleSize compressedBytes=${compressed.size()}",
-        )
-        return compressed.toByteArray()
     }
 
-    private fun calculateInSampleSize(width: Int, height: Int, maxDimension: Int): Int {
-        var sample = 1
-        var sampledWidth = width
-        var sampledHeight = height
-
-        while (sampledWidth > maxDimension || sampledHeight > maxDimension) {
-            sampledWidth /= 2
-            sampledHeight /= 2
-            sample *= 2
+    /**
+     * Kicks off an async fetch of [book]'s remote cover, then republishes it
+     * onto every current MediaItem once it lands. Guarded by [shouldRepublishArtwork]
+     * so a fetch that outlives the book it was started for (the user switched
+     * books mid-download) never paints the wrong cover — that race is exactly
+     * the "Auto keeps the previous book's cover" symptom from issue #89.
+     */
+    private fun scheduleRemoteArtworkFetch(book: AudioBook) {
+        scope.launch(Dispatchers.IO) {
+            val artworkBytes = try {
+                fetchRemoteArtworkBytes(book)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (e: Exception) {
+                Log.w(TAG, "scheduleRemoteArtworkFetch: failed bookId=${book.id}: ${e.message}")
+                null
+            } ?: return@launch
+            withContext(Dispatchers.Main) {
+                republishArtwork(book.id, artworkBytes)
+            }
         }
+    }
 
-        return sample
+    /**
+     * Replaces the metadata of every current MediaItem with one carrying
+     * [artworkBytes], without disrupting playback: Player.replaceMediaItem(s)
+     * keeps the existing period/position when the underlying media (URI)
+     * hasn't changed, only the metadata has. Must run on the Main thread.
+     */
+    private fun republishArtwork(bookId: String, artworkBytes: ByteArray) {
+        val player = exoPlayer ?: return
+        val itemCount = player.mediaItemCount
+        if (!shouldRepublishArtwork(_currentBook.value?.id, bookId, itemCount)) return
+        val updatedItems = (0 until itemCount).map { index ->
+            val item = player.getMediaItemAt(index)
+            val updatedMetadata = item.mediaMetadata.buildUpon()
+                .setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                .build()
+            item.buildUpon().setMediaMetadata(updatedMetadata).build()
+        }
+        player.replaceMediaItems(0, itemCount, updatedItems)
+        Log.d(TAG, "republishArtwork: applied late-arriving cover bookId=$bookId tracks=$itemCount")
     }
 
     // ─── MediaSession / Playback Service Management ─────────────────────────
@@ -3223,37 +3242,6 @@ internal fun playbackProgressWritePlan(
         updateAudioBook = true,
         useTerminalPath = true,
     )
-}
-
-// ─── Bounded InputStream ──────────────────────────────────────────────────
-
-/**
- * Wraps an [InputStream] and enforces a hard byte limit.
- * After [maxBytes] have been read, further reads return EOF (-1).
- * Prevents unbounded memory allocation when Content-Length is unknown
- * (e.g. chunked transfer encoding).
- */
-private class BoundedInputStream(
-    stream: InputStream,
-    private val maxBytes: Long,
-) : FilterInputStream(stream) {
-    private var bytesRead: Long = 0
-
-    override fun read(): Int {
-        if (bytesRead >= maxBytes) return -1
-        val b = super.read()
-        if (b != -1) bytesRead++
-        return b
-    }
-
-    override fun read(b: ByteArray, off: Int, len: Int): Int {
-        if (bytesRead >= maxBytes) return -1
-        val allowed = len.toLong().coerceAtMost(maxBytes - bytesRead).toInt()
-        if (allowed <= 0) return -1
-        val n = super.read(b, off, allowed)
-        if (n > 0) bytesRead += n
-        return n
-    }
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────

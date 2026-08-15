@@ -133,6 +133,14 @@ class PlaybackService : MediaLibraryService() {
         serviceScope.launch {
             syncManager.syncCompleted.collect {
                 try {
+                    // Start a fresh browse-artwork epoch so every book is
+                    // eligible for another fetch attempt. Note this emits on
+                    // every sync pass that clears SyncManager's pre-checks,
+                    // changed data or not, so in ABS mode it behaves as a
+                    // ~5-minute heartbeat rather than a strict change signal.
+                    // That is deliberate and harmless: a working set that fits
+                    // the cache re-queries into hits and fetches nothing.
+                    mediaBrowseTree.invalidateArtworkEpoch()
                     notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync())
                 } catch (e: Exception) {
                     Log.e(TAG, "syncCompleted collector: failed to refresh Auto browse parents", e)
@@ -150,11 +158,31 @@ class PlaybackService : MediaLibraryService() {
                 .drop(1)
                 .collect {
                     try {
+                        // Same reasoning as the sync collector above: the
+                        // source or library changed, so start a fresh
+                        // browse-artwork epoch.
+                        mediaBrowseTree.invalidateArtworkEpoch()
                         notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSourceChange())
                     } catch (e: Exception) {
                         Log.e(TAG, "source-change collector: failed to refresh Auto browse parents", e)
                     }
                 }
+        }
+
+        // Browse-row thumbnails fetch in the background (MediaBrowseTree never
+        // blocks a browse callback on the network). The signal flow's single
+        // buffered slot already coalesces a burst of thumbnails landing in
+        // quick succession (e.g. a freshly opened library) into one refresh,
+        // since extra emits while this collector is busy are dropped rather
+        // than queued.
+        serviceScope.launch {
+            mediaBrowseTree.artworkUpdated.collect {
+                try {
+                    notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync())
+                } catch (e: Exception) {
+                    Log.e(TAG, "artworkUpdated collector: failed to refresh Auto browse parents", e)
+                }
+            }
         }
 
         // Create shake detector and wire to SleepTimerManager

@@ -19,11 +19,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Share
+import com.ninelivesaudio.app.entitlement.FreeTier
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -60,18 +63,16 @@ import kotlin.time.Duration
 @Composable
 fun NightwatchDossierScreen(
     onNavigateBack: () -> Unit,
-    onLocked: () -> Unit = {},
+    onNavigateToUnlock: () -> Unit = {},
     viewModel: NightwatchDossierViewModel = hiltViewModel(),
     unlockViewModel: UnlockViewModel = hiltViewModel(),
 ) {
-    // Enforced on the screen rather than only at the entry points, so a deep
-    // link or a restored back stack cannot walk past the gate. Redirects to the
-    // unlock screen and pops itself, so Back does not bounce between the two.
+    // No whole-screen gate any more. Free reaches the Dossier and its share
+    // card on the 30-day window; the longer retrospectives are what unlock
+    // buys. The real enforcement is the cutoff clamp in the ViewModel, not
+    // these chips, so a deep link lands on a Dossier that is already limited
+    // rather than one that has to be bounced away from.
     val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
-    LaunchedEffect(unlockState.isUnlocked) {
-        if (!unlockState.isUnlocked) onLocked()
-    }
-    if (!unlockState.isUnlocked) return
 
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
@@ -123,7 +124,12 @@ fun NightwatchDossierScreen(
             }
 
             else -> {
-                DossierContent(state, viewModel)
+                DossierContent(
+                    state = state,
+                    viewModel = viewModel,
+                    isUnlocked = unlockState.isUnlocked,
+                    onNavigateToUnlock = onNavigateToUnlock,
+                )
             }
         }
     }
@@ -177,6 +183,8 @@ private fun DossierHeader(
 private fun DossierContent(
     state: DossierState,
     viewModel: NightwatchDossierViewModel,
+    isUnlocked: Boolean,
+    onNavigateToUnlock: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -193,14 +201,35 @@ private fun DossierContent(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             DossierPeriod.entries.forEach { period ->
+                // Greyed, never hidden, matching every other gate in the app. A
+                // free user should be able to see that longer windows exist and
+                // what they would be buying, not wonder why the Dossier only
+                // has one chip.
+                val locked = !FreeTier.allowsDossierPeriod(period, isUnlocked)
                 FilterChip(
                     selected = state.selectedPeriod == period,
-                    onClick = { viewModel.onPeriodChanged(period) },
+                    onClick = {
+                        if (locked) onNavigateToUnlock() else viewModel.onPeriodChanged(period)
+                    },
                     label = {
                         Text(
                             text = period.label,
                             style = MaterialTheme.typography.labelMedium,
+                            modifier = if (locked) Modifier.alpha(0.5f) else Modifier,
                         )
+                    },
+                    // Same lock sigil GatedControl uses, so a gated chip reads
+                    // as part of the existing vocabulary rather than a new badge.
+                    trailingIcon = if (!locked) null else {
+                        {
+                            Icon(
+                                imageVector = Icons.Outlined.Lock,
+                                contentDescription = "${period.label} requires unlock",
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .alpha(0.5f),
+                            )
+                        }
                     },
                     colors = FilterChipDefaults.filterChipColors(
                         containerColor = NineLivesTheme.colors.archiveVoidSurface,

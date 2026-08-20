@@ -90,17 +90,11 @@ fun HomeScreen(
             )
 
             // ─── The Dossier — Entry Banner ──────────────────────────────
-            // Greyed, not removed. The banner rendered unconditionally before,
-            // and hiding it outright would make the Dossier look like something
-            // the app does not have rather than something not yet bought.
-            GatedControl(
-                locked = !unlockState.isUnlocked,
-                onLockedTap = onNavigateToUnlock,
-                label = "Nightwatch Dossier",
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                DossierEntryBanner(onClick = onNavigateToDossier)
-            }
+            // Ungated as of 2026-08-16. Free reaches the Dossier on its 30-day
+            // window, which is also the window this banner has always
+            // advertised, and the share card with it. The longer
+            // retrospectives are gated inside, on the period chips.
+            DossierEntryBanner(onClick = onNavigateToDossier)
 
             // Breathing room before MiniPlayer
             Spacer(modifier = Modifier.height(16.dp))

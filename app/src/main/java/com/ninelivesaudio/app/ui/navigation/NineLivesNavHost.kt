@@ -160,12 +160,12 @@ fun NineLivesNavHost(
         composable(Routes.DOSSIER) {
             NightwatchDossierScreen(
                 onNavigateBack = { navController.popBackStack() },
-                // Route guard. The gated banner and Settings row are the normal
-                // way in, but a deep link or a stale back stack entry is not, and
-                // a gate that only exists on the entry points is not a gate.
-                onLocked = {
+                // No longer a route guard. The Dossier itself is free on the
+                // 30-day window, so this is an ordinary upsell from a locked
+                // period chip. It does NOT pop the Dossier: Back should return
+                // to the report the user was already reading.
+                onNavigateToUnlock = {
                     navController.navigate(Routes.UNLOCK) {
-                        popUpTo(Routes.DOSSIER) { inclusive = true }
                         launchSingleTop = true
                     }
                 },

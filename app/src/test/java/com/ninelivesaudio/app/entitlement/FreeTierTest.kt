@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.entitlement
 
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.ThemeMode
+import com.ninelivesaudio.app.ui.dossier.DossierPeriod
 import com.ninelivesaudio.app.ui.library.SortMode
 import com.ninelivesaudio.app.ui.library.ViewMode
 import org.junit.Assert.assertEquals
@@ -36,29 +37,26 @@ class FreeTierTest {
     /** The stored default theme must be reachable on a free install. */
     @Test
     fun `the default theme is free`() {
-        assertEquals(FreeTier.THEME, AppSettings().themeMode)
+        assertEquals(FreeTier.DEFAULT_THEME, AppSettings().themeMode)
         assertTrue(FreeTier.allowsTheme(AppSettings().themeMode, isUnlocked = false))
     }
 
     // ─── The free sets ────────────────────────────────────────────────────────
 
+    /**
+     * Ungated 2026-08-15. Asserted positively and exhaustively rather than by
+     * subtracting from the free set, because `SortMode.entries - SORT_MODES`
+     * would be empty now and a loop over an empty set passes without testing
+     * anything.
+     */
     @Test
-    fun `free gets exactly three sorts`() {
+    fun `every sort is free`() {
+        assertEquals(SortMode.entries.toSet(), FreeTier.SORT_MODES)
         assertEquals(
-            setOf(SortMode.RECENTLY_ADDED, SortMode.RECENTLY_PLAYED, SortMode.TITLE_AZ),
-            FreeTier.SORT_MODES,
+            "no sort may be gated",
+            emptySet<SortMode>(),
+            SortMode.entries.filterNot { FreeTier.allowsSort(it, isUnlocked = false) }.toSet(),
         )
-    }
-
-    @Test
-    fun `every other sort is gated for free and open when unlocked`() {
-        val gated = SortMode.entries - FreeTier.SORT_MODES
-
-        assertEquals(8, gated.size)
-        for (sort in gated) {
-            assertFalse("$sort should be gated", FreeTier.allowsSort(sort, isUnlocked = false))
-            assertTrue("$sort should open on unlock", FreeTier.allowsSort(sort, isUnlocked = true))
-        }
     }
 
     @Test
@@ -71,9 +69,11 @@ class FreeTierTest {
     }
 
     @Test
-    fun `only NOIR is free and every theme opens on unlock`() {
+    fun `NOIR and BRIGHT are free and every theme opens on unlock`() {
         for (theme in ThemeMode.entries) {
-            val expected = theme == ThemeMode.NOIR
+            // BRIGHT is free because a light theme is an access need, not a
+            // convenience. Changed 2026-08-15.
+            val expected = theme == ThemeMode.NOIR || theme == ThemeMode.BRIGHT
             assertEquals("$theme free access", expected, FreeTier.allowsTheme(theme, isUnlocked = false))
             assertTrue("$theme should open on unlock", FreeTier.allowsTheme(theme, isUnlocked = true))
         }
@@ -91,16 +91,25 @@ class FreeTierTest {
     // ─── Live downgrade of an already-selected option ─────────────────────────
 
     /**
-     * Gating the control does not retire a choice already made. Someone who
-     * picked a premium sort while unlocked must not keep it running behind a
-     * greyed chip after a downgrade.
+     * No sort is gated any more, so a downgrade must not disturb one. This is
+     * the inverse of the assertion that used to live here, and it is the one
+     * that would catch an accidental re-gate.
      */
     @Test
-    fun `a gated sort falls back to the default when entitlement drops`() {
-        assertEquals(
-            SortMode.RECENTLY_PLAYED,
-            FreeTier.effectiveSort(SortMode.DURATION_LONG, isUnlocked = false),
-        )
+    fun `no sort is disturbed by a downgrade`() {
+        SortMode.entries.forEach {
+            assertEquals("$it must survive a downgrade", it, FreeTier.effectiveSort(it, isUnlocked = false))
+        }
+    }
+
+    /**
+     * The clamp mechanism is retained as a future price-ladder lever, so it
+     * still has to work. Grouping is the live proof that it does.
+     */
+    @Test
+    fun `the clamp mechanism still works where a gate is live`() {
+        assertEquals(ViewMode.ALL, FreeTier.effectiveViewMode(ViewMode.AUTHOR, isUnlocked = false))
+        assertEquals(ViewMode.AUTHOR, FreeTier.effectiveViewMode(ViewMode.AUTHOR, isUnlocked = true))
     }
 
     @Test
@@ -204,10 +213,38 @@ class FreeTierTest {
 
         val effective = EffectiveSettings.normalize(stored, EntitlementState.FREE)
 
-        assertEquals(FreeTier.THEME, effective.themeMode)
+        assertEquals(FreeTier.DEFAULT_THEME, effective.themeMode)
         assertTrue(FreeTier.allowsTheme(effective.themeMode, isUnlocked = false))
         // And the choice survives for the rebuy.
         assertEquals(ThemeMode.CANDLELIGHT, stored.themeMode)
+    }
+
+    @Test
+    fun `normalization leaves a free install on BRIGHT`() {
+        val stored = AppSettings(themeMode = ThemeMode.BRIGHT)
+
+        val effective = EffectiveSettings.normalize(stored, EntitlementState.FREE)
+
+        // The whole point of the 2026-08-15 change: a free user who picks the
+        // light theme keeps it. Clamping this back to NOIR would make the app
+        // unreadable for the people the change exists for.
+        assertEquals(ThemeMode.BRIGHT, effective.themeMode)
+    }
+
+    @Test
+    fun `effectiveTheme falls back to the default, not the first free entry`() {
+        assertEquals(
+            ThemeMode.NOIR,
+            FreeTier.effectiveTheme(ThemeMode.AMOLED, isUnlocked = false),
+        )
+        assertEquals(
+            ThemeMode.BRIGHT,
+            FreeTier.effectiveTheme(ThemeMode.BRIGHT, isUnlocked = false),
+        )
+        assertEquals(
+            ThemeMode.AMOLED,
+            FreeTier.effectiveTheme(ThemeMode.AMOLED, isUnlocked = true),
+        )
     }
 
     @Test
@@ -216,5 +253,64 @@ class FreeTierTest {
         val unlocked = EntitlementState(true, EntitlementSource.PLAY_UNLOCK)
 
         assertEquals(ThemeMode.CANDLELIGHT, EffectiveSettings.normalize(stored, unlocked).themeMode)
+    }
+
+    // ─── Nightwatch Dossier periods ──────────────────────────────────────
+
+    @Test
+    fun `free gets the thirty day window and nothing longer`() {
+        assertTrue(FreeTier.allowsDossierPeriod(DossierPeriod.THIRTY_DAYS, isUnlocked = false))
+
+        DossierPeriod.entries
+            .filter { it != DossierPeriod.THIRTY_DAYS }
+            .forEach { period ->
+                assertFalse(
+                    "$period must not be free",
+                    FreeTier.allowsDossierPeriod(period, isUnlocked = false),
+                )
+            }
+    }
+
+    @Test
+    fun `unlocking opens every dossier window`() {
+        DossierPeriod.entries.forEach { period ->
+            assertTrue(
+                "$period must open on unlock",
+                FreeTier.allowsDossierPeriod(period, isUnlocked = true),
+            )
+        }
+    }
+
+    @Test
+    fun `a downgraded install cannot keep reading a longer window`() {
+        // The point of the clamp. Someone who selected a year while unlocked and
+        // then lost entitlement must fall back, not keep querying a year of
+        // sessions behind a greyed chip.
+        DossierPeriod.entries
+            .filter { it != DossierPeriod.THIRTY_DAYS }
+            .forEach { period ->
+                assertEquals(
+                    "$period must clamp to the default when free",
+                    DossierPeriod.THIRTY_DAYS,
+                    FreeTier.effectiveDossierPeriod(period, isUnlocked = false),
+                )
+            }
+    }
+
+    @Test
+    fun `an unlocked install keeps its chosen dossier window`() {
+        assertEquals(
+            DossierPeriod.ONE_YEAR,
+            FreeTier.effectiveDossierPeriod(DossierPeriod.ONE_YEAR, isUnlocked = true),
+        )
+    }
+
+    @Test
+    fun `the free dossier window is the default the screen opens on`() {
+        // If these ever disagree, a free install opens on a window it is not
+        // entitled to and gets silently clamped on first load, which reads as a
+        // bug rather than a paywall.
+        assertEquals(FreeTier.DEFAULT_DOSSIER_PERIOD, DossierPeriod.THIRTY_DAYS)
+        assertTrue(FreeTier.DEFAULT_DOSSIER_PERIOD in FreeTier.DOSSIER_PERIODS)
     }
 }

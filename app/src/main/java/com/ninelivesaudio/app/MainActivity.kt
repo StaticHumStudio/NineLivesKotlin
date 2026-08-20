@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
             NineLivesAudioTheme(
                 // The stored choice stays untouched and the picker keeps showing
                 // it, greyed. Only what gets APPLIED is clamped.
-                themeMode = if (isUnlocked) appSettings.themeMode else FreeTier.THEME,
+                themeMode = FreeTier.effectiveTheme(appSettings.themeMode, isUnlocked),
                 unhingedSettings = unhingedSettings,
             ) {
                 if (!settingsLoaded) {

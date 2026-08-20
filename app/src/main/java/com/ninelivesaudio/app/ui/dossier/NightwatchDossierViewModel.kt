@@ -10,11 +10,15 @@ import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.entitlement.EntitlementRepository
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
@@ -123,6 +127,7 @@ class NightwatchDossierViewModel @Inject constructor(
     private val audioBookRepository: AudioBookRepository,
     private val sessionRepository: ListeningSessionRepository,
     private val settingsManager: SettingsManager,
+    private val entitlements: EntitlementRepository,
 ) : ViewModel() {
 
     // ─── Data Models ──────────────────────────────────────────────────────
@@ -214,6 +219,43 @@ class NightwatchDossierViewModel @Inject constructor(
 
     init {
         loadDossier()
+        observeEntitlement()
+    }
+
+    /**
+     * Reload when the unlock goes away underneath a retained ViewModel.
+     *
+     * The chips re-lock on their own, because the screen collects entitlement
+     * for rendering. The DATA does not. Without this, a refund or a Play
+     * refresh that flips the flag while the Dossier is on top leaves a year of
+     * history and a shareable card on screen for someone who no longer owns it,
+     * until they happen to pull to refresh or leave and come back.
+     *
+     * Only a drop matters. Gaining the unlock just hands the reader more chips
+     * to tap, and reloading under them would throw away the report they are
+     * already reading.
+     */
+    private fun observeEntitlement() {
+        viewModelScope.launch {
+            entitlements.state
+                .map { it.isUnlocked }
+                .distinctUntilChanged()
+                .collect { isUnlocked ->
+                    if (dossierNeedsReloadOnEntitlementChange(
+                            _uiState.value.selectedPeriod,
+                            isUnlocked,
+                        )
+                    ) {
+                        _uiState.update {
+                            it.copy(
+                                selectedPeriod = FreeTier.DEFAULT_DOSSIER_PERIOD,
+                                isLoading = true,
+                            )
+                        }
+                        loadDossier()
+                    }
+                }
+        }
     }
 
     fun refresh() {
@@ -223,7 +265,12 @@ class NightwatchDossierViewModel @Inject constructor(
     private var loadJob: Job? = null
 
     fun onPeriodChanged(period: DossierPeriod) {
-        _uiState.update { it.copy(selectedPeriod = period, isLoading = true) }
+        // Clamped on the way in as well as in the load, so a locked period
+        // never lands in state even briefly. The load-side clamp is the one
+        // that guarantees correctness; this one stops the chip flickering to a
+        // selection it is about to lose.
+        val allowed = FreeTier.effectiveDossierPeriod(period, entitlements.current.isUnlocked)
+        _uiState.update { it.copy(selectedPeriod = allowed, isLoading = true) }
         loadDossier()
     }
 
@@ -255,8 +302,22 @@ class NightwatchDossierViewModel @Inject constructor(
                 val allBooks = dossierBooksInActiveScope(audioBookRepository.getAll(), settings)
                 val bookMap = allBooks.associateBy { it.id }
 
-                // Time period window
-                val period = _uiState.value.selectedPeriod
+                // Time period window, clamped by entitlement.
+                //
+                // Clamped HERE rather than at the chips, because the chips only
+                // control what can be tapped. A selection made while unlocked
+                // survives the downgrade in ViewModel state, so gating the
+                // control alone would leave a free install quietly reading a
+                // year of history behind a greyed chip.
+                val period = FreeTier.effectiveDossierPeriod(
+                    _uiState.value.selectedPeriod,
+                    entitlements.current.isUnlocked,
+                )
+                // Publish the clamped value so the selected chip and the data
+                // on screen cannot disagree about which window this is.
+                if (period != _uiState.value.selectedPeriod) {
+                    _uiState.update { it.copy(selectedPeriod = period) }
+                }
                 val cutoffMillis = period.cutoffMillis()
                 val endMillis = period.endMillis()
                 val recentSessions = allSessions
@@ -728,3 +789,17 @@ internal fun dossierSessionsInActiveScope(
     sessions: List<ListeningSession>,
     scopedBookIds: Set<String>,
 ): List<ListeningSession> = sessions.filter { it.libraryItemId in scopedBookIds }
+
+/**
+ * Whether a live entitlement change invalidates the report already on screen.
+ *
+ * The load-side clamp in [NightwatchDossierViewModel.loadDossier] only runs on
+ * init, refresh and period change. A revocation that happens while this screen
+ * is on top does none of those, so without this the long-window report and its
+ * share card would sit there behind chips that have already re-locked. Pure so
+ * the policy is testable without a coroutine harness.
+ */
+internal fun dossierNeedsReloadOnEntitlementChange(
+    selectedPeriod: DossierPeriod,
+    isUnlocked: Boolean,
+): Boolean = !FreeTier.allowsDossierPeriod(selectedPeriod, isUnlocked)

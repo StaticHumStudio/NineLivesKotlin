@@ -18,7 +18,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -40,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
@@ -561,25 +565,21 @@ fun SettingsScreen(
             //  Group: Appearance
             // ═════════════════════════════════════════════════════════════
             SettingsGroup(title = "Appearance") {
-                // Gated as a whole rather than per-swatch. NOIR is free and is
-                // also the default, so a free install is never looking at a theme
-                // it cannot pick again, and the picker still shows the full
-                // palette rather than pretending three themes do not exist.
-                GatedControl(
-                    locked = gatesLocked,
+                // Gated per swatch, not as a whole section. Two of the four
+                // themes are free (NOIR and BRIGHT), so a section-level gate
+                // would lock a free user out of a theme they are entitled to.
+                // The picker still shows the full palette rather than
+                // pretending the gated two do not exist.
+                ThemeSelectorSection(
+                    // The user's stored choice, not the normalized one. A
+                    // downgraded user sees the palette they picked, greyed,
+                    // while the app actually renders the default. Showing the
+                    // clamped value would look like their choice was erased.
+                    selected = uiState.themeMode,
+                    isUnlocked = unlockState.isUnlocked,
+                    onThemeSelected = viewModel::setThemeMode,
                     onLockedTap = onNavigateToUnlock,
-                    label = "Themes",
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    ThemeSelectorSection(
-                        // The user's stored choice, not the normalized one. A
-                        // downgraded user sees the palette they picked, greyed,
-                        // while the app actually renders NOIR. Showing the
-                        // clamped value would look like their choice was erased.
-                        selected = uiState.themeMode,
-                        onThemeSelected = viewModel::setThemeMode,
-                    )
-                }
+                )
             }
 
             // ═════════════════════════════════════════════════════════════
@@ -880,12 +880,9 @@ fun SettingsScreen(
                 // Nightwatch Dossier
                 SectionLabel("Nightwatch Dossier")
 
-                GatedControl(
-                    locked = gatesLocked,
-                    onLockedTap = onNavigateToUnlock,
-                    label = "Nightwatch Dossier",
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
+                // Ungated as of 2026-08-16. Free opens the Dossier on its
+                // 30-day window; the longer periods are gated on the chips
+                // inside it.
                 Button(
                     onClick = onNavigateToDossier,
                     modifier = Modifier.fillMaxWidth(),
@@ -902,7 +899,6 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Open Dossier", fontWeight = FontWeight.SemiBold)
-                }
                 }
                 Text(
                     text = "Listening stats, behavioral patterns, and temporal analysis",
@@ -1134,7 +1130,9 @@ private fun SourceModeToggle(
 @Composable
 private fun ThemeSelectorSection(
     selected: ThemeMode,
+    isUnlocked: Boolean,
     onThemeSelected: (ThemeMode) -> Unit,
+    onLockedTap: () -> Unit,
 ) {
     data class ThemeOption(
         val mode: ThemeMode,
@@ -1168,27 +1166,49 @@ private fun ThemeSelectorSection(
 
         options.forEach { option ->
             val isSelected = selected == option.mode
+            val locked = !FreeTier.allowsTheme(option.mode, isUnlocked)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .clickable { onThemeSelected(option.mode) }
-                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                    // A locked swatch is tappable on purpose. Tapping it routes
+                    // to the unlock screen instead of silently doing nothing,
+                    // which is the same contract GatedControl gives everywhere
+                    // else in Settings.
+                    .clickable { if (locked) onLockedTap() else onThemeSelected(option.mode) }
+                    .padding(vertical = 6.dp, horizontal = 4.dp)
+                    .semantics {
+                        if (locked) contentDescription = "${option.label} theme, locked. Unlock to use."
+                    },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Icon(
-                    if (isSelected) Icons.Outlined.CheckCircle else Icons.Outlined.Circle,
+                    when {
+                        locked -> Icons.Outlined.Lock
+                        isSelected -> Icons.Outlined.CheckCircle
+                        else -> Icons.Outlined.Circle
+                    },
                     contentDescription = null,
-                    tint = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextMuted,
+                    tint = when {
+                        locked -> NineLivesTheme.colors.archiveTextMuted
+                        isSelected -> NineLivesTheme.colors.goldFilament
+                        else -> NineLivesTheme.colors.archiveTextMuted
+                    },
                     modifier = Modifier.size(20.dp),
                 )
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        // Greyed, not hidden. A theme nobody can see is a theme
+                        // nobody buys.
+                        .alpha(if (locked) 0.45f else 1f),
+                ) {
                     Text(
                         text = option.label,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (isSelected) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (isSelected && !locked) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
+                        fontWeight = if (isSelected && !locked) FontWeight.SemiBold else FontWeight.Normal,
                     )
                     Text(
                         text = option.description,

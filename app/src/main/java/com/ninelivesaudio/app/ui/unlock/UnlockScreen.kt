@@ -95,7 +95,12 @@ fun UnlockScreen(
                 subtitle = if (uiState.isUnlocked) {
                     "The lights are on. Nothing left to buy."
                 } else {
-                    "The vault is what you get. Lighting is a privilege you buy."
+                    // Reworded 2026-08-20. The old line ("Lighting is a
+                    // privilege you buy") stopped being true the moment BRIGHT
+                    // went free, and a paywall that lies about what it gates is
+                    // the same con as an unlock list selling what you already
+                    // own.
+                    "The vault is yours, lit well enough to read. The comforts are what you buy."
                 },
             )
 
@@ -332,9 +337,12 @@ private val UNLOCK_BENEFITS = listOf(
     "Silence skipping",
     "Equalizer and volume boost",
     "Auto-rewind on resume",
-    "Every theme, not just the dark one",
-    "Series, author and genre grouping, and every sort order",
-    "The Archive Shelf and the Nightwatch Dossier",
+    // These three were rewritten 2026-08-15/16 as free gained ground. An unlock
+    // list that sells something the reader already has is worse than a short
+    // list: it reads as a con the moment they notice.
+    "The AMOLED and Candlelight themes",          // NOIR and BRIGHT are free
+    "Series, author and genre grouping",          // every sort order is free
+    "The Archive Shelf, and Dossier reports beyond 30 days",
 )
 
 /**

@@ -56,10 +56,10 @@ object EffectiveSettings {
             skipSilenceEnabled = false,
 
             // Theme. The stored choice is untouched, so unlocking restores the
-            // user's palette rather than leaving them on NOIR wondering where it
-            // went. NOIR is also the default, so a free install never sees a
-            // theme it cannot pick again.
-            themeMode = FreeTier.THEME,
+            // user's palette rather than leaving them on the default wondering
+            // where it went. Free may hold NOIR or BRIGHT, so this clamps
+            // against the allowed set rather than forcing one constant.
+            themeMode = FreeTier.effectiveTheme(stored.themeMode, isUnlocked = false),
 
             // Sleep timer extras. All three default premium-on, so all three
             // have to be normalized off rather than merely hidden.

@@ -31,9 +31,31 @@ import javax.inject.Singleton
  * symptom from the one pass most likely to catch it.
  *
  * The flag can now only arrive from an Auto Backup restore of an install that
- * predates the switch. Anyone stranded without it is recovered with a promo
- * code for `nine_lives_unlock`, which is affordable precisely because the paid
- * population is one person.
+ * predates the switch. Everyone else is recovered by hand.
+ *
+ * ## The paid population is no longer just Jeff
+ *
+ * CORRECTED 2026-08-20. This used to end by saying manual recovery was
+ * affordable "precisely because the paid population is one person". That stopped
+ * being true on 2026-08-16, when a stranger bought the paid app. Since nothing shipped ever writes this
+ * flag, they carry no grandfather signal and land on the free tier when 2.1.0
+ * reaches production. Their order identifier is deliberately not recorded in
+ * this repo, which is public.
+ *
+ * A date-gated writer was built to catch them and then deliberately thrown
+ * away. It worked, but it only stayed safe while a human remembered to flip the
+ * price AFTER a compiled-in cutoff, and one forgotten ordering rule would have
+ * grandfathered every free install and quietly ended the paid tier. Jeff's call:
+ * refund the buyer instead, leave them the free app, and carry the note in
+ * Settings offering a free unlock code to anyone who bought before the switch.
+ * Money back beats clever code.
+ *
+ * So manual recovery is still the plan, and it is still affordable, just for a
+ * different reason: the recovery path is a support email answered with a promo
+ * code, and the population it has to serve is tiny rather than theoretically
+ * zero. If real paid volume ever shows up in the order history before the flip,
+ * revisit this, because hand-recovery does not scale and the writer is only safe
+ * under a rule nobody will remember.
  */
 @Singleton
 class EntitlementPrefs @Inject constructor(

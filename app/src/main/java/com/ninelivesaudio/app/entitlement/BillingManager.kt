@@ -93,6 +93,24 @@ class BillingManager @Inject constructor(
      */
     val productLookupSettled: StateFlow<Boolean> = _productLookupSettled.asStateFlow()
 
+    private val _purchaseQuerySettled = MutableStateFlow(false)
+
+    /**
+     * True once the first purchase query has finished, however it finished.
+     *
+     * Same ambiguity as [productLookupSettled], one step more dangerous. Before
+     * the first query answers, entitlement reads as free for everybody, because
+     * the Play-grant cache is deliberately excluded from backup and so does not
+     * survive a reinstall or a device move. Anything that acts on "user is free"
+     * during that window acts on a value that has not been established yet.
+     *
+     * Set in [refreshPurchases]'s `finally`, which is the one place cancellation
+     * cannot skip. A consumer waiting on this must not be left waiting forever by
+     * a device with no Play Store, or by a query that Play never answers, both of
+     * which are legitimate states rather than errors.
+     */
+    val purchaseQuerySettled: StateFlow<Boolean> = _purchaseQuerySettled.asStateFlow()
+
     private val client: BillingClient = BillingClient.newBuilder(context)
         .setListener(this)
         // One-time products can go PENDING (cash payments, parental approval).
@@ -177,6 +195,12 @@ class BillingManager @Inject constructor(
             withTimeoutOrNull(BILLING_TIMEOUT_MS) { queryAndApply() }
                 ?: Log.d(TAG, "purchase query timed out, leaving entitlement untouched")
         } finally {
+            // Settled HERE and only here. An earlier version set this at the
+            // exits inside queryAndApply, which withTimeoutOrNull cancels before
+            // they run, so the 30s timeout path never settled and anything
+            // waiting on it waited forever. A timeout still produces no verdict,
+            // but "Play did not answer" is itself the answer a waiter needs.
+            _purchaseQuerySettled.value = true
             refreshMutex.unlock()
         }
     }

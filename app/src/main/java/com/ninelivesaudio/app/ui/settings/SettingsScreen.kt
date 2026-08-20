@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +36,10 @@ import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +58,7 @@ import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
+import com.ninelivesaudio.app.ui.unlock.sendPaidEraClaimEmail
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -545,7 +551,10 @@ fun SettingsScreen(
             // ═════════════════════════════════════════════════════════════
             //  Unlock
             // ═════════════════════════════════════════════════════════════
-            UnlockSettingsGroup(onNavigateToUnlock = onNavigateToUnlock)
+            UnlockSettingsGroup(
+                    onNavigateToUnlock = onNavigateToUnlock,
+                    appVersion = uiState.appVersion,
+                )
 
             SettingsGroup(title = "Experience") {
                 ArchivePreferencesSection(
@@ -856,7 +865,7 @@ fun SettingsScreen(
                         viewModel.buildReport { subject, body ->
                             val intent = Intent(Intent.ACTION_SENDTO).apply {
                                 data = Uri.parse("mailto:")
-                                putExtra(Intent.EXTRA_EMAIL, arrayOf("Static@StaticHum.Studio"))
+                                putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
                                 putExtra(Intent.EXTRA_SUBJECT, subject)
                                 putExtra(Intent.EXTRA_TEXT, body)
                             }
@@ -865,7 +874,7 @@ fun SettingsScreen(
                             } else {
                                 val fallback = Intent(Intent.ACTION_SEND).apply {
                                     type = "message/rfc822"
-                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("Static@StaticHum.Studio"))
+                                    putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
                                     putExtra(Intent.EXTRA_SUBJECT, subject)
                                     putExtra(Intent.EXTRA_TEXT, body)
                                 }
@@ -874,6 +883,18 @@ fun SettingsScreen(
                         }
                     },
                 )
+
+                // Plain contact, on purpose, sitting under the structured
+                // report form rather than replacing it.
+                //
+                // The report form covers bugs. This covers everything else, and
+                // more importantly it is the only place the address is VISIBLE.
+                // Everywhere else it lives inside Intent extras, so a phone with
+                // no mail client, or somebody who would rather write from a
+                // laptop, currently has no way to even learn where to write.
+                // Tap to compose, long-press to copy, and the text is
+                // selectable, so all three routes work.
+                DirectContactRow()
 
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
@@ -948,10 +969,12 @@ private fun SkipSilenceRow(
 @Composable
 private fun UnlockSettingsGroup(
     onNavigateToUnlock: () -> Unit,
+    appVersion: String,
     viewModel: UnlockViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val restoreMessage by viewModel.restoreMessage.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     SettingsGroup(title = "Unlock") {
         Row(
@@ -1019,6 +1042,46 @@ private fun UnlockSettingsGroup(
                 color = NineLivesTheme.colors.goldFilament,
                 modifier = Modifier.clickable { viewModel.restorePurchases() },
             )
+        }
+
+        // The whole recovery path for anyone who bought the paid app.
+        //
+        // There is no automatic grandfather. Nothing shipped to Play ever wrote
+        // legacy_paid, and the date-gated writer built on 2026-08-20 was thrown
+        // away on purpose: it was only safe while a human remembered to flip the
+        // price after a compiled-in cutoff, and one slip would have marked every
+        // free install paid-for-life. See EntitlementPrefs.
+        //
+        // So this row IS the mechanism, not a net under one. Play does not hand
+        // out buyer email addresses for a paid-app order, which means the app is
+        // the only channel that exists between a past buyer and us. If this row
+        // does not work, nothing does.
+        //
+        // Hidden once unlocked, because there is nothing left to claim.
+        if (!uiState.isUnlocked) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Bought this back when it cost money?",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NineLivesTheme.colors.archiveTextMuted,
+                )
+                Text(
+                    text = "Claim",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        textDecoration = TextDecoration.Underline,
+                    ),
+                    color = NineLivesTheme.colors.goldFilament,
+                    // Same helper the one-time prompt uses, so the two
+                    // cannot drift into asking for different things.
+                    modifier = Modifier.clickable {
+                        sendPaidEraClaimEmail(context, appVersion)
+                    },
+                )
+            }
         }
     }
 }
@@ -1603,6 +1666,59 @@ private fun ArchiveSweepConfirmDialog(
         },
         containerColor = NineLivesTheme.colors.archiveVoidSurface,
     )
+}
+
+private const val STUDIO_EMAIL = "Static@StaticHum.Studio"
+
+@Composable
+private fun DirectContactRow() {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .combinedClickable(
+                onClick = {
+                    val mail = Intent(Intent.ACTION_SENDTO).apply {
+                        data = Uri.parse("mailto:")
+                        putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
+                        putExtra(Intent.EXTRA_SUBJECT, "Nine Lives")
+                    }
+                    // No resolveActivity guard needed. If nothing handles it the
+                    // address is still on screen and still copyable, which is
+                    // the entire reason this row shows it as text.
+                    runCatching { context.startActivity(mail) }
+                },
+                onLongClick = {
+                    clipboard.setText(AnnotatedString(STUDIO_EMAIL))
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
+            )
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = "Something not covered here?",
+            style = MaterialTheme.typography.bodyMedium,
+            color = NineLivesTheme.colors.archiveTextPrimary,
+        )
+        SelectionContainer {
+            Text(
+                text = STUDIO_EMAIL,
+                style = MaterialTheme.typography.bodyMedium,
+                color = NineLivesTheme.colors.goldFilament,
+            )
+        }
+        Text(
+            text = "Tap to write, long-press to copy. It is one person back here, " +
+                "so give me 72 hours before you assume I am ignoring you.",
+            style = MaterialTheme.typography.bodySmall,
+            color = NineLivesTheme.colors.archiveTextMuted,
+        )
+    }
 }
 
 // ─── Section Label (inside a group) ──────────────────────────────────────

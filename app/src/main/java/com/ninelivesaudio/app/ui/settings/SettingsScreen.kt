@@ -58,7 +58,6 @@ import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
-import com.ninelivesaudio.app.ui.unlock.sendPaidEraClaimEmail
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
 /**
@@ -551,10 +550,7 @@ fun SettingsScreen(
             // ═════════════════════════════════════════════════════════════
             //  Unlock
             // ═════════════════════════════════════════════════════════════
-            UnlockSettingsGroup(
-                    onNavigateToUnlock = onNavigateToUnlock,
-                    appVersion = uiState.appVersion,
-                )
+            UnlockSettingsGroup(onNavigateToUnlock = onNavigateToUnlock)
 
             SettingsGroup(title = "Experience") {
                 ArchivePreferencesSection(
@@ -969,12 +965,10 @@ private fun SkipSilenceRow(
 @Composable
 private fun UnlockSettingsGroup(
     onNavigateToUnlock: () -> Unit,
-    appVersion: String,
     viewModel: UnlockViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val restoreMessage by viewModel.restoreMessage.collectAsStateWithLifecycle()
-    val context = LocalContext.current
 
     SettingsGroup(title = "Unlock") {
         Row(
@@ -1044,45 +1038,19 @@ private fun UnlockSettingsGroup(
             )
         }
 
-        // The whole recovery path for anyone who bought the paid app.
+        // No paid-era claim row here on purpose.
         //
-        // There is no automatic grandfather. Nothing shipped to Play ever wrote
-        // legacy_paid, and the date-gated writer built on 2026-08-20 was thrown
-        // away on purpose: it was only safe while a human remembered to flip the
-        // price after a compiled-in cutoff, and one slip would have marked every
-        // free install paid-for-life. See EntitlementPrefs.
+        // There used to be one ("Bought this back when it cost money? Claim"),
+        // as the permanent path for anyone who dismissed the one-time prompt.
+        // It was removed on 2026-08-20 because it read as clutter: a standing
+        // question about a price that no longer exists, shown forever to every
+        // free user, to serve a paid population of two.
         //
-        // So this row IS the mechanism, not a net under one. Play does not hand
-        // out buyer email addresses for a paid-app order, which means the app is
-        // the only channel that exists between a past buyer and us. If this row
-        // does not work, nothing does.
-        //
-        // Hidden once unlocked, because there is nothing left to claim.
-        if (!uiState.isUnlocked) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Bought this back when it cost money?",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = NineLivesTheme.colors.archiveTextMuted,
-                )
-                Text(
-                    text = "Claim",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        textDecoration = TextDecoration.Underline,
-                    ),
-                    color = NineLivesTheme.colors.goldFilament,
-                    // Same helper the one-time prompt uses, so the two
-                    // cannot drift into asking for different things.
-                    modifier = Modifier.clickable {
-                        sendPaidEraClaimEmail(context, appVersion)
-                    },
-                )
-            }
-        }
+        // The channel survives. The one-time PaidEraClaimDialog still carries
+        // the claim, and the direct contact row further down this screen is a
+        // general way in for anyone who dismissed it and changed their mind.
+        // The dialog's "this is the only time we'll ask" is now literally true,
+        // which is why the contact row must keep working.
     }
 }
 

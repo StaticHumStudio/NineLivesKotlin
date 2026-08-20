@@ -22,12 +22,18 @@ package com.ninelivesaudio.app.entitlement
  * have no other way to find out the offer exists. So [PROMPT_CUTOFF_MILLIS] is
  * set generously past the expected flip rather than tightly against it.
  *
- * ## Why a prompt and not just the Settings row
+ * ## Why a prompt, and why it is now the only claim-specific path
  *
- * The Settings row is the permanent path, but nobody scrolls into Settings
- * hunting for a refund they do not know exists. Play does not hand out buyer
- * email addresses for a paid-app order, so the app is the only channel between
- * a past buyer and us, and a channel nobody opens is not a channel.
+ * There was briefly a permanent Settings row too. It was removed on 2026-08-20:
+ * a standing question about a price that no longer exists, shown forever to
+ * every free user, to serve a paid population of two. Nobody scrolls into
+ * Settings hunting for a refund they do not know exists anyway.
+ *
+ * So the prompt is the claim. Play does not hand out buyer email addresses for
+ * a paid-app order, so the app is the only channel between a past buyer and us,
+ * and a channel nobody opens is not a channel. Anyone who dismisses the prompt
+ * falls back to the general direct-contact row in Settings, which is why that
+ * row is load-bearing and must not be removed without revisiting this.
  */
 object PaidEraClaimPolicy {
 
@@ -45,8 +51,10 @@ object PaidEraClaimPolicy {
 
     /**
      * @param firstInstallTimeMillis `PackageInfo.firstInstallTime`. Survives
-     *   updates, so a buyer who updates late still gets the prompt. Does not
-     *   survive uninstall and reinstall, which is what the Settings row covers.
+     *   updates, so a buyer who updates late still gets the prompt. Does NOT
+     *   survive uninstall and reinstall, and since the Settings claim row was
+     *   removed nothing in the app catches that case. A buyer who reinstalls has
+     *   to write in through the direct-contact row instead.
      * @param isUnlocked already entitled, by purchase or by a restored flag, so
      *   there is nothing to claim.
      * @param alreadyPrompted the prompt has been shown once. Once is the whole
@@ -55,8 +63,11 @@ object PaidEraClaimPolicy {
      *
      * A non-positive `firstInstallTimeMillis` means the lookup failed. Treated
      * as "do not prompt", so a broken read is silent rather than showing a
-     * confusing dialog to every install on the error path. The Settings row
-     * still covers anyone that misses.
+     * confusing dialog to every install on the error path. Nothing else catches
+     * that case now, so the miss is real: the buyer would have to write in. That
+     * trade still holds, because the error path would otherwise prompt EVERY
+     * install, and annoying everyone to catch a lookup failure that may never
+     * happen is the worse side of the bet.
      */
     fun shouldPrompt(
         firstInstallTimeMillis: Long,

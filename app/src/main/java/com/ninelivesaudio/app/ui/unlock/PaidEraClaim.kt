@@ -38,8 +38,10 @@ private const val CLAIM_SUBJECT = "Nine Lives: paid-app unlock claim"
 /**
  * Open a mail client with the paid-era claim prefilled.
  *
- * Shared by the Settings row and the one-time prompt so the two cannot drift
- * into asking for different things. Falls back to a chooser when nothing
+ * Used by the one-time prompt. It was shared with a Settings claim row until
+ * that row was removed on 2026-08-20, and it stays a named function rather than
+ * being inlined because the claim copy belongs in exactly one place regardless
+ * of how many callers there are. Falls back to a chooser when nothing
  * handles `mailto:`, because a dead button here means a past buyer has no way
  * to reach us at all: Play does not expose buyer email addresses for a
  * paid-app order, so this really is the only channel.
@@ -82,9 +84,11 @@ fun sendPaidEraClaimEmail(context: Context, appVersion: String) {
  * Add FLAG_ACTIVITY_NEW_TASK when the context is not an Activity.
  *
  * Caught on a real device, and it would never have shown up in a unit test.
- * The Settings row passes an Activity context and worked. The dialog routed
- * through a ViewModel holding the application context, and ContextImpl throws
- * outright rather than degrading. Applied conditionally rather than always,
+ * At the time there were two callers: a Settings claim row (since removed) which
+ * passed an Activity context and worked, and this dialog, which routed through a
+ * ViewModel holding the application context. ContextImpl throws outright rather
+ * than degrading, so only one of the two crashed and they looked identical from
+ * the source. Applied conditionally rather than always,
  * because forcing a new task from an Activity changes the back stack the mail
  * client comes back to.
  */

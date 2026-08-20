@@ -1680,23 +1680,17 @@ private fun DirectContactRow() {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .combinedClickable(
-                onClick = {
-                    val mail = Intent(Intent.ACTION_SENDTO).apply {
-                        data = Uri.parse("mailto:")
-                        putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
-                        putExtra(Intent.EXTRA_SUBJECT, "Nine Lives")
-                    }
-                    // No resolveActivity guard needed. If nothing handles it the
-                    // address is still on screen and still copyable, which is
-                    // the entire reason this row shows it as text.
-                    runCatching { context.startActivity(mail) }
-                },
-                onLongClick = {
-                    clipboard.setText(AnnotatedString(STUDIO_EMAIL))
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                },
-            )
+            .clickable {
+                val mail = Intent(Intent.ACTION_SENDTO).apply {
+                    data = Uri.parse("mailto:")
+                    putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
+                    putExtra(Intent.EXTRA_SUBJECT, "Nine Lives")
+                }
+                // No resolveActivity guard needed. If nothing handles it the
+                // address is still on screen and still copyable, which is
+                // the entire reason this row shows it as text.
+                runCatching { context.startActivity(mail) }
+            }
             .padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -1705,15 +1699,43 @@ private fun DirectContactRow() {
             style = MaterialTheme.typography.bodyMedium,
             color = NineLivesTheme.colors.archiveTextPrimary,
         )
-        SelectionContainer {
-            Text(
-                text = STUDIO_EMAIL,
-                style = MaterialTheme.typography.bodyMedium,
-                color = NineLivesTheme.colors.goldFilament,
-            )
+        // Copy is a real button, not a long-press, and the device pass is why.
+        //
+        // Long-press used to live on the whole row. It never fired on the part
+        // people actually press: the address sits in a SelectionContainer, which
+        // wins the long-press and starts text selection instead. Compose selects
+        // on word boundaries, so the "@" split the address and Copy handed back
+        // "StaticHum.Studio" with the "Static@" missing. Following the row's own
+        // printed instruction produced a broken address. A button cannot be
+        // stolen by a gesture, and selection still works for anyone who wants it.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SelectionContainer {
+                Text(
+                    text = STUDIO_EMAIL,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NineLivesTheme.colors.goldFilament,
+                )
+            }
+            IconButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(STUDIO_EMAIL))
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy the studio address",
+                    tint = NineLivesTheme.colors.goldFilament,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         Text(
-            text = "Tap to write, long-press to copy. It is one person back here, " +
+            text = "Tap to write, or copy the address. It is one person back here, " +
                 "so give me 72 hours before you assume I am ignoring you.",
             style = MaterialTheme.typography.bodySmall,
             color = NineLivesTheme.colors.archiveTextMuted,
@@ -1923,7 +1945,7 @@ private fun FeedbackSection(
                             Icon(
                                 imageVector = when (type) {
                                     SettingsViewModel.ReportType.BUG -> Icons.Outlined.BugReport
-                                    SettingsViewModel.ReportType.UPGRADE -> Icons.Outlined.RocketLaunch
+                                    SettingsViewModel.ReportType.FEATURE -> Icons.Outlined.RocketLaunch
                                 },
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),

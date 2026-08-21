@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +36,10 @@ import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -856,7 +861,7 @@ fun SettingsScreen(
                         viewModel.buildReport { subject, body ->
                             val intent = Intent(Intent.ACTION_SENDTO).apply {
                                 data = Uri.parse("mailto:")
-                                putExtra(Intent.EXTRA_EMAIL, arrayOf("Static@StaticHum.Studio"))
+                                putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
                                 putExtra(Intent.EXTRA_SUBJECT, subject)
                                 putExtra(Intent.EXTRA_TEXT, body)
                             }
@@ -865,7 +870,7 @@ fun SettingsScreen(
                             } else {
                                 val fallback = Intent(Intent.ACTION_SEND).apply {
                                     type = "message/rfc822"
-                                    putExtra(Intent.EXTRA_EMAIL, arrayOf("Static@StaticHum.Studio"))
+                                    putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
                                     putExtra(Intent.EXTRA_SUBJECT, subject)
                                     putExtra(Intent.EXTRA_TEXT, body)
                                 }
@@ -874,6 +879,18 @@ fun SettingsScreen(
                         }
                     },
                 )
+
+                // Plain contact, on purpose, sitting under the structured
+                // report form rather than replacing it.
+                //
+                // The report form covers bugs. This covers everything else, and
+                // more importantly it is the only place the address is VISIBLE.
+                // Everywhere else it lives inside Intent extras, so a phone with
+                // no mail client, or somebody who would rather write from a
+                // laptop, currently has no way to even learn where to write.
+                // Tap to compose, long-press to copy, and the text is
+                // selectable, so all three routes work.
+                DirectContactRow()
 
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
@@ -1020,6 +1037,20 @@ private fun UnlockSettingsGroup(
                 modifier = Modifier.clickable { viewModel.restorePurchases() },
             )
         }
+
+        // No paid-era claim row here on purpose.
+        //
+        // There used to be one ("Bought this back when it cost money? Claim"),
+        // as the permanent path for anyone who dismissed the one-time prompt.
+        // It was removed on 2026-08-20 because it read as clutter: a standing
+        // question about a price that no longer exists, shown forever to every
+        // free user, to serve a paid population of two.
+        //
+        // The channel survives. The one-time PaidEraClaimDialog still carries
+        // the claim, and the direct contact row further down this screen is a
+        // general way in for anyone who dismissed it and changed their mind.
+        // The dialog's "this is the only time we'll ask" is now literally true,
+        // which is why the contact row must keep working.
     }
 }
 
@@ -1605,6 +1636,81 @@ private fun ArchiveSweepConfirmDialog(
     )
 }
 
+private const val STUDIO_EMAIL = "Static@StaticHum.Studio"
+
+@Composable
+private fun DirectContactRow() {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable {
+                val mail = Intent(Intent.ACTION_SENDTO).apply {
+                    data = Uri.parse("mailto:")
+                    putExtra(Intent.EXTRA_EMAIL, arrayOf(STUDIO_EMAIL))
+                    putExtra(Intent.EXTRA_SUBJECT, "Nine Lives")
+                }
+                // No resolveActivity guard needed. If nothing handles it the
+                // address is still on screen and still copyable, which is
+                // the entire reason this row shows it as text.
+                runCatching { context.startActivity(mail) }
+            }
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = "Something not covered here?",
+            style = MaterialTheme.typography.bodyMedium,
+            color = NineLivesTheme.colors.archiveTextPrimary,
+        )
+        // Copy is a real button, not a long-press, and the device pass is why.
+        //
+        // Long-press used to live on the whole row. It never fired on the part
+        // people actually press: the address sits in a SelectionContainer, which
+        // wins the long-press and starts text selection instead. Compose selects
+        // on word boundaries, so the "@" split the address and Copy handed back
+        // "StaticHum.Studio" with the "Static@" missing. Following the row's own
+        // printed instruction produced a broken address. A button cannot be
+        // stolen by a gesture, and selection still works for anyone who wants it.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SelectionContainer {
+                Text(
+                    text = STUDIO_EMAIL,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NineLivesTheme.colors.goldFilament,
+                )
+            }
+            IconButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(STUDIO_EMAIL))
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                },
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.ContentCopy,
+                    contentDescription = "Copy the studio address",
+                    tint = NineLivesTheme.colors.goldFilament,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Text(
+            text = "Tap to write, or copy the address. It is one person back here, " +
+                "so give me 72 hours before you assume I am ignoring you.",
+            style = MaterialTheme.typography.bodySmall,
+            color = NineLivesTheme.colors.archiveTextMuted,
+        )
+    }
+}
+
 // ─── Section Label (inside a group) ──────────────────────────────────────
 
 @Composable
@@ -1807,7 +1913,7 @@ private fun FeedbackSection(
                             Icon(
                                 imageVector = when (type) {
                                     SettingsViewModel.ReportType.BUG -> Icons.Outlined.BugReport
-                                    SettingsViewModel.ReportType.UPGRADE -> Icons.Outlined.RocketLaunch
+                                    SettingsViewModel.ReportType.FEATURE -> Icons.Outlined.RocketLaunch
                                 },
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),

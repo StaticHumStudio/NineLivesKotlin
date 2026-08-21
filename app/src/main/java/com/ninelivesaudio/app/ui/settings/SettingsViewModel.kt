@@ -141,7 +141,7 @@ class SettingsViewModel @Inject constructor(
 
     enum class ReportType(val label: String, val subjectPrefix: String) {
         BUG("Bug Report", "[NineLives Bug]"),
-        UPGRADE("Upgrade Request", "[NineLives Request]"),
+        FEATURE("Feature Request", "[NineLives Request]"),
     }
 
     /**

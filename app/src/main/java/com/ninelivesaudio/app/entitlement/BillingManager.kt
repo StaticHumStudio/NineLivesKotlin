@@ -93,6 +93,29 @@ class BillingManager @Inject constructor(
      */
     val productLookupSettled: StateFlow<Boolean> = _productLookupSettled.asStateFlow()
 
+    private val _purchaseQuerySettled = MutableStateFlow(false)
+
+    /**
+     * True once the first purchase query has produced an ANSWER.
+     *
+     * Same ambiguity as [productLookupSettled], one step more dangerous. Before
+     * the first query answers, entitlement reads as free for everybody, because
+     * the Play-grant cache is deliberately excluded from backup and so does not
+     * survive a reinstall or a device move. Anything that acts on "user is free"
+     * during that window acts on a value that has not been established yet.
+     *
+     * "Answer" excludes retryable transport failures. A disconnected service or a
+     * dead network is Play saying NOTHING, not Play saying "you own nothing", and
+     * flipping this on one hands a consumer a provisional free reading dressed up
+     * as an established one. See [RETRYABLE_RESPONSE_CODES].
+     *
+     * This flow can therefore stay false forever, and that is deliberate: a device
+     * with no Play Store never completes setup, so [refreshPurchases] never runs
+     * there at all. Every consumer MUST carry its own bound rather than awaiting
+     * this indefinitely.
+     */
+    val purchaseQuerySettled: StateFlow<Boolean> = _purchaseQuerySettled.asStateFlow()
+
     private val client: BillingClient = BillingClient.newBuilder(context)
         .setListener(this)
         // One-time products can go PENDING (cash payments, parental approval).
@@ -165,6 +188,7 @@ class BillingManager @Inject constructor(
             Log.d(TAG, "refresh already in flight, skipping")
             return
         }
+        var answered = false
         try {
             // Bounded on purpose. The Billing KTX helpers suspend until Play
             // invokes their callback, and nothing guarantees it ever does. Without
@@ -174,14 +198,37 @@ class BillingManager @Inject constructor(
             //
             // A timeout is not a revocation. It produces no verdict at all, which
             // is the same thing a failed query does.
-            withTimeoutOrNull(BILLING_TIMEOUT_MS) { queryAndApply() }
-                ?: Log.d(TAG, "purchase query timed out, leaving entitlement untouched")
+            answered = withTimeoutOrNull(BILLING_TIMEOUT_MS) { queryAndApply() } ?: run {
+                Log.d(TAG, "purchase query timed out, leaving entitlement untouched")
+                // A timeout DOES settle the gate. Play had the full window and
+                // produced nothing, so waiting past it buys a consumer nothing
+                // except a longer stare at a spinner.
+                true
+            }
         } finally {
+            // Settled out here rather than at the exits inside queryAndApply,
+            // which withTimeoutOrNull cancels before they run, so the timeout path
+            // never settled at all.
+            //
+            // Conditionally, though. Settling unconditionally was wrong for the
+            // reason a second review pass caught: a retryable transport failure is
+            // Play saying nothing, and treating it as an answer lets the paid-era
+            // claim prompt act on a provisional free reading. An unlock owner
+            // mid-reinstall could then be offered a free code for the thing they
+            // already bought. Leaving it unsettled gives auto-reconnection a
+            // window to land the real answer first.
+            if (answered) _purchaseQuerySettled.value = true
             refreshMutex.unlock()
         }
     }
 
-    private suspend fun queryAndApply() {
+    /**
+     * @return whether Play produced an answer, which is a strictly weaker claim
+     *   than the query succeeding. A hard "no" (billing unavailable, developer
+     *   error) IS an answer and settles the gate, because a retry will say the
+     *   same thing. Only the retryable transport codes return false.
+     */
+    private suspend fun queryAndApply(): Boolean {
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.INAPP)
             .build()
@@ -189,11 +236,11 @@ class BillingManager @Inject constructor(
         val result = billingCall { client.queryPurchasesAsync(params) }
         if (result == null) {
             Log.d(TAG, "purchase query threw, leaving entitlement untouched")
-            return
+            return false
         }
 
-        val responseOk =
-            result.billingResult.responseCode == BillingClient.BillingResponseCode.OK
+        val responseCode = result.billingResult.responseCode
+        val responseOk = responseCode == BillingClient.BillingResponseCode.OK
         val snapshots = result.purchasesList.flatMap { it.toSnapshots() }
 
         when (PurchaseEvaluator.evaluateQuery(responseOk, snapshots)) {
@@ -207,6 +254,12 @@ class BillingManager @Inject constructor(
         // days, and a missed callback would otherwise cost the user their money
         // and us the sale.
         if (responseOk) acknowledgeIfNeeded(result.purchasesList)
+
+        if (!responseOk && responseCode in RETRYABLE_RESPONSE_CODES) {
+            Log.d(TAG, "purchase query not answered ($responseCode), gate stays open")
+            return false
+        }
+        return true
     }
 
     /** Load `nine_lives_unlock` so the unlock screen can show a real price. */
@@ -323,6 +376,20 @@ class BillingManager @Inject constructor(
          * hang guard rather than a latency target.
          */
         const val BILLING_TIMEOUT_MS = 30_000L
+
+        /**
+         * Codes where Play said NOTHING, as opposed to saying "no".
+         *
+         * These are the ones auto-reconnection can plausibly fix on its own
+         * within seconds, so they must not settle [purchaseQuerySettled].
+         * Everything else, including BILLING_UNAVAILABLE and DEVELOPER_ERROR,
+         * is a stable answer that a retry would only repeat.
+         */
+        val RETRYABLE_RESPONSE_CODES = setOf(
+            BillingClient.BillingResponseCode.SERVICE_DISCONNECTED,
+            BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE,
+            BillingClient.BillingResponseCode.NETWORK_ERROR,
+        )
 
         /**
          * One Play purchase can carry several product ids, so flatten rather

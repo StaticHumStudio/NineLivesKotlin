@@ -2,7 +2,7 @@
 
 Produced 2026-08-15 by reading all three sources directly. Sources:
 
-- **Plan summary** ... `docs/superpowers/plans/2026-08-05-free-unlock-production.md`,
+- **Plan summary** ... the free-unlock production plan, kept in the private companion,
   the supersession block near the top: *"The free tier's limits are now exactly
   three, and they are final."*
 - **Plan detail** ... the same document's Locked Decisions section and the PR E /

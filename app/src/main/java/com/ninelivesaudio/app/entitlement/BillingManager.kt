@@ -104,10 +104,10 @@ class BillingManager @Inject constructor(
      * survive a reinstall or a device move. Anything that acts on "user is free"
      * during that window acts on a value that has not been established yet.
      *
-     * "Answer" excludes retryable transport failures. A disconnected service or a
-     * dead network is Play saying NOTHING, not Play saying "you own nothing", and
-     * flipping this on one hands a consumer a provisional free reading dressed up
-     * as an established one. See [RETRYABLE_RESPONSE_CODES].
+     * "Answer" excludes retryable failures. A disconnected service, a dead
+     * network, or Play's generic ERROR is Play saying NOTHING, not Play saying
+     * "you own nothing", and flipping this on one hands a consumer a provisional
+     * free reading dressed up as an established one. See [PurchaseGatePolicy].
      *
      * This flow can therefore stay false forever, and that is deliberate: a device
      * with no Play Store never completes setup, so [refreshPurchases] never runs
@@ -255,7 +255,9 @@ class BillingManager @Inject constructor(
         // and us the sale.
         if (responseOk) acknowledgeIfNeeded(result.purchasesList)
 
-        if (!responseOk && responseCode in RETRYABLE_RESPONSE_CODES) {
+        // Classification lives in PurchaseGatePolicy so it can be tested without
+        // a Billing client. See PurchaseGatePolicyTest.
+        if (!responseOk && !PurchaseGatePolicy.settles(responseCode)) {
             Log.d(TAG, "purchase query not answered ($responseCode), gate stays open")
             return false
         }
@@ -376,20 +378,6 @@ class BillingManager @Inject constructor(
          * hang guard rather than a latency target.
          */
         const val BILLING_TIMEOUT_MS = 30_000L
-
-        /**
-         * Codes where Play said NOTHING, as opposed to saying "no".
-         *
-         * These are the ones auto-reconnection can plausibly fix on its own
-         * within seconds, so they must not settle [purchaseQuerySettled].
-         * Everything else, including BILLING_UNAVAILABLE and DEVELOPER_ERROR,
-         * is a stable answer that a retry would only repeat.
-         */
-        val RETRYABLE_RESPONSE_CODES = setOf(
-            BillingClient.BillingResponseCode.SERVICE_DISCONNECTED,
-            BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE,
-            BillingClient.BillingResponseCode.NETWORK_ERROR,
-        )
 
         /**
          * One Play purchase can carry several product ids, so flatten rather

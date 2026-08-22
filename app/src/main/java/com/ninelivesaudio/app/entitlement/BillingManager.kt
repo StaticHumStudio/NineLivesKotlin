@@ -250,12 +250,16 @@ class BillingManager @Inject constructor(
      * callers. This one did not. That asymmetry was the actual defect, so the
      * fix is a second trigger rather than a cleverer connect.
      *
-     * Cheap to call repeatedly. It returns immediately once a price is in hand,
-     * and a failed lookup deliberately leaves the product null so the next
-     * foreground retries it.
+     * Re-queries every time rather than caching the first answer. Prices vary by
+     * region, the ladder moves with each feature drop, and the offer token
+     * inside [ProductDetails] is what the purchase flow actually spends. A
+     * player process can live for days, so a price pinned on first launch is a
+     * price that can be wrong by the time somebody presses the button.
+     *
+     * A failed lookup leaves any previously good product in place rather than
+     * clearing it, so one bad query never costs a working price.
      */
     suspend fun loadProductDetails() {
-        if (_unlockProduct.value != null) return
         // Two foregrounds inside one slow query would ask Play the same question
         // twice and write the same answer twice. Skip rather than queue, exactly
         // as [refreshPurchases] does.

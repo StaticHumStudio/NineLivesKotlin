@@ -299,8 +299,17 @@ class BillingManager @Inject constructor(
             return
         }
 
+        // Matching the id is not enough. oneTimePurchaseOfferDetails is nullable
+        // in the Billing API, and that field is both the price the screen shows
+        // and the thing [launchPurchase] hands to Play. A matching product with
+        // no offer prices as null, which disables the button just as thoroughly
+        // as having no product at all, except it also looks like a cache hit and
+        // so blocks the next lookup from replacing it. Treat it as a miss.
         val found = result.productDetailsList
-            ?.firstOrNull { it.productId == PurchaseEvaluator.UNLOCK_PRODUCT_ID }
+            ?.firstOrNull {
+                it.productId == PurchaseEvaluator.UNLOCK_PRODUCT_ID &&
+                    it.oneTimePurchaseOfferDetails != null
+            }
 
         // Only overwrite on a hit. An OK response is not a promise that our
         // product came back with it: Play reports unfetched products separately

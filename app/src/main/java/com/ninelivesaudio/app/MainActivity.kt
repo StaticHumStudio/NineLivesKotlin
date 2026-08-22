@@ -55,7 +55,6 @@ import com.ninelivesaudio.app.ui.navigation.BottomNavBar
 import com.ninelivesaudio.app.ui.navigation.startDestinationFor
 import com.ninelivesaudio.app.ui.navigation.LeftNavRail
 import com.ninelivesaudio.app.ui.navigation.NineLivesNavHost
-import com.ninelivesaudio.app.ui.unlock.PaidEraClaimDialog
 import com.ninelivesaudio.app.ui.navigation.Routes
 import com.ninelivesaudio.app.ui.theme.NineLivesAudioTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -230,14 +229,6 @@ class MainActivity : ComponentActivity() {
                             Box(modifier = Modifier.weight(1f)) {
                                 // Cosmic gradient background (behind all content)
                                 CosmicBackgroundGradient()
-
-                                // One-time paid-era claim offer. Hosted here
-                                // rather than on a screen so it does not depend
-                                // on which destination the user lands on, and
-                                // so it cannot be missed by someone who never
-                                // opens Settings. It decides for itself whether
-                                // to render.
-                                PaidEraClaimDialog()
 
                                 // Content stack: NavHost + MiniPlayer overlay
                                 Column(modifier = Modifier.fillMaxSize()) {

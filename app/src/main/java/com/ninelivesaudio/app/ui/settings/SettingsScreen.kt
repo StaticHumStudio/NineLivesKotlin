@@ -1038,19 +1038,24 @@ private fun UnlockSettingsGroup(
             )
         }
 
-        // No paid-era claim row here on purpose.
+        // No paid-era claim row here, and no claim prompt anywhere either.
         //
-        // There used to be one ("Bought this back when it cost money? Claim"),
-        // as the permanent path for anyone who dismissed the one-time prompt.
-        // It was removed on 2026-08-20 because it read as clutter: a standing
-        // question about a price that no longer exists, shown forever to every
-        // free user, to serve a paid population of two.
+        // The whole claim path was removed on 2026-08-21. A standing row went
+        // first, on 2026-08-20, for reading as clutter. Then the one-time dialog
+        // went too, once the only person it existed for had been refunded.
         //
-        // The channel survives. The one-time PaidEraClaimDialog still carries
-        // the claim, and the direct contact row further down this screen is a
-        // general way in for anyone who dismissed it and changed their mind.
-        // The dialog's "this is the only time we'll ask" is now literally true,
-        // which is why the contact row must keep working.
+        // The reasoning, so nobody rebuilds it: the prompt could not tell who
+        // had actually paid, because Play does not expose buyer identity for a
+        // paid-app order. It guessed from install date. That guess told every
+        // pre-cutoff install "You paid for this" and offered them a code,
+        // including the Play reviewer, who installs fresh during review. All of
+        // that to serve one person who has their money back.
+        //
+        // The direct contact row further down this screen is now the entire
+        // channel, and it is enough: anyone who writes in gets answered by hand
+        // with a promo code. Reactive for one person beats machinery on every
+        // install. If real paid volume ever appears before the flip, revisit
+        // this, but build for who exists rather than who might.
     }
 }
 

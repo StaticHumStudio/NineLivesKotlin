@@ -71,6 +71,8 @@ class BillingManager @Inject constructor(
      */
     private val refreshMutex = Mutex()
 
+    private val productMutex = Mutex()
+
     private val _unlockProduct = MutableStateFlow<ProductDetails?>(null)
 
     /**
@@ -112,12 +114,18 @@ class BillingManager @Inject constructor(
      * Also registers the foreground hook, because an out-of-app promo redemption
      * produces no purchase-update callback in this process. Without a query on
      * resume, redeeming a code and coming back leaves the app still locked.
+     *
+     * The foreground hook loads the price as well as the purchases, and that is
+     * the whole point rather than a convenience. See [loadProductDetails].
      */
     fun start() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
-                    scope.launch { refreshPurchases() }
+                    scope.launch {
+                        refreshPurchases()
+                        loadProductDetails()
+                    }
                 }
             }
         )
@@ -133,6 +141,20 @@ class BillingManager @Inject constructor(
                     // Not an error worth surfacing. A device with no Play Store,
                     // or a Play Store mid-update, is a legitimate state. The user
                     // keeps whatever entitlement they already had.
+                    //
+                    // Nor is it rare. [enableAutoServiceReconnection] can already
+                    // have a connection in flight when this call reaches the
+                    // library, and the library rejects the loser with
+                    // DEVELOPER_ERROR: "Client is already in the process of
+                    // connecting to billing service." That happened on 10 of 10
+                    // cold starts on a real device on 2026-08-22. The connection
+                    // the other caller opened is live and serves queries fine,
+                    // so this branch does not mean Play is unavailable. It means
+                    // this particular listener will never hear back.
+                    //
+                    // Nothing may hang off this callback alone for that reason.
+                    // Both calls below are also reachable from the foreground
+                    // hook in [start], which is what makes them survive.
                     Log.d(TAG, "billing setup finished: ${result.responseCode}")
                     return
                 }
@@ -210,8 +232,42 @@ class BillingManager @Inject constructor(
         if (responseOk) acknowledgeIfNeeded(result.purchasesList)
     }
 
-    /** Load `nine_lives_unlock` so the unlock screen can show a real price. */
+    /**
+     * Load `nine_lives_unlock` so the unlock screen can show a real price.
+     *
+     * Runs on launch, on every successful connect, and on every foreground.
+     *
+     * The foreground trigger is not belt and braces. Until 2026-08-22 the only
+     * caller was the success branch of [connect]'s setup listener, and that
+     * listener loses a startup race with the library's own auto-reconnection
+     * often enough to have failed 10 of 10 cold starts on a real device. When it
+     * lost, this never ran, `productLookupSettled` stayed false for the life of
+     * the process, and the unlock screen showed a disabled button spinning on
+     * "Checking price" that no in-app action could clear. The Restore button did
+     * not help: it re-asks what you own, not what things cost.
+     *
+     * The entitlement refresh survived the same race only because it had other
+     * callers. This one did not. That asymmetry was the actual defect, so the
+     * fix is a second trigger rather than a cleverer connect.
+     *
+     * Cheap to call repeatedly. It returns immediately once a price is in hand,
+     * and a failed lookup deliberately leaves the product null so the next
+     * foreground retries it.
+     */
     suspend fun loadProductDetails() {
+        if (_unlockProduct.value != null) return
+        // Two foregrounds inside one slow query would ask Play the same question
+        // twice and write the same answer twice. Skip rather than queue, exactly
+        // as [refreshPurchases] does.
+        if (!productMutex.tryLock()) return
+        try {
+            loadProductDetailsLocked()
+        } finally {
+            productMutex.unlock()
+        }
+    }
+
+    private suspend fun loadProductDetailsLocked() {
         val params = QueryProductDetailsParams.newBuilder()
             .setProductList(
                 listOf(

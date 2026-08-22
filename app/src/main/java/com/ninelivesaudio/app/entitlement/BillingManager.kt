@@ -71,6 +71,8 @@ class BillingManager @Inject constructor(
      */
     private val refreshMutex = Mutex()
 
+    private val productMutex = Mutex()
+
     private val _unlockProduct = MutableStateFlow<ProductDetails?>(null)
 
     /**
@@ -112,12 +114,18 @@ class BillingManager @Inject constructor(
      * Also registers the foreground hook, because an out-of-app promo redemption
      * produces no purchase-update callback in this process. Without a query on
      * resume, redeeming a code and coming back leaves the app still locked.
+     *
+     * The foreground hook loads the price as well as the purchases, and that is
+     * the whole point rather than a convenience. See [loadProductDetails].
      */
     fun start() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
-                    scope.launch { refreshPurchases() }
+                    scope.launch {
+                        refreshPurchases()
+                        loadProductDetails()
+                    }
                 }
             }
         )
@@ -133,6 +141,20 @@ class BillingManager @Inject constructor(
                     // Not an error worth surfacing. A device with no Play Store,
                     // or a Play Store mid-update, is a legitimate state. The user
                     // keeps whatever entitlement they already had.
+                    //
+                    // Nor is it rare. [enableAutoServiceReconnection] can already
+                    // have a connection in flight when this call reaches the
+                    // library, and the library rejects the loser with
+                    // DEVELOPER_ERROR: "Client is already in the process of
+                    // connecting to billing service." That happened on 10 of 10
+                    // cold starts on a real device on 2026-08-22. The connection
+                    // the other caller opened is live and serves queries fine,
+                    // so this branch does not mean Play is unavailable. It means
+                    // this particular listener will never hear back.
+                    //
+                    // Nothing may hang off this callback alone for that reason.
+                    // Both calls below are also reachable from the foreground
+                    // hook in [start], which is what makes them survive.
                     Log.d(TAG, "billing setup finished: ${result.responseCode}")
                     return
                 }
@@ -210,8 +232,46 @@ class BillingManager @Inject constructor(
         if (responseOk) acknowledgeIfNeeded(result.purchasesList)
     }
 
-    /** Load `nine_lives_unlock` so the unlock screen can show a real price. */
+    /**
+     * Load `nine_lives_unlock` so the unlock screen can show a real price.
+     *
+     * Runs on launch, on every successful connect, and on every foreground.
+     *
+     * The foreground trigger is not belt and braces. Until 2026-08-22 the only
+     * caller was the success branch of [connect]'s setup listener, and that
+     * listener loses a startup race with the library's own auto-reconnection
+     * often enough to have failed 10 of 10 cold starts on a real device. When it
+     * lost, this never ran, `productLookupSettled` stayed false for the life of
+     * the process, and the unlock screen showed a disabled button spinning on
+     * "Checking price" that no in-app action could clear. The Restore button did
+     * not help: it re-asks what you own, not what things cost.
+     *
+     * The entitlement refresh survived the same race only because it had other
+     * callers. This one did not. That asymmetry was the actual defect, so the
+     * fix is a second trigger rather than a cleverer connect.
+     *
+     * Re-queries every time rather than caching the first answer. Prices vary by
+     * region, the ladder moves with each feature drop, and the offer token
+     * inside [ProductDetails] is what the purchase flow actually spends. A
+     * player process can live for days, so a price pinned on first launch is a
+     * price that can be wrong by the time somebody presses the button.
+     *
+     * A failed lookup leaves any previously good product in place rather than
+     * clearing it, so one bad query never costs a working price.
+     */
     suspend fun loadProductDetails() {
+        // Two foregrounds inside one slow query would ask Play the same question
+        // twice and write the same answer twice. Skip rather than queue, exactly
+        // as [refreshPurchases] does.
+        if (!productMutex.tryLock()) return
+        try {
+            loadProductDetailsLocked()
+        } finally {
+            productMutex.unlock()
+        }
+    }
+
+    private suspend fun loadProductDetailsLocked() {
         val params = QueryProductDetailsParams.newBuilder()
             .setProductList(
                 listOf(
@@ -239,8 +299,37 @@ class BillingManager @Inject constructor(
             return
         }
 
-        _unlockProduct.value = result.productDetailsList
-            ?.firstOrNull { it.productId == PurchaseEvaluator.UNLOCK_PRODUCT_ID }
+        // Matching the id is not enough. oneTimePurchaseOfferDetails is nullable
+        // in the Billing API, and that field is both the price the screen shows
+        // and the thing [launchPurchase] hands to Play. A matching product with
+        // no offer prices as null, which disables the button just as thoroughly
+        // as having no product at all, except it also looks like a cache hit and
+        // so blocks the next lookup from replacing it. Treat it as a miss.
+        val found = result.productDetailsList
+            ?.firstOrNull {
+                it.productId == PurchaseEvaluator.UNLOCK_PRODUCT_ID &&
+                    it.oneTimePurchaseOfferDetails != null
+            }
+
+        // Only overwrite on a hit. An OK response is not a promise that our
+        // product came back with it: Play reports unfetched products separately
+        // from the overall response code, so an empty or non-matching list is a
+        // routine outcome rather than proof the product is gone.
+        //
+        // Assigning that null unconditionally would clear a price we already had
+        // and leave the button reading "Unavailable" with nothing the user can
+        // press, which is the same dead purchase surface this whole change
+        // exists to remove. Keeping the last known price risks the opposite and
+        // much smaller failure: if the product really were deactivated, the user
+        // taps buy and Play says no. A recoverable error beats a dead button.
+        //
+        // A device that never had a price keeps null and correctly shows the
+        // unavailable copy, because that is the honest answer there.
+        if (found != null) {
+            _unlockProduct.value = found
+        } else {
+            Log.d(TAG, "product lookup found no matching product, keeping last known price")
+        }
     }
 
     /**

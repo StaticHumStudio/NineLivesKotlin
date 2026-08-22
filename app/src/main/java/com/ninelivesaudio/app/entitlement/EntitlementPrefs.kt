@@ -33,29 +33,29 @@ import javax.inject.Singleton
  * The flag can now only arrive from an Auto Backup restore of an install that
  * predates the switch. Everyone else is recovered by hand.
  *
- * ## The paid population is no longer just Jeff
+ * ## The paid population is zero, and that is now literally true
+
+ * CORRECTED 2026-08-21. A stranger bought the paid app on 2026-08-16, which
+ * briefly made the population two rather than one. Jeff refunded them on
+ * 2026-08-21, so the transaction is unwound and they stand exactly where any
+ * free user stands.
  *
- * CORRECTED 2026-08-20. This used to end by saying manual recovery was
- * affordable "precisely because the paid population is one person". That stopped
- * being true on 2026-08-16, when a stranger bought the paid app. Since nothing shipped ever writes this
- * flag, they carry no grandfather signal and land on the free tier when 2.1.0
- * reaches production. Their order identifier is deliberately not recorded in
- * this repo, which is public.
+ * Two mechanisms were built for that one person and both were thrown away. A
+ * date-gated writer went first: it worked, but stayed safe only while a human
+ * remembered to flip the price after a compiled-in cutoff, and one forgotten
+ * ordering rule would have grandfathered every free install. A one-time claim
+ * prompt went second: it could not tell who had paid, so it guessed from
+ * install date and told every pre-cutoff install "You paid for this", the Play
+ * reviewer included.
  *
- * A date-gated writer was built to catch them and then deliberately thrown
- * away. It worked, but it only stayed safe while a human remembered to flip the
- * price AFTER a compiled-in cutoff, and one forgotten ordering rule would have
- * grandfathered every free install and quietly ended the paid tier. Jeff's call:
- * refund the buyer instead, leave them the free app, and carry the note in
- * Settings offering a free unlock code to anyone who bought before the switch.
- * Money back beats clever code.
+ * What survives is the direct contact row in Settings. Anyone who believes they
+ * bought this writes in and gets answered by hand with a promo code for
+ * `nine_lives_unlock`. That scales to the population it has to serve, which is
+ * zero, and it cannot lie to anybody because a human reads it first.
  *
- * So manual recovery is still the plan, and it is still affordable, just for a
- * different reason: the recovery path is a support email answered with a promo
- * code, and the population it has to serve is tiny rather than theoretically
- * zero. If real paid volume ever shows up in the order history before the flip,
- * revisit this, because hand-recovery does not scale and the writer is only safe
- * under a rule nobody will remember.
+ * If real paid volume ever appears in the order history before the flip,
+ * revisit this. Hand-recovery does not scale, and the writer is only safe under
+ * a rule nobody will remember.
  */
 @Singleton
 class EntitlementPrefs @Inject constructor(

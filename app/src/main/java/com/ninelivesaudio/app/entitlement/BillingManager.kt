@@ -299,8 +299,28 @@ class BillingManager @Inject constructor(
             return
         }
 
-        _unlockProduct.value = result.productDetailsList
+        val found = result.productDetailsList
             ?.firstOrNull { it.productId == PurchaseEvaluator.UNLOCK_PRODUCT_ID }
+
+        // Only overwrite on a hit. An OK response is not a promise that our
+        // product came back with it: Play reports unfetched products separately
+        // from the overall response code, so an empty or non-matching list is a
+        // routine outcome rather than proof the product is gone.
+        //
+        // Assigning that null unconditionally would clear a price we already had
+        // and leave the button reading "Unavailable" with nothing the user can
+        // press, which is the same dead purchase surface this whole change
+        // exists to remove. Keeping the last known price risks the opposite and
+        // much smaller failure: if the product really were deactivated, the user
+        // taps buy and Play says no. A recoverable error beats a dead button.
+        //
+        // A device that never had a price keeps null and correctly shows the
+        // unavailable copy, because that is the honest answer there.
+        if (found != null) {
+            _unlockProduct.value = found
+        } else {
+            Log.d(TAG, "product lookup found no matching product, keeping last known price")
+        }
     }
 
     /**

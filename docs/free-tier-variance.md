@@ -37,13 +37,13 @@ Legend: **Y** gated / specified · **n** not mentioned · **--** not applicable
 | 5 | Auto-rewind on resume | n | **Y** | **Y** `autoRewindEnabled=false` | n | summary gap · **listing silent** |
 | 6 | Equalizer and volume boost | n | **Y** | **Y** normalized off, clamped in `PlaybackManager` | n | summary gap · **listing silent** |
 | 7 | Silence skipping | n | **Y** | **Y** `skipSilenceEnabled=false` | **advertises it as new, no gate note** | **listing conflict** |
-| 8 | Sorts: 8 of 11 gated | n | **Y** | **Y** `FreeTier.SORT_MODES` | n | summary gap · **listing silent** |
-| 9 | Grouping: series, author, genre | n | **Y** | **Y** `VIEW_MODES = {ALL}` | n | summary gap · **listing silent** |
+| 8 | Sorts: 8 of 11 gated | n | **Y** | **all 11 FREE** as of 2026-08-15, `FreeTier.SORT_MODES` = every entry, mechanism retained | n | **code ahead of plan, deliberate** |
+| 9 | Grouping: series, author, genre | n | **Y** | **Y** `VIEW_MODES = {ALL}` | n | gated, ships gated in 2.1.0 · see reconciliation |
 | 10 | Archive Shelf browsing and manual restore | n | **Y** (auto-restore and deletion stay free) | **Y** `LibraryScreen` tab lock | **describes it as a feature, no gate note** | **listing conflict** |
 | 11 | Nightwatch Dossier and share card | n | **Y** | **30-day window FREE**, longer periods gated, as of 2026-08-16 | **describes it as a feature, no gate note** | **resolved in code**, listing still needs the period note |
 | 12 | Themes | n | **Y** NOIR free, other three gated | **NOIR + BRIGHT free** as of 2026-08-15 | n | **code ahead of plan, deliberate** |
-| 13 | Advanced server settings (self-signed cert, TOFU) | n | **Y** "gated in the UI" | **NO GATE** ... bare `Switch`, no `GatedControl` | n | **code gap** |
-| 14 | Android Auto browse gating and command grants | n | **Y** | **NO GATE** ... zero entitlement refs in `PlaybackService`, `MediaBrowseTree`, `RemoteMediaAccessPolicy` | n | **code gap** |
+| 13 | Advanced server settings (self-signed cert, TOFU) | n | **Y** "gated in the UI" | **NO GATE** ... bare `Switch`, no `GatedControl` | n | ships ungated in 2.1.0, deliberate · see reconciliation |
+| 14 | Android Auto browse gating and command grants | n | **Y** | **NO GATE** ... zero entitlement refs in `PlaybackService`, `MediaBrowseTree`, `RemoteMediaAccessPolicy` | n | **never gated, decided 2026-08-16** · see reconciliation |
 | 15 | Local folder cap | dropped 2026-08-15 | marked superseded | never built | correctly silent | **aligned** |
 | 16 | ABS library cap | dropped 2026-08-15 | marked superseded | never built | correctly silent | **aligned** |
 
@@ -143,3 +143,43 @@ the default, not the first free entry`).
 The plan doc's locked decision on themes and the `FreeTier` lore line ("the
 vault is what you get, lighting is a privilege you buy") are both now superseded
 and need updating in place.
+
+## Reconciliation, 2026-08-23
+
+Written the night 2.1.0 (212) was finalized for production, to close the rows
+still marked open above. Facts and decisions, with provenance:
+
+- **Row 14, Android Auto: never gated. Locked decision, 2026-08-16.** Auto
+  ships free in the category king's Basic tier, and a gate here would punish
+  the exact commute use case the listing sells. The absence of entitlement
+  references in `PlaybackService`, `MediaBrowseTree`, and
+  `RemoteMediaAccessPolicy` is the intended end state, not a gap. The old
+  "code gap" verdict is superseded.
+- **Row 13, advanced server settings: ships ungated in 2.1.0.** The standing
+  recommendation (self-signed cert trust is how a self-hoster reaches their
+  own box, and gating it sits next door to gating access to a user's own
+  data) has not been formally locked, but the code ships ungated and the
+  listing is silent, so nothing is promised either way. If a future release
+  wants this gate, that is a new decision, not a regression fix.
+- **Row 9, grouping: gated, and 2.1.0 ships it gated.** Whether it stays
+  gated long-term is formally still open, marked low priority 2026-08-16.
+  The listing does not mention grouping, so the open decision has no copy
+  exposure.
+- **Row 8, sorts: all 11 free since 2026-08-15.** Chart cell updated. The
+  gate mechanism is retained deliberately ... a lever not pulled is not a
+  lever removed.
+- **Rows 7, 10, 11, the listing conflicts: substantially resolved by the
+  approved 2.1.0 copy** (approved 2026-08-23, paste source of record in the
+  marketing package). The release notes now say "silence skipping, included
+  with the unlock," which was row 7's worst case. The Archive Shelf
+  paragraph describes retention, which is free, rather than browsing, which
+  is not (row 10). The Dossier paragraph leads with "thirty days," the free
+  window (row 11). One remaining nit, flagged rather than silently edited
+  because the copy is approved: the BUILT FOR LONG LISTENS bullet list still
+  names silence skipping, the equalizer, and the motion-grace sleep timer
+  without saying they ride with the unlock. Candidate one-line fix, pending
+  Jeff: extend the unlock sentence to "every speed, silence skipping, the
+  equalizer, unlimited offline books, and full sleep timer control."
+- **The 30-day trial is not in 2.1.0.** Decided 2026-08-16, cut 2026-08-22:
+  v212 ships without it and the trial moves to 2.2 as a release beat. No
+  listing or doc text may mention a trial until it ships.

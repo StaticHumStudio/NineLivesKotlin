@@ -154,7 +154,15 @@ still marked open above. Facts and decisions, with provenance:
   the exact commute use case the listing sells. The absence of entitlement
   references in `PlaybackService`, `MediaBrowseTree`, and
   `RemoteMediaAccessPolicy` is the intended end state, not a gap. The old
-  "code gap" verdict is superseded.
+  "code gap" verdict is superseded. One live artifact still contradicts the
+  decision: the listing currently on Play (mirrored in `store-listing.md`
+  at the repo root, PLAYBACK section) sells the unlock as adding Android
+  Auto. The approved 2.1.0 copy drops that claim, and the flip-week listing
+  refresh replaces the live text wholesale. Until then the live listing
+  oversells the unlock in Auto's favor ... known, accepted, and it dies at
+  the refresh. When the refresh publishes, re-sync the root mirror and
+  `reference/play-store-listing.txt` in the marketing package from the
+  approved paste source, per the mirror's own header rule.
 - **Row 13, advanced server settings: ships ungated in 2.1.0.** The standing
   recommendation (self-signed cert trust is how a self-hoster reaches their
   own box, and gating it sits next door to gating access to a user's own
@@ -163,8 +171,12 @@ still marked open above. Facts and decisions, with provenance:
   wants this gate, that is a new decision, not a regression fix.
 - **Row 9, grouping: gated, and 2.1.0 ships it gated.** Whether it stays
   gated long-term is formally still open, marked low priority 2026-08-16.
-  The listing does not mention grouping, so the open decision has no copy
-  exposure.
+  The approved 2.1.0 copy never mentions grouping, so the open decision has
+  no exposure in what ships at the flip. The listing live today is another
+  story: its LIBRARY section advertises "grouping by series, author, or
+  genre" with no gate note (`store-listing.md` mirror, same section). That
+  line is one more thing the flip-week refresh retires, and it stays a
+  listing conflict, not a closed row, until the refresh is live.
 - **Row 8, sorts: all 11 free since 2026-08-15.** Chart cell updated. The
   gate mechanism is retained deliberately ... a lever not pulled is not a
   lever removed.

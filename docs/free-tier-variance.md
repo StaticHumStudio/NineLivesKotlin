@@ -90,11 +90,13 @@ paragraph rather than tag each mention. Jeff took a version of that on
 - The old `FREE AND UNLOCKED` section split into `WHAT FREE GETS` and
   `THE PAID UNLOCK, IN FULL`, so the pointers land on a header that says what
   it is.
-- The paid list is now copied **verbatim** from `UNLOCK_BENEFITS` in
+- The paid list was copied **verbatim** from `UNLOCK_BENEFITS` in
   `ui/unlock/UnlockScreen.kt`, whose own comment says it exists so the unlock
-  screen and the store listing cannot drift. It had drifted. Copying beats
-  paraphrasing, and this is the structural fix that keeps rows 4 through 11
-  aligned without anyone remembering to check.
+  screen and the store listing cannot drift. It had drifted anyway, which is
+  the point: a comment asking people to remember is not a mechanism. Copying
+  beats paraphrasing and it makes rows 4 through 11 true today, but it is a
+  one-time reconciliation and the next edit to either artifact can undo it.
+  The mechanical check is issue #13, not this paste. See the status block.
 
 Approved copy is the paste package in the marketing repo, re-approved
 2026-08-24 09:57 after three review passes.

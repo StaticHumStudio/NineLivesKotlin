@@ -14,16 +14,24 @@ Produced 2026-08-15 by reading all three sources directly. Sources:
 
 ## Status, 2026-08-24
 
-**Every listing conflict in this document is CLOSED.** The store copy was
-rewritten on 2026-08-24 and re-approved the same day, and the paid-feature
-list in it is now copied verbatim from `UNLOCK_BENEFITS` in
-`ui/unlock/UnlockScreen.kt` rather than written alongside it, which is the
-structural fix that keeps these rows from drifting apart again.
+**Every listing conflict in this document is closed IN THE APPROVED 2.1.0
+COPY.** The store copy was rewritten on 2026-08-24 and re-approved the same
+day, and the paid-feature list in it was copied verbatim from
+`UNLOCK_BENEFITS` in `ui/unlock/UnlockScreen.kt` rather than written
+alongside it.
 
-What remains open here is not a conflict: rows 9 and 13 carry decisions that
-are formally still open but have no exposure in what ships, and the listing
-LIVE on Play today still contains the old text until the flip-week refresh
-replaces it wholesale.
+**That copy is a one-time reconciliation, not a mechanism, and this document
+should not have called it structural.** `UNLOCK_BENEFITS` is a private Kotlin
+value in this repo, the canonical listing lives in the marketing repo, and
+nothing generates one from the other or checks them against each other. The
+next edit to either side can re-drift exactly as before. A real check is
+filed separately.
+
+**The listing LIVE on Play is a different question and it is still open.** It
+carries the pre-rewrite text until the flip-week refresh replaces it
+wholesale, so the grouping conflict in row 9 is closed in the approved copy
+and open on the live listing. Where this document says a row is resolved, it
+means the approved copy unless it says otherwise.
 
 Read section 1 for what changed, and 1b for the class of error this chart was
 never built to catch and therefore missed.
@@ -54,7 +62,7 @@ Legend: **Y** gated / specified · **n** not mentioned · **--** not applicable
 | 6 | Equalizer and volume boost | n | **Y** | **Y** normalized off, clamped in `PlaybackManager` | named in the unlock list | summary gap · **listing aligned 2026-08-24** |
 | 7 | Silence skipping | n | **Y** | **Y** `skipSilenceEnabled=false` | named in the unlock list, and the release notes now mark it "(new)" inside the unlock sentence | **resolved 2026-08-24** |
 | 8 | Sorts: 8 of 11 gated | n | **Y** | **all 11 FREE** as of 2026-08-15, `FreeTier.SORT_MODES` = every entry, mechanism retained | n | **code ahead of plan, deliberate** |
-| 9 | Grouping: series, author, genre | n | **Y** | **Y** `VIEW_MODES = {ALL}` | named in the unlock list | gated, ships gated, and the listing now says so · **2026-08-24** |
+| 9 | Grouping: series, author, genre | n | **Y** | **Y** `VIEW_MODES = {ALL}` | named in the unlock list | gated, ships gated · **approved copy resolved 2026-08-24, LIVE listing still open until the refresh** |
 | 10 | Archive Shelf browsing and manual restore | n | **Y** (auto-restore and deletion stay free) | **Y** `LibraryScreen` tab lock | **names browsing as a paid unlock feature**, and points at the full list | **resolved 2026-08-24** |
 | 11 | Nightwatch Dossier and share card | n | **Y** | **30-day window FREE**, longer periods gated, as of 2026-08-16 | **names the free window as permanent and the longer ones as paid** | **resolved 2026-08-24** |
 | 12 | Themes | n | **Y** NOIR free, other three gated | **NOIR + BRIGHT free** as of 2026-08-15 | AMOLED and Candlelight named in the unlock list | **code ahead of plan, deliberate** |
@@ -142,25 +150,33 @@ Rejected alternatives, for the record: share card without the Dossier screen
 (splits one feature into two half-features), and leaving it gated while dropping
 H1 (throws away the only user-distribution mechanism in the plan).
 
-Still open: the listing copy needs a period note, since the full description
-describes the Dossier without saying the long windows are an unlock feature.
+~~Still open: the listing copy needs a period note, since the full description
+describes the Dossier without saying the long windows are an unlock feature.~~
+**CLOSED 2026-08-24.** The approved copy now says the thirty-day window is
+free and never expires, and that longer retrospectives are a paid unlock
+feature, with a pointer to the full list. No copy work remains on this row.
 
 Recommend the first. The card is an acquisition asset, and gating your own
 acquisition asset behind a purchase is backwards.
 
-### 3. The two code gaps (rows 13, 14)
+### 3. The one open gate question (row 13), and one that is decided (row 14)
 
-Both are planned gates that were never built. Neither is a correctness bug and
+Both were planned gates that were never built. Neither is a correctness bug and
 neither leaks entitlement in the wrong direction, so free users currently get
 *more* than intended.
 
-- **Advanced server settings**: this one is arguably better left ungated.
-  Self-signed cert trust is how a self-hoster connects to their own box at all.
-  Gating it is close to gating access to a user's own data, which is the line
-  the paywall philosophy says not to cross.
-- **Android Auto browse gating**: worth deciding deliberately rather than by
-  omission, especially since PRs #88, #90, and #92 all touched Auto and none
-  added it.
+- **Advanced server settings (row 13), still open.** This one is arguably
+  better left ungated. Self-signed cert trust is how a self-hoster connects to
+  their own box at all. Gating it is close to gating access to a user's own
+  data, which is the line the paywall philosophy says not to cross. No formal
+  lock, and the code ships ungated with the listing silent, so nothing is
+  promised either way.
+- **~~Android Auto browse gating~~ (row 14), DECIDED 2026-08-16: never gated.**
+  This section previously called it a gap and asked for a deliberate decision.
+  That decision was made and Android Auto is free, so the absence of
+  entitlement references in `PlaybackService`, `MediaBrowseTree` and
+  `RemoteMediaAccessPolicy` is the intended end state rather than an omission.
+  Kept here rather than deleted because the old framing was cited elsewhere.
 
 ### 4. The plan doc sentence
 

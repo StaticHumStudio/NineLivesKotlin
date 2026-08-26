@@ -10,6 +10,7 @@ import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -188,9 +189,18 @@ class AudioBookRepository @Inject constructor(
             .sorted()
     }
 
-    /** Fetch all items for a library from server and save to local DB. */
-    suspend fun syncLibraryItems(libraryId: String): List<AudioBook> {
-        val remote = apiService.getLibraryItems(libraryId)
+    /**
+     * Fetch all items for a library from server and save to local DB. A
+     * partial fetch still saves what it got: some of the shelf beats none of
+     * it, and the caller keeps the failure reason for the bug report.
+     */
+    suspend fun syncLibraryItems(libraryId: String): RemoteResult<List<AudioBook>> {
+        val result = apiService.getLibraryItems(libraryId)
+        val remote = when (result) {
+            is RemoteResult.Ok -> result.value
+            is RemoteResult.Partial -> result.value
+            is RemoteResult.Failed -> return result
+        }
         if (remote.isNotEmpty()) {
             // Preserve local download info when syncing.
             // Query by book IDs (not by libraryId) so we find existing entries
@@ -201,9 +211,12 @@ class AudioBookRepository @Inject constructor(
                 mergeSyncedBook(remoteBook, localBooks[remoteBook.id])
             }
             audioBookDao.upsertAll(merged.map { it.toEntity() })
-            return merged
+            return when (result) {
+                is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
+                else -> RemoteResult.Ok(merged)
+            }
         }
-        return remote
+        return result
     }
 
     /** Fetch expanded item details from server. */

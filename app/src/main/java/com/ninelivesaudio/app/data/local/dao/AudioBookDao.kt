@@ -170,6 +170,10 @@ interface AudioBookDao {
 
     /** Count live audiobooks in a library (drives the empty-state copy, so it
      *  excludes archived books — an archive-only library reads as empty). */
+    /** Every book the app currently holds, for the bug report's stored-state line. */
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE ArchivedAt IS NULL")
+    suspend fun countAll(): Int
+
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL")
     suspend fun countByLibrary(libraryId: String): Int
 

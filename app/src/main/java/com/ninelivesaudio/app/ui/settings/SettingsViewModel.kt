@@ -1,5 +1,8 @@
 package com.ninelivesaudio.app.ui.settings
 
+import com.ninelivesaudio.app.service.describeLastSync
+import com.ninelivesaudio.app.service.atAge
+import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -1380,15 +1383,34 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun buildDiagnostics(state: UiState): String = buildString {
-        appendLine("App Version: ${getAppVersion()}")
-        appendLine("Build Type: ${BuildConfig.BUILD_TYPE}")
-        appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-        appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-        appendLine("Connection: ${state.connectionStatusText}")
-        appendLine("EQ Enabled: ${state.eqEnabled}")
-        appendLine("Auto-Rewind: ${if (state.autoRewindEnabled) "${state.autoRewindMode} (${state.autoRewindSeconds}s)" else "Off"}")
-        appendLine("Sleep Motion: ${state.sleepTimerMotionEnabled}, Shake: ${state.sleepTimerShakeResetEnabled}")
+    private suspend fun buildDiagnostics(state: UiState): String {
+        val settings = settingsManager.currentSettings
+        val lastSync = syncManager.lastSync.value.atAge(System.currentTimeMillis())
+        return renderDiagnostics(
+            DiagnosticsSnapshot(
+                appVersion = getAppVersion(),
+                buildType = BuildConfig.BUILD_TYPE,
+                device = "${Build.MANUFACTURER} ${Build.MODEL}",
+                androidVersion = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+                connection = state.connectionStatusText,
+                appMode = settings.appMode,
+                serverLibraryId = settings.selectedLibraryId,
+                localLibraryId = settings.selectedLocalLibraryId,
+                libraryCount = libraryDao.countAll(),
+                bookCount = audioBookDao.countAll(),
+                activeLibraryBookCount = settings.activeLibraryId
+                    ?.let { audioBookDao.countByLibrary(it) } ?: 0,
+                lastSync = describeLastSync(lastSync),
+                eqEnabled = state.eqEnabled,
+                autoRewind = if (state.autoRewindEnabled) {
+                    "${state.autoRewindMode} (${state.autoRewindSeconds}s)"
+                } else {
+                    "Off"
+                },
+                sleepMotion = state.sleepTimerMotionEnabled,
+                sleepShake = state.sleepTimerShakeResetEnabled,
+            )
+        )
     }
 
     private suspend fun collectLogcat(): String = withContext(Dispatchers.IO) {
@@ -1425,7 +1447,7 @@ class SettingsViewModel @Inject constructor(
 
             // Sync from server if possible (server returns ABS libraries only)
             try {
-                val serverLibs = libraryRepository.syncFromServer()
+                val serverLibs = libraryRepository.syncFromServer().valueOrEmpty()
                 if (serverLibs.isNotEmpty()) libs = serverLibs
             } catch (_: Exception) {
                 // Use cached

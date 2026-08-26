@@ -4,6 +4,10 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
+import com.ninelivesaudio.app.data.remote.RemoteResult
+import com.ninelivesaudio.app.data.remote.describeFailure
+import com.ninelivesaudio.app.data.remote.map
+import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
@@ -61,6 +65,14 @@ class SyncManager @Inject constructor(
 
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    /**
+     * What the last library sync produced. Surfaced in the bug report body so
+     * "it says it's syncing but nothing shows up" arrives with the answer
+     * attached instead of needing a code trace.
+     */
+    private val _lastSync = MutableStateFlow<SyncSnapshot?>(null)
+    internal val lastSync: StateFlow<SyncSnapshot?> = _lastSync.asStateFlow()
 
     private val _syncCompleted = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
     val syncCompleted: SharedFlow<Unit> = _syncCompleted.asSharedFlow()
@@ -195,23 +207,37 @@ class SyncManager @Inject constructor(
      * Sync libraries and their audiobooks from the server.
      */
     private suspend fun syncLibraries() {
-        try {
-            // Sync libraries
-            val libraries = libraryRepository.syncFromServer()
-            if (libraries.isEmpty()) return
-
-            // Sync audiobooks for each library
-            for (library in libraries) {
-                try {
-                    // syncLibraryItems already preserves local download state
-                    audioBookRepository.syncLibraryItems(library.id)
-                } catch (_: Exception) {
-                    // Continue with next library on failure
-                }
-            }
-        } catch (_: Exception) {
-            // Non-fatal
+        val librariesResult = try {
+            libraryRepository.syncFromServer()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            RemoteResult.Failed(describeFailure(e))
         }
+
+        // A library whose items fetch blows up must not stop the others, but
+        // it must not vanish either: every outcome lands in the report so a
+        // bug report can say which library failed and why.
+        val itemResults = librariesResult.valueOrEmpty().map { library ->
+            val result = try {
+                // syncLibraryItems already preserves local download state
+                audioBookRepository.syncLibraryItems(library.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                RemoteResult.Failed(describeFailure(e))
+            }
+            result.map { books -> books.size }
+        }
+
+        _lastSync.value = SyncSnapshot(
+            report = buildSyncReport(
+                libraries = librariesResult.map { libs -> libs.map { it.name } },
+                items = itemResults,
+                ageMinutes = null,
+            ),
+            completedAtMs = System.currentTimeMillis(),
+        )
     }
 
     /**

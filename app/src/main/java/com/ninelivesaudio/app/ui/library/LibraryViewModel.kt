@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.library
 
+import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
@@ -459,7 +460,7 @@ class LibraryViewModel @Inject constructor(
             )
         ) {
             try {
-                val serverLibs = libraryRepository.syncFromServer()
+                val serverLibs = libraryRepository.syncFromServer().valueOrEmpty()
                 if (serverLibs.isNotEmpty()) libs = serverLibs
             } catch (_: Exception) {
                 // Use cached

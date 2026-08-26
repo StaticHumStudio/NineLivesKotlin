@@ -46,6 +46,10 @@ interface LibraryDao {
     @Query("DELETE FROM Libraries WHERE Id = :id AND IsLocal = 1")
     suspend fun deleteLocalById(id: String)
 
+    /** Library count for the bug report's stored-state line. */
+    @Query("SELECT COUNT(*) FROM Libraries")
+    suspend fun countAll(): Int
+
     @Query("DELETE FROM Libraries")
     suspend fun deleteAll()
 

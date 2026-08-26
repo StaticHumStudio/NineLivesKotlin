@@ -589,41 +589,72 @@ class ApiService @Inject constructor(
 
     // ─── Libraries ───────────────────────────────────────────────────────
 
-    suspend fun getLibraries(): List<Library> = withContext(Dispatchers.IO) {
+    /**
+     * The library list. Returns [RemoteResult] rather than a list because an
+     * empty list used to mean four different things (HTTP error, empty body,
+     * thrown exception, genuinely no libraries) and a user reporting "my shelf
+     * is empty" could not be told which one they hit.
+     */
+    suspend fun getLibraries(): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
         try {
             val response = api.getLibraries()
-            if (!response.isSuccessful) return@withContext emptyList()
+            if (!response.isSuccessful) {
+                Log.w(TAG, "getLibraries: HTTP ${response.code()}")
+                return@withContext RemoteResult.Failed("HTTP ${response.code()}")
+            }
 
-            response.body()?.libraries?.map { apiLib ->
-                Library(
-                    id = apiLib.id,
-                    name = apiLib.name,
-                    displayOrder = apiLib.displayOrder,
-                    icon = apiLib.icon ?: "audiobook",
-                    mediaType = apiLib.mediaType ?: "book",
-                    folders = apiLib.folders?.map { f ->
-                        Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
-                    } ?: emptyList()
-                )
-            } ?: emptyList()
+            val body = response.body()
+            if (body == null) {
+                Log.w(TAG, "getLibraries: successful response with no body")
+                return@withContext RemoteResult.Failed("empty body")
+            }
+
+            RemoteResult.Ok(
+                body.libraries.map { apiLib ->
+                    Library(
+                        id = apiLib.id,
+                        name = apiLib.name,
+                        displayOrder = apiLib.displayOrder,
+                        icon = apiLib.icon ?: "audiobook",
+                        mediaType = apiLib.mediaType ?: "book",
+                        folders = apiLib.folders?.map { f ->
+                            Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
+                        } ?: emptyList()
+                    )
+                }
+            )
         } catch (e: Exception) {
-            emptyList()
+            Log.w(TAG, "getLibraries failed", e)
+            RemoteResult.Failed(describeFailure(e))
         }
     }
 
     // ─── Library Items (Paginated batch load) ────────────────────────────
 
-    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): List<AudioBook> =
+    /**
+     * Every item in a library, paginated. A page that fails part-way through
+     * yields [RemoteResult.Partial]: the books already fetched are still worth
+     * showing, but the caller has to know the shelf stopped short rather than
+     * ended.
+     */
+    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
         withContext(Dispatchers.IO) {
-            try {
-                val allItems = mutableListOf<AudioBook>()
-                var currentPage = 0
+            val allItems = mutableListOf<AudioBook>()
+            var currentPage = 0
 
+            try {
                 while (true) {
                     val response = api.getLibraryItems(libraryId, limit, currentPage)
-                    if (!response.isSuccessful) break
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $currentPage")
+                        return@withContext stoppedShort(allItems, "page $currentPage: HTTP ${response.code()}")
+                    }
 
-                    val body = response.body() ?: break
+                    val body = response.body()
+                    if (body == null) {
+                        Log.w(TAG, "getLibraryItems($libraryId): no body at page $currentPage")
+                        return@withContext stoppedShort(allItems, "page $currentPage: empty body")
+                    }
                     if (body.results.isEmpty()) break
 
                     allItems.addAll(body.results.map { mapToAudioBook(it, libraryId) })
@@ -636,9 +667,10 @@ class ApiService @Inject constructor(
                     currentPage++
                 }
 
-                allItems
+                RemoteResult.Ok(allItems.toList())
             } catch (e: Exception) {
-                emptyList()
+                Log.w(TAG, "getLibraryItems($libraryId) failed at page $currentPage", e)
+                stoppedShort(allItems, "page $currentPage: ${describeFailure(e)}")
             }
         }
 

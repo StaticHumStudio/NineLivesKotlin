@@ -49,13 +49,52 @@ internal data class TrialReminderPlan(
     }
 }
 
-internal suspend fun shouldPostTrialReminder(
-    refreshPlayOwnership: suspend () -> Boolean,
-    currentState: suspend () -> EntitlementState,
-): Boolean {
-    if (!refreshPlayOwnership()) return false
-    return currentState().source == EntitlementSource.TRIAL
+/** What the one-shot trial reminder worker should do with this run. */
+internal enum class TrialReminderDecision {
+    /** A fresh refresh confirms an active trial. Show the notification. */
+    POST,
+
+    /**
+     * A completed answer says not to post: ownership isn't a trial, or the
+     * refresh itself failed. Either way this run is done for good.
+     */
+    SKIP,
+
+    /**
+     * The refresh could not even run because the sequencer was busy with
+     * another one. This run learned nothing, so it must not consume the
+     * one-shot reminder. The worker should retry.
+     */
+    RETRY,
 }
+
+/** How many attempts the busy-sequencer path may burn before giving up. */
+internal const val MAX_BUSY_REMINDER_RETRIES = 5
+
+internal suspend fun trialReminderDecision(
+    refreshPlayOwnership: suspend () -> RefreshPurchasesResult,
+    currentState: suspend () -> EntitlementState,
+): TrialReminderDecision = when (refreshPlayOwnership()) {
+    RefreshPurchasesResult.BUSY -> TrialReminderDecision.RETRY
+    RefreshPurchasesResult.FAILED -> TrialReminderDecision.SKIP
+    RefreshPurchasesResult.SUCCEEDED ->
+        if (currentState().source == EntitlementSource.TRIAL) {
+            TrialReminderDecision.POST
+        } else {
+            TrialReminderDecision.SKIP
+        }
+}
+
+/**
+ * Whether WorkManager should retry this attempt.
+ *
+ * Only [TrialReminderDecision.RETRY] is ever retryable, and even that gives up
+ * past [MAX_BUSY_REMINDER_RETRIES] rather than retrying for the life of the
+ * install. A genuine failure ([TrialReminderDecision.SKIP]) is a completed
+ * answer and never retries, at any attempt count.
+ */
+internal fun shouldRetry(decision: TrialReminderDecision, runAttemptCount: Int): Boolean =
+    decision == TrialReminderDecision.RETRY && runAttemptCount < MAX_BUSY_REMINDER_RETRIES
 
 internal class WorkManagerTrialReminderScheduler @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -114,18 +153,26 @@ class TrialReminderWorker(
         // If Play cannot answer, skip this best-effort reminder.
         val billing = deps.billingManager()
         val entitlements = deps.entitlementRepository()
-        if (shouldPostTrialReminder(
-                refreshPlayOwnership = { billing.refreshPurchases() },
-                currentState = {
-                    billing.afterPendingEntitlementUpdates {
-                        entitlements.current
-                    }
-                },
-            )
-        ) {
-            TrialNotifications.show(applicationContext)
+        val decision = trialReminderDecision(
+            refreshPlayOwnership = { billing.refreshPurchases() },
+            currentState = {
+                billing.afterPendingEntitlementUpdates {
+                    entitlements.current
+                }
+            },
+        )
+
+        return when {
+            decision == TrialReminderDecision.POST -> {
+                TrialNotifications.show(applicationContext)
+                Result.success()
+            }
+            // A busy sequencer answered nothing, so this run must not consume
+            // the one-shot reminder. Retry with WorkManager's own backoff,
+            // capped so a sequencer that never clears cannot retry forever.
+            shouldRetry(decision, runAttemptCount) -> Result.retry()
+            else -> Result.success()
         }
-        return Result.success()
     }
 }
 

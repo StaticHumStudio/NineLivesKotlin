@@ -44,6 +44,25 @@ import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** What asking Play for current ownership actually produced. */
+internal enum class RefreshPurchasesResult {
+    /** A query ran to completion with an OK response and was applied. */
+    SUCCEEDED,
+
+    /**
+     * No query ran at all: another refresh already held the sequencer.
+     *
+     * Distinct from [FAILED] on purpose. A caller that only cares whether it
+     * can trust the current entitlement treats the two the same, but a caller
+     * deciding whether to try again later, such as the trial reminder worker,
+     * cannot: this is not an answer, so it is retryable, and [FAILED] is.
+     */
+    BUSY,
+
+    /** A query ran and did not come back OK, or timed out. A completed answer. */
+    FAILED,
+}
+
 /**
  * Orders entitlement writes from refreshes and purchase callbacks.
  *
@@ -229,8 +248,14 @@ class BillingManager @Inject constructor(
      * same answer, and since this fires on every foreground, waiting on a lock
      * held across a slow network call would let app-switching pile up refreshes
      * that all land at once with nothing new to say.
+     *
+     * The three outcomes are deliberately not collapsed into one boolean. A
+     * skipped-because-busy refresh and a completed-but-failed refresh look the
+     * same to most callers, who only care whether current entitlement can be
+     * trusted, but they are not the same to a caller that might retry: busy
+     * means try again, failed means this attempt is done.
      */
-    suspend fun refreshPurchases(): Boolean {
+    internal suspend fun refreshPurchases(): RefreshPurchasesResult {
         val result = entitlementSequencer.runRefreshIfIdle {
             // Bounded on purpose. The Billing KTX helpers suspend until Play
             // invokes their callback, and nothing guarantees it ever does. Without
@@ -247,9 +272,9 @@ class BillingManager @Inject constructor(
         }
         if (result == null) {
             Log.d(TAG, "refresh already in flight, skipping")
-            return false
+            return RefreshPurchasesResult.BUSY
         }
-        return result
+        return if (result) RefreshPurchasesResult.SUCCEEDED else RefreshPurchasesResult.FAILED
     }
 
     internal suspend fun <T> afterPendingEntitlementUpdates(

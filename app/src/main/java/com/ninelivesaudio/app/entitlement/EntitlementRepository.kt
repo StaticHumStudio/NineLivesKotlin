@@ -20,6 +20,17 @@ internal interface DurableEntitlementStore {
     val trialStartedAtEpochMs: Long?
     val trialConsumed: Boolean
     fun consumeTrial(startedAtEpochMs: Long): Boolean
+
+    /**
+     * Advance the persisted trial clock high-water mark to at least
+     * [nowEpochMs] and return the resulting mark, or null if no trial has ever
+     * started.
+     *
+     * Only ever moves forward. This is what makes rolling the device clock
+     * back after a trial has already been observed to expire a no-op: the mark
+     * keeps standing at the latest time this install ever legitimately saw.
+     */
+    fun advanceTrialWatermark(nowEpochMs: Long): Long?
 }
 
 internal interface PlayEntitlementCache {
@@ -215,6 +226,11 @@ class EntitlementRepository internal constructor(
         trialStartedAtEpochMs = prefs.trialStartedAtEpochMs,
         trialConsumed = prefs.trialConsumed,
         nowEpochMs = now,
+        // Advancing here, on every resolution, is what feeds TrialPolicy a mark
+        // that has actually seen this device's clock. A call site that only
+        // read the mark without advancing it would let a trial evaluated once
+        // right after a rollback, then never again, dodge detection forever.
+        trialLatestSeenEpochMs = prefs.advanceTrialWatermark(now),
     )
 
     private companion object {

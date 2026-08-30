@@ -265,6 +265,80 @@ class EntitlementRepositoryTest {
         assertEquals(refundTransition, trialTransition)
     }
 
+    // ─── High-water mark (clock rollback resistance) ──────────────────────────
+
+    @Test
+    fun `rolling the clock back after the repository has seen the trial expire keeps it free`() =
+        runBlocking {
+            val durable = FakeDurableEntitlementStore()
+            var now = start
+            val repository = repository(
+                durable,
+                FakePlayEntitlementCache(),
+                FakeTrialReminderScheduler(),
+            ) { now }
+            assertTrue(repository.startTrial())
+
+            // Live past expiry and let the repository observe it.
+            now = start + TimeUnit.DAYS.toMillis(14)
+            repository.refresh()
+            assertTrue(repository.current.isFree)
+
+            // Wind the device clock back to well inside the original window.
+            now = start + TimeUnit.DAYS.toMillis(1)
+            repository.refresh()
+
+            assertTrue(repository.current.isFree)
+            assertNull(repository.current.source)
+        }
+
+    @Test
+    fun `a pre-trial future clock reading does not poison a later legitimate trial`() =
+        runBlocking {
+            val durable = FakeDurableEntitlementStore()
+            // The device clock is badly wrong, years ahead, before any trial
+            // has ever started. Ordinary resolutions (app opens, refreshes)
+            // observe this bogus time while there is nothing to poison yet.
+            var now = start + TimeUnit.DAYS.toMillis(3_650)
+            val repository = repository(
+                durable,
+                FakePlayEntitlementCache(),
+                FakeTrialReminderScheduler(),
+            ) { now }
+            repository.refresh()
+            assertNull(durable.trialLatestSeenEpochMs)
+
+            // The clock gets corrected, and only now does the user start a
+            // real trial.
+            now = start
+            assertTrue(repository.startTrial())
+
+            assertEquals(14, repository.current.trialDaysRemaining)
+            assertEquals(start, durable.trialLatestSeenEpochMs)
+        }
+
+    @Test
+    fun `the persisted watermark advances forward and never regresses on a clock rollback`() =
+        runBlocking {
+            val durable = FakeDurableEntitlementStore()
+            var now = start
+            val repository = repository(
+                durable,
+                FakePlayEntitlementCache(),
+                FakeTrialReminderScheduler(),
+            ) { now }
+            assertTrue(repository.startTrial())
+            assertEquals(start, durable.trialLatestSeenEpochMs)
+
+            now = start + TimeUnit.DAYS.toMillis(5)
+            repository.refresh()
+            assertEquals(start + TimeUnit.DAYS.toMillis(5), durable.trialLatestSeenEpochMs)
+
+            now = start + TimeUnit.DAYS.toMillis(1)
+            repository.refresh()
+            assertEquals(start + TimeUnit.DAYS.toMillis(5), durable.trialLatestSeenEpochMs)
+        }
+
     private fun repository(
         durable: DurableEntitlementStore,
         cache: PlayEntitlementCache,
@@ -292,13 +366,26 @@ private class FakeDurableEntitlementStore(
     private val commitSucceeds: Boolean = true,
 ) : DurableEntitlementStore {
     var consumeCalls = 0
+    var trialLatestSeenEpochMs: Long? = null
+        private set
 
     override fun consumeTrial(startedAtEpochMs: Long): Boolean {
         consumeCalls += 1
         if (!commitSucceeds) return false
         trialConsumed = true
         trialStartedAtEpochMs = startedAtEpochMs
+        // Mirrors EntitlementPrefs: seeded at the trial's own start, never at
+        // whatever the device clock read before the trial existed.
+        trialLatestSeenEpochMs = startedAtEpochMs
         return true
+    }
+
+    override fun advanceTrialWatermark(nowEpochMs: Long): Long? {
+        val startedAt = trialStartedAtEpochMs ?: return null
+        val current = trialLatestSeenEpochMs ?: startedAt
+        val advanced = maxOf(current, nowEpochMs)
+        trialLatestSeenEpochMs = advanced
+        return advanced
     }
 }
 

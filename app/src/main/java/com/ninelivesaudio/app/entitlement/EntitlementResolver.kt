@@ -27,6 +27,10 @@ object EntitlementResolver {
      *   trial action, or null if no start was ever recorded.
      * @param trialConsumed the backed-up one-time consumption latch.
      * @param nowEpochMs the wall-clock input used only by [TrialPolicy].
+     * @param trialLatestSeenEpochMs the persisted high-water mark of every
+     *   clock reading ever observed for this trial, or null if no trial has
+     *   ever started. Defends [TrialPolicy] against a clock rolled back after
+     *   the trial was already seen to expire.
      */
     fun resolve(
         legacyPaid: Boolean,
@@ -36,6 +40,7 @@ object EntitlementResolver {
         trialStartedAtEpochMs: Long? = null,
         trialConsumed: Boolean = false,
         nowEpochMs: Long = 0L,
+        trialLatestSeenEpochMs: Long? = null,
     ): EntitlementState = when {
         debugForceEntitled -> EntitlementState(true, EntitlementSource.DEBUG)
 
@@ -46,7 +51,7 @@ object EntitlementResolver {
 
         legacyPaid && !forceFree -> EntitlementState(true, EntitlementSource.LEGACY_PAID)
 
-        trialConsumed -> TrialPolicy.evaluate(nowEpochMs, trialStartedAtEpochMs)
+        trialConsumed -> TrialPolicy.evaluate(nowEpochMs, trialStartedAtEpochMs, trialLatestSeenEpochMs)
             ?.let { active ->
                 EntitlementState(
                     isUnlocked = true,

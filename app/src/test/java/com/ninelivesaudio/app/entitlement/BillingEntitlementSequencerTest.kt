@@ -71,12 +71,12 @@ class BillingEntitlementSequencerTest {
             )
 
             val workerDecision = async(start = CoroutineStart.UNDISPATCHED) {
-                val playOwnershipResolved = sequencer.runRefreshIfIdle {
+                val refreshResult = sequencer.runRefreshIfIdle {
                     finishWorkerRefresh.await()
                     true
-                } ?: false
-                shouldPostTrialReminder(
-                    refreshPlayOwnership = { playOwnershipResolved },
+                }?.let { RefreshPurchasesResult.SUCCEEDED } ?: RefreshPurchasesResult.BUSY
+                trialReminderDecision(
+                    refreshPlayOwnership = { refreshResult },
                     currentState = {
                         sequencer.runAfterPendingUpdates { current }
                     },
@@ -93,7 +93,7 @@ class BillingEntitlementSequencerTest {
             yield()
             delayedDispatcher.runAll()
 
-            assertFalse(workerDecision.await())
+            assertEquals(TrialReminderDecision.SKIP, workerDecision.await())
             purchaseGrant.join()
             callbackJob.cancel()
         }

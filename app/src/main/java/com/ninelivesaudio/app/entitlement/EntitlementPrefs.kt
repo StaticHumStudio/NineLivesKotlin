@@ -83,6 +83,11 @@ class EntitlementPrefs @Inject constructor(
         return prefs.edit()
             .putLong(KEY_TRIAL_STARTED_AT, startedAtEpochMs)
             .putBoolean(KEY_TRIAL_CONSUMED, true)
+            // The watermark starts at the trial's own clock, not at whatever
+            // this device's clock happened to read before the trial existed.
+            // A stray future reading from before the tap must never poison a
+            // trial that has not started yet.
+            .putLong(KEY_TRIAL_LATEST_SEEN, startedAtEpochMs)
             // Restoring a pre-trial backup, or reinstalling without a restore,
             // can re-arm this local trial. Enforcing lifetime-once would require
             // phoning home. The studio accepts that loss at this price point.
@@ -91,10 +96,36 @@ class EntitlementPrefs @Inject constructor(
             .commit()
     }
 
+    /**
+     * Advance the trial clock high-water mark to at least [nowEpochMs].
+     *
+     * Only writes when the mark actually moves forward, so an attempted
+     * rollback (or ordinary re-resolution at an unchanged time) costs no disk
+     * write. Synchronous like [consumeTrial]: a lost async write here would
+     * reopen exactly the rollback window this mark exists to close.
+     */
+    override fun advanceTrialWatermark(nowEpochMs: Long): Long? {
+        val startedAt = trialStartedAtEpochMs ?: return null
+        val current = if (prefs.contains(KEY_TRIAL_LATEST_SEEN)) {
+            prefs.getLong(KEY_TRIAL_LATEST_SEEN, startedAt)
+        } else {
+            // A trial started before this field existed. Fall back to its own
+            // start rather than to now, for the same reason consumeTrial seeds
+            // the mark at start: now could itself be a stray future reading.
+            startedAt
+        }
+        val advanced = maxOf(current, nowEpochMs)
+        if (advanced != current) {
+            prefs.edit().putLong(KEY_TRIAL_LATEST_SEEN, advanced).commit()
+        }
+        return advanced
+    }
+
     companion object {
         const val FILE_NAME = "nine_lives_entitlement"
         const val KEY_LEGACY_PAID = "legacy_paid"
         const val KEY_TRIAL_STARTED_AT = "trial_started_at_epoch_ms"
         const val KEY_TRIAL_CONSUMED = "trial_consumed"
+        const val KEY_TRIAL_LATEST_SEEN = "trial_latest_seen_epoch_ms"
     }
 }

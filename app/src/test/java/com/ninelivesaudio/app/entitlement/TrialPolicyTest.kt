@@ -75,4 +75,66 @@ class TrialPolicyTest {
 
         assertNull(TrialPolicy.evaluate(start, futureStart))
     }
+
+    // ─── High-water mark (clock rollback resistance) ──────────────────────────
+
+    @Test
+    fun `a clock rollback inside the trial window cannot revive an expired trial`() {
+        // The trial was already observed to reach its expiry boundary...
+        val latestSeen = start + TimeUnit.DAYS.toMillis(14)
+        // ...then the device clock gets set back to day one, well inside the
+        // original 14-day window.
+        val rolledBackNow = start + TimeUnit.DAYS.toMillis(1)
+
+        assertNull(TrialPolicy.evaluate(rolledBackNow, start, latestSeen))
+    }
+
+    @Test
+    fun `a clock rollback past the boundary stays expired no matter how far back it goes`() {
+        val latestSeen = start + TimeUnit.DAYS.toMillis(20)
+        val rolledBackNow = start - TimeUnit.DAYS.toMillis(365)
+
+        assertNull(TrialPolicy.evaluate(rolledBackNow, start, latestSeen))
+    }
+
+    @Test
+    fun `ordinary forward clock movement is unaffected by the high-water mark`() {
+        val now = start + TimeUnit.DAYS.toMillis(5)
+
+        val withMark = TrialPolicy.evaluate(now, start, latestSeenEpochMs = start)
+        val withoutMark = TrialPolicy.evaluate(now, start, latestSeenEpochMs = null)
+
+        assertEquals(withoutMark, withMark)
+        assertEquals(9, withMark?.daysRemaining)
+    }
+
+    @Test
+    fun `the high-water mark can only push the effective clock forward, never back`() {
+        val now = start + TimeUnit.DAYS.toMillis(5)
+        val laterMark = start + TimeUnit.DAYS.toMillis(10)
+        val earlierMark = start + TimeUnit.DAYS.toMillis(2)
+
+        // A mark ahead of now wins: evaluating with (now, mark=later) matches
+        // evaluating as if now had actually reached the mark.
+        assertEquals(
+            TrialPolicy.evaluate(laterMark, start)?.daysRemaining,
+            TrialPolicy.evaluate(now, start, laterMark)?.daysRemaining,
+        )
+        // A mark behind now never pulls the effective clock backward: it changes
+        // nothing versus not having a mark at all.
+        assertEquals(
+            TrialPolicy.evaluate(now, start)?.daysRemaining,
+            TrialPolicy.evaluate(now, start, earlierMark)?.daysRemaining,
+        )
+    }
+
+    @Test
+    fun `the future-start tolerance still checks the raw clock, not the watermark`() {
+        // A stale high-water mark sitting far in the future must not be used to
+        // wave through a start that the raw clock says is implausible.
+        val futureStart = start + TimeUnit.HOURS.toMillis(1)
+        val staleMark = start + TimeUnit.DAYS.toMillis(365)
+
+        assertNull(TrialPolicy.evaluate(start, futureStart, staleMark))
+    }
 }

@@ -2,6 +2,8 @@ package com.ninelivesaudio.app.ui.settings
 
 import com.ninelivesaudio.app.service.describeLastSync
 import com.ninelivesaudio.app.service.atAge
+import com.ninelivesaudio.app.service.lastSyncForCurrentServer
+import com.ninelivesaudio.app.service.SyncAttempt
 import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import android.content.Context
 import android.content.Intent
@@ -21,7 +23,9 @@ import com.ninelivesaudio.app.data.remote.TokenValidationResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
@@ -1254,8 +1258,19 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(errorMessage = null, successMessage = null) }
             try {
-                syncManager.syncNow()
-                _uiState.update { it.copy(successMessage = "Sync completed successfully") }
+                val attempt = syncManager.syncNow()
+                // syncNow() doesn't throw for a failed remote result. It
+                // records the failure in LastSyncRecord instead, so read
+                // that record rather than assuming a clean return means
+                // success. And when the attempt itself was skipped (another
+                // sync already running, or the gate wasn't ready), that
+                // record may belong to an earlier attempt entirely, not this
+                // tap, so lastSyncForCurrentServer() is only consulted for a
+                // real RAN attempt (see syncNowOutcome).
+                val outcome = syncNowOutcome(attempt, settingsManager.currentSettings.lastSyncForCurrentServer())
+                _uiState.update {
+                    it.copy(successMessage = outcome.successMessage, errorMessage = outcome.errorMessage)
+                }
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = "Sync failed: ${e.message}") }
             }
@@ -1544,6 +1559,55 @@ internal suspend fun dispatchStoredValidation(
  * inside authUiOperationMutex so Connect/Disconnect/Refresh stay mutually
  * exclusive for these two steps.
  */
+/** The two banner fields syncNow() writes into UiState once a sync attempt returns. */
+internal data class SyncNowOutcome(val successMessage: String?, val errorMessage: String?)
+
+/**
+ * SyncManager.syncNow() never throws for a failed remote fetch. The failure
+ * is recorded as data in [LastSyncRecord], not surfaced as an exception. A
+ * clean return from syncNow() is therefore not proof of success: the caller
+ * has to read the record it just wrote and report what actually happened, or
+ * an HTTP 500 on /libraries shows up in diagnostics as FAILED while the
+ * screen says "Sync completed successfully."
+ *
+ * [attempt] being anything other than [SyncAttempt.RAN] means syncNow()
+ * returned without doing any work at all (its own gate failed, or another
+ * sync already held the mutex). [record] is then whatever was already there
+ * from some earlier attempt, so it must not be read as this call's result: a
+ * background sync in progress plus a manual "Sync Now" tap used to read that
+ * stale record and report a false "Sync completed successfully."
+ *
+ * [record] being null while [attempt] is [SyncAttempt.RAN] (no sync has ever
+ * completed, e.g. right after a fresh install) keeps the prior best-effort
+ * "success" message rather than inventing a new failure state for a case
+ * outside this fix's scope.
+ */
+internal fun syncNowOutcome(attempt: SyncAttempt, record: LastSyncRecord?): SyncNowOutcome = when (attempt) {
+    SyncAttempt.SKIPPED_BUSY -> SyncNowOutcome(
+        successMessage = null,
+        errorMessage = "Sync already in progress. Try again in a moment.",
+    )
+    SyncAttempt.SKIPPED_NOT_READY -> SyncNowOutcome(
+        successMessage = null,
+        errorMessage = "Sync did not run. Check your connection and try again.",
+    )
+    SyncAttempt.DISCARDED_SERVER_CHANGED -> SyncNowOutcome(
+        successMessage = null,
+        errorMessage = "The server changed while syncing. Sync again to refresh the new server.",
+    )
+    SyncAttempt.RAN -> when (record?.result) {
+        null, SyncResult.SUCCESS -> SyncNowOutcome(successMessage = "Sync completed successfully", errorMessage = null)
+        SyncResult.PARTIAL -> SyncNowOutcome(
+            successMessage = null,
+            errorMessage = "Sync finished incomplete" + (record.failure?.let { ": $it" } ?: ""),
+        )
+        SyncResult.FAILED -> SyncNowOutcome(
+            successMessage = null,
+            errorMessage = "Sync failed" + (record.failure?.let { ": $it" } ?: ""),
+        )
+    }
+}
+
 internal suspend fun activateSessionAfterLogin(
     activateAudiobookshelf: suspend () -> Unit,
     loadLibraries: suspend () -> Unit,

@@ -596,17 +596,21 @@ class ApiService @Inject constructor(
      * is empty" could not be told which one they hit.
      */
     suspend fun getLibraries(): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
-        try {
+        // remoteResultCatching lets CancellationException escape uncaught
+        // (see its kdoc). A plain `catch (e: Exception)` here would turn a
+        // stopped sync into a persisted failure instead of a silently
+        // cancelled request.
+        remoteResultCatching(onFailure = { Log.w(TAG, "getLibraries failed", it) }) {
             val response = api.getLibraries()
             if (!response.isSuccessful) {
                 Log.w(TAG, "getLibraries: HTTP ${response.code()}")
-                return@withContext RemoteResult.Failed("HTTP ${response.code()}")
+                return@remoteResultCatching RemoteResult.Failed("HTTP ${response.code()}")
             }
 
             val body = response.body()
             if (body == null) {
                 Log.w(TAG, "getLibraries: successful response with no body")
-                return@withContext RemoteResult.Failed("empty body")
+                return@remoteResultCatching RemoteResult.Failed("empty body")
             }
 
             RemoteResult.Ok(
@@ -623,9 +627,6 @@ class ApiService @Inject constructor(
                     )
                 }
             )
-        } catch (e: Exception) {
-            Log.w(TAG, "getLibraries failed", e)
-            RemoteResult.Failed(describeFailure(e))
         }
     }
 
@@ -668,6 +669,12 @@ class ApiService @Inject constructor(
                 }
 
                 RemoteResult.Ok(allItems.toList())
+            } catch (e: CancellationException) {
+                // Cancellation must escape uncaught. Converting it to a
+                // stoppedShort() result here would persist FAILED/PARTIAL
+                // (and flash a failure banner) for a deliberately cancelled
+                // sync instead of letting structured concurrency unwind.
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "getLibraryItems($libraryId) failed at page $currentPage", e)
                 stoppedShort(allItems, "page $currentPage: ${describeFailure(e)}")

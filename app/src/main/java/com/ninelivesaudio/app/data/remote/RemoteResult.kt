@@ -1,5 +1,7 @@
 package com.ninelivesaudio.app.data.remote
 
+import kotlinx.coroutines.CancellationException
+
 /**
  * A remote call that either produced a value or failed for a nameable reason.
  * Introduced because every library fetch used to collapse timeouts, HTTP
@@ -35,6 +37,26 @@ internal fun <T> stoppedShort(fetched: List<T>, reason: String): RemoteResult<Li
     if (fetched.isEmpty()) RemoteResult.Failed(reason) else RemoteResult.Partial(fetched.toList(), reason)
 
 private const val MAX_FAILURE_REASON = 120
+
+/**
+ * Runs [call] and turns a thrown failure into [RemoteResult.Failed].
+ * Cancellation must escape uncaught: a plain `catch (e: Exception)` also
+ * catches [CancellationException] (it is a RuntimeException subtype), which
+ * turned a deliberately stopped sync into a persisted FAILED/PARTIAL result
+ * and a failure banner instead of a silently cancelled request.
+ */
+internal suspend fun <T> remoteResultCatching(
+    onFailure: (Exception) -> Unit = {},
+    call: suspend () -> RemoteResult<T>,
+): RemoteResult<T> =
+    try {
+        call()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        onFailure(e)
+        RemoteResult.Failed(describeFailure(e))
+    }
 
 internal fun <T, R> RemoteResult<T>.map(transform: (T) -> R): RemoteResult<R> = when (this) {
     is RemoteResult.Ok -> RemoteResult.Ok(transform(value))

@@ -153,8 +153,14 @@ class SyncManager @Inject constructor(
     /**
      * Execute a full sync: libraries + audiobooks + progress.
      * Thread-safe via Mutex.
+     *
+     * Returns whether it actually attempted a sync. Callers that report the
+     * outcome to the user (Settings' manual "Sync Now") must not treat a
+     * [SyncAttempt.SKIPPED] return as success: nothing ran, so whatever
+     * [SettingsManager.currentSettings].lastSync happens to hold is a leftover
+     * from some earlier attempt, not this one's result.
      */
-    suspend fun syncNow() {
+    internal suspend fun syncNow(): SyncAttempt {
         val settingsAtStart = settingsManager.currentSettings
         val serverUrlAtStart = settingsAtStart.serverUrl
         // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a network.
@@ -163,7 +169,7 @@ class SyncManager @Inject constructor(
                 isLocalMode = settingsAtStart.appMode == AppMode.LOCAL,
                 hasAuth = hasAuthToken(),
             )
-        ) return
+        ) return SyncAttempt.SKIPPED_NOT_READY
 
         // Actually reach the server before committing to a sync. A live VPN
         // interface (e.g. Tailscale) keeps isOnline=true with no real connectivity,
@@ -175,14 +181,17 @@ class SyncManager @Inject constructor(
         // no LastSyncRecord at all, indistinguishable from never having
         // synced.
         if (!connectivityMonitor.checkServerReachable()) {
+            var recorded = false
             settingsManager.updateSettings {
-                it.withLastSyncIfServerUnchanged(
+                val updated = it.withLastSyncIfServerUnchanged(
                     report = unreachableServerSyncReport(),
                     completedAtMs = System.currentTimeMillis(),
                     serverUrlAtStart = serverUrlAtStart,
                 )
+                recorded = updated !== it
+                updated
             }
-            return
+            return if (recorded) SyncAttempt.RAN else SyncAttempt.DISCARDED_SERVER_CHANGED
         }
         // The probe took real time. Re-check eligibility so a mode switch or
         // sign-out that landed mid-probe does not start a sync that should no
@@ -192,10 +201,12 @@ class SyncManager @Inject constructor(
                 isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
                 hasAuth = hasAuthToken(),
             )
-        ) return
+        ) return SyncAttempt.SKIPPED_NOT_READY
 
-        // Prevent concurrent syncs
-        if (!syncMutex.tryLock()) return
+        // Prevent concurrent syncs. A caller reporting this outcome to the
+        // user must not read the mutex owner's eventual record as its own:
+        // that record belongs to whichever sync got there first.
+        if (!syncMutex.tryLock()) return SyncAttempt.SKIPPED_BUSY
 
         try {
             _isSyncing.value = true
@@ -204,9 +215,10 @@ class SyncManager @Inject constructor(
             // Progress sync FIRST — this populates the home screen grid immediately.
             // Library sync runs after (heavier, fetches all book metadata).
             syncProgress()
-            syncLibraries(serverUrlAtStart)
+            val recorded = syncLibraries(serverUrlAtStart)
 
             _syncCompleted.tryEmit(Unit)
+            return if (recorded) SyncAttempt.RAN else SyncAttempt.DISCARDED_SERVER_CHANGED
         } catch (e: CancellationException) {
             // Don't swallow cancellation — let structured concurrency unwind.
             throw e
@@ -217,21 +229,28 @@ class SyncManager @Inject constructor(
             connectivityMonitor.setSyncing(false)
             syncMutex.unlock()
         }
+        return SyncAttempt.RAN
     }
 
     /**
      * Sync libraries and their audiobooks from the server.
+     * Returns whether the resulting record was persisted, which it is not
+     * when the configured server changed while the sync was in flight.
      */
-    private suspend fun syncLibraries(serverUrlAtStart: String) {
+    private suspend fun syncLibraries(serverUrlAtStart: String): Boolean {
         val report = fetchLibrarySyncReport(
             fetchLibraries = libraryRepository::syncFromServer,
             // syncLibraryItems already preserves local download state.
             fetchItems = { library -> audioBookRepository.syncLibraryItems(library.id) },
         )
         val completedAtMs = System.currentTimeMillis()
+        var recorded = false
         settingsManager.updateSettings {
-            it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
+            val updated = it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
+            recorded = updated !== it
+            updated
         }
+        return recorded
     }
 
     /**
@@ -522,6 +541,31 @@ internal fun shouldRunSync(
     isLocalMode: Boolean,
     hasAuth: Boolean,
 ): Boolean = isOnline && !isLocalMode && hasAuth
+
+/**
+ * What syncNow() actually did. [SKIPPED_NOT_READY] and [SKIPPED_BUSY] both
+ * mean no sync ran this call: nothing was fetched and no [LastSyncRecord] was
+ * written on this attempt's behalf. A caller that reports the outcome to the
+ * user must treat either skip as its own outcome, not read whatever record
+ * happens to already be there and call that a result.
+ */
+internal enum class SyncAttempt {
+    /** The gate failed: offline, LOCAL mode, or no auth token. */
+    SKIPPED_NOT_READY,
+
+    /** Another sync already held the mutex. */
+    SKIPPED_BUSY,
+
+    /** A sync actually ran (including the reachability-probe-failure path, which records FAILED). */
+    RAN,
+
+    /**
+     * A sync ran but the configured server changed before it finished, so
+     * its record was refused. The record now stored, if any, belongs to the
+     * new server and is not this attempt's result.
+     */
+    DISCARDED_SERVER_CHANGED,
+}
 
 internal data class PlaybackThrottleSnapshot(
     val lastSyncedTime: Double = 0.0,

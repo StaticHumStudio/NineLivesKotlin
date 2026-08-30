@@ -6,7 +6,7 @@
     <string name="trial_reminder_title_today">Your trial ends soon</string>
     <string name="trial_reminder_body_today">Your Nine Lives trial ends in less than a day. This is the only reminder.</string>
     <string name="trial_reminder_title_one">One day remains</string>
-    <string name="trial_reminder_body_one">Your Nine Lives trial ends tomorrow. This is the only reminder.</string>
+    <string name="trial_reminder_body_one">Your Nine Lives trial ends in about a day. This is the only reminder.</string>
     <string name="trial_reminder_title_many">%1$d days remain</string>
     <string name="trial_reminder_body_many">Your Nine Lives trial ends in %1$d days. This is the only reminder.</string>
     <string name="crash_dialog_text">Nine Lives hit something unexpected. Send a crash report to help us fix it?</string>

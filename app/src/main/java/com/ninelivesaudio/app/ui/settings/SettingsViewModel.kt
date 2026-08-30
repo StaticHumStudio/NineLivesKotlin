@@ -414,13 +414,24 @@ class SettingsViewModel @Inject constructor(
                 val msg = "${scanResult.books.size} books imported" +
                     if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
 
+                // A clean scan (no errors) that still found nothing needs an explanation,
+                // not a cheerful zero. Everything else about the import/archive flow runs
+                // the same either way.
+                val emptyScanMessage = if (scanResult.books.isEmpty() && scanResult.errorMessages.isEmpty()) {
+                    "No books found in ${scanResult.foldersScanned} folders. Nine Lives looks " +
+                        "for folders with audio files inside. Check the folder layout guide in Settings."
+                } else {
+                    null
+                }
+
                 _uiState.update {
                     it.copy(
                         isScanning = false,
                         lastScanMessage = msg,
                         selectedLocalLibrary = library,
                         inaccessibleLocalLibraryIds = it.inaccessibleLocalLibraryIds - library.id,
-                        successMessage = msg,
+                        successMessage = if (emptyScanMessage != null) null else msg,
+                        errorMessage = emptyScanMessage,
                     )
                 }
             } catch (e: Exception) {
@@ -454,11 +465,22 @@ class SettingsViewModel @Inject constructor(
                 val msg = "${scanResult.books.size} books found" +
                     if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
 
+                // A clean scan (no errors) that still found nothing needs an explanation,
+                // not a cheerful zero. Everything else about the import/archive flow runs
+                // the same either way.
+                val emptyScanMessage = if (scanResult.books.isEmpty() && scanResult.errorMessages.isEmpty()) {
+                    "No books found in ${scanResult.foldersScanned} folders. Nine Lives looks " +
+                        "for folders with audio files inside. Check the folder layout guide in Settings."
+                } else {
+                    null
+                }
+
                 _uiState.update {
                     it.copy(
                         isScanning = false,
                         lastScanMessage = msg,
-                        successMessage = "Rescan complete: $msg",
+                        successMessage = if (emptyScanMessage != null) null else "Rescan complete: $msg",
+                        errorMessage = emptyScanMessage,
                     )
                 }
             } catch (e: Exception) {

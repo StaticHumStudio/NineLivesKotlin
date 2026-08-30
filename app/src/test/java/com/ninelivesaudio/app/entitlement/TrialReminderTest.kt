@@ -221,4 +221,33 @@ class TrialReminderTest {
         assertTrue(cancellationPropagated)
         assertEquals(0, stateReads)
     }
+
+    // WorkManager can run the reminder late (device off, battery deferral), so
+    // the copy must come from the days actually remaining, never a hardcoded
+    // three.
+
+    @Test
+    fun `a reminder firing on time keeps the three day copy`() {
+        assertEquals(TrialReminderCopy.Many(3), trialReminderCopy(3))
+    }
+
+    @Test
+    fun `a reminder deferred to the last day says one day, not three`() {
+        assertEquals(TrialReminderCopy.OneDay, trialReminderCopy(1))
+    }
+
+    @Test
+    fun `a reminder deferred to expiry day says today`() {
+        assertEquals(TrialReminderCopy.Today, trialReminderCopy(0))
+    }
+
+    @Test
+    fun `an unknown remaining count falls back to the scheduled three days`() {
+        assertEquals(TrialReminderCopy.Many(3), trialReminderCopy(null))
+    }
+
+    @Test
+    fun `an early fire reports the real larger count`() {
+        assertEquals(TrialReminderCopy.Many(5), trialReminderCopy(5))
+    }
 }

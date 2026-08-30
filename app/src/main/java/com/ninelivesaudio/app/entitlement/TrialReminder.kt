@@ -71,6 +71,24 @@ internal enum class TrialReminderDecision {
 /** How many attempts the busy-sequencer path may burn before giving up. */
 internal const val MAX_BUSY_REMINDER_RETRIES = 5
 
+/**
+ * The reminder is scheduled for three days out, but WorkManager may run it
+ * late (device off, battery deferral) or the count may be unknown. The copy
+ * follows the days actually remaining at fire time.
+ */
+internal sealed interface TrialReminderCopy {
+    data object Today : TrialReminderCopy
+    data object OneDay : TrialReminderCopy
+    data class Many(val days: Int) : TrialReminderCopy
+}
+
+internal fun trialReminderCopy(daysRemaining: Int?): TrialReminderCopy = when {
+    daysRemaining == null -> TrialReminderCopy.Many(3)
+    daysRemaining <= 0 -> TrialReminderCopy.Today
+    daysRemaining == 1 -> TrialReminderCopy.OneDay
+    else -> TrialReminderCopy.Many(daysRemaining)
+}
+
 internal suspend fun trialReminderDecision(
     refreshPlayOwnership: suspend () -> RefreshPurchasesResult,
     currentState: suspend () -> EntitlementState,
@@ -153,18 +171,22 @@ class TrialReminderWorker(
         // If Play cannot answer, skip this best-effort reminder.
         val billing = deps.billingManager()
         val entitlements = deps.entitlementRepository()
+        var observedState: EntitlementState? = null
         val decision = trialReminderDecision(
             refreshPlayOwnership = { billing.refreshPurchases() },
             currentState = {
                 billing.afterPendingEntitlementUpdates {
                     entitlements.current
-                }
+                }.also { observedState = it }
             },
         )
 
         return when {
             decision == TrialReminderDecision.POST -> {
-                TrialNotifications.show(applicationContext)
+                TrialNotifications.show(
+                    applicationContext,
+                    trialReminderCopy(observedState?.trialDaysRemaining),
+                )
                 Result.success()
             }
             // A busy sequencer answered nothing, so this run must not consume
@@ -180,15 +202,25 @@ private object TrialNotifications {
     private const val CHANNEL_ID = "trial_reminder"
     private const val NOTIFICATION_ID = 4713
 
-    fun show(context: Context) {
+    fun show(context: Context, copy: TrialReminderCopy) {
+        val title = when (copy) {
+            is TrialReminderCopy.Today -> context.getString(R.string.trial_reminder_title_today)
+            is TrialReminderCopy.OneDay -> context.getString(R.string.trial_reminder_title_one)
+            is TrialReminderCopy.Many -> context.getString(R.string.trial_reminder_title_many, copy.days)
+        }
+        val body = when (copy) {
+            is TrialReminderCopy.Today -> context.getString(R.string.trial_reminder_body_today)
+            is TrialReminderCopy.OneDay -> context.getString(R.string.trial_reminder_body_one)
+            is TrialReminderCopy.Many -> context.getString(R.string.trial_reminder_body_many, copy.days)
+        }
         try {
             ensureChannel(context)
             NotificationManagerCompat.from(context).notify(
                 NOTIFICATION_ID,
                 NotificationCompat.Builder(context, CHANNEL_ID)
                     .setSmallIcon(R.drawable.ic_notification)
-                    .setContentTitle(context.getString(R.string.trial_reminder_title))
-                    .setContentText(context.getString(R.string.trial_reminder_body))
+                    .setContentTitle(title)
+                    .setContentText(body)
                     .setContentIntent(openApp(context))
                     .setAutoCancel(true)
                     .setOnlyAlertOnce(true)

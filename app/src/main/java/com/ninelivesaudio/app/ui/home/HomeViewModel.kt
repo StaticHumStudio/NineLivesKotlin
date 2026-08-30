@@ -161,6 +161,7 @@ class HomeViewModel @Inject constructor(
                 isAudiobookshelfMode = {
                     settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF
                 },
+                probeServerReachable = connectivityMonitor::refreshAndProbeServerReachable,
                 syncNow = syncManager::syncNow,
             )
         }
@@ -389,10 +390,21 @@ internal class HomeReconnectJobOwner(
     }
 }
 
+/**
+ * [probeServerReachable] must force a fresh reachability check, not read the
+ * cached isOnline flag the pill's own ConnectionStatus is derived from. Right
+ * after connectivity returns — but before the OS NetworkCallback lands, or
+ * when it never lands at all — that cached flag can still read false with a
+ * real network already up, and syncNow()'s own shouldRunSync pre-check trusts
+ * that same stale flag. Gating on the probe's own verdict instead of calling
+ * syncNow() unconditionally is what keeps a tap on RECONNECT from being inert.
+ */
 internal suspend fun performHomeReconnect(
     isAudiobookshelfMode: () -> Boolean,
+    probeServerReachable: suspend () -> Boolean,
     syncNow: suspend () -> Unit,
 ) {
     if (!isAudiobookshelfMode()) return
+    if (!probeServerReachable()) return
     syncNow()
 }

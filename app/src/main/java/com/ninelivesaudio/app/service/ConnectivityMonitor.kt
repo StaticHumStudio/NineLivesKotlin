@@ -183,18 +183,44 @@ class ConnectivityMonitor @Inject constructor(
     // ─── Checks ───────────────────────────────────────────────────────────
 
     private fun checkCurrentConnectivity() {
-        val activeNetwork = connectivityManager.activeNetwork
-        val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
-        _isOnline.value = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        updateConnectionStatus()
+        refreshIsOnlineFromSystem()
 
         // Initial server check (deduplicated)
         launchReachabilityCheck()
     }
 
+    /**
+     * Re-reads the OS's current network capabilities directly into [isOnline],
+     * bypassing NetworkCallback. The callback normally keeps isOnline current,
+     * but it can lag right after connectivity returns, or on some OEM
+     * power-management skins never fire at all — leaving isOnline stuck false
+     * with a real network already up.
+     */
+    private fun refreshIsOnlineFromSystem() {
+        val activeNetwork = connectivityManager.activeNetwork
+        val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
+        _isOnline.value = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        updateConnectionStatus()
+    }
+
     suspend fun checkServerReachable(): Boolean = reachabilityCheckGate.run()
 
     suspend fun probeServerReachable(): Boolean = checkServerReachable()
+
+    /**
+     * For a user-initiated "try again" (the Home reconnect pill): refreshes
+     * [isOnline] from the OS directly, then probes the server against that
+     * fresh state. Plain [probeServerReachable] trusts the cached [isOnline]
+     * flag and bails out before ever touching the network if that flag is
+     * stale-false — [performServerReachabilityCheck] short-circuits on it —
+     * which is exactly the state right after connectivity returns but before
+     * the OS callback lands, or when it never lands at all. One refresh per
+     * call; this must not be polled or looped.
+     */
+    suspend fun refreshAndProbeServerReachable(): Boolean {
+        refreshIsOnlineFromSystem()
+        return checkServerReachable()
+    }
 
     private suspend fun performServerReachabilityCheck(): Boolean {
         if (!_isOnline.value) {

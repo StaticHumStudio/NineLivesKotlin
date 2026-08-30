@@ -104,6 +104,7 @@ class HomeReconnectPolicyTest {
 
         performHomeReconnect(
             isAudiobookshelfMode = { true },
+            probeServerReachable = { true },
             syncNow = { syncCalls += 1 },
         )
 
@@ -116,6 +117,7 @@ class HomeReconnectPolicyTest {
 
         performHomeReconnect(
             isAudiobookshelfMode = { false },
+            probeServerReachable = { calls += "probe"; true },
             syncNow = { calls += "sync" },
         )
 
@@ -131,6 +133,7 @@ class HomeReconnectPolicyTest {
         val reconnect = async(start = CoroutineStart.UNDISPATCHED) {
             performHomeReconnect(
                 isAudiobookshelfMode = { true },
+                probeServerReachable = { true },
                 syncNow = {
                     calls += "sync"
                     syncStarted.complete(Unit)
@@ -147,6 +150,65 @@ class HomeReconnectPolicyTest {
         reconnect.await()
 
         assertEquals(listOf("sync"), calls)
+    }
+
+    // ─── Stale isOnline vs. a fresh probe ──────────────────────────────────
+    //
+    // The pill offers RECONNECT off ConnectionStatus, which is itself derived
+    // from the cached isOnline flag. Right after real connectivity returns —
+    // but before the OS NetworkCallback lands, or when it never lands at all —
+    // that cached flag can still read false even though the network is up.
+    // syncNow()'s own shouldRunSync pre-check trusts the SAME stale flag, so
+    // calling it directly would silently no-op. The reconnect action must
+    // force one active probe first and let ITS verdict — not the stale cache —
+    // decide whether to proceed.
+
+    @Test
+    fun `a successful probe runs the sync even though the cached isOnline flag was stale`() = runBlocking {
+        val calls = mutableListOf<String>()
+
+        performHomeReconnect(
+            isAudiobookshelfMode = { true },
+            probeServerReachable = {
+                calls += "probe"
+                true
+            },
+            syncNow = { calls += "sync" },
+        )
+
+        assertEquals(listOf("probe", "sync"), calls)
+    }
+
+    @Test
+    fun `a failed probe leaves the pill offline instead of running a doomed sync`() = runBlocking {
+        val calls = mutableListOf<String>()
+
+        performHomeReconnect(
+            isAudiobookshelfMode = { true },
+            probeServerReachable = {
+                calls += "probe"
+                false
+            },
+            syncNow = { calls += "sync" },
+        )
+
+        assertEquals(listOf("probe"), calls)
+    }
+
+    @Test
+    fun `an already-online probe still proceeds to sync exactly as before`() = runBlocking {
+        val calls = mutableListOf<String>()
+
+        performHomeReconnect(
+            isAudiobookshelfMode = { true },
+            probeServerReachable = {
+                calls += "probe"
+                true
+            },
+            syncNow = { calls += "sync" },
+        )
+
+        assertEquals(listOf("probe", "sync"), calls)
     }
 
     @Test

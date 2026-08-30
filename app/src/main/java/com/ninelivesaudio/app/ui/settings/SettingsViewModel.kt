@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.AuthSessionIdentity
 import com.ninelivesaudio.app.data.remote.CredentialLoginResult
 import com.ninelivesaudio.app.data.remote.StoredTokenValidation
 import com.ninelivesaudio.app.data.remote.TokenValidationResult
@@ -65,6 +66,33 @@ internal suspend fun runConfirmedDisconnectOperation(
     authOperationMutex.withLock {
         if (isCurrent()) operation()
     }
+}
+
+/**
+ * Disconnects the session captured by [captureSession], not whatever session
+ * happens to be live once [resetNowPlaying] finally returns.
+ *
+ * [captureSession] runs before [resetNowPlaying] can await pending terminal
+ * progress, so its snapshot cannot be the session a DIFFERENT SettingsViewModel
+ * instance (a freshly opened Settings screen, with its own authUiGeneration and
+ * mutex) has already replaced by the time [logoutIfCurrent] runs. Only a
+ * session that is STILL the captured one gets logged out; a session that moved
+ * on is left alone rather than clearing the newer login's token.
+ */
+internal suspend fun disconnectSessionGuarded(
+    appMode: AppMode,
+    captureSession: suspend () -> AuthSessionIdentity?,
+    resetNowPlaying: suspend () -> Unit,
+    logoutIfCurrent: suspend (AuthSessionIdentity) -> Unit,
+    holdsRemoteBook: Boolean = false,
+) {
+    val disconnectingSession = captureSession()
+    disconnectSession(
+        appMode = appMode,
+        resetNowPlaying = resetNowPlaying,
+        logout = { disconnectingSession?.let { logoutIfCurrent(it) } },
+        holdsRemoteBook = holdsRemoteBook,
+    )
 }
 
 @HiltViewModel
@@ -1029,10 +1057,11 @@ class SettingsViewModel @Inject constructor(
                 isCurrent = { authUiGeneration.get() == uiGeneration },
             ) {
                 try {
-                    disconnectSession(
+                    disconnectSessionGuarded(
                         appMode = _uiState.value.appMode,
+                        captureSession = apiService::currentAuthSession,
                         resetNowPlaying = playbackManager::resetNowPlayingForDisconnect,
-                        logout = apiService::logout,
+                        logoutIfCurrent = { apiService.logoutIfCurrentSession(it) },
                         holdsRemoteBook = playbackManager.currentBook.value?.isLocal == false,
                     )
                     updateAuthUi(uiGeneration) {

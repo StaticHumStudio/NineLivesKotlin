@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.settings
 
+import com.ninelivesaudio.app.data.remote.AuthSessionIdentity
 import com.ninelivesaudio.app.domain.model.AppMode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -8,6 +9,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -105,6 +107,116 @@ class SettingsDisconnectFlowTest {
         disconnectJob.join()
 
         assertEquals(listOf("disconnect"), effects)
+    }
+
+    // ─── Session-identity guard (confirmed disconnect races a fresh login) ────
+    //
+    // runConfirmedDisconnectOperation's isCurrent() check only sees THIS
+    // ViewModel instance's own authUiGeneration. Opening Settings again builds
+    // a brand new instance with its own mutex and generation counter, so a
+    // login on that new instance is invisible to an old instance's disconnect
+    // still waiting on resetNowPlayingForDisconnect() to finish. The only
+    // thing both instances share is ApiService's own session identity, so the
+    // guard has to be keyed on that instead.
+
+    private val sessionA = AuthSessionIdentity(generation = 0, token = "token-a", serverUrl = "https://a.example")
+    private val sessionB = AuthSessionIdentity(generation = 1, token = "token-b", serverUrl = "https://a.example")
+
+    @Test
+    fun `guarded disconnect does not log out a session that changed during the reset wait`() = runBlocking {
+        var liveSession: AuthSessionIdentity? = sessionA
+        val effects = mutableListOf<String>()
+
+        disconnectSessionGuarded(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            captureSession = { liveSession },
+            resetNowPlaying = {
+                effects += "reset"
+                // A second Settings screen (its own ViewModel, own mutex, own
+                // generation counter) logs in on session B while this
+                // instance's reset is still awaiting pending terminal progress.
+                liveSession = sessionB
+            },
+            logoutIfCurrent = { captured ->
+                if (captured == liveSession) {
+                    effects += "logout"
+                    liveSession = null
+                }
+            },
+        )
+
+        assertEquals(listOf("reset"), effects)
+        assertEquals(sessionB, liveSession)
+    }
+
+    @Test
+    fun `guarded disconnect logs out when the session did not change`() = runBlocking {
+        var liveSession: AuthSessionIdentity? = sessionA
+        val effects = mutableListOf<String>()
+
+        disconnectSessionGuarded(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            captureSession = { liveSession },
+            resetNowPlaying = { effects += "reset" },
+            logoutIfCurrent = { captured ->
+                if (captured == liveSession) {
+                    effects += "logout"
+                    liveSession = null
+                }
+            },
+        )
+
+        assertEquals(listOf("reset", "logout"), effects)
+        assertNull(liveSession)
+    }
+
+    @Test
+    fun `guarded disconnect completes logout after caller cancellation of the same session`() = runBlocking {
+        val resetStarted = CompletableDeferred<Unit>()
+        val releaseReset = CompletableDeferred<Unit>()
+        val authOperationMutex = Mutex()
+        val effects = mutableListOf<String>()
+        val disconnectJob = launch {
+            runConfirmedDisconnectOperation(
+                authOperationMutex = authOperationMutex,
+                isCurrent = { true },
+            ) {
+                disconnectSessionGuarded(
+                    appMode = AppMode.AUDIOBOOKSHELF,
+                    captureSession = { sessionA },
+                    resetNowPlaying = {
+                        effects += "reset"
+                        resetStarted.complete(Unit)
+                        releaseReset.await()
+                        effects += "reset complete"
+                    },
+                    logoutIfCurrent = { captured ->
+                        if (captured == sessionA) effects += "logout"
+                    },
+                )
+            }
+        }
+
+        resetStarted.await()
+        disconnectJob.cancel()
+        releaseReset.complete(Unit)
+        disconnectJob.join()
+
+        assertEquals(listOf("reset", "reset complete", "logout"), effects)
+    }
+
+    @Test
+    fun `guarded disconnect skips logout when there was no session to capture`() = runBlocking {
+        val effects = mutableListOf<String>()
+
+        disconnectSessionGuarded(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            captureSession = { null },
+            resetNowPlaying = { effects += "reset" },
+            logoutIfCurrent = { effects += "logout" },
+        )
+
+        assertEquals(listOf("reset"), effects)
     }
 
     @Test

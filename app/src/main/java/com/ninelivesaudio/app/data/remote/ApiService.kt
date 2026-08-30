@@ -400,6 +400,21 @@ class ApiService @Inject constructor(
             authSessionMatches(expected, currentAuthSessionLocked(settingsManager.getAuthToken()))
         }
 
+    /**
+     * Captures the live session identity right now, with no HTTP validation.
+     * A confirmed disconnect calls this before its resetNowPlaying() step can
+     * await pending terminal progress, so whatever a different ApiService
+     * caller (a login from a freshly opened Settings screen, its own ViewModel
+     * instance and generation counter) does during that wait is compared
+     * against THIS snapshot rather than silently overwritten by it.
+     */
+    internal suspend fun currentAuthSession(): AuthSessionIdentity? =
+        authMutationMutex.withLock {
+            val token = settingsManager.getAuthToken()?.takeIf { it.isNotEmpty() }
+                ?: return@withLock null
+            currentAuthSessionLocked(token)
+        }
+
     /** Clears an invalid session only if no newer auth mutation replaced it. */
     internal suspend fun logoutIfCurrentSession(expected: AuthSessionIdentity): Boolean =
         authMutationMutex.withLock {

@@ -205,6 +205,15 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                                         }
                                 }.getOrDefault(true)
                             }
+
+                        // The lookahead can list descendants many levels below the
+                        // immediate siblings without ever recursing into them normally,
+                        // so charge whatever budget it actually consumed regardless of
+                        // whether the merge went through. Otherwise a tree of merge
+                        // parents each hiding a large empty subtree behind one sibling
+                        // probes far past the advertised cap while this counter crawls.
+                        foldersScanned += MAX_LOOKAHEAD_FOLDERS - lookaheadBudget.foldersRemaining
+
                         if (shouldMerge) {
                             // Merge detection listed every subfolder to decide, not just
                             // the audio-bearing ones, so every one of them counts toward

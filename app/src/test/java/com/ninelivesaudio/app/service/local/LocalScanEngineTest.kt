@@ -802,6 +802,42 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `merge lookahead into a descendant tree charges its consumed budget to the folder cap`() {
+        // Adversarial layout: hundreds of parents, each with one "CD 1" audio
+        // folder plus an "Extras" folder whose own children are all empty. Merge
+        // detection must walk that whole Extras subtree (via containsAudioAnywhere)
+        // to prove it holds no audio, but the only charge to foldersScanned on a
+        // successful merge was the two immediate siblings (CD 1, Extras). The
+        // lookahead's descendant probing went uncharged, so this tree lists on
+        // the order of 60 folders per parent while the counter only advanced by
+        // 3, letting the real work blow far past the advertised cap.
+        val extrasChildrenPerParent = 59 // + Extras itself = 60 nodes probed, under the 64 lookahead budget
+        val parents = (0 until 300).map { p ->
+            val disc = dir(
+                "CD 1", "$rootUri/Parent$p/CD 1", children = listOf(
+                    file("track.mp3", "$rootUri/Parent$p/CD 1/track.mp3"),
+                )
+            )
+            val extrasChildren = (0 until extrasChildrenPerParent).map { s ->
+                dir("Nested$s", "$rootUri/Parent$p/Extras/Nested$s")
+            }
+            val extras = dir("Extras", "$rootUri/Parent$p/Extras", children = extrasChildren)
+            dir("Parent$p", "$rootUri/Parent$p", children = listOf(disc, extras))
+        }
+        val root = dir(null, rootUri, children = parents)
+
+        val result = engine().scan(root, rootUri)
+
+        assertTrue(result.errorMessages.any { it.contains("${LocalScanEngine.MAX_FOLDERS_SCANNED}") })
+        // Bounded by roughly one parent's worth of overshoot: itself, its two
+        // direct children, and the lookahead budget it could still consume.
+        assertTrue(
+            result.foldersScanned <=
+                LocalScanEngine.MAX_FOLDERS_SCANNED + 1 + 2 + extrasChildrenPerParent + 1
+        )
+    }
+
+    @Test
     fun `the folder cap is respected and reported`() {
         val total = LocalScanEngine.MAX_FOLDERS_SCANNED + 6
         val subfolders = (0 until total).map { i ->

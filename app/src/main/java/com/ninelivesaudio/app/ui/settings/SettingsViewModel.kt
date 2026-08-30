@@ -32,6 +32,7 @@ import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -40,6 +41,27 @@ import kotlinx.coroutines.withContext
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
+
+internal suspend fun disconnectSession(
+    appMode: AppMode,
+    resetNowPlaying: suspend () -> Unit,
+    logout: suspend () -> Unit,
+) {
+    if (appMode == AppMode.AUDIOBOOKSHELF) {
+        resetNowPlaying()
+    }
+    logout()
+}
+
+internal suspend fun runConfirmedDisconnectOperation(
+    authOperationMutex: Mutex,
+    isCurrent: () -> Boolean,
+    operation: suspend () -> Unit,
+) = withContext(NonCancellable) {
+    authOperationMutex.withLock {
+        if (isCurrent()) operation()
+    }
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -998,24 +1020,30 @@ class SettingsViewModel @Inject constructor(
     fun disconnect() {
         val uiGeneration = authUiGeneration.incrementAndGet()
         viewModelScope.launch {
-            authUiOperationMutex.withLock {
-                if (authUiGeneration.get() != uiGeneration) return@withLock
-            try {
-                apiService.logout()
-                updateAuthUi(uiGeneration) {
-                    it.copy(
-                        isConnected = false,
-                        connectionStatusText = "Not connected",
-                        successMessage = "Disconnected successfully",
-                        password = "",
-                        errorMessage = null,
+            runConfirmedDisconnectOperation(
+                authOperationMutex = authUiOperationMutex,
+                isCurrent = { authUiGeneration.get() == uiGeneration },
+            ) {
+                try {
+                    disconnectSession(
+                        appMode = _uiState.value.appMode,
+                        resetNowPlaying = playbackManager::resetNowPlayingForDisconnect,
+                        logout = apiService::logout,
                     )
+                    updateAuthUi(uiGeneration) {
+                        it.copy(
+                            isConnected = false,
+                            connectionStatusText = "Not connected",
+                            successMessage = "Disconnected successfully",
+                            password = "",
+                            errorMessage = null,
+                        )
+                    }
+                } catch (e: Exception) {
+                    updateAuthUi(uiGeneration) {
+                        it.copy(errorMessage = "Error disconnecting: ${e.message}")
+                    }
                 }
-            } catch (e: Exception) {
-                updateAuthUi(uiGeneration) {
-                    it.copy(errorMessage = "Error disconnecting: ${e.message}")
-                }
-            }
             }
         }
     }

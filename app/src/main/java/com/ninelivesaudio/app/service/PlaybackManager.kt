@@ -552,6 +552,17 @@ internal fun playbackItemPersistenceAction(
     else -> PlaybackItemPersistence.KEEP
 }
 
+internal suspend fun runNowPlayingDisconnectReset(
+    currentBookId: String?,
+    stopPlayback: () -> Unit,
+    clearCurrentBook: () -> Unit,
+    awaitTerminalProgress: suspend (String) -> Unit,
+) {
+    stopPlayback()
+    clearCurrentBook()
+    currentBookId?.let { awaitTerminalProgress(it) }
+}
+
 internal fun autoBookLoadAllowed(
     book: AudioBook,
     settings: AppSettings,
@@ -1877,6 +1888,15 @@ class PlaybackManager @Inject constructor(
                 }
             }
         }
+    }
+
+    suspend fun resetNowPlayingForDisconnect() {
+        runNowPlayingDisconnectReset(
+            currentBookId = _currentBook.value?.id,
+            stopPlayback = ::stop,
+            clearCurrentBook = { _currentBook.value = null },
+            awaitTerminalProgress = pendingTerminalOwner::await,
+        )
     }
 
     fun seekTo(position: Duration) {

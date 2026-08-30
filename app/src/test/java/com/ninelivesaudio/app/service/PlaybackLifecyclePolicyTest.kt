@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -72,5 +73,19 @@ class PlaybackLifecyclePolicyTest {
             PlaybackItemPersistence.KEEP,
             playbackItemPersistenceAction(naturalCompletion = false, playbackStarting = false),
         )
+    }
+
+    @Test
+    fun `disconnect reset stops clears current book and waits for progress`() = runBlocking {
+        val effects = mutableListOf<String>()
+
+        runNowPlayingDisconnectReset(
+            currentBookId = "book-19",
+            stopPlayback = { effects += "stop" },
+            clearCurrentBook = { effects += "clear" },
+            awaitTerminalProgress = { bookId -> effects += "await $bookId" },
+        )
+
+        assertEquals(listOf("stop", "clear", "await book-19"), effects)
     }
 }

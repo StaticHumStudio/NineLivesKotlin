@@ -12,6 +12,7 @@ import androidx.navigation.navArgument
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailScreen
+import com.ninelivesaudio.app.ui.changelog.ChangelogScreen
 import com.ninelivesaudio.app.ui.dossier.NightwatchDossierScreen
 import com.ninelivesaudio.app.ui.unlock.UnlockScreen
 import com.ninelivesaudio.app.ui.downloads.DownloadsScreen
@@ -35,6 +36,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val DOSSIER = "dossier"
     const val LICENSES = "licenses"
+    const val CHANGELOG = "changelog"
     const val UNLOCK = "unlock"
     const val BOOK_DETAIL = "book_detail/{bookId}"
 
@@ -142,6 +144,11 @@ fun NineLivesNavHost(
                         launchSingleTop = true
                     }
                 },
+                onNavigateToChangelog = {
+                    navController.navigate(Routes.CHANGELOG) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 
@@ -154,6 +161,12 @@ fun NineLivesNavHost(
         composable(Routes.LICENSES) {
             LicensesScreen(
                 onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Routes.CHANGELOG) {
+            ChangelogScreen(
+                onNavigateBack = { navController.popBackStack() },
             )
         }
 

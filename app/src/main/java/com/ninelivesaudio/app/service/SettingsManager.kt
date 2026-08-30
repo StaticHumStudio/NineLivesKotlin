@@ -369,6 +369,15 @@ class SettingsManager @Inject constructor(
         Log.d(TAG, "updateSettings: Transformed - unhingedThemeEnabled=${updated.unhingedThemeEnabled}")
     }
 
+    suspend fun markChangelogVersionSeen(version: String) {
+        if (currentSettings.lastSeenChangelogVersion == version) return
+        updateSettings { settings ->
+            if (settings.lastSeenChangelogVersion == version) settings else {
+                settings.copy(lastSeenChangelogVersion = version)
+            }
+        }
+    }
+
     // ─── Auth Token ──────────────────────────────────────────────────────
 
     companion object {

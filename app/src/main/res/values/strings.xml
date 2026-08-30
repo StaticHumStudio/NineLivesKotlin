@@ -3,8 +3,8 @@
     <string name="notification_channel_name">Audio Playback</string>
     <string name="trial_reminder_channel_name">Trial reminder</string>
     <string name="trial_reminder_channel_description">The one reminder before a trial ends</string>
-    <string name="trial_reminder_title_today">Your trial ends today</string>
-    <string name="trial_reminder_body_today">Your Nine Lives trial ends today. This is the only reminder.</string>
+    <string name="trial_reminder_title_today">Your trial ends soon</string>
+    <string name="trial_reminder_body_today">Your Nine Lives trial ends in less than a day. This is the only reminder.</string>
     <string name="trial_reminder_title_one">One day remains</string>
     <string name="trial_reminder_body_one">Your Nine Lives trial ends tomorrow. This is the only reminder.</string>
     <string name="trial_reminder_title_many">%1$d days remain</string>

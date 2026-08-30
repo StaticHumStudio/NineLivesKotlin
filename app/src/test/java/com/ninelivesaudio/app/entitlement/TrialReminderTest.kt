@@ -222,32 +222,66 @@ class TrialReminderTest {
         assertEquals(0, stateReads)
     }
 
-    // WorkManager can run the reminder late (device off, battery deferral), so
-    // the copy must come from the days actually remaining, never a hardcoded
-    // three.
+    // WorkManager can run the reminder late (device off, battery deferral), and
+    // TrialPolicy always rounds a partial day of remaining time UP to a whole
+    // day. So the copy is bucketed on the real milliseconds left until
+    // trialEndsAtEpochMs, never on a rounded day count, or a trial expiring at
+    // 10 a.m. whose reminder fires at 2 a.m. that same day would wrongly say
+    // "tomorrow".
 
     @Test
-    fun `a reminder firing on time keeps the three day copy`() {
-        assertEquals(TrialReminderCopy.Many(3), trialReminderCopy(3))
+    fun `a reminder firing on time at three days keeps the three day copy`() {
+        val now = start
+        assertEquals(
+            TrialReminderCopy.Many(3),
+            trialReminderCopy(now + TimeUnit.DAYS.toMillis(3), now),
+        )
     }
 
     @Test
-    fun `a reminder deferred to the last day says one day, not three`() {
-        assertEquals(TrialReminderCopy.OneDay, trialReminderCopy(1))
+    fun `a trial ending in eight hours reads as ending soon, not tomorrow`() {
+        // The exact bug: 2 a.m., trial ends 10 a.m. that day. Rounded up that
+        // used to be "1 day remaining", which the old selector read as OneDay
+        // and worded as ending tomorrow.
+        val now = start
+        assertEquals(
+            TrialReminderCopy.Today,
+            trialReminderCopy(now + TimeUnit.HOURS.toMillis(8), now),
+        )
     }
 
     @Test
-    fun `a reminder deferred to expiry day says today`() {
-        assertEquals(TrialReminderCopy.Today, trialReminderCopy(0))
+    fun `a trial ending in thirty hours reads as one day`() {
+        val now = start
+        assertEquals(
+            TrialReminderCopy.OneDay,
+            trialReminderCopy(now + TimeUnit.HOURS.toMillis(30), now),
+        )
     }
 
     @Test
-    fun `an unknown remaining count falls back to the scheduled three days`() {
-        assertEquals(TrialReminderCopy.Many(3), trialReminderCopy(null))
+    fun `a trial that already ended still reads as ending soon`() {
+        // Can't actually reach POST (the refresh-and-check guard rules an
+        // expired trial out first), but the selector must not do anything
+        // silly if it is ever asked about a non-positive remainder.
+        val now = start
+        assertEquals(
+            TrialReminderCopy.Today,
+            trialReminderCopy(now - TimeUnit.HOURS.toMillis(1), now),
+        )
+    }
+
+    @Test
+    fun `an unknown end time falls back to the scheduled three days`() {
+        assertEquals(TrialReminderCopy.Many(3), trialReminderCopy(null, start))
     }
 
     @Test
     fun `an early fire reports the real larger count`() {
-        assertEquals(TrialReminderCopy.Many(5), trialReminderCopy(5))
+        val now = start
+        assertEquals(
+            TrialReminderCopy.Many(5),
+            trialReminderCopy(now + TimeUnit.DAYS.toMillis(5), now),
+        )
     }
 }

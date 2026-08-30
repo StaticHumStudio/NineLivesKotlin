@@ -73,8 +73,13 @@ internal const val MAX_BUSY_REMINDER_RETRIES = 5
 
 /**
  * The reminder is scheduled for three days out, but WorkManager may run it
- * late (device off, battery deferral) or the count may be unknown. The copy
- * follows the days actually remaining at fire time.
+ * late (device off, battery deferral) or the end time may be unknown. The
+ * copy follows the actual milliseconds remaining at fire time, not a
+ * calendar day count: [TrialPolicy] rounds a partial day up, so a trial
+ * expiring at 10 a.m. still reports one day remaining at 2 a.m. that same
+ * day, and that rounded count alone can't tell "ends in eight hours" apart
+ * from "ends in twenty-three hours". Bucketing on real elapsed time instead
+ * means no midnight, or any other calendar boundary, can make the copy lie.
  */
 internal sealed interface TrialReminderCopy {
     data object Today : TrialReminderCopy
@@ -82,11 +87,19 @@ internal sealed interface TrialReminderCopy {
     data class Many(val days: Int) : TrialReminderCopy
 }
 
-internal fun trialReminderCopy(daysRemaining: Int?): TrialReminderCopy = when {
-    daysRemaining == null -> TrialReminderCopy.Many(3)
-    daysRemaining <= 0 -> TrialReminderCopy.Today
-    daysRemaining == 1 -> TrialReminderCopy.OneDay
-    else -> TrialReminderCopy.Many(daysRemaining)
+private val TRIAL_REMINDER_DAY_MS: Long = TimeUnit.DAYS.toMillis(1)
+
+internal fun trialReminderCopy(trialEndsAtEpochMs: Long?, nowEpochMs: Long): TrialReminderCopy {
+    if (trialEndsAtEpochMs == null) return TrialReminderCopy.Many(3)
+    val remainingMs = trialEndsAtEpochMs - nowEpochMs
+    return when {
+        // Zero, negative, or under a day: "ends soon" covers an already-expired
+        // trial too, which can reach this selector even though it can never
+        // reach POST (the refresh-and-check guard upstream rules that out).
+        remainingMs < TRIAL_REMINDER_DAY_MS -> TrialReminderCopy.Today
+        remainingMs < 2 * TRIAL_REMINDER_DAY_MS -> TrialReminderCopy.OneDay
+        else -> TrialReminderCopy.Many(((remainingMs - 1) / TRIAL_REMINDER_DAY_MS + 1).toInt())
+    }
 }
 
 internal suspend fun trialReminderDecision(
@@ -185,7 +198,7 @@ class TrialReminderWorker(
             decision == TrialReminderDecision.POST -> {
                 TrialNotifications.show(
                     applicationContext,
-                    trialReminderCopy(observedState?.trialDaysRemaining),
+                    trialReminderCopy(observedState?.trialEndsAtEpochMs, System.currentTimeMillis()),
                 )
                 Result.success()
             }

@@ -217,6 +217,12 @@ internal class PlaybackLoadOwner {
         wasNewest
     }
 
+    fun invalidate() = synchronized(ownerLock) {
+        activeRequest = null
+        pendingRequests.clear()
+        requestChanges.value += 1L
+    }
+
     fun isCurrent(request: Long): Boolean = synchronized(ownerLock) {
         request == activeRequest
     }
@@ -554,10 +560,12 @@ internal fun playbackItemPersistenceAction(
 
 internal suspend fun runNowPlayingDisconnectReset(
     currentBookId: String?,
+    invalidateActiveLoad: () -> Unit,
     stopPlayback: () -> Unit,
     clearCurrentBook: () -> Unit,
     awaitTerminalProgress: suspend (String) -> Unit,
 ) {
+    invalidateActiveLoad()
     stopPlayback()
     clearCurrentBook()
     currentBookId?.let { awaitTerminalProgress(it) }
@@ -1893,6 +1901,7 @@ class PlaybackManager @Inject constructor(
     suspend fun resetNowPlayingForDisconnect() {
         runNowPlayingDisconnectReset(
             currentBookId = _currentBook.value?.id,
+            invalidateActiveLoad = playbackLoadOwner::invalidate,
             stopPlayback = ::stop,
             clearCurrentBook = { _currentBook.value = null },
             awaitTerminalProgress = pendingTerminalOwner::await,

@@ -81,11 +81,12 @@ class PlaybackLifecyclePolicyTest {
 
         runNowPlayingDisconnectReset(
             currentBookId = "book-19",
+            invalidateActiveLoad = { effects += "invalidate" },
             stopPlayback = { effects += "stop" },
             clearCurrentBook = { effects += "clear" },
             awaitTerminalProgress = { bookId -> effects += "await $bookId" },
         )
 
-        assertEquals(listOf("stop", "clear", "await book-19"), effects)
+        assertEquals(listOf("invalidate", "stop", "clear", "await book-19"), effects)
     }
 }

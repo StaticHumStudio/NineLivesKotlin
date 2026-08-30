@@ -1,16 +1,55 @@
 package com.ninelivesaudio.app.service
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 class PlaybackGenerationTest {
+
+    @Test
+    fun `disconnect invalidates suspended load before it can restart playback or restore item`() = runBlocking {
+        val owner = PlaybackLoadOwner()
+        val request = owner.newRequest()
+        val fetchStarted = CompletableDeferred<Unit>()
+        val releaseFetch = CompletableDeferred<Unit>()
+        var playerStarted = false
+        var persistedRestoreItem: String? = "book-a"
+        val load = launch(start = CoroutineStart.UNDISPATCHED) {
+            assertTrue(owner.claim(request))
+            fetchStarted.complete(Unit)
+            releaseFetch.await()
+            if (!owner.isCurrent(request)) return@launch
+            playerStarted = true
+            persistedRestoreItem = "book-a"
+        }
+
+        fetchStarted.await()
+        runNowPlayingDisconnectReset(
+            currentBookId = "book-a",
+            invalidateActiveLoad = owner::invalidate,
+            stopPlayback = {
+                playerStarted = false
+                persistedRestoreItem = null
+            },
+            clearCurrentBook = {},
+            awaitTerminalProgress = {},
+        )
+        releaseFetch.complete(Unit)
+        load.join()
+
+        assertFalse(playerStarted)
+        assertNull(persistedRestoreItem)
+    }
 
     @Test
     fun `issuing a newer load does not invalidate the active load before claim`() = runBlocking {

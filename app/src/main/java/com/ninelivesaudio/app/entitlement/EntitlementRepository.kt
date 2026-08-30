@@ -9,19 +9,48 @@ import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal interface DurableEntitlementStore {
+    val legacyPaid: Boolean
+    val trialStartedAtEpochMs: Long?
+    val trialConsumed: Boolean
+    fun consumeTrial(startedAtEpochMs: Long): Boolean
+}
+
+internal interface PlayEntitlementCache {
+    var playUnlockCached: Boolean
+    var forceFree: Boolean
+}
+
+internal fun interface TrialReminderScheduler {
+    fun schedule(startedAtEpochMs: Long)
+}
+
 /**
  * The single source of truth for entitlement. Every gate observes [state] and
  * nothing anywhere queries billing directly.
  *
- * Billing is not wired in yet. [applyPlayUnlock] is the seam the BillingManager
- * plugs into, and until then the repository resolves from the grandfather flag
- * and the cached grant alone.
+ * Billing writes through [applyPlayUnlock], while an explicit trial start writes
+ * through [startTrial]. Both paths resolve here before any gate sees the result.
  */
 @Singleton
-class EntitlementRepository @Inject constructor(
-    private val prefs: EntitlementPrefs,
-    private val cache: EntitlementCachePrefs,
+class EntitlementRepository internal constructor(
+    private val prefs: DurableEntitlementStore,
+    private val cache: PlayEntitlementCache,
+    private val reminderScheduler: TrialReminderScheduler,
+    private val nowEpochMs: () -> Long,
 ) {
+    @Inject
+    internal constructor(
+        prefs: EntitlementPrefs,
+        cache: EntitlementCachePrefs,
+        reminderScheduler: WorkManagerTrialReminderScheduler,
+    ) : this(
+        prefs = prefs,
+        cache = cache,
+        reminderScheduler = reminderScheduler,
+        nowEpochMs = System::currentTimeMillis,
+    )
+
     private val _state = MutableStateFlow(resolveNow())
     val state: StateFlow<EntitlementState> = _state.asStateFlow()
 
@@ -49,6 +78,26 @@ class EntitlementRepository @Inject constructor(
         _state.value = resolveNow()
     }
 
+    /** Persist and grant the one-time trial after an explicit user action. */
+    suspend fun startTrial(): Boolean = writeMutex.withLock {
+        val startedAt = nowEpochMs()
+        val before = resolveAt(startedAt)
+        if (before.isUnlocked || !before.trialOfferAvailable) return@withLock false
+        if (TrialPolicy.evaluate(startedAt, startedAt) == null) return@withLock false
+
+        if (!prefs.consumeTrial(startedAt)) {
+            _state.value = resolveAt(startedAt)
+            return@withLock false
+        }
+
+        _state.value = resolveAt(startedAt)
+        if (_state.value.source != EntitlementSource.TRIAL) return@withLock false
+
+        // The trial is already durable. A notification failure must never revoke it.
+        runCatching { reminderScheduler.schedule(startedAt) }
+        true
+    }
+
     /**
      * Release-build test override, suppressing the `legacy_paid` source only.
      *
@@ -66,13 +115,18 @@ class EntitlementRepository @Inject constructor(
         _state.value = resolveNow()
     }
 
-    private fun resolveNow(): EntitlementState = EntitlementResolver.resolve(
-        legacyPaid = prefs.isLegacyPaid,
+    private fun resolveNow(): EntitlementState = resolveAt(nowEpochMs())
+
+    private fun resolveAt(now: Long): EntitlementState = EntitlementResolver.resolve(
+        legacyPaid = prefs.legacyPaid,
         playUnlocked = cache.playUnlockCached,
         // Gated on BuildConfig.DEBUG at the call site, so a release build cannot
         // reach the DEBUG source at all.
         debugForceEntitled = BuildConfig.DEBUG && DEBUG_FORCE_ENTITLED,
         forceFree = cache.forceFree,
+        trialStartedAtEpochMs = prefs.trialStartedAtEpochMs,
+        trialConsumed = prefs.trialConsumed,
+        nowEpochMs = now,
     )
 
     private companion object {

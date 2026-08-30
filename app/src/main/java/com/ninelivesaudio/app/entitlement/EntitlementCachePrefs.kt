@@ -25,7 +25,7 @@ import javax.inject.Singleton
 @Singleton
 class EntitlementCachePrefs @Inject constructor(
     @ApplicationContext context: Context,
-) {
+) : PlayEntitlementCache {
     private val prefs = context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 
     /**
@@ -35,7 +35,7 @@ class EntitlementCachePrefs @Inject constructor(
      * timeout, or a disconnected Billing service must leave this untouched
      * rather than writing false, or every offline launch would revoke.
      */
-    var playUnlockCached: Boolean
+    override var playUnlockCached: Boolean
         get() = prefs.getBoolean(KEY_PLAY_UNLOCK, false)
         set(value) = prefs.edit().putBoolean(KEY_PLAY_UNLOCK, value).apply()
 
@@ -47,7 +47,7 @@ class EntitlementCachePrefs @Inject constructor(
      * pass. Lives here rather than in [EntitlementPrefs] precisely so it cannot
      * ride a backup onto another device.
      */
-    var forceFree: Boolean
+    override var forceFree: Boolean
         get() = prefs.getBoolean(KEY_FORCE_FREE, false)
         set(value) = prefs.edit().putBoolean(KEY_FORCE_FREE, value).apply()
 

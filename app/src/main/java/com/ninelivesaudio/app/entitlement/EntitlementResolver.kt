@@ -7,10 +7,9 @@ package com.ninelivesaudio.app.entitlement
  * has to be exhaustively unit-tested. Everything that can silently unlock the
  * whole app for everyone lives in this one function.
  *
- * There is NO date logic here and there must never be. `PAID_ERA_CUTOFF` was
- * deleted on 2026-08-08: a cutoff constant has to be guessed before Play review
- * latency is knowable, and every install landing inside the guessed window
- * grandfathers itself permanently.
+ * There is no paid-era cutoff here and there must never be. The trial clock is
+ * different: it starts only after an explicit tap, lasts a fixed 14 days, and
+ * never creates a permanent entitlement.
  */
 object EntitlementResolver {
 
@@ -24,12 +23,19 @@ object EntitlementResolver {
      * @param forceFree release-build test override. Suppresses [EntitlementSource.LEGACY_PAID]
      *   and NOTHING else, so the internal-track pass can see the free tier on a
      *   device that already carries the flag without also hiding a real purchase.
+     * @param trialStartedAtEpochMs the backed-up start written by an explicit
+     *   trial action, or null if no start was ever recorded.
+     * @param trialConsumed the backed-up one-time consumption latch.
+     * @param nowEpochMs the wall-clock input used only by [TrialPolicy].
      */
     fun resolve(
         legacyPaid: Boolean,
         playUnlocked: Boolean,
         debugForceEntitled: Boolean = false,
         forceFree: Boolean = false,
+        trialStartedAtEpochMs: Long? = null,
+        trialConsumed: Boolean = false,
+        nowEpochMs: Long = 0L,
     ): EntitlementState = when {
         debugForceEntitled -> EntitlementState(true, EntitlementSource.DEBUG)
 
@@ -40,6 +46,22 @@ object EntitlementResolver {
 
         legacyPaid && !forceFree -> EntitlementState(true, EntitlementSource.LEGACY_PAID)
 
-        else -> EntitlementState.FREE
+        trialConsumed -> TrialPolicy.evaluate(nowEpochMs, trialStartedAtEpochMs)
+            ?.let { active ->
+                EntitlementState(
+                    isUnlocked = true,
+                    source = EntitlementSource.TRIAL,
+                    trialDaysRemaining = active.daysRemaining,
+                )
+            }
+            ?: EntitlementState.FREE
+
+        else -> EntitlementState(
+            isUnlocked = false,
+            source = null,
+            // A stray start with no consumed latch is malformed state. Fail
+            // closed and do not offer a second start over the top of it.
+            trialOfferAvailable = trialStartedAtEpochMs == null,
+        )
     }
 }

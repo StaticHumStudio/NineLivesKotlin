@@ -17,6 +17,9 @@ enum class EntitlementSource {
     /** A Play purchase of `nine_lives_unlock`, live or cached. */
     PLAY_UNLOCK,
 
+    /** The one-time 14-day local trial, while its persisted clock is active. */
+    TRIAL,
+
     /** Debug-build override. Never reachable in a release build. */
     DEBUG,
 }
@@ -28,6 +31,8 @@ enum class EntitlementSource {
 data class EntitlementState(
     val isUnlocked: Boolean,
     val source: EntitlementSource?,
+    val trialOfferAvailable: Boolean = false,
+    val trialDaysRemaining: Int? = null,
 ) {
     val isFree: Boolean get() = !isUnlocked
 

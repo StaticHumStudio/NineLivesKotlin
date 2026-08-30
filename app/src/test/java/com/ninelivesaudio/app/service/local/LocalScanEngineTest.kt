@@ -721,6 +721,60 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `one unreadable sibling does not take down the rest of the container`() {
+        // Merge probing lists every sibling. If one of them throws (provider error,
+        // yanked permission), the readable books beside it must still import.
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Author", "$rootUri/Author", children = listOf(
+                        dir(
+                            "Good Book", "$rootUri/Author/Good Book", children = listOf(
+                                file("chapter01.mp3", "$rootUri/Author/Good Book/chapter01.mp3"),
+                            )
+                        ),
+                        ThrowingNode("Rotten", "$rootUri/Author/Rotten"),
+                    )
+                ),
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(1, result.books.size)
+        assertEquals("Good Book", result.books.single().title)
+    }
+
+    @Test
+    fun `an unreadable extras sibling disables merging instead of losing the discs`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        dir(
+                            "CD 1", "$rootUri/Book/CD 1", children = listOf(
+                                file("track.mp3", "$rootUri/Book/CD 1/track.mp3"),
+                            )
+                        ),
+                        dir(
+                            "CD 2", "$rootUri/Book/CD 2", children = listOf(
+                                file("track.mp3", "$rootUri/Book/CD 2/track.mp3"),
+                            )
+                        ),
+                        ThrowingNode("extras", "$rootUri/Book/extras"),
+                    )
+                ),
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        // The unreadable sibling makes merge safety unknowable, so no merged Book,
+        // but the discs themselves must survive as individually scanned books.
+        assertEquals(2, result.books.size)
+    }
+
+    @Test
     fun `merge probing charges every inspected sibling to the folder cap`() {
         // Adversarial layout: many parents, each holding one numbered audio folder
         // and a crowd of empty siblings. Merge detection must list every sibling to

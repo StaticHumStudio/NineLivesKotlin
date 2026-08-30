@@ -188,17 +188,22 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                             // A prettier parent merge is not worth losing nested audio.
                             // Recurse into plain CD and Bonus books when a disc has any.
                             audioSubdirs.none { disc ->
-                                childrenOf(disc)
-                                    .filterNot { isHidden(it) }
-                                    .filter { it.isDirectory }
-                                    .any {
-                                        containsAudioAnywhere(
-                                            it,
-                                            childDepth + 1,
-                                            lookaheadBudget,
-                                            ::childrenOf,
-                                        )
-                                    }
+                                // An unreadable disc makes merge safety unknowable:
+                                // treat it as having nested audio so merging is off
+                                // and visit() handles the failure per folder.
+                                runCatching {
+                                    childrenOf(disc)
+                                        .filterNot { isHidden(it) }
+                                        .filter { it.isDirectory }
+                                        .any {
+                                            containsAudioAnywhere(
+                                                it,
+                                                childDepth + 1,
+                                                lookaheadBudget,
+                                                ::childrenOf,
+                                            )
+                                        }
+                                }.getOrDefault(true)
                             }
                         if (shouldMerge) {
                             // Merge detection listed every subfolder to decide, not just
@@ -445,7 +450,15 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         node: ScanNode,
         childrenOf: (ScanNode) -> List<ScanNode>,
     ): Boolean {
-        return childrenOf(node).any { !isHidden(it) && !it.isDirectory && isAudioFile(it) }
+        // An unreadable folder holds no audio this probe can see. Failing here
+        // must not abort the caller's whole container: the child still goes
+        // through visit(), whose per-folder handling isolates the failure.
+        val children = try {
+            childrenOf(node)
+        } catch (e: Exception) {
+            return false
+        }
+        return children.any { !isHidden(it) && !it.isDirectory && isAudioFile(it) }
     }
 
     private fun parseNumberedSibling(name: String): NumberedSibling? {
@@ -502,7 +515,14 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         if (budget.foldersRemaining == 0) return true
         budget.foldersRemaining--
 
-        val children = childrenOf(node).filterNot { isHidden(it) }
+        // An unreadable folder gets the same treatment as exhaustion: merge
+        // safety is unknowable, so assume audio and let normal recursion deal
+        // with the failure one folder at a time.
+        val children = try {
+            childrenOf(node).filterNot { isHidden(it) }
+        } catch (e: Exception) {
+            return true
+        }
         if (children.any { !it.isDirectory && isAudioFile(it) }) return true
         val subfolders = children.filter { it.isDirectory }
         if (subfolders.isEmpty()) return false

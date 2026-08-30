@@ -122,7 +122,6 @@ class SyncManager @Inject constructor(
                         if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
                             performModeSwitchReconnect(
                                 refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
-                                requestReachabilityCheck = connectivityMonitor::requestReachabilityCheck,
                                 syncNow = { syncNow() },
                             )
                         }
@@ -477,11 +476,9 @@ internal class SyncLifecycleOwner(
  */
 internal suspend fun performModeSwitchReconnect(
     refreshIsOnline: () -> Unit,
-    requestReachabilityCheck: () -> Unit,
     syncNow: suspend () -> Unit,
 ) {
     refreshIsOnline()
-    requestReachabilityCheck()
     syncNow()
 }
 

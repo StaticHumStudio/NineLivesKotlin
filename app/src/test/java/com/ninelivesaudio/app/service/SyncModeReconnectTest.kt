@@ -78,10 +78,9 @@ class SyncModeReconnectTest {
 
         performModeSwitchReconnect(
             refreshIsOnline = { order += "refresh" },
-            requestReachabilityCheck = { order += "check" },
             syncNow = { order += "sync" },
         )
 
-        org.junit.Assert.assertEquals(listOf("refresh", "check", "sync"), order)
+        org.junit.Assert.assertEquals(listOf("refresh", "sync"), order)
     }
 }

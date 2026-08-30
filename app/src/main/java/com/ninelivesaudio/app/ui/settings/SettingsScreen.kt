@@ -54,6 +54,7 @@ import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.components.StatusPill
+import com.ninelivesaudio.app.ui.components.connectionStatusPresentation
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
@@ -137,8 +138,11 @@ fun SettingsScreen(
             ),
             trailing = {
                 StatusPill(
-                    connectionStatus = uiState.connectionStatus,
-                    isLocalMode = uiState.appMode == AppMode.LOCAL,
+                    presentation = connectionStatusPresentation(
+                        appMode = uiState.appMode,
+                        hasAuthToken = uiState.hasAuthToken,
+                        connectionStatus = uiState.connectionStatus,
+                    ),
                 )
             },
         )
@@ -240,8 +244,11 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     StatusPill(
-                        connectionStatus = uiState.connectionStatus,
-                        isLocalMode = uiState.appMode == AppMode.LOCAL,
+                        presentation = connectionStatusPresentation(
+                            appMode = uiState.appMode,
+                            hasAuthToken = uiState.hasAuthToken,
+                            connectionStatus = uiState.connectionStatus,
+                        ),
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     Text(

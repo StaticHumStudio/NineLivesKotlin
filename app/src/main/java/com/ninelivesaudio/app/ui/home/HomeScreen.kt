@@ -86,6 +86,7 @@ fun HomeScreen(
                 totalListeningSeconds = uiState.totalListeningSeconds,
                 connectionPillState = connectionPillState,
                 onReconnect = viewModel::reconnect,
+                onNavigateToSettings = onNavigateToSettings,
                 onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
             )
 
@@ -241,6 +242,7 @@ private fun NineLivesAltar(
     totalListeningSeconds: Double,
     connectionPillState: HomeConnectionPillState,
     onReconnect: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     onSecretUnlocked: () -> Unit = {},
 ) {
     var tapCount by remember { mutableStateOf(0) }
@@ -283,6 +285,7 @@ private fun NineLivesAltar(
             HomeConnectionStatusPill(
                 state = connectionPillState,
                 onReconnect = onReconnect,
+                onNavigateToSettings = onNavigateToSettings,
             )
         }
 
@@ -431,6 +434,7 @@ private fun EmptyHomeState(
         HomeConnectionStatusPill(
             state = connectionPillState,
             onReconnect = onReconnect,
+            onNavigateToSettings = onNavigateToSettings,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(horizontal = 18.dp, vertical = 10.dp),
@@ -507,21 +511,26 @@ private fun EmptyHomeState(
 private fun HomeConnectionStatusPill(
     state: HomeConnectionPillState,
     onReconnect: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val actionModifier = if (state.reconnectContentDescription != null) {
+    val onClick = when (state.action) {
+        HomeConnectionPillAction.RECONNECT -> onReconnect
+        HomeConnectionPillAction.OPEN_SETTINGS -> onNavigateToSettings
+        HomeConnectionPillAction.NONE -> null
+    }
+    val actionModifier = if (onClick != null && state.actionContentDescription != null) {
         Modifier
             .clip(RoundedCornerShape(16.dp))
-            .clickable(role = Role.Button, onClick = onReconnect)
+            .clickable(role = Role.Button, onClick = onClick)
             .semantics {
-                contentDescription = state.reconnectContentDescription
+                contentDescription = state.actionContentDescription
             }
     } else {
         Modifier
     }
     StatusPill(
-        connectionStatus = state.connectionStatus,
-        isLocalMode = state.isLocalMode,
+        presentation = state.presentation,
         modifier = modifier.then(actionModifier),
     )
 }

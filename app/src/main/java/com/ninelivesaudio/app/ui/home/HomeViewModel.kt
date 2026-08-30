@@ -13,6 +13,8 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.ui.components.ConnectionStatusPresentation
+import com.ninelivesaudio.app.ui.components.connectionStatusPresentation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -61,6 +63,7 @@ class HomeViewModel @Inject constructor(
         val totalListeningSeconds: Double = 0.0,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val isLocalMode: Boolean = false,
+        val hasAuthToken: Boolean? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -82,6 +85,18 @@ class HomeViewModel @Inject constructor(
                 .distinctUntilChanged()
                 .collect { isLocal ->
                     _uiState.update { it.copy(isLocalMode = isLocal) }
+                }
+        }
+
+        // Session state is independent of server reachability. A reachable
+        // /ping endpoint cannot make a signed-out ABS session usable.
+        viewModelScope.launch {
+            // Do not publish the StateFlow's construction-time false before
+            // encrypted storage has had a chance to restore a saved session.
+            settingsManager.loadSettings()
+            settingsManager.hasAuthToken
+                .collect { hasAuthToken ->
+                    _uiState.update { it.copy(hasAuthToken = hasAuthToken) }
                 }
         }
 
@@ -133,7 +148,13 @@ class HomeViewModel @Inject constructor(
 
     fun reconnect() {
         val state = _uiState.value
-        if (!isHomeReconnectAvailable(state.isLocalMode, state.connectionStatus)) return
+        if (
+            !isHomeReconnectAvailable(
+                isLocalMode = state.isLocalMode,
+                hasAuthToken = settingsManager.hasAuthToken.value,
+                connectionStatus = state.connectionStatus,
+            )
+        ) return
 
         reconnectJobOwner.joinOrStart {
             performHomeReconnect(
@@ -311,37 +332,50 @@ internal fun canShowHomeBooks(
 
 internal fun isHomeReconnectAvailable(
     isLocalMode: Boolean,
+    hasAuthToken: Boolean,
     connectionStatus: ConnectionStatus,
-): Boolean = !isLocalMode && (
+): Boolean = !isLocalMode && hasAuthToken && (
     connectionStatus == ConnectionStatus.SERVER_UNREACHABLE ||
         connectionStatus == ConnectionStatus.OFFLINE
     )
 
-internal fun homeReconnectContentDescription(
-    isLocalMode: Boolean,
-    connectionStatus: ConnectionStatus,
-): String? = if (isHomeReconnectAvailable(isLocalMode, connectionStatus)) {
-    "Connection lost. Tap to reconnect."
-} else {
-    null
-}
-
 internal data class HomeConnectionPillState(
-    val connectionStatus: ConnectionStatus,
-    val isLocalMode: Boolean,
-    val reconnectContentDescription: String?,
+    val presentation: ConnectionStatusPresentation,
+    val action: HomeConnectionPillAction,
+    val actionContentDescription: String?,
 )
 
-internal fun homeConnectionPillState(
-    uiState: HomeViewModel.UiState,
-): HomeConnectionPillState = HomeConnectionPillState(
-    connectionStatus = uiState.connectionStatus,
-    isLocalMode = uiState.isLocalMode,
-    reconnectContentDescription = homeReconnectContentDescription(
-        isLocalMode = uiState.isLocalMode,
+internal enum class HomeConnectionPillAction { NONE, RECONNECT, OPEN_SETTINGS }
+
+internal fun homeConnectionPillState(uiState: HomeViewModel.UiState): HomeConnectionPillState {
+    val presentation = connectionStatusPresentation(
+        appMode = if (uiState.isLocalMode) AppMode.LOCAL else AppMode.AUDIOBOOKSHELF,
+        hasAuthToken = uiState.hasAuthToken,
         connectionStatus = uiState.connectionStatus,
-    ),
-)
+    )
+    val action = when {
+        presentation == ConnectionStatusPresentation.SIGNED_OUT ->
+            HomeConnectionPillAction.OPEN_SETTINGS
+        isHomeReconnectAvailable(
+            isLocalMode = uiState.isLocalMode,
+            hasAuthToken = uiState.hasAuthToken == true,
+            connectionStatus = uiState.connectionStatus,
+        ) ->
+            HomeConnectionPillAction.RECONNECT
+        else -> HomeConnectionPillAction.NONE
+    }
+    val contentDescription = when (action) {
+        HomeConnectionPillAction.OPEN_SETTINGS -> "Signed out. Tap to open Settings."
+        HomeConnectionPillAction.RECONNECT -> "Connection lost. Tap to reconnect."
+        HomeConnectionPillAction.NONE -> null
+    }
+
+    return HomeConnectionPillState(
+        presentation = presentation,
+        action = action,
+        actionContentDescription = contentDescription,
+    )
+}
 
 internal class HomeReconnectJobOwner(
     private val scope: CoroutineScope,

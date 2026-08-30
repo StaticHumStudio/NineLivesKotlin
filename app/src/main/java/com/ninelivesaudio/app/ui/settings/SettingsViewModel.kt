@@ -75,6 +75,7 @@ class SettingsViewModel @Inject constructor(
         val isConnecting: Boolean = false,
         val connectionStatusText: String = "Not connected",
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
+        val hasAuthToken: Boolean? = null,
 
         // Libraries (ABS)
         val libraries: List<Library> = emptyList(),
@@ -249,6 +250,7 @@ class SettingsViewModel @Inject constructor(
                 hasTrustedFingerprint = configuredHost?.let {
                     settingsManager.getTrustedCertificateFingerprint(it) != null
                 } == true,
+                hasAuthToken = settingsManager.hasAuthToken.value,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
                 selectedLocalLibrary = resolveSelectedLocalLibrary(
@@ -265,6 +267,15 @@ class SettingsViewModel @Inject constructor(
                 includeArchivedInStats = settings.includeArchivedInStats,
                 themeMode = settings.themeMode,
             )
+        }
+
+        // The auth token is the session signal for status presentation. Start
+        // observing only after encrypted storage restores the initial value.
+        // Explicit logout and expiry both publish their clears immediately.
+        viewModelScope.launch {
+            settingsManager.hasAuthToken.collect { hasAuthToken ->
+                _uiState.update { it.copy(hasAuthToken = hasAuthToken) }
+            }
         }
 
         // Check if already connected by validating stored token. Only an

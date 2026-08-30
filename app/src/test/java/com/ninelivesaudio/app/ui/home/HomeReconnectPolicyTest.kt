@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.ui.home
 
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.ui.components.ConnectionStatusPresentation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -15,7 +16,6 @@ import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,12 +31,14 @@ class HomeReconnectPolicyTest {
         assertTrue(
             isHomeReconnectAvailable(
                 isLocalMode = false,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.SERVER_UNREACHABLE,
             ),
         )
         assertTrue(
             isHomeReconnectAvailable(
                 isLocalMode = false,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.OFFLINE,
             ),
         )
@@ -47,12 +49,14 @@ class HomeReconnectPolicyTest {
         assertFalse(
             isHomeReconnectAvailable(
                 isLocalMode = false,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.CONNECTED,
             ),
         )
         assertFalse(
             isHomeReconnectAvailable(
                 isLocalMode = false,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.SYNCING,
             ),
         )
@@ -63,36 +67,33 @@ class HomeReconnectPolicyTest {
         assertFalse(
             isHomeReconnectAvailable(
                 isLocalMode = true,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.SERVER_UNREACHABLE,
             ),
         )
         assertFalse(
             isHomeReconnectAvailable(
                 isLocalMode = true,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.OFFLINE,
             ),
         )
     }
 
     @Test
-    fun `lost connection action explains how to reconnect`() {
-        assertEquals(
-            "Connection lost. Tap to reconnect.",
-            homeReconnectContentDescription(
+    fun `signed-out ABS session cannot start reconnect work`() {
+        assertFalse(
+            isHomeReconnectAvailable(
                 isLocalMode = false,
+                hasAuthToken = false,
                 connectionStatus = ConnectionStatus.OFFLINE,
             ),
         )
-        assertNull(
-            homeReconnectContentDescription(
-                isLocalMode = true,
-                connectionStatus = ConnectionStatus.OFFLINE,
-            ),
-        )
-        assertNull(
-            homeReconnectContentDescription(
+        assertFalse(
+            isHomeReconnectAvailable(
                 isLocalMode = false,
-                connectionStatus = ConnectionStatus.CONNECTED,
+                hasAuthToken = false,
+                connectionStatus = ConnectionStatus.SERVER_UNREACHABLE,
             ),
         )
     }
@@ -220,11 +221,43 @@ class HomeReconnectPolicyTest {
             HomeViewModel.UiState(
                 showEmptyState = true,
                 isLocalMode = false,
+                hasAuthToken = true,
                 connectionStatus = ConnectionStatus.OFFLINE,
             ),
         )
 
-        assertEquals(ConnectionStatus.OFFLINE, pillState.connectionStatus)
-        assertEquals("Connection lost. Tap to reconnect.", pillState.reconnectContentDescription)
+        assertEquals(ConnectionStatusPresentation.OFFLINE, pillState.presentation)
+        assertEquals(HomeConnectionPillAction.RECONNECT, pillState.action)
+        assertEquals("Connection lost. Tap to reconnect.", pillState.actionContentDescription)
+    }
+
+    @Test
+    fun `signed-out ABS Home opens Settings instead of reconnecting`() {
+        val pillState = homeConnectionPillState(
+            HomeViewModel.UiState(
+                isLocalMode = false,
+                hasAuthToken = false,
+                connectionStatus = ConnectionStatus.CONNECTED,
+            ),
+        )
+
+        assertEquals(ConnectionStatusPresentation.SIGNED_OUT, pillState.presentation)
+        assertEquals(HomeConnectionPillAction.OPEN_SETTINGS, pillState.action)
+        assertEquals("Signed out. Tap to open Settings.", pillState.actionContentDescription)
+    }
+
+    @Test
+    fun `unresolved ABS session keeps the old presentation without an action`() {
+        val pillState = homeConnectionPillState(
+            HomeViewModel.UiState(
+                isLocalMode = false,
+                hasAuthToken = null,
+                connectionStatus = ConnectionStatus.OFFLINE,
+            ),
+        )
+
+        assertEquals(ConnectionStatusPresentation.OFFLINE, pillState.presentation)
+        assertEquals(HomeConnectionPillAction.NONE, pillState.action)
+        assertEquals(null, pillState.actionContentDescription)
     }
 }

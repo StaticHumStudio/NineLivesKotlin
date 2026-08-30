@@ -1,6 +1,8 @@
 package com.ninelivesaudio.app.domain.model
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -50,6 +52,33 @@ class AppSettingsTest {
         val decoded = json.decodeFromString<AppSettings>(json.encodeToString(original))
 
         assertEquals(original, decoded)
+    }
+
+    @Test
+    fun `last sync record survives settings json round trip`() {
+        val stored = """
+            {
+              "lastSync": {
+                "result": "PARTIAL",
+                "libraryCount": 2,
+                "bookCount": 200,
+                "failure": "items[Books]: timeout",
+                "completedAtMs": 123456789,
+                "serverUrl": "https://server.example"
+              }
+            }
+        """.trimIndent()
+
+        val decoded = json.decodeFromString<AppSettings>(stored)
+        val roundTrip = json.parseToJsonElement(json.encodeToString(decoded)).jsonObject
+        val lastSync = roundTrip["lastSync"]?.jsonObject
+
+        assertEquals("PARTIAL", lastSync?.get("result")?.jsonPrimitive?.content)
+        assertEquals("2", lastSync?.get("libraryCount")?.jsonPrimitive?.content)
+        assertEquals("200", lastSync?.get("bookCount")?.jsonPrimitive?.content)
+        assertEquals("items[Books]: timeout", lastSync?.get("failure")?.jsonPrimitive?.content)
+        assertEquals("123456789", lastSync?.get("completedAtMs")?.jsonPrimitive?.content)
+        assertEquals("https://server.example", lastSync?.get("serverUrl")?.jsonPrimitive?.content)
     }
 
     @Test

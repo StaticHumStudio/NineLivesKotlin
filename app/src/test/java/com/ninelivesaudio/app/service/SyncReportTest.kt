@@ -1,6 +1,10 @@
 package com.ninelivesaudio.app.service
 
+import com.ninelivesaudio.app.domain.model.AppSettings
+import com.ninelivesaudio.app.domain.model.LastSyncRecord
+import com.ninelivesaudio.app.domain.model.SyncResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -66,5 +70,99 @@ class SyncReportTest {
     @Test
     fun `no snapshot ages to nothing`() {
         assertEquals(null, (null as SyncSnapshot?).atAge(nowMs = 1_000_000L))
+    }
+
+    @Test
+    fun `persisted sync record keeps the outcome counts failure and completion time`() {
+        val current = AppSettings(serverUrl = "https://server.example")
+        val updated = current.withLastSyncIfServerUnchanged(
+            report = SyncReport(
+                libraryCount = 2,
+                bookCount = 200,
+                failure = "items[Books]: timeout",
+                result = SyncResult.PARTIAL,
+            ),
+            completedAtMs = 123_456_789L,
+            serverUrlAtStart = "https://server.example",
+        )
+
+        assertEquals("https://server.example", updated.serverUrl)
+        assertEquals(
+            LastSyncRecord(
+                result = SyncResult.PARTIAL,
+                libraryCount = 2,
+                bookCount = 200,
+                failure = "items[Books]: timeout",
+                completedAtMs = 123_456_789L,
+                // Stamped with the server this sync actually ran against, so
+                // a later switch to a different server can tell this record
+                // isn't about it. See LibraryShelfDecisionTest and
+                // LibraryRemoteRefreshTest for the read side of that check.
+                serverUrl = "https://server.example",
+            ),
+            updated.lastSync,
+        )
+    }
+
+    @Test
+    fun `a sync completion is discarded when the configured server changed in flight`() {
+        val currentServerRecord = LastSyncRecord(
+            result = SyncResult.SUCCESS,
+            libraryCount = 1,
+            bookCount = 10,
+            completedAtMs = 10L,
+            serverUrl = "https://b.example",
+        )
+        val current = AppSettings(
+            serverUrl = "https://b.example",
+            lastSync = currentServerRecord,
+        )
+
+        val updated = current.withLastSyncIfServerUnchanged(
+            report = SyncReport(
+                libraryCount = 0,
+                bookCount = 0,
+                failure = "server unreachable",
+                result = SyncResult.FAILED,
+            ),
+            completedAtMs = 20L,
+            serverUrlAtStart = "https://a.example",
+        )
+
+        assertEquals(current, updated)
+    }
+
+    @Test
+    fun `diagnostic snapshot is hidden when it belongs to another server`() {
+        val settings = AppSettings(
+            serverUrl = "https://b.example",
+            lastSync = LastSyncRecord(
+                result = SyncResult.FAILED,
+                libraryCount = 0,
+                bookCount = 0,
+                failure = "offline",
+                completedAtMs = 10L,
+                serverUrl = "https://a.example",
+            ),
+        )
+
+        assertNull(settings.syncSnapshotForCurrentServer())
+    }
+
+    @Test
+    fun `diagnostic snapshot is exposed for the configured server`() {
+        val settings = AppSettings(
+            serverUrl = "https://a.example",
+            lastSync = LastSyncRecord(
+                result = SyncResult.PARTIAL,
+                libraryCount = 1,
+                bookCount = 25,
+                failure = "page 2: timeout",
+                completedAtMs = 10L,
+                serverUrl = "https://a.example",
+            ),
+        )
+
+        assertEquals(SyncResult.PARTIAL, settings.syncSnapshotForCurrentServer()?.report?.result)
     }
 }

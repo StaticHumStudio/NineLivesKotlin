@@ -4,10 +4,6 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
-import com.ninelivesaudio.app.data.remote.RemoteResult
-import com.ninelivesaudio.app.data.remote.describeFailure
-import com.ninelivesaudio.app.data.remote.map
-import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
@@ -71,8 +67,13 @@ class SyncManager @Inject constructor(
      * "it says it's syncing but nothing shows up" arrives with the answer
      * attached instead of needing a code trace.
      */
-    private val _lastSync = MutableStateFlow<SyncSnapshot?>(null)
-    internal val lastSync: StateFlow<SyncSnapshot?> = _lastSync.asStateFlow()
+    internal val lastSync: StateFlow<SyncSnapshot?> = settingsManager.settings
+        .map { it.syncSnapshotForCurrentServer() }
+        .stateIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            initialValue = settingsManager.currentSettings.syncSnapshotForCurrentServer(),
+        )
 
     private val _syncCompleted = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
     val syncCompleted: SharedFlow<Unit> = _syncCompleted.asSharedFlow()
@@ -154,10 +155,12 @@ class SyncManager @Inject constructor(
      * Thread-safe via Mutex.
      */
     suspend fun syncNow() {
+        val settingsAtStart = settingsManager.currentSettings
+        val serverUrlAtStart = settingsAtStart.serverUrl
         // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a network.
         if (!shouldRunSync(
                 isOnline = connectivityMonitor.isOnline.value,
-                isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                isLocalMode = settingsAtStart.appMode == AppMode.LOCAL,
                 hasAuth = hasAuthToken(),
             )
         ) return
@@ -166,15 +169,28 @@ class SyncManager @Inject constructor(
         // interface (e.g. Tailscale) keeps isOnline=true with no real connectivity,
         // so without this fast probe the sync fires and hangs on the full 30s
         // request timeout — the "still trying to sync" symptom in airplane mode.
-        if (!isSyncEligibleAfterReachability(
-                checkServerReachable = connectivityMonitor::checkServerReachable,
-                isStillEligible = {
-                    shouldRunSync(
-                        isOnline = connectivityMonitor.isOnline.value,
-                        isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
-                        hasAuth = hasAuthToken(),
-                    )
-                },
+        //
+        // A failed probe still has to be recorded. Returning silently here
+        // used to leave a fresh install on a live, unreachable network with
+        // no LastSyncRecord at all, indistinguishable from never having
+        // synced.
+        if (!connectivityMonitor.checkServerReachable()) {
+            settingsManager.updateSettings {
+                it.withLastSyncIfServerUnchanged(
+                    report = unreachableServerSyncReport(),
+                    completedAtMs = System.currentTimeMillis(),
+                    serverUrlAtStart = serverUrlAtStart,
+                )
+            }
+            return
+        }
+        // The probe took real time. Re-check eligibility so a mode switch or
+        // sign-out that landed mid-probe does not start a sync that should no
+        // longer run.
+        if (!shouldRunSync(
+                isOnline = connectivityMonitor.isOnline.value,
+                isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                hasAuth = hasAuthToken(),
             )
         ) return
 
@@ -188,7 +204,7 @@ class SyncManager @Inject constructor(
             // Progress sync FIRST — this populates the home screen grid immediately.
             // Library sync runs after (heavier, fetches all book metadata).
             syncProgress()
-            syncLibraries()
+            syncLibraries(serverUrlAtStart)
 
             _syncCompleted.tryEmit(Unit)
         } catch (e: CancellationException) {
@@ -206,38 +222,16 @@ class SyncManager @Inject constructor(
     /**
      * Sync libraries and their audiobooks from the server.
      */
-    private suspend fun syncLibraries() {
-        val librariesResult = try {
-            libraryRepository.syncFromServer()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            RemoteResult.Failed(describeFailure(e))
-        }
-
-        // A library whose items fetch blows up must not stop the others, but
-        // it must not vanish either: every outcome lands in the report so a
-        // bug report can say which library failed and why.
-        val itemResults = librariesResult.valueOrEmpty().map { library ->
-            val result = try {
-                // syncLibraryItems already preserves local download state
-                audioBookRepository.syncLibraryItems(library.id)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                RemoteResult.Failed(describeFailure(e))
-            }
-            result.map { books -> books.size }
-        }
-
-        _lastSync.value = SyncSnapshot(
-            report = buildSyncReport(
-                libraries = librariesResult.map { libs -> libs.map { it.name } },
-                items = itemResults,
-                ageMinutes = null,
-            ),
-            completedAtMs = System.currentTimeMillis(),
+    private suspend fun syncLibraries(serverUrlAtStart: String) {
+        val report = fetchLibrarySyncReport(
+            fetchLibraries = libraryRepository::syncFromServer,
+            // syncLibraryItems already preserves local download state.
+            fetchItems = { library -> audioBookRepository.syncLibraryItems(library.id) },
         )
+        val completedAtMs = System.currentTimeMillis()
+        settingsManager.updateSettings {
+            it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
+        }
     }
 
     /**

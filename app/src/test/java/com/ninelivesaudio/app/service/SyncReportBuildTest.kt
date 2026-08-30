@@ -1,6 +1,9 @@
 package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.data.remote.RemoteResult
+import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.SyncResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -78,6 +81,20 @@ class SyncReportBuildTest {
     }
 
     @Test
+    fun `a part-way pagination result is reported as incomplete`() {
+        val report = buildSyncReport(
+            libraries = RemoteResult.Ok(listOf("Books")),
+            items = listOf(RemoteResult.Partial(100, "page 3: timeout")),
+            ageMinutes = 2,
+        )
+
+        assertEquals(
+            "INCOMPLETE (items[Books]: page 3: timeout), 2m ago",
+            describeLastSync(report),
+        )
+    }
+
+    @Test
     fun `no libraries at all is a clean sync, which is itself the finding`() {
         // An Audiobookshelf account with no libraries visible to this user.
         // Distinguishable from a 401, which lands in the Failed branch.
@@ -89,5 +106,61 @@ class SyncReportBuildTest {
         assertNull(report.failure)
         assertEquals(0, report.libraryCount)
         assertEquals(0L, report.ageMinutes)
+    }
+
+    @Test
+    fun `targeted shelf report keeps a failed library list failed when cached items load`() {
+        val report = buildShelfSyncReport(
+            libraries = RemoteResult.Failed("HTTP 500"),
+            selectedLibrary = Library(id = "books", name = "Books"),
+            items = RemoteResult.Ok(listOf(AudioBook(id = "cached"))),
+        )
+
+        assertEquals(SyncResult.FAILED, report?.result)
+        assertEquals("libraries: HTTP 500", report?.failure)
+        assertEquals(1, report?.bookCount)
+    }
+
+    @Test
+    fun `targeted shelf report keeps a partial item fetch incomplete`() {
+        val report = buildShelfSyncReport(
+            libraries = null,
+            selectedLibrary = Library(id = "books", name = "Books"),
+            items = RemoteResult.Partial(listOf(AudioBook(id = "one")), "page 2: timeout"),
+        )
+
+        assertEquals(SyncResult.PARTIAL, report?.result)
+        assertEquals("items[Books]: page 2: timeout", report?.failure)
+        assertEquals(1, report?.libraryCount)
+        assertEquals(1, report?.bookCount)
+    }
+
+    // ─── Failed reachability probe ─────────────────────────────────────────
+    //
+    // syncNow() used to return the instant probeServerReachable() failed,
+    // before syncLibraries() ever ran, so no LastSyncRecord was written.
+    // Fresh install, live WiFi, unreachable host: the app looked like it had
+    // simply never synced, not like it had tried and failed.
+
+    @Test
+    fun `an unreachable server probe is reported as a failure, not silence`() {
+        val report = unreachableServerSyncReport()
+        assertEquals(SyncResult.FAILED, report.result)
+        assertEquals(0, report.libraryCount)
+        assertEquals(0, report.bookCount)
+        assertEquals("server unreachable", report.failure)
+    }
+
+    @Test
+    fun `targeted empty library list records a successful empty sync`() {
+        val report = buildShelfSyncReport(
+            libraries = RemoteResult.Ok(emptyList()),
+            selectedLibrary = null,
+            items = null,
+        )
+
+        assertEquals(SyncResult.SUCCESS, report?.result)
+        assertEquals(0, report?.libraryCount)
+        assertEquals(0, report?.bookCount)
     }
 }

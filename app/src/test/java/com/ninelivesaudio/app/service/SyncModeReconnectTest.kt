@@ -68,4 +68,20 @@ class SyncModeReconnectTest {
 
         assertFalse(result.await())
     }
+
+    @Test
+    fun `mode switch reconnect refreshes OS connectivity before anything probes`() = runBlocking {
+        // The cached isOnline flag can lag a returned connection. The refresh
+        // must come first or both the reachability check and the sync
+        // short-circuit on stale state and the reconnect does nothing.
+        val order = mutableListOf<String>()
+
+        performModeSwitchReconnect(
+            refreshIsOnline = { order += "refresh" },
+            requestReachabilityCheck = { order += "check" },
+            syncNow = { order += "sync" },
+        )
+
+        org.junit.Assert.assertEquals(listOf("refresh", "check", "sync"), order)
+    }
 }

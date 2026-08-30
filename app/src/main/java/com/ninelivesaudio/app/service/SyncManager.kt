@@ -120,8 +120,11 @@ class SyncManager @Inject constructor(
                     .drop(1)
                     .collect { (oldMode, newMode) ->
                         if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
-                            connectivityMonitor.requestReachabilityCheck()
-                            syncNow()
+                            performModeSwitchReconnect(
+                                refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
+                                requestReachabilityCheck = connectivityMonitor::requestReachabilityCheck,
+                                syncNow = { syncNow() },
+                            )
                         }
                     }
             }
@@ -463,6 +466,23 @@ internal class SyncLifecycleOwner(
             job = null
         }
     }
+}
+
+/**
+ * The mode-switch reconnect has the same blind spot the Home pill had: right
+ * after connectivity returns, the cached isOnline flag can still say false
+ * because the OS callback is delayed or missed, and both the reachability
+ * check and syncNow short-circuit on that cache. Re-read the OS state first,
+ * then let syncNow own the single reachability probe.
+ */
+internal suspend fun performModeSwitchReconnect(
+    refreshIsOnline: () -> Unit,
+    requestReachabilityCheck: () -> Unit,
+    syncNow: suspend () -> Unit,
+) {
+    refreshIsOnline()
+    requestReachabilityCheck()
+    syncNow()
 }
 
 internal fun shouldReconnectForModeTransition(

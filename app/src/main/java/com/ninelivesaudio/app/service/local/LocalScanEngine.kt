@@ -88,11 +88,8 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             if (result != 0) result else ap.size.compareTo(bp.size)
         }
 
-        // Case-insensitive numbered sibling with an optional shared prefix:
-        // "CD1", "The Hobbit Disc 2", "Book_part-03", or "Chapter 4".
-        private val NUMBERED_SIBLING_PATTERN = Regex(
-            "^(?<prefix>.*?)[\\s._-]*(cd|disc|disk|part|vol|volume|chapter)[\\s._-]*(\\d+)$",
-            RegexOption.IGNORE_CASE,
+        private val NUMBERED_SIBLING_KEYWORDS = listOf(
+            "chapter", "volume", "disc", "disk", "part", "vol", "cd",
         )
 
         internal const val MAX_SCAN_DEPTH = 8
@@ -103,6 +100,11 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
     private data class NodeWithMeta(
         val node: ScanNode,
         val meta: LocalMetadataExtractor.TrackMetadata?,
+    )
+
+    private data class NumberedSibling(
+        val prefix: String,
+        val terminalNumber: String,
     )
 
     private class LookaheadBudget(var foldersRemaining: Int)
@@ -174,12 +176,12 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                         val audioSubdirs = subfolders.filter { hasDirectAudio(it, ::childrenOf) }
                         val others = subfolders - audioSubdirs.toSet()
                         val lookaheadBudget = LookaheadBudget(MAX_LOOKAHEAD_FOLDERS)
-                        val numberedPrefixes = audioSubdirs.mapNotNull {
-                            numberedSiblingPrefix(it.name.orEmpty())
+                        val numberedSiblings = audioSubdirs.mapNotNull {
+                            parseNumberedSibling(it.name.orEmpty())
                         }
                         val shouldMerge = audioSubdirs.isNotEmpty() &&
-                            numberedPrefixes.size == audioSubdirs.size &&
-                            numberedPrefixes.distinct().size == 1 &&
+                            numberedSiblings.size == audioSubdirs.size &&
+                            numberedSiblings.map { it.prefix }.distinct().size == 1 &&
                             others.none {
                                 containsAudioAnywhere(it, childDepth, lookaheadBudget, ::childrenOf)
                             } &&
@@ -341,9 +343,17 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         ownChildren: List<ScanNode>,
         childrenOf: (ScanNode) -> List<ScanNode>,
     ): ScannedLocalBook {
-        val discsInOrder = audioSubdirs.sortedWith(
-            compareBy(NATURAL_FILENAME_COMPARATOR) { it.name.orEmpty() }
-        )
+        val discsInOrder = audioSubdirs.sortedWith { a, b ->
+            val aName = a.name.orEmpty()
+            val bName = b.name.orEmpty()
+            val aNumber = checkNotNull(parseNumberedSibling(aName)).terminalNumber
+            val bNumber = checkNotNull(parseNumberedSibling(bName)).terminalNumber
+            compareNumericStrings(aNumber, bNumber)
+                .takeIf { it != 0 }
+                ?: NATURAL_FILENAME_COMPARATOR.compare(aName, bName)
+                    .takeIf { it != 0 }
+                ?: aName.compareTo(bName)
+        }
 
         // Sort each disc on its own (trackNumber restarts per disc), then lay the
         // discs end to end. Never sort the merged list by trackNumber as a whole.
@@ -435,12 +445,47 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         return childrenOf(node).any { !isHidden(it) && !it.isDirectory && isAudioFile(it) }
     }
 
-    private fun numberedSiblingPrefix(name: String): String? {
-        val prefix = NUMBERED_SIBLING_PATTERN.matchEntire(name)
-            ?.groups?.get("prefix")?.value
-            ?: return null
-        return prefix.trim { it.isWhitespace() || it == '.' || it == '_' || it == '-' }
-            .lowercase()
+    private fun parseNumberedSibling(name: String): NumberedSibling? {
+        var numberStart = name.length
+        while (numberStart > 0 && name[numberStart - 1] in '0'..'9') {
+            numberStart--
+        }
+        if (numberStart == name.length) return null
+
+        var keywordEnd = numberStart
+        while (keywordEnd > 0 && name[keywordEnd - 1].isNumberedSiblingSeparator()) {
+            keywordEnd--
+        }
+        val keyword = NUMBERED_SIBLING_KEYWORDS.firstOrNull {
+            keywordEnd >= it.length && name.regionMatches(
+                thisOffset = keywordEnd - it.length,
+                other = it,
+                otherOffset = 0,
+                length = it.length,
+                ignoreCase = true,
+            )
+        } ?: return null
+
+        val keywordStart = keywordEnd - keyword.length
+        val prefix = name.substring(0, keywordStart)
+        if (prefix.isNotEmpty() && !prefix.last().isNumberedSiblingSeparator()) {
+            return null
+        }
+        return NumberedSibling(
+            prefix = prefix.trim { it.isNumberedSiblingSeparator() }.lowercase(),
+            terminalNumber = name.substring(numberStart),
+        )
+    }
+
+    private fun Char.isNumberedSiblingSeparator(): Boolean =
+        this == ' ' || this == '.' || this == '_' || this == '-'
+
+    private fun compareNumericStrings(a: String, b: String): Int {
+        val normalizedA = a.trimStart('0').ifEmpty { "0" }
+        val normalizedB = b.trimStart('0').ifEmpty { "0" }
+        return normalizedA.length.compareTo(normalizedB.length)
+            .takeIf { it != 0 }
+            ?: normalizedA.compareTo(normalizedB)
     }
 
     private fun containsAudioAnywhere(

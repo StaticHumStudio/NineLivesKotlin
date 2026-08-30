@@ -186,6 +186,85 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `mixed separator disc folders sort by terminal number`() {
+        val disc2Track = "$rootUri/The Hobbit/The Hobbit-CD2/track.mp3"
+        val disc10Track = "$rootUri/The Hobbit/The Hobbit CD10/track.mp3"
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "The Hobbit", "$rootUri/The Hobbit", children = listOf(
+                        dir(
+                            "The Hobbit CD10", "$rootUri/The Hobbit/The Hobbit CD10", children = listOf(
+                                file("track.mp3", disc10Track),
+                            )
+                        ),
+                        dir(
+                            "The Hobbit-CD2", "$rootUri/The Hobbit/The Hobbit-CD2", children = listOf(
+                                file("track.mp3", disc2Track),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(listOf(disc2Track, disc10Track), result.books.single().tracks.map { it.uri })
+    }
+
+    @Test
+    fun `keyword inside a word does not make numbered siblings merge`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Collection", "$rootUri/Collection", children = listOf(
+                        dir(
+                            "Counterpart 1", "$rootUri/Collection/Counterpart 1", children = listOf(
+                                file("one.mp3", "$rootUri/Collection/Counterpart 1/one.mp3"),
+                            )
+                        ),
+                        dir(
+                            "Counterpart 2", "$rootUri/Collection/Counterpart 2", children = listOf(
+                                file("two.mp3", "$rootUri/Collection/Counterpart 2/two.mp3"),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(setOf("Counterpart 1", "Counterpart 2"), result.books.map { it.title }.toSet())
+        assertFalse(result.books.any { it.title == "Collection" })
+    }
+
+    @Test(timeout = 250L)
+    fun `separator only folder name completes without merging`() {
+        val separatorOnlyName = "-".repeat(10_000)
+        val folderUri = "$rootUri/$separatorOnlyName"
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Collection", "$rootUri/Collection", children = listOf(
+                        dir(
+                            separatorOnlyName, folderUri, children = listOf(
+                                file("track.mp3", "$folderUri/track.mp3"),
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(listOf(separatorOnlyName), result.books.map { it.title })
+        assertFalse(result.books.any { it.title == "Collection" })
+    }
+
+    @Test
     fun `different disc folder prefixes stay as separate books`() {
         val root = dir(
             null, rootUri, children = listOf(

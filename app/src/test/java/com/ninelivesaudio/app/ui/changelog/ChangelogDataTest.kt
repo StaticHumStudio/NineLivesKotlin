@@ -58,4 +58,25 @@ class ChangelogDataTest {
             ChangelogData.releases.map { it.version },
         )
     }
+
+    @Test
+    fun `improved and fixed collapse into one display section after new`() {
+        val sections = listOf(
+            ChangelogSection("New", listOf("a")),
+            ChangelogSection("Improved", listOf("b")),
+            ChangelogSection("Fixed", listOf("c", "d")),
+        )
+        val display = displaySections(sections)
+        assertEquals(listOf("New", "Improved and fixed"), display.map { it.header })
+        assertEquals(listOf("b", "c", "d"), display.last().entries)
+    }
+
+    @Test
+    fun `a release with only one of improved or fixed keeps its own header`() {
+        val sections = listOf(
+            ChangelogSection("New", listOf("a")),
+            ChangelogSection("Fixed", listOf("b")),
+        )
+        assertEquals(sections, displaySections(sections))
+    }
 }

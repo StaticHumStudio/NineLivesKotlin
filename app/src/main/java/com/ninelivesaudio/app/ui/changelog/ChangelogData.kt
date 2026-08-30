@@ -33,9 +33,7 @@ object ChangelogData {
                         "Use the Nightwatch Dossier for 30 days for free.",
                         "Use the five-band equalizer and volume boost with the unlock.",
                         "Let the sleep timer wait when it detects that you are still moving, with the unlock.",
-                        "Books in nested folders now show up when you scan.",
-                        "Books split across numbered discs now appear as one book.",
-                        "Disc and chapter folders with matching names now stay together as one book.",
+                        "Tap the Home connection status to reconnect after a loss.",
                     ),
                 ),
                 ChangelogSection(
@@ -44,7 +42,7 @@ object ChangelogData {
                         "Android Auto can sign in, browse, play, and show cover art.",
                         "Downloaded books with several audio files resume properly.",
                         "Library menus open beside the control you selected.",
-                        "Downloads now start in the Google Play version of the app.",
+                        "Downloads now start reliably.",
                         "Progress and resume positions are kept more reliably.",
                         "The unlock price reappears after a connection problem.",
                     ),
@@ -52,9 +50,11 @@ object ChangelogData {
                 ChangelogSection(
                     header = "Fixed",
                     entries = listOf(
+                        "Books in nested folders now show up when you scan.",
+                        "Books split across numbered discs now appear as one book.",
+                        "Disc and chapter folders with matching names now stay together as one book.",
                         "The app gives a clear reason when a download cannot start.",
                         "Switching back to Audiobookshelf reconnects automatically.",
-                        "Tap the Home connection status to reconnect after a loss.",
                         "Downloaded Only turns off after you reconnect.",
                     ),
                 ),
@@ -271,3 +271,17 @@ object ChangelogData {
 
 fun shouldShowChangelogBadge(currentVersion: String, lastSeenVersion: String): Boolean =
     currentVersion.isNotBlank() && currentVersion != lastSeenVersion
+
+/**
+ * Improved and Fixed render as one block. The data keeps them separate so
+ * each entry stays tagged by what it actually was, and only the presentation
+ * collapses them.
+ */
+fun displaySections(sections: List<ChangelogSection>): List<ChangelogSection> {
+    val (mergeable, keep) = sections.partition { it.header == "Improved" || it.header == "Fixed" }
+    if (mergeable.size < 2) return sections
+    return keep + ChangelogSection(
+        header = "Improved and fixed",
+        entries = mergeable.flatMap { it.entries },
+    )
+}

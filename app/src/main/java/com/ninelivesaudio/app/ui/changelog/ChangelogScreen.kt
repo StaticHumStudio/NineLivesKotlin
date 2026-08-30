@@ -124,7 +124,7 @@ private fun ChangelogReleaseCard(release: ChangelogRelease) {
                 )
             }
 
-            release.sections.forEach { section ->
+            displaySections(release.sections).forEach { section ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = section.header,

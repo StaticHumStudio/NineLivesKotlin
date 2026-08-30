@@ -14,6 +14,8 @@ import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -63,6 +65,7 @@ class HomeViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val reconnectJobOwner = HomeReconnectJobOwner(viewModelScope)
 
     init {
         // Observe connection status
@@ -132,9 +135,11 @@ class HomeViewModel @Inject constructor(
         val state = _uiState.value
         if (!isHomeReconnectAvailable(state.isLocalMode, state.connectionStatus)) return
 
-        viewModelScope.launch {
+        reconnectJobOwner.joinOrStart {
             performHomeReconnect(
-                requestReachabilityCheck = connectivityMonitor::requestReachabilityCheck,
+                isAudiobookshelfMode = {
+                    settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF
+                },
                 syncNow = syncManager::syncNow,
             )
         }
@@ -338,10 +343,22 @@ internal fun homeConnectionPillState(
     ),
 )
 
+internal class HomeReconnectJobOwner(
+    private val scope: CoroutineScope,
+) {
+    private val lock = Any()
+    private var activeJob: Job? = null
+
+    fun joinOrStart(block: suspend CoroutineScope.() -> Unit): Job = synchronized(lock) {
+        activeJob?.takeIf { it.isActive }
+            ?: scope.launch(block = block).also { activeJob = it }
+    }
+}
+
 internal suspend fun performHomeReconnect(
-    requestReachabilityCheck: () -> Unit,
+    isAudiobookshelfMode: () -> Boolean,
     syncNow: suspend () -> Unit,
 ) {
-    requestReachabilityCheck()
+    if (!isAudiobookshelfMode()) return
     syncNow()
 }

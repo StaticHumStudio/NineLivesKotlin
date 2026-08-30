@@ -7,6 +7,30 @@ import org.junit.Test
 class DownloadedOnlyLatchTest {
 
     @Test
+    fun `syncing to every lost status auto-sets the downloaded filter`() {
+        val expected = DownloadedOnlyFilterState(
+            showDownloadedOnly = true,
+            autoDownloadedOnly = true,
+        )
+
+        listOf(
+            ConnectionStatus.OFFLINE,
+            ConnectionStatus.SERVER_UNREACHABLE,
+        ).forEach { lostStatus ->
+            val result = decideDownloadedOnlyFilter(
+                previousStatus = ConnectionStatus.SYNCING,
+                newStatus = lostStatus,
+                current = DownloadedOnlyFilterState(
+                    showDownloadedOnly = false,
+                    autoDownloadedOnly = false,
+                ),
+            )
+
+            assertEquals("SYNCING to $lostStatus", expected, result)
+        }
+    }
+
+    @Test
     fun `auto-set filter reverts after reconnect`() {
         val latched = decideDownloadedOnlyFilter(
             previousStatus = ConnectionStatus.CONNECTED,

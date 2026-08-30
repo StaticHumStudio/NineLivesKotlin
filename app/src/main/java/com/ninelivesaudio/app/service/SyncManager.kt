@@ -48,13 +48,11 @@ class SyncManager @Inject constructor(
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleOwner = SyncLifecycleOwner(scope)
     private val syncMutex = Mutex()
     private val activeItemMutationMutex = Mutex()
 
     // Sync state
-    private var syncJob: Job? = null
-    private var connectivityJob: Job? = null
-    private var modeChangeJob: Job? = null
     @Volatile private var activeItemId: String? = null
 
     private val playbackThrottleOwner = PlaybackThrottleOwner()
@@ -74,71 +72,65 @@ class SyncManager @Inject constructor(
      * Call this once when the app is initialized and authenticated.
      */
     fun start() {
-        stop()
-        syncJob = scope.launch {
-            // Fast first sync
-            delay(INITIAL_DELAY_MS)
-            syncNow()
-
-            // Periodic sync
-            while (isActive) {
-                delay(DEFAULT_SYNC_INTERVAL_MS)
+        lifecycleOwner.restart {
+            launch {
+                // Fast first sync
+                delay(INITIAL_DELAY_MS)
                 syncNow()
-                // Also retry the offline queue here. The rising-edge flush only
-                // fires once per reconnect, so a push that failed right after
-                // reconnect would otherwise sit queued until the next full
-                // disconnect/reconnect cycle.
-                flushOfflineQueue()
-            }
-        }
 
-        // Flush offline queue on the rising edge of (connected AND not LOCAL).
-        // Triggers on both connectivity returns and mode switches back to AUDIOBOOKSHELF
-        // while already connected, so progress queued during LOCAL mode doesn't sit indefinitely.
-        connectivityJob?.cancel()
-        connectivityJob = scope.launch {
-            combine(
-                connectivityMonitor.connectionStatus,
-                settingsManager.settings,
-            ) { status, settings ->
-                status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
-                        settings.appMode != AppMode.LOCAL
+                // Periodic sync
+                while (isActive) {
+                    delay(DEFAULT_SYNC_INTERVAL_MS)
+                    syncNow()
+                    // Also retry the offline queue here. The rising-edge flush only
+                    // fires once per reconnect, so a push that failed right after
+                    // reconnect would otherwise sit queued until the next full
+                    // disconnect/reconnect cycle.
+                    flushOfflineQueue()
+                }
             }
-                .distinctUntilChanged()
-                .collect { canFlush ->
-                    if (canFlush) flushOfflineQueue()
-                }
-        }
 
-        modeChangeJob?.cancel()
-        modeChangeJob = scope.launch {
-            var previousMode: AppMode? = null
-            settingsManager.settings
-                .map { it.appMode }
-                .distinctUntilChanged()
-                .map { newMode ->
-                    val transition = previousMode to newMode
-                    previousMode = newMode
-                    transition
+            // Flush offline queue on the rising edge of (connected AND not LOCAL).
+            // Triggers on both connectivity returns and mode switches back to AUDIOBOOKSHELF
+            // while already connected, so progress queued during LOCAL mode doesn't sit indefinitely.
+            launch {
+                combine(
+                    connectivityMonitor.connectionStatus,
+                    settingsManager.settings,
+                ) { status, settings ->
+                    status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
+                            settings.appMode != AppMode.LOCAL
                 }
-                .drop(1)
-                .collect { (oldMode, newMode) ->
-                    if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
-                        connectivityMonitor.requestReachabilityCheck()
-                        syncNow()
+                    .distinctUntilChanged()
+                    .collect { canFlush ->
+                        if (canFlush) flushOfflineQueue()
                     }
-                }
+            }
+
+            launch {
+                var previousMode: AppMode? = null
+                settingsManager.settings
+                    .map { it.appMode }
+                    .distinctUntilChanged()
+                    .map { newMode ->
+                        val transition = previousMode to newMode
+                        previousMode = newMode
+                        transition
+                    }
+                    .drop(1)
+                    .collect { (oldMode, newMode) ->
+                        if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
+                            connectivityMonitor.requestReachabilityCheck()
+                            syncNow()
+                        }
+                    }
+            }
         }
     }
 
     /** Stop the periodic sync timer and connectivity listener. */
     fun stop() {
-        syncJob?.cancel()
-        syncJob = null
-        connectivityJob?.cancel()
-        connectivityJob = null
-        modeChangeJob?.cancel()
-        modeChangeJob = null
+        lifecycleOwner.stop()
     }
 
     // ─── Sync Operations ─────────────────────────────────────────────────────
@@ -449,6 +441,27 @@ class SyncManager @Inject constructor(
 
     private suspend fun hasAuthToken(): Boolean {
         return settingsManager.getAuthToken()?.isNotBlank() == true
+    }
+}
+
+internal class SyncLifecycleOwner(
+    private val scope: CoroutineScope,
+) {
+    private val lock = Any()
+    private var job: Job? = null
+
+    fun restart(block: suspend CoroutineScope.() -> Unit): Job = synchronized(lock) {
+        job?.cancel()
+        scope.launch {
+            supervisorScope(block)
+        }.also { job = it }
+    }
+
+    fun stop() {
+        synchronized(lock) {
+            job?.cancel()
+            job = null
+        }
     }
 }
 

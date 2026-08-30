@@ -80,10 +80,12 @@ internal fun decideDownloadedOnlyFilter(
     newStatus: ConnectionStatus,
     current: DownloadedOnlyFilterState,
 ): DownloadedOnlyFilterState {
+    val connectionWasLost = previousStatus == ConnectionStatus.OFFLINE ||
+        previousStatus == ConnectionStatus.SERVER_UNREACHABLE
     val connectionLost = newStatus == ConnectionStatus.OFFLINE ||
         newStatus == ConnectionStatus.SERVER_UNREACHABLE
     return when {
-        previousStatus == ConnectionStatus.CONNECTED &&
+        !connectionWasLost &&
             connectionLost &&
             !current.showDownloadedOnly -> current.copy(
                 showDownloadedOnly = true,

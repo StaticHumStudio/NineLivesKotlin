@@ -25,7 +25,13 @@ class LocalScanEngineTest {
         override val mimeType: String? = null,
         private val childNodes: List<ScanNode> = emptyList(),
     ) : ScanNode {
-        override fun children(): List<ScanNode> = childNodes
+        var childrenCallCount = 0
+            private set
+
+        override fun children(): List<ScanNode> {
+            childrenCallCount++
+            return childNodes
+        }
     }
 
     private class ThrowingNode(name: String?, uriString: String) :
@@ -36,7 +42,7 @@ class LocalScanEngineTest {
     private fun file(name: String?, uri: String, size: Long = 100L): ScanNode =
         FakeNode(name = name, isDirectory = false, uriString = uri, sizeBytes = size)
 
-    private fun dir(name: String?, uri: String, children: List<ScanNode> = emptyList()): ScanNode =
+    private fun dir(name: String?, uri: String, children: List<ScanNode> = emptyList()): FakeNode =
         FakeNode(name = name, isDirectory = true, uriString = uri, childNodes = children)
 
     private class FakeMetadataSource(
@@ -170,6 +176,28 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `each folder is listed exactly once per scan`() {
+        val cd1 = dir(
+            "CD1", "$rootUri/Book/CD1", children = listOf(
+                file("track1.mp3", "$rootUri/Book/CD1/track1.mp3"),
+            )
+        )
+        val cd2 = dir(
+            "CD2", "$rootUri/Book/CD2", children = listOf(
+                file("track2.mp3", "$rootUri/Book/CD2/track2.mp3"),
+            )
+        )
+        val book = dir("Book", "$rootUri/Book", children = listOf(cd1, cd2))
+        val root = dir(null, rootUri, children = listOf(book))
+
+        engine().scan(root, rootUri)
+
+        for (folder in listOf(root, book, cd1, cd2)) {
+            assertEquals("${folder.name} was listed more than once", 1, folder.childrenCallCount)
+        }
+    }
+
+    @Test
     fun `a single CD1 subfolder still merges upward`() {
         val root = dir(
             null, rootUri, children = listOf(
@@ -189,6 +217,77 @@ class LocalScanEngineTest {
 
         assertEquals(1, result.books.size)
         assertEquals("Book", result.books.single().title)
+    }
+
+    @Test
+    fun `deep other sibling exhausts lookahead and prevents a parent merge`() {
+        fun emptyChain(level: Int): ScanNode {
+            if (level == 30) {
+                return dir("Nested$level", "$rootUri/Book/Other/Nested$level")
+            }
+            return dir(
+                "Nested$level", "$rootUri/Book/Other/Nested$level", children = listOf(
+                    emptyChain(level + 1)
+                )
+            )
+        }
+
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        dir(
+                            "CD1", "$rootUri/Book/CD1", children = listOf(
+                                file("track.mp3", "$rootUri/Book/CD1/track.mp3"),
+                            )
+                        ),
+                        dir(
+                            "Other", "$rootUri/Book/Other", children = listOf(
+                                emptyChain(1)
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(listOf("CD1"), result.books.map { it.title })
+        assertFalse(result.books.any { it.title == "Book" })
+    }
+
+    @Test
+    fun `audio nested below a disc folder prevents merging without losing tracks`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        dir(
+                            "CD1", "$rootUri/Book/CD1", children = listOf(
+                                file("track1.mp3", "$rootUri/Book/CD1/track1.mp3"),
+                                dir(
+                                    "Bonus", "$rootUri/Book/CD1/Bonus", children = listOf(
+                                        file("bonus.mp3", "$rootUri/Book/CD1/Bonus/bonus.mp3"),
+                                    )
+                                ),
+                            )
+                        ),
+                        dir(
+                            "CD2", "$rootUri/Book/CD2", children = listOf(
+                                file("track2.mp3", "$rootUri/Book/CD2/track2.mp3"),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(setOf("CD1", "CD2", "Bonus"), result.books.map { it.title }.toSet())
+        assertFalse(result.books.any { it.title == "Book" })
+        assertEquals(3, result.books.sumOf { it.tracks.size })
     }
 
     @Test
@@ -345,6 +444,28 @@ class LocalScanEngineTest {
         assertEquals(LocalScanEngine.MAX_FOLDERS_SCANNED - 1, result.books.size)
         assertEquals(1, result.errorMessages.count { it.contains("${LocalScanEngine.MAX_FOLDERS_SCANNED}") })
         assertTrue(result.skippedCount > 0)
+    }
+
+    @Test
+    fun `disc merge falls back to capped recursion when subfolders exceed remaining room`() {
+        val discFolders = (1..LocalScanEngine.MAX_FOLDERS_SCANNED).map { disc ->
+            dir(
+                "CD$disc", "$rootUri/Book/CD$disc", children = listOf(
+                    file("track.mp3", "$rootUri/Book/CD$disc/track.mp3"),
+                )
+            )
+        }
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir("Book", "$rootUri/Book", children = discFolders)
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertFalse(result.books.any { it.title == "Book" })
+        assertTrue(result.errorMessages.any { it.contains("${LocalScanEngine.MAX_FOLDERS_SCANNED}") })
+        assertTrue(result.foldersScanned <= LocalScanEngine.MAX_FOLDERS_SCANNED)
     }
 
     // ─── R9 / empty tree ────────────────────────────────────────────────────

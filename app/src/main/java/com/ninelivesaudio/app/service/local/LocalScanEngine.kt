@@ -96,6 +96,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
 
         internal const val MAX_SCAN_DEPTH = 8
         internal const val MAX_FOLDERS_SCANNED = 1000
+        private const val MAX_LOOKAHEAD_FOLDERS = 64
     }
 
     private data class NodeWithMeta(
@@ -103,14 +104,20 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         val meta: LocalMetadataExtractor.TrackMetadata?,
     )
 
+    private class LookaheadBudget(var foldersRemaining: Int)
+
     fun scan(root: ScanNode, rootUriString: String): EngineResult {
         val books = mutableListOf<ScannedLocalBook>()
         val errorMessages = mutableListOf<String>()
+        val childrenCache = mutableMapOf<String, List<ScanNode>>()
         var skippedCount = 0
         var foldersScanned = 0
         var depthCapMessageAdded = false
         var folderCapMessageAdded = false
         var folderCapHit = false
+
+        fun childrenOf(node: ScanNode): List<ScanNode> =
+            childrenCache.getOrPut(node.uriString) { node.children() }
 
         fun addDepthCapMessage() {
             if (!depthCapMessageAdded) {
@@ -144,7 +151,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             foldersScanned++
 
             try {
-                val children = folder.children().filterNot { isHidden(it) }
+                val children = childrenOf(folder).filterNot { isHidden(it) }
                 val directAudio = children.filter { !it.isDirectory && isAudioFile(it) }
                 val subfolders = children.filter { it.isDirectory }
                 var emittedHere = false
@@ -159,17 +166,46 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                     if (childDepth > MAX_SCAN_DEPTH) {
                         addDepthCapMessage()
                         skippedCount += subfolders.size
-                    } else if (directAudio.isEmpty()) {
-                        val audioSubdirs = subfolders.filter { hasDirectAudio(it) }
+                    } else if (
+                        directAudio.isEmpty() &&
+                        foldersScanned + subfolders.size <= MAX_FOLDERS_SCANNED
+                    ) {
+                        val audioSubdirs = subfolders.filter { hasDirectAudio(it, ::childrenOf) }
                         val others = subfolders - audioSubdirs.toSet()
+                        val lookaheadBudget = LookaheadBudget(MAX_LOOKAHEAD_FOLDERS)
                         val shouldMerge = audioSubdirs.isNotEmpty() &&
                             audioSubdirs.all { DISC_PATTERN.matches(it.name.orEmpty()) } &&
-                            others.none { containsAudioAnywhere(it) }
+                            others.none {
+                                containsAudioAnywhere(it, childDepth, lookaheadBudget, ::childrenOf)
+                            } &&
+                            // A prettier parent merge is not worth losing nested audio.
+                            // Recurse into plain CD and Bonus books when a disc has any.
+                            audioSubdirs.none { disc ->
+                                childrenOf(disc)
+                                    .filterNot { isHidden(it) }
+                                    .filter { it.isDirectory }
+                                    .any {
+                                        containsAudioAnywhere(
+                                            it,
+                                            childDepth + 1,
+                                            lookaheadBudget,
+                                            ::childrenOf,
+                                        )
+                                    }
+                            }
                         if (shouldMerge) {
                             // Every audio-bearing subfolder is read to build the merged
                             // book, so it counts toward the folders-scanned total too.
                             foldersScanned += audioSubdirs.size
-                            books += buildMergedDiscBook(folder, relPath, depth, audioSubdirs, rootUriString, children)
+                            books += buildMergedDiscBook(
+                                folder,
+                                relPath,
+                                depth,
+                                audioSubdirs,
+                                rootUriString,
+                                children,
+                                ::childrenOf,
+                            )
                             emittedHere = true
                         } else {
                             for (sub in subfolders) {
@@ -177,8 +213,8 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                             }
                         }
                     } else {
-                        // R3: a folder that emitted a book from its own files still has
-                        // its subfolders visited, no disc-merge consideration here.
+                        // R3: direct audio, or insufficient room to account for a merge,
+                        // routes every subfolder through the guard-checked visit path.
                         for (sub in subfolders) {
                             visit(sub, joinRelPath(relPath, sub.name.orEmpty()), childDepth)
                         }
@@ -198,7 +234,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         // The root is special: loose audio files here are single-file books (R1),
         // not folded into a "root folder book". Subfolders recurse normally.
         foldersScanned++
-        val rootChildren = root.children().filterNot { isHidden(it) }
+        val rootChildren = childrenOf(root).filterNot { isHidden(it) }
         val rootAudioFiles = rootChildren.filter { !it.isDirectory && isAudioFile(it) }
         val rootSubfolders = rootChildren.filter { it.isDirectory }
 
@@ -298,6 +334,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         audioSubdirs: List<ScanNode>,
         rootUri: String,
         ownChildren: List<ScanNode>,
+        childrenOf: (ScanNode) -> List<ScanNode>,
     ): ScannedLocalBook {
         val discsInOrder = audioSubdirs.sortedWith(
             compareBy(NATURAL_FILENAME_COMPARATOR) { it.name.orEmpty() }
@@ -306,7 +343,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         // Sort each disc on its own (trackNumber restarts per disc), then lay the
         // discs end to end. Never sort the merged list by trackNumber as a whole.
         val perDisc = discsInOrder.map { disc ->
-            val discAudio = disc.children()
+            val discAudio = childrenOf(disc)
                 .filterNot { isHidden(it) }
                 .filter { !it.isDirectory && isAudioFile(it) }
             sortTracks(discAudio)
@@ -321,7 +358,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         val author = resolveAuthor(firstTrack.meta, depth, relPath)
         val bookId = "local_book_${sha256("$rootUri/$relPath")}"
 
-        val firstDiscChildren = discsInOrder.first().children().filterNot { isHidden(it) }
+        val firstDiscChildren = childrenOf(discsInOrder.first()).filterNot { isHidden(it) }
         val coverSource = findCoverImage(ownChildren) ?: findCoverImage(firstDiscChildren)
         val coverUri = metadataSource.persistFolderCover(coverSource, bookId)
             ?: metadataSource.extractEmbeddedCover(firstTrack.node.uriString, bookId)
@@ -386,14 +423,32 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         return null
     }
 
-    private fun hasDirectAudio(node: ScanNode): Boolean {
-        return node.children().any { !isHidden(it) && !it.isDirectory && isAudioFile(it) }
+    private fun hasDirectAudio(
+        node: ScanNode,
+        childrenOf: (ScanNode) -> List<ScanNode>,
+    ): Boolean {
+        return childrenOf(node).any { !isHidden(it) && !it.isDirectory && isAudioFile(it) }
     }
 
-    private fun containsAudioAnywhere(node: ScanNode): Boolean {
-        val children = node.children().filterNot { isHidden(it) }
+    private fun containsAudioAnywhere(
+        node: ScanNode,
+        depth: Int,
+        budget: LookaheadBudget,
+        childrenOf: (ScanNode) -> List<ScanNode>,
+    ): Boolean {
+        // Exhaustion assumes audio exists. That disables merging and sends the tree
+        // through normal recursion, where the scan depth and folder caps are enforced.
+        if (budget.foldersRemaining == 0) return true
+        budget.foldersRemaining--
+
+        val children = childrenOf(node).filterNot { isHidden(it) }
         if (children.any { !it.isDirectory && isAudioFile(it) }) return true
-        return children.filter { it.isDirectory }.any { containsAudioAnywhere(it) }
+        val subfolders = children.filter { it.isDirectory }
+        if (subfolders.isEmpty()) return false
+        if (depth >= MAX_SCAN_DEPTH) return true
+        return subfolders.any {
+            containsAudioAnywhere(it, depth + 1, budget, childrenOf)
+        }
     }
 
     private fun isAudioFile(node: ScanNode): Boolean {

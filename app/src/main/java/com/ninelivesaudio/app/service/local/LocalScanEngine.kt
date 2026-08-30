@@ -478,7 +478,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
     }
 
     private fun Char.isNumberedSiblingSeparator(): Boolean =
-        this == ' ' || this == '.' || this == '_' || this == '-'
+        this.isWhitespace() || this == '.' || this == '_' || this == '-'
 
     private fun compareNumericStrings(a: String, b: String): Int {
         val normalizedA = a.trimStart('0').ifEmpty { "0" }

@@ -186,6 +186,36 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `tab separated prefixed disc folders still merge`() {
+        val cd1Track = "$rootUri/The Hobbit/The Hobbit\tCD1/01.mp3"
+        val cd2Track = "$rootUri/The Hobbit/The Hobbit\tCD2/01.mp3"
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "The Hobbit", "$rootUri/The Hobbit", children = listOf(
+                        dir(
+                            "The Hobbit\tCD2", "$rootUri/The Hobbit/The Hobbit\tCD2", children = listOf(
+                                file("01.mp3", cd2Track),
+                            )
+                        ),
+                        dir(
+                            "The Hobbit\tCD1", "$rootUri/The Hobbit/The Hobbit\tCD1", children = listOf(
+                                file("01.mp3", cd1Track),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(1, result.books.size)
+        assertEquals("The Hobbit", result.books.single().title)
+        assertEquals(listOf(cd1Track, cd2Track), result.books.single().tracks.map { it.uri })
+    }
+
+    @Test
     fun `mixed separator disc folders sort by terminal number`() {
         val disc2Track = "$rootUri/The Hobbit/The Hobbit-CD2/track.mp3"
         val disc10Track = "$rootUri/The Hobbit/The Hobbit CD10/track.mp3"

@@ -148,6 +148,192 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `prefixed disc folders merge into the parent book in disc-major order`() {
+        val cd1Track1 = "$rootUri/The Hobbit/The Hobbit CD1/01.mp3"
+        val cd1Track2 = "$rootUri/The Hobbit/The Hobbit CD1/02.mp3"
+        val cd2Track1 = "$rootUri/The Hobbit/The Hobbit CD2/01.mp3"
+        val cd2Track2 = "$rootUri/The Hobbit/The Hobbit CD2/02.mp3"
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "The Hobbit", "$rootUri/The Hobbit", children = listOf(
+                        dir(
+                            "The Hobbit CD2", "$rootUri/The Hobbit/The Hobbit CD2", children = listOf(
+                                file("02.mp3", cd2Track2),
+                                file("01.mp3", cd2Track1),
+                            )
+                        ),
+                        dir(
+                            "The Hobbit CD1", "$rootUri/The Hobbit/The Hobbit CD1", children = listOf(
+                                file("02.mp3", cd1Track2),
+                                file("01.mp3", cd1Track1),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(1, result.books.size)
+        val book = result.books.single()
+        assertEquals("The Hobbit", book.title)
+        assertEquals(
+            listOf(cd1Track1, cd1Track2, cd2Track1, cd2Track2),
+            book.tracks.map { it.uri },
+        )
+    }
+
+    @Test
+    fun `different disc folder prefixes stay as separate books`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        dir(
+                            "Alpha CD1", "$rootUri/Book/Alpha CD1", children = listOf(
+                                file("alpha.mp3", "$rootUri/Book/Alpha CD1/alpha.mp3"),
+                            )
+                        ),
+                        dir(
+                            "Beta CD2", "$rootUri/Book/Beta CD2", children = listOf(
+                                file("beta.mp3", "$rootUri/Book/Beta CD2/beta.mp3"),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(2, result.books.size)
+        assertEquals(setOf("Alpha CD1", "Beta CD2"), result.books.map { it.title }.toSet())
+        assertFalse(result.books.any { it.title == "Book" })
+    }
+
+    @Test
+    fun `chapter folders merge into the parent book in natural chapter order`() {
+        val chapter1 = "$rootUri/Book/Chapter 1/ch.mp3"
+        val chapter2 = "$rootUri/Book/Chapter 02/ch.mp3"
+        val chapter3 = "$rootUri/Book/Chapter 3/ch.mp3"
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        dir("Chapter 3", "$rootUri/Book/Chapter 3", children = listOf(file("ch.mp3", chapter3))),
+                        dir("Chapter 02", "$rootUri/Book/Chapter 02", children = listOf(file("ch.mp3", chapter2))),
+                        dir("Chapter 1", "$rootUri/Book/Chapter 1", children = listOf(file("ch.mp3", chapter1))),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(1, result.books.size)
+        val book = result.books.single()
+        assertEquals("Book", book.title)
+        assertEquals(listOf(chapter1, chapter2, chapter3), book.tracks.map { it.uri })
+    }
+
+    @Test
+    fun `bare CD folders still merge into the parent book`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        dir(
+                            "CD1", "$rootUri/Book/CD1", children = listOf(
+                                file("one.mp3", "$rootUri/Book/CD1/one.mp3"),
+                            )
+                        ),
+                        dir(
+                            "CD2", "$rootUri/Book/CD2", children = listOf(
+                                file("two.mp3", "$rootUri/Book/CD2/two.mp3"),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(1, result.books.size)
+        assertEquals("Book", result.books.single().title)
+        assertEquals(2, result.books.single().tracks.size)
+    }
+
+    @Test
+    fun `numbered folders without a supported keyword stay as separate books`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Series", "$rootUri/Series", children = listOf(
+                        dir(
+                            "Book 1", "$rootUri/Series/Book 1", children = listOf(
+                                file("one.mp3", "$rootUri/Series/Book 1/one.mp3"),
+                            )
+                        ),
+                        dir(
+                            "Book 2", "$rootUri/Series/Book 2", children = listOf(
+                                file("two.mp3", "$rootUri/Series/Book 2/two.mp3"),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(2, result.books.size)
+        assertEquals(setOf("Book 1", "Book 2"), result.books.map { it.title }.toSet())
+        assertFalse(result.books.any { it.title == "Series" })
+    }
+
+    @Test
+    fun `prefixed disc folder with nested audio prevents the parent merge`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "The Hobbit", "$rootUri/The Hobbit", children = listOf(
+                        dir(
+                            "The Hobbit CD1", "$rootUri/The Hobbit/The Hobbit CD1", children = listOf(
+                                file("track1.mp3", "$rootUri/The Hobbit/The Hobbit CD1/track1.mp3"),
+                                dir(
+                                    "Bonus", "$rootUri/The Hobbit/The Hobbit CD1/Bonus", children = listOf(
+                                        file(
+                                            "bonus.mp3",
+                                            "$rootUri/The Hobbit/The Hobbit CD1/Bonus/bonus.mp3",
+                                        ),
+                                    )
+                                ),
+                            )
+                        ),
+                        dir(
+                            "The Hobbit CD2", "$rootUri/The Hobbit/The Hobbit CD2", children = listOf(
+                                file("track2.mp3", "$rootUri/The Hobbit/The Hobbit CD2/track2.mp3"),
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(
+            setOf("The Hobbit CD1", "The Hobbit CD2", "Bonus"),
+            result.books.map { it.title }.toSet(),
+        )
+        assertFalse(result.books.any { it.title == "The Hobbit" })
+        assertEquals(3, result.books.sumOf { it.tracks.size })
+    }
+
+    @Test
     fun `disc track numbers reset per disc but merged order stays disc-major`() {
         fun meta(track: Int) = LocalMetadataExtractor.TrackMetadata(trackNumber = track)
         val cd1t1 = "$rootUri/Book/CD1/a.mp3"

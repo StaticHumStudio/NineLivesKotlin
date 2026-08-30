@@ -88,9 +88,10 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             if (result != 0) result else ap.size.compareTo(bp.size)
         }
 
-        // Case-insensitive disc-folder name: "CD1", "Disc 2", "disk_03", "Part-4", "vol 5", "Volume6".
-        private val DISC_PATTERN = Regex(
-            "^(cd|disc|disk|part|vol|volume)\\s*[._-]?\\s*\\d+$",
+        // Case-insensitive numbered sibling with an optional shared prefix:
+        // "CD1", "The Hobbit Disc 2", "Book_part-03", or "Chapter 4".
+        private val NUMBERED_SIBLING_PATTERN = Regex(
+            "^(?<prefix>.*?)[\\s._-]*(cd|disc|disk|part|vol|volume|chapter)[\\s._-]*(\\d+)$",
             RegexOption.IGNORE_CASE,
         )
 
@@ -173,8 +174,12 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                         val audioSubdirs = subfolders.filter { hasDirectAudio(it, ::childrenOf) }
                         val others = subfolders - audioSubdirs.toSet()
                         val lookaheadBudget = LookaheadBudget(MAX_LOOKAHEAD_FOLDERS)
+                        val numberedPrefixes = audioSubdirs.mapNotNull {
+                            numberedSiblingPrefix(it.name.orEmpty())
+                        }
                         val shouldMerge = audioSubdirs.isNotEmpty() &&
-                            audioSubdirs.all { DISC_PATTERN.matches(it.name.orEmpty()) } &&
+                            numberedPrefixes.size == audioSubdirs.size &&
+                            numberedPrefixes.distinct().size == 1 &&
                             others.none {
                                 containsAudioAnywhere(it, childDepth, lookaheadBudget, ::childrenOf)
                             } &&
@@ -428,6 +433,14 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         childrenOf: (ScanNode) -> List<ScanNode>,
     ): Boolean {
         return childrenOf(node).any { !isHidden(it) && !it.isDirectory && isAudioFile(it) }
+    }
+
+    private fun numberedSiblingPrefix(name: String): String? {
+        val prefix = NUMBERED_SIBLING_PATTERN.matchEntire(name)
+            ?.groups?.get("prefix")?.value
+            ?: return null
+        return prefix.trim { it.isWhitespace() || it == '.' || it == '_' || it == '-' }
+            .lowercase()
     }
 
     private fun containsAudioAnywhere(

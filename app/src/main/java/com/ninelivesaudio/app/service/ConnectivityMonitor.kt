@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -52,9 +54,11 @@ class ConnectivityMonitor @Inject constructor(
 
     private var pingJob: Job? = null
 
-    // Guard against concurrent reachability checks during network flaps.
-    // Each new request cancels any in-flight check so only the latest wins.
+    // Guard background reachability requests during network flaps. Direct and
+    // background checks also share reachabilityCheckGate, so probes cannot race.
     private var reachabilityJob: Job? = null
+    private val reachabilityJobLock = Any()
+    private val reachabilityCheckGate = ReachabilityCheckGate { performServerReachabilityCheck() }
 
     // Track when the app went to background for debouncing foreground recovery
     @Volatile private var backgroundedAt: Long = 0L
@@ -124,8 +128,14 @@ class ConnectivityMonitor @Inject constructor(
      * (e.g., WiFi → cellular handoff firing onAvailable + onCapabilitiesChanged).
      */
     private fun launchReachabilityCheck() {
-        reachabilityJob?.cancel()
-        reachabilityJob = scope.launch { checkServerReachable() }
+        synchronized(reachabilityJobLock) {
+            reachabilityJob?.cancel()
+            reachabilityJob = scope.launch { reachabilityCheckGate.run() }
+        }
+    }
+
+    fun requestReachabilityCheck() {
+        launchReachabilityCheck()
     }
 
     // ─── Start / Stop ─────────────────────────────────────────────────────
@@ -164,8 +174,10 @@ class ConnectivityMonitor @Inject constructor(
             connectivityManager.unregisterNetworkCallback(networkCallback)
         } catch (_: Exception) {}
         pingJob?.cancel()
-        reachabilityJob?.cancel()
-        reachabilityJob = null
+        synchronized(reachabilityJobLock) {
+            reachabilityJob?.cancel()
+            reachabilityJob = null
+        }
     }
 
     // ─── Checks ───────────────────────────────────────────────────────────
@@ -180,27 +192,16 @@ class ConnectivityMonitor @Inject constructor(
         launchReachabilityCheck()
     }
 
-    suspend fun checkServerReachable(): Boolean {
+    suspend fun checkServerReachable(): Boolean = reachabilityCheckGate.run()
+
+    suspend fun probeServerReachable(): Boolean = checkServerReachable()
+
+    private suspend fun performServerReachabilityCheck(): Boolean {
         if (!_isOnline.value) {
             _isServerReachable.value = false
             updateConnectionStatus()
             return false
         }
-        return probeServerReachable()
-    }
-
-    /**
-     * Fast server reachability probe: hit the server with a short timeout and
-     * treat ANY HTTP response (even an error code) as reachable. Only a transport
-     * failure or timeout counts as unreachable.
-     *
-     * This is the "internet connection check" that matters when a VPN interface
-     * (e.g. Tailscale) keeps ConnectivityManager reporting online with no real
-     * connectivity: isOnline stays true, so without an actual probe a sync would
-     * fire and hang on the full request timeout. SyncManager calls this before
-     * committing to a sync, and it also drives the periodic status refresh.
-     */
-    suspend fun probeServerReachable(): Boolean {
         val serverUrl = settingsManager.currentSettings.serverUrl.trim()
         if (serverUrl.isBlank()) {
             _isServerReachable.value = false
@@ -298,4 +299,12 @@ internal fun computeConnectionStatus(
     isSyncing -> ConnectivityMonitor.ConnectionStatus.SYNCING
     isServerReachable -> ConnectivityMonitor.ConnectionStatus.CONNECTED
     else -> ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE
+}
+
+internal class ReachabilityCheckGate(
+    private val check: suspend () -> Boolean,
+) {
+    private val mutex = Mutex()
+
+    suspend fun run(): Boolean = mutex.withLock { check() }
 }

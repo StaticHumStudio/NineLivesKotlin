@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -24,6 +25,7 @@ import kotlin.math.roundToInt
 class HomeViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val syncManager: SyncManager,
     private val settingsManager: SettingsManager,
     private val libraryRepository: LibraryRepository,
     private val localFolderAccess: LocalFolderAccess,
@@ -123,6 +125,18 @@ class HomeViewModel @Inject constructor(
             } finally {
                 _uiState.update { it.copy(isLoading = false) }
             }
+        }
+    }
+
+    fun reconnect() {
+        val state = _uiState.value
+        if (!isHomeReconnectAvailable(state.isLocalMode, state.connectionStatus)) return
+
+        viewModelScope.launch {
+            performHomeReconnect(
+                requestReachabilityCheck = connectivityMonitor::requestReachabilityCheck,
+                syncNow = syncManager::syncNow,
+            )
         }
     }
 
@@ -288,4 +302,46 @@ internal fun canShowHomeBooks(
     AppMode.AUDIOBOOKSHELF ->
         hasAuthToken && settings.serverUrl.isNotBlank() && settings.selectedLibraryId != null
     AppMode.LOCAL -> settings.selectedLocalLibraryId != null
+}
+
+internal fun isHomeReconnectAvailable(
+    isLocalMode: Boolean,
+    connectionStatus: ConnectionStatus,
+): Boolean = !isLocalMode && (
+    connectionStatus == ConnectionStatus.SERVER_UNREACHABLE ||
+        connectionStatus == ConnectionStatus.OFFLINE
+    )
+
+internal fun homeReconnectContentDescription(
+    isLocalMode: Boolean,
+    connectionStatus: ConnectionStatus,
+): String? = if (isHomeReconnectAvailable(isLocalMode, connectionStatus)) {
+    "Connection lost. Tap to reconnect."
+} else {
+    null
+}
+
+internal data class HomeConnectionPillState(
+    val connectionStatus: ConnectionStatus,
+    val isLocalMode: Boolean,
+    val reconnectContentDescription: String?,
+)
+
+internal fun homeConnectionPillState(
+    uiState: HomeViewModel.UiState,
+): HomeConnectionPillState = HomeConnectionPillState(
+    connectionStatus = uiState.connectionStatus,
+    isLocalMode = uiState.isLocalMode,
+    reconnectContentDescription = homeReconnectContentDescription(
+        isLocalMode = uiState.isLocalMode,
+        connectionStatus = uiState.connectionStatus,
+    ),
+)
+
+internal suspend fun performHomeReconnect(
+    requestReachabilityCheck: () -> Unit,
+    syncNow: suspend () -> Unit,
+) {
+    requestReachabilityCheck()
+    syncNow()
 }

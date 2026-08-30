@@ -54,6 +54,7 @@ class SyncManager @Inject constructor(
     // Sync state
     private var syncJob: Job? = null
     private var connectivityJob: Job? = null
+    private var modeChangeJob: Job? = null
     @Volatile private var activeItemId: String? = null
 
     private val playbackThrottleOwner = PlaybackThrottleOwner()
@@ -108,6 +109,26 @@ class SyncManager @Inject constructor(
                     if (canFlush) flushOfflineQueue()
                 }
         }
+
+        modeChangeJob?.cancel()
+        modeChangeJob = scope.launch {
+            var previousMode: AppMode? = null
+            settingsManager.settings
+                .map { it.appMode }
+                .distinctUntilChanged()
+                .map { newMode ->
+                    val transition = previousMode to newMode
+                    previousMode = newMode
+                    transition
+                }
+                .drop(1)
+                .collect { (oldMode, newMode) ->
+                    if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
+                        connectivityMonitor.requestReachabilityCheck()
+                        syncNow()
+                    }
+                }
+        }
     }
 
     /** Stop the periodic sync timer and connectivity listener. */
@@ -116,6 +137,8 @@ class SyncManager @Inject constructor(
         syncJob = null
         connectivityJob?.cancel()
         connectivityJob = null
+        modeChangeJob?.cancel()
+        modeChangeJob = null
     }
 
     // ─── Sync Operations ─────────────────────────────────────────────────────
@@ -137,7 +160,17 @@ class SyncManager @Inject constructor(
         // interface (e.g. Tailscale) keeps isOnline=true with no real connectivity,
         // so without this fast probe the sync fires and hangs on the full 30s
         // request timeout — the "still trying to sync" symptom in airplane mode.
-        if (!connectivityMonitor.probeServerReachable()) return
+        if (!isSyncEligibleAfterReachability(
+                checkServerReachable = connectivityMonitor::checkServerReachable,
+                isStillEligible = {
+                    shouldRunSync(
+                        isOnline = connectivityMonitor.isOnline.value,
+                        isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                        hasAuth = hasAuthToken(),
+                    )
+                },
+            )
+        ) return
 
         // Prevent concurrent syncs
         if (!syncMutex.tryLock()) return
@@ -418,6 +451,16 @@ class SyncManager @Inject constructor(
         return settingsManager.getAuthToken()?.isNotBlank() == true
     }
 }
+
+internal fun shouldReconnectForModeTransition(
+    previousMode: AppMode,
+    newMode: AppMode,
+): Boolean = previousMode != AppMode.AUDIOBOOKSHELF && newMode == AppMode.AUDIOBOOKSHELF
+
+internal suspend fun isSyncEligibleAfterReachability(
+    checkServerReachable: suspend () -> Boolean,
+    isStillEligible: suspend () -> Boolean,
+): Boolean = checkServerReachable() && isStillEligible()
 
 /**
  * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an

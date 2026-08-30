@@ -721,6 +721,33 @@ class LocalScanEngineTest {
     }
 
     @Test
+    fun `merge probing charges every inspected sibling to the folder cap`() {
+        // Adversarial layout: many parents, each holding one numbered audio folder
+        // and a crowd of empty siblings. Merge detection must list every sibling to
+        // decide, so every sibling counts toward the cap. Charging only the audio
+        // folders would let this tree probe tens of thousands of folders while the
+        // counter crawled, bypassing the advertised large-tree cutoff.
+        val emptySiblingsPerParent = 30
+        val parents = (0 until 300).map { p ->
+            val disc = dir(
+                "CD 1", "$rootUri/Parent$p/CD 1", children = listOf(
+                    file("track.mp3", "$rootUri/Parent$p/CD 1/track.mp3"),
+                )
+            )
+            val empties = (0 until emptySiblingsPerParent).map { s ->
+                dir("Empty$s", "$rootUri/Parent$p/Empty$s")
+            }
+            dir("Parent$p", "$rootUri/Parent$p", children = listOf(disc) + empties)
+        }
+        val root = dir(null, rootUri, children = parents)
+
+        val result = engine().scan(root, rootUri)
+
+        assertTrue(result.errorMessages.any { it.contains("${LocalScanEngine.MAX_FOLDERS_SCANNED}") })
+        assertTrue(result.foldersScanned <= LocalScanEngine.MAX_FOLDERS_SCANNED + emptySiblingsPerParent + 1)
+    }
+
+    @Test
     fun `the folder cap is respected and reported`() {
         val total = LocalScanEngine.MAX_FOLDERS_SCANNED + 6
         val subfolders = (0 until total).map { i ->

@@ -201,9 +201,12 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                                     }
                             }
                         if (shouldMerge) {
-                            // Every audio-bearing subfolder is read to build the merged
-                            // book, so it counts toward the folders-scanned total too.
-                            foldersScanned += audioSubdirs.size
+                            // Merge detection listed every subfolder to decide, not just
+                            // the audio-bearing ones, so every one of them counts toward
+                            // the folders-scanned total. Charging only audioSubdirs let a
+                            // tree of merge parents with crowds of empty siblings probe
+                            // far past the advertised cap while the counter crawled.
+                            foldersScanned += subfolders.size
                             books += buildMergedDiscBook(
                                 folder,
                                 relPath,

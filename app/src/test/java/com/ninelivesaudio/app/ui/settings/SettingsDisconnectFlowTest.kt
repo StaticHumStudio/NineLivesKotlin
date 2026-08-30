@@ -11,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class SettingsDisconnectFlowTest {
@@ -217,6 +218,94 @@ class SettingsDisconnectFlowTest {
         )
 
         assertEquals(listOf("reset"), effects)
+    }
+
+    // ─── Disconnect barrier (raised before the reset, lowered after logout) ──
+    //
+    // resetNowPlayingForDisconnect only invalidates the loads that existed
+    // when it started. A load kicked off while this confirmed disconnect is
+    // still blocked awaiting terminal progress would otherwise get a fresh
+    // request id, claim it, and outlive the logout it raced. The barrier has
+    // to be up for that entire window and it must come back down on every
+    // path out of this function, or every later remote load is refused
+    // forever.
+
+    @Test
+    fun `guarded disconnect raises the barrier before resetting and lowers it after logout`() = runBlocking {
+        val effects = mutableListOf<String>()
+
+        disconnectSessionGuarded(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            captureSession = { sessionA },
+            resetNowPlaying = { effects += "reset" },
+            logoutIfCurrent = { effects += "logout" },
+            raiseDisconnectBarrier = { effects += "barrier-up" },
+            lowerDisconnectBarrier = { effects += "barrier-down" },
+        )
+
+        assertEquals(listOf("barrier-up", "reset", "logout", "barrier-down"), effects)
+    }
+
+    @Test
+    fun `guarded disconnect lowers the barrier even with no session to capture`() = runBlocking {
+        val effects = mutableListOf<String>()
+
+        disconnectSessionGuarded(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            captureSession = { null },
+            resetNowPlaying = { effects += "reset" },
+            logoutIfCurrent = { effects += "logout" },
+            raiseDisconnectBarrier = { effects += "barrier-up" },
+            lowerDisconnectBarrier = { effects += "barrier-down" },
+        )
+
+        assertEquals(listOf("barrier-up", "reset", "barrier-down"), effects)
+    }
+
+    @Test
+    fun `guarded disconnect lowers the barrier when the reset throws`() = runBlocking {
+        val effects = mutableListOf<String>()
+
+        try {
+            disconnectSessionGuarded(
+                appMode = AppMode.AUDIOBOOKSHELF,
+                captureSession = { sessionA },
+                resetNowPlaying = {
+                    effects += "reset"
+                    throw IllegalStateException("reset blew up")
+                },
+                logoutIfCurrent = { effects += "logout" },
+                raiseDisconnectBarrier = { effects += "barrier-up" },
+                lowerDisconnectBarrier = { effects += "barrier-down" },
+            )
+            fail("expected the reset failure to propagate")
+        } catch (_: IllegalStateException) {
+        }
+
+        assertEquals(listOf("barrier-up", "reset", "barrier-down"), effects)
+    }
+
+    @Test
+    fun `guarded disconnect lowers the barrier when logout throws`() = runBlocking {
+        val effects = mutableListOf<String>()
+
+        try {
+            disconnectSessionGuarded(
+                appMode = AppMode.AUDIOBOOKSHELF,
+                captureSession = { sessionA },
+                resetNowPlaying = { effects += "reset" },
+                logoutIfCurrent = {
+                    effects += "logout"
+                    throw IllegalStateException("logout blew up")
+                },
+                raiseDisconnectBarrier = { effects += "barrier-up" },
+                lowerDisconnectBarrier = { effects += "barrier-down" },
+            )
+            fail("expected the logout failure to propagate")
+        } catch (_: IllegalStateException) {
+        }
+
+        assertEquals(listOf("barrier-up", "reset", "logout", "barrier-down"), effects)
     }
 
     @Test

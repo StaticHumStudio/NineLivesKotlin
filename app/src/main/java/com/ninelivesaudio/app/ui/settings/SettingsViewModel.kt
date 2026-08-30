@@ -78,6 +78,14 @@ internal suspend fun runConfirmedDisconnectOperation(
  * mutex) has already replaced by the time [logoutIfCurrent] runs. Only a
  * session that is STILL the captured one gets logged out; a session that moved
  * on is left alone rather than clearing the newer login's token.
+ *
+ * [raiseDisconnectBarrier] goes up before any of that starts and
+ * [lowerDisconnectBarrier] only comes back down in a finally, so a load that
+ * starts partway through this wait (leaving Settings triggers a home-screen
+ * load, or Android Auto browses) can't claim a remote book and outlive the
+ * logout it raced. It must come down on every path, including no captured
+ * session and an exception from either callback, or the barrier sticks and
+ * every later remote load is refused forever.
  */
 internal suspend fun disconnectSessionGuarded(
     appMode: AppMode,
@@ -85,14 +93,21 @@ internal suspend fun disconnectSessionGuarded(
     resetNowPlaying: suspend () -> Unit,
     logoutIfCurrent: suspend (AuthSessionIdentity) -> Unit,
     holdsRemoteBook: Boolean = false,
+    raiseDisconnectBarrier: () -> Unit = {},
+    lowerDisconnectBarrier: () -> Unit = {},
 ) {
-    val disconnectingSession = captureSession()
-    disconnectSession(
-        appMode = appMode,
-        resetNowPlaying = resetNowPlaying,
-        logout = { disconnectingSession?.let { logoutIfCurrent(it) } },
-        holdsRemoteBook = holdsRemoteBook,
-    )
+    raiseDisconnectBarrier()
+    try {
+        val disconnectingSession = captureSession()
+        disconnectSession(
+            appMode = appMode,
+            resetNowPlaying = resetNowPlaying,
+            logout = { disconnectingSession?.let { logoutIfCurrent(it) } },
+            holdsRemoteBook = holdsRemoteBook,
+        )
+    } finally {
+        lowerDisconnectBarrier()
+    }
 }
 
 @HiltViewModel
@@ -1063,6 +1078,8 @@ class SettingsViewModel @Inject constructor(
                         resetNowPlaying = playbackManager::resetNowPlayingForDisconnect,
                         logoutIfCurrent = { apiService.logoutIfCurrentSession(it) },
                         holdsRemoteBook = playbackManager.currentBook.value?.isLocal == false,
+                        raiseDisconnectBarrier = playbackManager::raiseDisconnectBarrier,
+                        lowerDisconnectBarrier = playbackManager::lowerDisconnectBarrier,
                     )
                     updateAuthUi(uiGeneration) {
                         it.copy(

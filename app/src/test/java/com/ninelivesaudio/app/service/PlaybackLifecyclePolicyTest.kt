@@ -2,6 +2,8 @@ package com.ninelivesaudio.app.service
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackLifecyclePolicyTest {
@@ -88,5 +90,32 @@ class PlaybackLifecyclePolicyTest {
         )
 
         assertEquals(listOf("invalidate", "stop", "clear", "await book-19"), effects)
+    }
+
+    // ─── Disconnect barrier vs. a load that starts mid-teardown ───────────
+    //
+    // resetNowPlayingForDisconnect only invalidates the loads that already
+    // existed when it started. A load kicked off while a confirmed disconnect
+    // is still blocked awaiting terminal progress gets a brand new request id
+    // and would otherwise claim it cleanly, surviving the logout it raced.
+
+    @Test
+    fun `barrier up refuses a remote load`() {
+        assertTrue(disconnectBarrierBlocksLoad(barrierUp = true, bookIsLocal = false))
+    }
+
+    @Test
+    fun `barrier up still allows a local load`() {
+        assertFalse(disconnectBarrierBlocksLoad(barrierUp = true, bookIsLocal = true))
+    }
+
+    @Test
+    fun `barrier down allows a remote load`() {
+        assertFalse(disconnectBarrierBlocksLoad(barrierUp = false, bookIsLocal = false))
+    }
+
+    @Test
+    fun `barrier down allows a local load`() {
+        assertFalse(disconnectBarrierBlocksLoad(barrierUp = false, bookIsLocal = true))
     }
 }

@@ -62,6 +62,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -571,6 +572,18 @@ internal suspend fun runNowPlayingDisconnectReset(
     currentBookId?.let { awaitTerminalProgress(it) }
 }
 
+/**
+ * Whether a fresh load claim should be refused because a confirmed disconnect
+ * is still tearing down the session. [invalidateActiveLoad] above only voids
+ * the loads that existed when the reset started, so a load kicked off while a
+ * disconnect is blocked awaiting terminal progress (leaving Settings triggers
+ * a home-screen load, or Android Auto browses) would otherwise get a brand
+ * new request id, claim it cleanly, and outlive the logout it raced. A local
+ * book never touches the session being torn down, so it may still proceed.
+ */
+internal fun disconnectBarrierBlocksLoad(barrierUp: Boolean, bookIsLocal: Boolean): Boolean =
+    barrierUp && !bookIsLocal
+
 internal fun autoBookLoadAllowed(
     book: AudioBook,
     settings: AppSettings,
@@ -849,6 +862,21 @@ class PlaybackManager @Inject constructor(
     private val pendingTerminalOwner = PendingTerminalOwner()
     private val playbackLoadOwner = PlaybackLoadOwner()
 
+    // Raised by SettingsViewModel's disconnect flow before it starts tearing
+    // the session down, lowered only after the logout it guards completes
+    // (see disconnectSessionGuarded). PlaybackManager is the singleton every
+    // ViewModel shares, so this is the one place a load started mid-disconnect
+    // can be told a logout is in flight and refuse to claim a remote book.
+    private val disconnectBarrierUp = AtomicBoolean(false)
+
+    fun raiseDisconnectBarrier() {
+        disconnectBarrierUp.set(true)
+    }
+
+    fun lowerDisconnectBarrier() {
+        disconnectBarrierUp.set(false)
+    }
+
     // Auto-rewind: timestamp of last pause
     private var pausedAtTimestamp: Long? = null
 
@@ -1111,6 +1139,18 @@ class PlaybackManager @Inject constructor(
         if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
             if (playbackLoadOwner.abandon(loadRequest)) {
                 _events.tryEmit(PlaybackEvent.Error(remoteAccess.message))
+            }
+            return false
+        }
+        // A confirmed disconnect can still be blocked awaiting terminal
+        // progress when this load starts (leaving Settings mid-disconnect
+        // triggers a home-screen load, or Android Auto browses). Refuse to
+        // claim a fresh request id for a remote book until the barrier the
+        // disconnect flow raised comes back down. A local book never touches
+        // the session being torn down, so it is left alone.
+        if (disconnectBarrierBlocksLoad(disconnectBarrierUp.get(), book.isLocal)) {
+            if (playbackLoadOwner.abandon(loadRequest)) {
+                _events.tryEmit(PlaybackEvent.Error("Signing out. Try again once you're disconnected."))
             }
             return false
         }

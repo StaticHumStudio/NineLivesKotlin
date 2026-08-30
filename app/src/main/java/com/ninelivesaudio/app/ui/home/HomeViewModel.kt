@@ -161,7 +161,7 @@ class HomeViewModel @Inject constructor(
                 isAudiobookshelfMode = {
                     settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF
                 },
-                probeServerReachable = connectivityMonitor::refreshAndProbeServerReachable,
+                refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
                 syncNow = syncManager::syncNow,
             )
         }
@@ -391,20 +391,24 @@ internal class HomeReconnectJobOwner(
 }
 
 /**
- * [probeServerReachable] must force a fresh reachability check, not read the
- * cached isOnline flag the pill's own ConnectionStatus is derived from. Right
- * after connectivity returns — but before the OS NetworkCallback lands, or
- * when it never lands at all — that cached flag can still read false with a
- * real network already up, and syncNow()'s own shouldRunSync pre-check trusts
- * that same stale flag. Gating on the probe's own verdict instead of calling
- * syncNow() unconditionally is what keeps a tap on RECONNECT from being inert.
+ * [refreshIsOnline] must re-read the OS network state before [syncNow] runs,
+ * not leave the pill's cached isOnline flag stale. Right after connectivity
+ * returns (before the OS NetworkCallback lands, or when it never lands at
+ * all), that cached flag can still read false with a real network already
+ * up, and [syncNow]'s own shouldRunSync pre-check trusts that same flag.
+ *
+ * The refresh itself makes no network request. It only re-reads OS state,
+ * so the single /ping for this whole action is the one [syncNow] already
+ * performs internally once its pre-check sees a fresh flag. Probing here
+ * too would double the request, letting a flaky second ping suppress a
+ * sync the first probe already proved was reachable.
  */
 internal suspend fun performHomeReconnect(
     isAudiobookshelfMode: () -> Boolean,
-    probeServerReachable: suspend () -> Boolean,
+    refreshIsOnline: () -> Unit,
     syncNow: suspend () -> Unit,
 ) {
     if (!isAudiobookshelfMode()) return
-    if (!probeServerReachable()) return
+    refreshIsOnline()
     syncNow()
 }

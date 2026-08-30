@@ -99,25 +99,27 @@ class HomeReconnectPolicyTest {
     }
 
     @Test
-    fun `reconnect delegates exactly one probe-owning sync`() = runBlocking {
+    fun `reconnect refreshes isOnline once and delegates to sync exactly once`() = runBlocking {
+        var refreshCalls = 0
         var syncCalls = 0
 
         performHomeReconnect(
             isAudiobookshelfMode = { true },
-            probeServerReachable = { true },
+            refreshIsOnline = { refreshCalls += 1 },
             syncNow = { syncCalls += 1 },
         )
 
+        assertEquals(1, refreshCalls)
         assertEquals(1, syncCalls)
     }
 
     @Test
-    fun `mode change to local before reconnect work starts skips the probe`() = runBlocking {
+    fun `mode change to local before reconnect work starts skips the refresh and sync`() = runBlocking {
         val calls = mutableListOf<String>()
 
         performHomeReconnect(
             isAudiobookshelfMode = { false },
-            probeServerReachable = { calls += "probe"; true },
+            refreshIsOnline = { calls += "refresh" },
             syncNow = { calls += "sync" },
         )
 
@@ -125,7 +127,7 @@ class HomeReconnectPolicyTest {
     }
 
     @Test
-    fun `reconnect work stays active until the probe-owning sync finishes`() = runBlocking {
+    fun `reconnect work stays active until sync finishes`() = runBlocking {
         val calls = mutableListOf<String>()
         val syncStarted = CompletableDeferred<Unit>()
         val releaseSync = CompletableDeferred<Unit>()
@@ -133,7 +135,7 @@ class HomeReconnectPolicyTest {
         val reconnect = async(start = CoroutineStart.UNDISPATCHED) {
             performHomeReconnect(
                 isAudiobookshelfMode = { true },
-                probeServerReachable = { true },
+                refreshIsOnline = { calls += "refresh" },
                 syncNow = {
                     calls += "sync"
                     syncStarted.complete(Unit)
@@ -144,71 +146,65 @@ class HomeReconnectPolicyTest {
 
         syncStarted.await()
         assertFalse(reconnect.isCompleted)
-        assertEquals(listOf("sync"), calls)
+        assertEquals(listOf("refresh", "sync"), calls)
 
         releaseSync.complete(Unit)
         reconnect.await()
 
-        assertEquals(listOf("sync"), calls)
+        assertEquals(listOf("refresh", "sync"), calls)
     }
 
-    // ─── Stale isOnline vs. a fresh probe ──────────────────────────────────
+    // ─── One probe per tap, not two ────────────────────────────────────────
     //
     // The pill offers RECONNECT off ConnectionStatus, which is itself derived
-    // from the cached isOnline flag. Right after real connectivity returns —
-    // but before the OS NetworkCallback lands, or when it never lands at all —
+    // from the cached isOnline flag. Right after real connectivity returns
+    // (before the OS NetworkCallback lands, or when it never lands at all),
     // that cached flag can still read false even though the network is up.
-    // syncNow()'s own shouldRunSync pre-check trusts the SAME stale flag, so
-    // calling it directly would silently no-op. The reconnect action must
-    // force one active probe first and let ITS verdict — not the stale cache —
-    // decide whether to proceed.
+    // syncNow()'s own shouldRunSync pre-check trusts that same flag, so a
+    // stale-false reading would make it silently no-op.
+    //
+    // The old fix forced its own probe before syncNow() ran, but syncNow()
+    // already probes internally once its pre-check passes, so a tap sent two
+    // sequential pings and let a transient failure of the redundant second
+    // one suppress a sync the first one already proved was reachable. The
+    // tap must instead only refresh the cached flag (no network request) and
+    // let syncNow() own the single probe, exactly as it does for every other
+    // caller.
 
     @Test
-    fun `a successful probe runs the sync even though the cached isOnline flag was stale`() = runBlocking {
-        val calls = mutableListOf<String>()
+    fun `stale flag refreshed to online leads to a sync attempt with exactly one probe`() = runBlocking {
+        // Models syncNow()'s own two gates: a cheap isOnline pre-check, then
+        // the real network probe that becomes this action's one and only
+        // ping. refreshIsOnline must run before this fake reads the flag.
+        var isOnline = false
+        var probeCalls = 0
 
         performHomeReconnect(
             isAudiobookshelfMode = { true },
-            probeServerReachable = {
-                calls += "probe"
-                true
+            refreshIsOnline = { isOnline = true },
+            syncNow = {
+                if (isOnline) probeCalls += 1
             },
-            syncNow = { calls += "sync" },
         )
 
-        assertEquals(listOf("probe", "sync"), calls)
+        assertEquals(1, probeCalls)
     }
 
     @Test
-    fun `a failed probe leaves the pill offline instead of running a doomed sync`() = runBlocking {
-        val calls = mutableListOf<String>()
+    fun `refresh finding no network skips the sync without pinging`() = runBlocking {
+        // The cached flag starts stale-true. The refresh is what corrects it.
+        var isOnline = true
+        var probeCalls = 0
 
         performHomeReconnect(
             isAudiobookshelfMode = { true },
-            probeServerReachable = {
-                calls += "probe"
-                false
+            refreshIsOnline = { isOnline = false },
+            syncNow = {
+                if (isOnline) probeCalls += 1
             },
-            syncNow = { calls += "sync" },
         )
 
-        assertEquals(listOf("probe"), calls)
-    }
-
-    @Test
-    fun `an already-online probe still proceeds to sync exactly as before`() = runBlocking {
-        val calls = mutableListOf<String>()
-
-        performHomeReconnect(
-            isAudiobookshelfMode = { true },
-            probeServerReachable = {
-                calls += "probe"
-                true
-            },
-            syncNow = { calls += "sync" },
-        )
-
-        assertEquals(listOf("probe", "sync"), calls)
+        assertEquals(0, probeCalls)
     }
 
     @Test

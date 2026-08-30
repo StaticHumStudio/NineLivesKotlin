@@ -29,17 +29,64 @@ import com.android.billingclient.api.queryProductDetails
 import com.android.billingclient.api.queryPurchasesAsync
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * Orders entitlement writes from refreshes and purchase callbacks.
+ *
+ * A refresh keeps the lock from query start through application. A purchase
+ * callback that arrives meanwhile waits and grants last, so the older query
+ * cannot clear the fresh purchase. A later refresh can still revoke normally.
+ */
+internal class BillingEntitlementSequencer {
+    private val mutex = Mutex()
+
+    suspend fun runRefreshIfIdle(block: suspend () -> Boolean): Boolean? {
+        if (!mutex.tryLock()) return null
+        return try {
+            block()
+        } finally {
+            mutex.unlock()
+        }
+    }
+
+    suspend fun runPurchaseGrant(block: suspend () -> Unit) = mutex.withLock {
+        block()
+    }
+
+    /**
+     * Register the callback grant before returning to Billing's listener.
+     *
+     * UNDISPATCHED reaches [runPurchaseGrant] on the listener thread. If a
+     * refresh owns the mutex, the grant joins that queue immediately instead of
+     * sitting unseen on a busy dispatcher while a reminder reads stale state.
+     */
+    fun launchPurchaseGrant(
+        scope: CoroutineScope,
+        afterGrant: suspend () -> Unit = {},
+        grant: suspend () -> Unit,
+    ): Job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+        runPurchaseGrant(grant)
+        afterGrant()
+    }
+
+    suspend fun <T> runAfterPendingUpdates(block: suspend () -> T): T = mutex.withLock {
+        block()
+    }
+}
 
 /**
  * Everything that talks to Play Billing. Nothing else in the app does.
@@ -69,7 +116,7 @@ class BillingManager @Inject constructor(
      * in flight there is no older result that could land after a newer one and
      * overwrite it.
      */
-    private val refreshMutex = Mutex()
+    private val entitlementSequencer = BillingEntitlementSequencer()
 
     private val productMutex = Mutex()
 
@@ -183,12 +230,8 @@ class BillingManager @Inject constructor(
      * held across a slow network call would let app-switching pile up refreshes
      * that all land at once with nothing new to say.
      */
-    suspend fun refreshPurchases() {
-        if (!refreshMutex.tryLock()) {
-            Log.d(TAG, "refresh already in flight, skipping")
-            return
-        }
-        try {
+    suspend fun refreshPurchases(): Boolean {
+        val result = entitlementSequencer.runRefreshIfIdle {
             // Bounded on purpose. The Billing KTX helpers suspend until Play
             // invokes their callback, and nothing guarantees it ever does. Without
             // a ceiling, one call that never resumes holds this lock for the life
@@ -198,13 +241,22 @@ class BillingManager @Inject constructor(
             // A timeout is not a revocation. It produces no verdict at all, which
             // is the same thing a failed query does.
             withTimeoutOrNull(BILLING_TIMEOUT_MS) { queryAndApply() }
-                ?: Log.d(TAG, "purchase query timed out, leaving entitlement untouched")
-        } finally {
-            refreshMutex.unlock()
+                ?: false.also {
+                    Log.d(TAG, "purchase query timed out, leaving entitlement untouched")
+                }
         }
+        if (result == null) {
+            Log.d(TAG, "refresh already in flight, skipping")
+            return false
+        }
+        return result
     }
 
-    private suspend fun queryAndApply() {
+    internal suspend fun <T> afterPendingEntitlementUpdates(
+        block: suspend () -> T,
+    ): T = entitlementSequencer.runAfterPendingUpdates(block)
+
+    private suspend fun queryAndApply(): Boolean {
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.INAPP)
             .build()
@@ -212,7 +264,7 @@ class BillingManager @Inject constructor(
         val result = billingCall { client.queryPurchasesAsync(params) }
         if (result == null) {
             Log.d(TAG, "purchase query threw, leaving entitlement untouched")
-            return
+            return false
         }
 
         val responseCode = result.billingResult.responseCode
@@ -230,6 +282,7 @@ class BillingManager @Inject constructor(
         // days, and a missed callback would otherwise cost the user their money
         // and us the sale.
         if (responseOk) acknowledgeIfNeeded(result.purchasesList)
+        return responseOk
     }
 
     /**
@@ -358,18 +411,24 @@ class BillingManager @Inject constructor(
         val responseOk = result.responseCode == BillingClient.BillingResponseCode.OK
         val snapshots = purchases.orEmpty().flatMap { it.toSnapshots() }
 
-        scope.launch {
-            // A purchase update can grant but never revoke. A cancelled or
-            // failed billing flow says nothing about what the user already owns,
-            // and treating it as a census would revoke on every dismissed sheet.
-            when (PurchaseEvaluator.evaluatePurchaseUpdate(responseOk, snapshots)) {
-                EntitlementVerdict.GRANT -> entitlements.applyPlayUnlock(true)
-                EntitlementVerdict.REVOKE,
-                EntitlementVerdict.UNCHANGED,
-                -> Unit
+        // A purchase update can grant but never revoke. A cancelled or failed
+        // billing flow says nothing about what the user already owns, and
+        // treating it as a census would revoke on every dismissed sheet.
+        when (PurchaseEvaluator.evaluatePurchaseUpdate(responseOk, snapshots)) {
+            EntitlementVerdict.GRANT -> entitlementSequencer.launchPurchaseGrant(
+                scope = scope,
+                afterGrant = {
+                    if (responseOk) acknowledgeIfNeeded(purchases.orEmpty())
+                },
+                grant = {
+                    entitlements.applyPlayUnlock(true)
+                },
+            )
+            EntitlementVerdict.REVOKE,
+            EntitlementVerdict.UNCHANGED,
+            -> if (responseOk) {
+                scope.launch { acknowledgeIfNeeded(purchases.orEmpty()) }
             }
-
-            if (responseOk) acknowledgeIfNeeded(purchases.orEmpty())
         }
     }
 

@@ -1,9 +1,15 @@
 package com.ninelivesaudio.app.entitlement
 
 import com.ninelivesaudio.app.BuildConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -23,6 +29,62 @@ internal interface PlayEntitlementCache {
 
 internal fun interface TrialReminderScheduler {
     fun schedule(startedAtEpochMs: Long)
+    fun cancel() = Unit
+}
+
+internal data class TrialExpiryRefreshPlan(
+    val targetAtEpochMs: Long,
+    val initialDelayMs: Long,
+) {
+    companion object {
+        private const val REFRESH_AFTER_EXPIRY_MS = 1_000L
+
+        fun forState(
+            state: EntitlementState,
+            nowEpochMs: Long,
+        ): TrialExpiryRefreshPlan? {
+            if (state.source != EntitlementSource.TRIAL || !state.isUnlocked) return null
+            val endsAt = state.trialEndsAtEpochMs ?: return null
+            if (nowEpochMs < 0 || endsAt <= nowEpochMs) return null
+
+            val target = if (endsAt > Long.MAX_VALUE - REFRESH_AFTER_EXPIRY_MS) {
+                Long.MAX_VALUE
+            } else {
+                endsAt + REFRESH_AFTER_EXPIRY_MS
+            }
+            return TrialExpiryRefreshPlan(
+                targetAtEpochMs = target,
+                initialDelayMs = target - nowEpochMs,
+            )
+        }
+    }
+}
+
+internal interface TrialExpiryRefreshScheduler {
+    fun replace(
+        plan: TrialExpiryRefreshPlan?,
+        refresh: suspend () -> Unit,
+    )
+}
+
+internal class CoroutineTrialExpiryRefreshScheduler(
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val wait: suspend (Long) -> Unit = { delay(it) },
+) : TrialExpiryRefreshScheduler {
+    private var pendingRefresh: Job? = null
+
+    override fun replace(
+        plan: TrialExpiryRefreshPlan?,
+        refresh: suspend () -> Unit,
+    ) {
+        pendingRefresh?.cancel()
+        pendingRefresh = plan?.let {
+            scope.launch {
+                wait(it.initialDelayMs)
+                refresh()
+            }
+        }
+    }
 }
 
 /**
@@ -38,6 +100,8 @@ class EntitlementRepository internal constructor(
     private val cache: PlayEntitlementCache,
     private val reminderScheduler: TrialReminderScheduler,
     private val nowEpochMs: () -> Long,
+    private val expiryRefreshScheduler: TrialExpiryRefreshScheduler =
+        CoroutineTrialExpiryRefreshScheduler(),
 ) {
     @Inject
     internal constructor(
@@ -53,6 +117,10 @@ class EntitlementRepository internal constructor(
 
     private val _state = MutableStateFlow(resolveNow())
     val state: StateFlow<EntitlementState> = _state.asStateFlow()
+
+    init {
+        rescheduleExpiryRefresh(_state.value, nowEpochMs())
+    }
 
     /**
      * Serializes every write. Entitlement is read from several places at once
@@ -75,7 +143,12 @@ class EntitlementRepository internal constructor(
      */
     suspend fun applyPlayUnlock(unlocked: Boolean) = writeMutex.withLock {
         cache.playUnlockCached = unlocked
-        _state.value = resolveNow()
+        resolveAndPublish(nowEpochMs())
+        if (unlocked) {
+            // The Play grant is already durable. Reminder cleanup is best-effort
+            // and must never turn a successful purchase into a failed one.
+            runCatching { reminderScheduler.cancel() }
+        }
     }
 
     /** Persist and grant the one-time trial after an explicit user action. */
@@ -86,11 +159,11 @@ class EntitlementRepository internal constructor(
         if (TrialPolicy.evaluate(startedAt, startedAt) == null) return@withLock false
 
         if (!prefs.consumeTrial(startedAt)) {
-            _state.value = resolveAt(startedAt)
+            resolveAndPublish(startedAt)
             return@withLock false
         }
 
-        _state.value = resolveAt(startedAt)
+        resolveAndPublish(startedAt)
         if (_state.value.source != EntitlementSource.TRIAL) return@withLock false
 
         // The trial is already durable. A notification failure must never revoke it.
@@ -107,15 +180,30 @@ class EntitlementRepository internal constructor(
      */
     suspend fun setForceFree(forceFree: Boolean) = writeMutex.withLock {
         cache.forceFree = forceFree
-        _state.value = resolveNow()
+        resolveAndPublish(nowEpochMs())
     }
 
     /** Re-read the persisted inputs, e.g. after an Auto Backup restore. */
     suspend fun refresh() = writeMutex.withLock {
-        _state.value = resolveNow()
+        resolveAndPublish(nowEpochMs())
     }
 
     private fun resolveNow(): EntitlementState = resolveAt(nowEpochMs())
+
+    private fun resolveAndPublish(now: Long) {
+        val resolved = resolveAt(now)
+        _state.value = resolved
+        rescheduleExpiryRefresh(resolved, now)
+    }
+
+    private fun rescheduleExpiryRefresh(state: EntitlementState, now: Long) {
+        expiryRefreshScheduler.replace(
+            plan = TrialExpiryRefreshPlan.forState(state, now),
+            refresh = {
+                refresh()
+            },
+        )
+    }
 
     private fun resolveAt(now: Long): EntitlementState = EntitlementResolver.resolve(
         legacyPaid = prefs.legacyPaid,

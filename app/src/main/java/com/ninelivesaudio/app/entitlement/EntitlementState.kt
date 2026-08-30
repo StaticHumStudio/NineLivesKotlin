@@ -33,6 +33,7 @@ data class EntitlementState(
     val source: EntitlementSource?,
     val trialOfferAvailable: Boolean = false,
     val trialDaysRemaining: Int? = null,
+    val trialEndsAtEpochMs: Long? = null,
 ) {
     val isFree: Boolean get() = !isUnlocked
 

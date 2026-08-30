@@ -56,16 +56,23 @@ class TrialPolicyTest {
     }
 
     @Test
-    fun `clock rollback remains active without reporting more than fourteen days`() {
-        val nowBeforeStart = start - TimeUnit.DAYS.toMillis(3)
+    fun `a start within the clock jitter tolerance remains active`() {
+        val nowBeforeStart = start - TimeUnit.MINUTES.toMillis(5) + 1
 
         assertEquals(14, TrialPolicy.evaluate(nowBeforeStart, start)?.daysRemaining)
     }
 
     @Test
-    fun `extreme clock rollback cannot overflow the days remaining count`() {
-        val farFutureStart = Long.MAX_VALUE - TrialPolicy.DURATION_MS
+    fun `a start one hour in the future fails closed`() {
+        val futureStart = start + TimeUnit.HOURS.toMillis(1)
 
-        assertEquals(14, TrialPolicy.evaluate(0L, farFutureStart)?.daysRemaining)
+        assertNull(TrialPolicy.evaluate(start, futureStart))
+    }
+
+    @Test
+    fun `a start one year in the future fails closed`() {
+        val futureStart = start + TimeUnit.DAYS.toMillis(365)
+
+        assertNull(TrialPolicy.evaluate(start, futureStart))
     }
 }

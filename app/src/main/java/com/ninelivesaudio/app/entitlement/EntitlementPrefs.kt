@@ -83,6 +83,9 @@ class EntitlementPrefs @Inject constructor(
         return prefs.edit()
             .putLong(KEY_TRIAL_STARTED_AT, startedAtEpochMs)
             .putBoolean(KEY_TRIAL_CONSUMED, true)
+            // Restoring a pre-trial backup, or reinstalling without a restore,
+            // can re-arm this local trial. Enforcing lifetime-once would require
+            // phoning home. The studio accepts that loss at this price point.
             // Synchronous on purpose. A process death after an asynchronous
             // grant but before disk flush could otherwise make the offer recur.
             .commit()

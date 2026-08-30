@@ -8,14 +8,18 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.ninelivesaudio.app.MainActivity
 import com.ninelivesaudio.app.R
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -45,8 +49,13 @@ internal data class TrialReminderPlan(
     }
 }
 
-internal fun shouldPostTrialReminder(state: EntitlementState): Boolean =
-    state.source == EntitlementSource.TRIAL
+internal suspend fun shouldPostTrialReminder(
+    refreshPlayOwnership: suspend () -> Boolean,
+    currentState: suspend () -> EntitlementState,
+): Boolean {
+    if (!refreshPlayOwnership()) return false
+    return currentState().source == EntitlementSource.TRIAL
+}
 
 internal class WorkManagerTrialReminderScheduler @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -70,6 +79,14 @@ internal class WorkManagerTrialReminderScheduler @Inject constructor(
         }
     }
 
+    override fun cancel() {
+        try {
+            WorkManager.getInstance(context).cancelUniqueWork(TrialReminderPlan.UNIQUE_WORK_NAME)
+        } catch (e: Exception) {
+            Log.d(TAG, "trial reminder could not be cancelled: ${e.message}")
+        }
+    }
+
     private companion object {
         const val TAG = "TrialReminder"
     }
@@ -78,20 +95,34 @@ internal class WorkManagerTrialReminderScheduler @Inject constructor(
 class TrialReminderWorker(
     appContext: Context,
     params: WorkerParameters,
-) : Worker(appContext, params) {
-    override fun doWork(): Result {
-        val prefs = EntitlementPrefs(applicationContext)
-        val cache = EntitlementCachePrefs(applicationContext)
-        val state = EntitlementResolver.resolve(
-            legacyPaid = prefs.legacyPaid,
-            playUnlocked = cache.playUnlockCached,
-            forceFree = cache.forceFree,
-            trialStartedAtEpochMs = prefs.trialStartedAtEpochMs,
-            trialConsumed = prefs.trialConsumed,
-            nowEpochMs = System.currentTimeMillis(),
-        )
+) : CoroutineWorker(appContext, params) {
 
-        if (shouldPostTrialReminder(state)) {
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface Deps {
+        fun billingManager(): BillingManager
+        fun entitlementRepository(): EntitlementRepository
+    }
+
+    private val deps: Deps by lazy {
+        EntryPointAccessors.fromApplication(applicationContext, Deps::class.java)
+    }
+
+    override suspend fun doWork(): Result {
+        // A purchase can happen after WorkManager accepted this request. Query
+        // Play at fire time rather than trusting the process cache captured then.
+        // If Play cannot answer, skip this best-effort reminder.
+        val billing = deps.billingManager()
+        val entitlements = deps.entitlementRepository()
+        if (shouldPostTrialReminder(
+                refreshPlayOwnership = { billing.refreshPurchases() },
+                currentState = {
+                    billing.afterPendingEntitlementUpdates {
+                        entitlements.current
+                    }
+                },
+            )
+        ) {
             TrialNotifications.show(applicationContext)
         }
         return Result.success()

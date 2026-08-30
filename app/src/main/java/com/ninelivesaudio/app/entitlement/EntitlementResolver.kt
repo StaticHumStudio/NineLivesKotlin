@@ -52,6 +52,7 @@ object EntitlementResolver {
                     isUnlocked = true,
                     source = EntitlementSource.TRIAL,
                     trialDaysRemaining = active.daysRemaining,
+                    trialEndsAtEpochMs = active.endsAtEpochMs,
                 )
             }
             ?: EntitlementState.FREE

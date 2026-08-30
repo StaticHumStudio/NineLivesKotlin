@@ -46,8 +46,12 @@ internal suspend fun disconnectSession(
     appMode: AppMode,
     resetNowPlaying: suspend () -> Unit,
     logout: suspend () -> Unit,
+    holdsRemoteBook: Boolean = false,
 ) {
-    if (appMode == AppMode.AUDIOBOOKSHELF) {
+    // The UI mode alone cannot decide this: switching a live server session
+    // to Local keeps the remote book in the mini player, and logging out must
+    // not leave it there. A local book, by contrast, survives the logout.
+    if (appMode == AppMode.AUDIOBOOKSHELF || holdsRemoteBook) {
         resetNowPlaying()
     }
     logout()
@@ -1029,6 +1033,7 @@ class SettingsViewModel @Inject constructor(
                         appMode = _uiState.value.appMode,
                         resetNowPlaying = playbackManager::resetNowPlayingForDisconnect,
                         logout = apiService::logout,
+                        holdsRemoteBook = playbackManager.currentBook.value?.isLocal == false,
                     )
                     updateAuthUi(uiGeneration) {
                         it.copy(

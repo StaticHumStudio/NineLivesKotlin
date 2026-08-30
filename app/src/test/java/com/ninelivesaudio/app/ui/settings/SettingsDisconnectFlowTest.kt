@@ -40,6 +40,23 @@ class SettingsDisconnectFlowTest {
     }
 
     @Test
+    fun `LOCAL disconnect still clears a lingering remote book`() = runBlocking {
+        // Switch an active server session to Local, then disconnect: the mini
+        // player still holds the remote book, and the UI mode alone must not
+        // let it survive the logout.
+        val effects = mutableListOf<String>()
+
+        disconnectSession(
+            appMode = AppMode.LOCAL,
+            holdsRemoteBook = true,
+            resetNowPlaying = { effects += "reset" },
+            logout = { effects += "logout" },
+        )
+
+        assertEquals(listOf("reset", "logout"), effects)
+    }
+
+    @Test
     fun `confirmed disconnect finishes logout after caller cancellation`() = runBlocking {
         val resetStarted = CompletableDeferred<Unit>()
         val releaseReset = CompletableDeferred<Unit>()

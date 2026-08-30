@@ -411,16 +411,16 @@ class SettingsViewModel @Inject constructor(
                     it.copy(selectedLocalLibraryId = library.id)
                 }
 
-                val msg = "${scanResult.books.size} books imported" +
-                    if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
+                val outcome = buildScanOutcome(scanResult, countedAs = "imported")
 
                 _uiState.update {
                     it.copy(
                         isScanning = false,
-                        lastScanMessage = msg,
+                        lastScanMessage = outcome.lastScanMessage,
                         selectedLocalLibrary = library,
                         inaccessibleLocalLibraryIds = it.inaccessibleLocalLibraryIds - library.id,
-                        successMessage = msg,
+                        successMessage = outcome.successMessage,
+                        errorMessage = outcome.errorMessage,
                     )
                 }
             } catch (e: Exception) {
@@ -451,14 +451,14 @@ class SettingsViewModel @Inject constructor(
                 audioBookRepository.importLocalBooks(library.id, books)
                 removeMissingBooksAfterSuccessfulScan(library.id, scanResult)
 
-                val msg = "${scanResult.books.size} books found" +
-                    if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
+                val outcome = buildScanOutcome(scanResult, countedAs = "found") { "Rescan complete: $it" }
 
                 _uiState.update {
                     it.copy(
                         isScanning = false,
-                        lastScanMessage = msg,
-                        successMessage = "Rescan complete: $msg",
+                        lastScanMessage = outcome.lastScanMessage,
+                        successMessage = outcome.successMessage,
+                        errorMessage = outcome.errorMessage,
                     )
                 }
             } catch (e: Exception) {
@@ -1549,3 +1549,61 @@ internal fun orphanedLibraries(
     accessibleFolderUris: Set<String>,
 ): List<Library> =
     localLibraries.filter { !isLibraryFolderAccessible(it.folderUri, accessibleFolderUris) }
+
+// ─── Scan result messaging (internal for testability) ──────────────────────
+
+/**
+ * What the local-folder-scan UI shows after a scan: [lastScanMessage] is the
+ * always-visible per-folder summary, [successMessage] and [errorMessage] are
+ * the dismissable banners above it, and exactly one of the two is non-null.
+ */
+internal data class ScanOutcome(
+    val lastScanMessage: String,
+    val successMessage: String?,
+    val errorMessage: String?,
+)
+
+/**
+ * A scan that found books can still have hit the depth or folder cap along
+ * the way, or skipped a folder it could not read. Those errorMessages are
+ * as actionable as an empty-scan explanation ("Pick a more specific folder")
+ * and must not be discarded just because books were also found: the error
+ * banner wins over the success banner whenever there is one, same as the
+ * empty-scan case below. [countedAs] and [successMessage] let scan and
+ * rescan share this wording ("imported" vs "found", plain vs "Rescan
+ * complete: ").
+ */
+internal fun buildScanOutcome(
+    scanResult: LocalLibraryScanner.ScanResult,
+    countedAs: String,
+    successMessage: (String) -> String = { it },
+): ScanOutcome {
+    val msg = "${scanResult.books.size} books $countedAs" +
+        if (scanResult.skippedCount > 0) ", ${scanResult.skippedCount} skipped" else ""
+
+    val warning = when {
+        // A clean scan (no errors) that still found nothing needs an explanation,
+        // not a cheerful zero.
+        scanResult.books.isEmpty() && scanResult.errorMessages.isEmpty() ->
+            "No books found in ${scanResult.foldersScanned} folders. Nine Lives looks " +
+                "for folders with audio files inside. Check the folder layout guide in Settings."
+        scanResult.errorMessages.isNotEmpty() -> summarizeScanWarnings(scanResult.errorMessages)
+        else -> null
+    }
+
+    return ScanOutcome(
+        lastScanMessage = msg,
+        successMessage = if (warning != null) null else successMessage(msg),
+        errorMessage = warning,
+    )
+}
+
+/** The first scan warning, plus a count of the rest so none of them are silently dropped. */
+internal fun summarizeScanWarnings(errorMessages: List<String>): String {
+    val first = errorMessages.first()
+    return if (errorMessages.size > 1) {
+        "$first (+${errorMessages.size - 1} more)"
+    } else {
+        first
+    }
+}

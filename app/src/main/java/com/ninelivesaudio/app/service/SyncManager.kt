@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service
 
+import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -9,6 +10,7 @@ import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -18,6 +20,7 @@ import kotlin.time.Duration.Companion.seconds
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val TAG = "SyncManager"
 private const val MIN_POSITION_SYNC_INTERVAL_MS = 30_000L
 private const val MIN_POSITION_DELTA = 2.0
 private const val MIN_PROGRESS_DELTA = 0.01
@@ -154,103 +157,92 @@ class SyncManager @Inject constructor(
      * Execute a full sync: libraries + audiobooks + progress.
      * Thread-safe via Mutex.
      *
-     * Returns whether it actually attempted a sync. Callers that report the
-     * outcome to the user (Settings' manual "Sync Now") must not treat a
-     * [SyncAttempt.SKIPPED] return as success: nothing ran, so whatever
-     * [SettingsManager.currentSettings].lastSync happens to hold is a leftover
-     * from some earlier attempt, not this one's result.
+     * Returns the [SyncNowResult] this attempt actually produced. Callers
+     * that report the outcome to the user (Settings' manual "Sync Now") must
+     * render [SyncNowResult.record] directly rather than rereading
+     * [SettingsManager.currentSettings] afterward — a concurrent periodic
+     * sync can write its own outcome in the gap between this attempt
+     * finishing and a reread, and the reread would then report THAT
+     * attempt's result instead of this one's. A [SyncAttempt.SKIPPED] result
+     * means nothing ran at all: [SyncNowResult.record] is null and must not
+     * be read as this call's outcome either.
+     *
+     * The actual control flow (gate, reachability probe, mutex, persist) is
+     * [runSyncAttempt] — extracted so its invariants are pinned directly by
+     * tests instead of through a stand-in helper this method could quietly
+     * stop calling.
      */
-    internal suspend fun syncNow(): SyncAttempt {
-        val settingsAtStart = settingsManager.currentSettings
-        val serverUrlAtStart = settingsAtStart.serverUrl
-        // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a network.
-        if (!shouldRunSync(
-                isOnline = connectivityMonitor.isOnline.value,
-                isLocalMode = settingsAtStart.appMode == AppMode.LOCAL,
-                hasAuth = hasAuthToken(),
-            )
-        ) return SyncAttempt.SKIPPED_NOT_READY
+    internal suspend fun syncNow(): SyncNowResult {
+        val serverUrlAtStart = settingsManager.currentSettings.serverUrl
 
-        // Actually reach the server before committing to a sync. A live VPN
-        // interface (e.g. Tailscale) keeps isOnline=true with no real connectivity,
-        // so without this fast probe the sync fires and hangs on the full 30s
-        // request timeout — the "still trying to sync" symptom in airplane mode.
-        //
-        // A failed probe still has to be recorded. Returning silently here
-        // used to leave a fresh install on a live, unreachable network with
-        // no LastSyncRecord at all, indistinguishable from never having
-        // synced.
-        if (!connectivityMonitor.checkServerReachable()) {
-            var recorded = false
-            settingsManager.updateSettings {
-                val updated = it.withLastSyncIfServerUnchanged(
+        return runSyncAttempt(
+            // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a
+            // network. Evaluated fresh every call — the post-probe recheck
+            // below must see a mode switch or sign-out that landed mid-probe.
+            isSyncReady = {
+                shouldRunSync(
+                    isOnline = connectivityMonitor.isOnline.value,
+                    isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                    hasAuth = hasAuthToken(),
+                )
+            },
+            // Actually reach the server before committing to a sync. A live
+            // VPN interface (e.g. Tailscale) keeps isOnline=true with no real
+            // connectivity, so without this probe the sync fires and hangs
+            // on the full 30s request timeout — the "still trying to sync"
+            // symptom in airplane mode. Called at most once per attempt.
+            checkServerReachable = { connectivityMonitor.checkServerReachable() },
+            tryLock = { syncMutex.tryLock() },
+            unlock = { syncMutex.unlock() },
+            onLockAcquired = {
+                _isSyncing.value = true
+                connectivityMonitor.setSyncing(true)
+            },
+            onLockReleasing = {
+                _isSyncing.value = false
+                connectivityMonitor.setSyncing(false)
+            },
+            // Progress sync FIRST — this populates the home screen grid
+            // immediately. Library sync runs after (heavier, fetches all
+            // book metadata).
+            runSyncWork = {
+                syncProgress()
+                fetchLibrarySyncReport(
+                    fetchLibraries = libraryRepository::syncFromServer,
+                    // syncLibraryItems already preserves local download state.
+                    fetchItems = { library -> audioBookRepository.syncLibraryItems(library.id) },
+                )
+            },
+            persistOutcome = { report ->
+                persistSyncOutcome(
+                    report = report,
+                    completedAtMs = System.currentTimeMillis(),
+                    serverUrlAtStart = serverUrlAtStart,
+                    updateSettings = settingsManager::updateSettings,
+                ).also { outcome ->
+                    if (!outcome.persisted) {
+                        Log.e(TAG, "syncNow: failed to persist sync outcome")
+                    }
+                    _syncCompleted.tryEmit(Unit)
+                }
+            },
+            // A failed probe still has to be recorded. Returning silently
+            // here used to leave a fresh install on a live, unreachable
+            // network with no LastSyncRecord at all, indistinguishable from
+            // never having synced.
+            persistUnreachableOutcome = {
+                persistSyncOutcome(
                     report = unreachableServerSyncReport(),
                     completedAtMs = System.currentTimeMillis(),
                     serverUrlAtStart = serverUrlAtStart,
-                )
-                recorded = updated !== it
-                updated
-            }
-            return if (recorded) SyncAttempt.RAN else SyncAttempt.DISCARDED_SERVER_CHANGED
-        }
-        // The probe took real time. Re-check eligibility so a mode switch or
-        // sign-out that landed mid-probe does not start a sync that should no
-        // longer run.
-        if (!shouldRunSync(
-                isOnline = connectivityMonitor.isOnline.value,
-                isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
-                hasAuth = hasAuthToken(),
-            )
-        ) return SyncAttempt.SKIPPED_NOT_READY
-
-        // Prevent concurrent syncs. A caller reporting this outcome to the
-        // user must not read the mutex owner's eventual record as its own:
-        // that record belongs to whichever sync got there first.
-        if (!syncMutex.tryLock()) return SyncAttempt.SKIPPED_BUSY
-
-        try {
-            _isSyncing.value = true
-            connectivityMonitor.setSyncing(true)
-
-            // Progress sync FIRST — this populates the home screen grid immediately.
-            // Library sync runs after (heavier, fetches all book metadata).
-            syncProgress()
-            val recorded = syncLibraries(serverUrlAtStart)
-
-            _syncCompleted.tryEmit(Unit)
-            return if (recorded) SyncAttempt.RAN else SyncAttempt.DISCARDED_SERVER_CHANGED
-        } catch (e: CancellationException) {
-            // Don't swallow cancellation — let structured concurrency unwind.
-            throw e
-        } catch (e: Exception) {
-            // Non-fatal — log and continue
-        } finally {
-            _isSyncing.value = false
-            connectivityMonitor.setSyncing(false)
-            syncMutex.unlock()
-        }
-        return SyncAttempt.RAN
-    }
-
-    /**
-     * Sync libraries and their audiobooks from the server.
-     * Returns whether the resulting record was persisted, which it is not
-     * when the configured server changed while the sync was in flight.
-     */
-    private suspend fun syncLibraries(serverUrlAtStart: String): Boolean {
-        val report = fetchLibrarySyncReport(
-            fetchLibraries = libraryRepository::syncFromServer,
-            // syncLibraryItems already preserves local download state.
-            fetchItems = { library -> audioBookRepository.syncLibraryItems(library.id) },
+                    updateSettings = settingsManager::updateSettings,
+                ).also { outcome ->
+                    if (!outcome.persisted) {
+                        Log.e(TAG, "syncNow: failed to persist unreachable-server outcome")
+                    }
+                }
+            },
         )
-        val completedAtMs = System.currentTimeMillis()
-        var recorded = false
-        settingsManager.updateSettings {
-            val updated = it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
-            recorded = updated !== it
-            updated
-        }
-        return recorded
     }
 
     /**
@@ -526,11 +518,6 @@ internal fun shouldReconnectForModeTransition(
     newMode: AppMode,
 ): Boolean = previousMode != AppMode.AUDIOBOOKSHELF && newMode == AppMode.AUDIOBOOKSHELF
 
-internal suspend fun isSyncEligibleAfterReachability(
-    checkServerReachable: suspend () -> Boolean,
-    isStillEligible: suspend () -> Boolean,
-): Boolean = checkServerReachable() && isStillEligible()
-
 /**
  * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an
  * active network. The online check is the "internet connection check" that
@@ -565,6 +552,96 @@ internal enum class SyncAttempt {
      * new server and is not this attempt's result.
      */
     DISCARDED_SERVER_CHANGED,
+}
+
+/**
+ * What syncNow() returned to its caller: the [SyncAttempt] classification
+ * plus the actual [LastSyncRecord] this attempt produced, if any. Returned
+ * directly so a caller reporting the outcome to the user (Settings' manual
+ * "Sync Now") renders THIS record — never a reread of
+ * [SettingsManager.currentSettings], which a concurrent periodic sync can
+ * overwrite in the gap between this attempt finishing and the caller getting
+ * around to reading it.
+ *
+ * [persisted] is false when [record] reflects what this attempt actually
+ * produced but the write to durable settings storage failed. The in-memory
+ * [record] is still the truthful answer for THIS call — callers reporting to
+ * the user should trust it — but it did not make it to disk, so a fresh app
+ * start or another reader of [SettingsManager.currentSettings] will not see
+ * it. Always true when [attempt] is not [SyncAttempt.RAN].
+ */
+internal data class SyncNowResult(
+    val attempt: SyncAttempt,
+    val record: LastSyncRecord?,
+    val persisted: Boolean = true,
+)
+
+private fun PersistedSyncOutcome.toSyncNowResult(): SyncNowResult = when {
+    // A failed write is reported honestly regardless of what the transform
+    // decided — see issue #14's adversarial review, finding 1. Silently
+    // falling back to DISCARDED_SERVER_CHANGED here would misreport a
+    // storage failure as a server-changed race that never happened.
+    !persisted -> SyncNowResult(SyncAttempt.RAN, record, persisted = false)
+    recorded -> SyncNowResult(SyncAttempt.RAN, record, persisted = true)
+    else -> SyncNowResult(SyncAttempt.DISCARDED_SERVER_CHANGED, null)
+}
+
+/**
+ * The full pre-flight-through-persist control flow of a sync attempt,
+ * extracted so its exact invariants are pinned directly by tests instead of
+ * through a stand-in helper production code could quietly stop calling (see
+ * the removed isSyncEligibleAfterReachability, which syncNow() no longer
+ * routed through — issue #14's adversarial review, finding 4).
+ *
+ * [checkServerReachable] — the reachability probe — is invoked AT MOST ONCE
+ * per call. [isSyncReady] is checked once before the probe (cheap, no
+ * network) and once more after (the probe takes real time, so a mode switch
+ * or sign-out mid-probe still has to block), but that second check must
+ * never trigger a second probe.
+ */
+internal suspend fun runSyncAttempt(
+    isSyncReady: suspend () -> Boolean,
+    checkServerReachable: suspend () -> Boolean,
+    tryLock: () -> Boolean,
+    unlock: () -> Unit,
+    onLockAcquired: () -> Unit = {},
+    onLockReleasing: () -> Unit = {},
+    runSyncWork: suspend () -> SyncReport,
+    persistOutcome: suspend (SyncReport) -> PersistedSyncOutcome,
+    persistUnreachableOutcome: suspend () -> PersistedSyncOutcome,
+): SyncNowResult {
+    if (!isSyncReady()) return SyncNowResult(SyncAttempt.SKIPPED_NOT_READY, null)
+
+    if (!checkServerReachable()) {
+        return persistUnreachableOutcome().toSyncNowResult()
+    }
+
+    // The probe took real time. Re-check eligibility so a mode switch or
+    // sign-out that landed mid-probe does not start a sync that should no
+    // longer run — but never probe again to do it.
+    if (!isSyncReady()) return SyncNowResult(SyncAttempt.SKIPPED_NOT_READY, null)
+
+    // Prevent concurrent syncs. A caller reporting this outcome to the user
+    // must not read the mutex owner's eventual record as its own: that
+    // record belongs to whichever sync got there first.
+    if (!tryLock()) return SyncNowResult(SyncAttempt.SKIPPED_BUSY, null)
+    onLockAcquired()
+    return try {
+        val report = runSyncWork()
+        persistOutcome(report).toSyncNowResult()
+    } catch (e: CancellationException) {
+        // Don't swallow cancellation — let structured concurrency unwind.
+        throw e
+    } catch (e: Exception) {
+        // Truly unexpected — runSyncWork's own internals already catch and
+        // report their own failures as a FAILED SyncReport. Still honest
+        // rather than a clean-looking RAN: no report was produced, so
+        // nothing was persisted.
+        SyncNowResult(SyncAttempt.RAN, null, persisted = false)
+    } finally {
+        onLockReleasing()
+        unlock()
+    }
 }
 
 internal data class PlaybackThrottleSnapshot(

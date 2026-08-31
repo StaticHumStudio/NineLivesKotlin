@@ -1,8 +1,6 @@
 package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.domain.model.AppMode
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -46,28 +44,13 @@ class SyncModeReconnectTest {
         )
     }
 
-    @Test
-    fun `mode change during reachability check blocks remote sync`() = runBlocking {
-        val checkStarted = CompletableDeferred<Unit>()
-        val releaseCheck = CompletableDeferred<Unit>()
-        var stillEligible = true
-        val result = async {
-            isSyncEligibleAfterReachability(
-                checkServerReachable = {
-                    checkStarted.complete(Unit)
-                    releaseCheck.await()
-                    true
-                },
-                isStillEligible = { stillEligible },
-            )
-        }
-
-        checkStarted.await()
-        stillEligible = false
-        releaseCheck.complete(Unit)
-
-        assertFalse(result.await())
-    }
+    // Mode-change-during-reachability-check coverage lives in
+    // RunSyncAttemptTest now (`eligibility is rechecked after the probe...`),
+    // pinned against runSyncAttempt() -- the function syncNow() actually
+    // calls. It used to live here against isSyncEligibleAfterReachability, a
+    // stand-in helper production code had quietly stopped calling (issue #14's
+    // adversarial review, finding 4): this test stayed green while the real
+    // gate could have regressed underneath it.
 
     @Test
     fun `mode switch reconnect refreshes OS connectivity before anything probes`() = runBlocking {

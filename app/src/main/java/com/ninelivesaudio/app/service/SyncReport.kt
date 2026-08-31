@@ -200,6 +200,57 @@ internal fun AppSettings.withLastSyncIfServerUnchanged(
 internal fun AppSettings.lastSyncForCurrentServer(): LastSyncRecord? =
     lastSync?.takeIf { it.serverUrl == serverUrl }
 
+/**
+ * The result of one attempt to persist a sync's outcome as [LastSyncRecord].
+ *
+ * [recorded] is true only when the transform actually decided to write a new
+ * record — i.e. the configured server had not changed underneath the sync.
+ * [persisted] is false when the write to durable settings storage itself
+ * failed. When that happens, [record] is still the truthful in-memory
+ * answer this attempt produced (the [LastSyncRecord] the transform decided
+ * on before the write failed) — it is null only when the failure happened
+ * before the transform ever got to run. A failed write must never look like
+ * a clean result with no signal: the caller needs [persisted] to know
+ * storage didn't take, and [record] to still report what actually happened
+ * rather than silently falling back to stale or absent data.
+ */
+internal data class PersistedSyncOutcome(
+    val recorded: Boolean,
+    val persisted: Boolean,
+    val record: LastSyncRecord?,
+)
+
+/**
+ * Persist [report] as this sync attempt's [LastSyncRecord] via [updateSettings],
+ * tolerating a failure to actually write it to durable storage instead of
+ * letting that exception propagate and get swallowed by a caller's generic
+ * catch (which used to report a clean [SyncAttempt.RAN] with no idea the
+ * record was never stored — see issue #14's adversarial review, finding 1).
+ */
+internal suspend fun persistSyncOutcome(
+    report: SyncReport,
+    completedAtMs: Long,
+    serverUrlAtStart: String,
+    updateSettings: suspend ((AppSettings) -> AppSettings) -> Unit,
+): PersistedSyncOutcome {
+    var recorded = false
+    var record: LastSyncRecord? = null
+    var persisted = true
+    try {
+        updateSettings {
+            val updated = it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
+            recorded = updated !== it
+            if (recorded) record = updated.lastSync
+            updated
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        persisted = false
+    }
+    return PersistedSyncOutcome(recorded, persisted, record)
+}
+
 internal fun AppSettings.syncSnapshotForCurrentServer(): SyncSnapshot? =
     lastSyncForCurrentServer()?.toSyncSnapshot()
 

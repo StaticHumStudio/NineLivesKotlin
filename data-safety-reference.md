@@ -19,18 +19,22 @@ Last updated: 2026-08-24
 > thing: nothing reaches Static Hum Studio except the opt-in emails.
 >
 > Who set the form to No, and on what reasoning, is NOT recorded anywhere and
-> was not reconstructed. The defensible argument is Play's user-initiated
-> transfer exemption, and it has two legs. Server-mode data goes to the
-> Audiobookshelf server the user chose. That is usually their own box, but
-> nothing stops a user from pointing the app at a friend's or a hosted
-> instance they do not control, which is exactly why the per-category
-> analysis below marks the shared question a Console judgment call rather
-> than settled. Static Hum Studio receives none of it either way. The two
-> paths that DO reach the studio, opt-in
-> crash reports and manual feedback, leave through an email the user composes
-> and sends from their own mail client, which is user-initiated in the most
-> literal sense. Both legs are plausible, neither is verified as the actual
-> reasoning, and it is a genuine judgment call rather than a settled question.
+> was not reconstructed. Do not cite a named Play exemption for it. Google's
+> current guidance (checked 2026-08-31) defines collect as transmitting data
+> off the device, "irrespective of whether data is transmitted to you or a
+> third-party server", and its exemption list (on-device only, ephemeral,
+> end-to-end encryption, open webview) has no user-chosen-destination entry.
+> E2EE does not fit either: Audiobookshelf serves plain HTTP by default.
+> What the No actually rests on, as a judgment call (Jeff, 2026-08-31):
+> Static Hum Studio can never access any of it. Server-mode data goes only to
+> the Audiobookshelf server the user chose (usually their own box, sometimes
+> a friend's or a hosted instance they merely have access to, which is why
+> the per-category analysis below marks the shared question a Console
+> judgment call rather than settled). Declaring No on that basis is the
+> common pattern for self-hosted client apps on Play, and this declaration
+> has already survived multiple Google review rounds as filed. The two paths
+> that DO reach the studio, opt-in crash reports and manual feedback, leave
+> through an email the user composes and sends from their own mail client.
 >
 > The per-category analysis below is kept ON PURPOSE. If Google ever challenges
 > the "No data collected" declaration, this is the fallback: it is the work of

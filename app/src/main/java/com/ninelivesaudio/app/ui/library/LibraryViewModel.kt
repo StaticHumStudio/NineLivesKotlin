@@ -5,15 +5,25 @@ import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.RemoteResult
+import com.ninelivesaudio.app.data.remote.describeFailure
+import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Library
+import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.service.PersistedSyncOutcome
 import com.ninelivesaudio.app.service.SettingsManager
-import com.ninelivesaudio.app.service.resolveActiveLibrarySelection
+import com.ninelivesaudio.app.service.buildShelfSyncReport
+import com.ninelivesaudio.app.service.lastSyncForCurrentServer
+import com.ninelivesaudio.app.service.persistActiveLibrarySelection
+import com.ninelivesaudio.app.service.persistSyncOutcome
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -100,6 +110,32 @@ internal fun decideDownloadedOnlyFilter(
     }
 }
 
+/**
+ * Cancels whatever job the previous [launch] call started before starting a
+ * new one, so an older, still-running call can never outlive a newer one and
+ * overwrite its persisted or displayed result.
+ *
+ * A single [Job] reference rather than a generation counter: cancelling the
+ * stale coroutine outright stops ANY uiState write or persist call it was
+ * mid-way through, not just a final one gated on a generation check. Callers
+ * whose body can be interrupted mid-network-call must let
+ * [kotlinx.coroutines.CancellationException] escape their own try/catch
+ * (see [rethrowLibraryLoadCancellation]) or the cancellation would still be
+ * reported as an ordinary failure.
+ */
+internal class ExclusiveLaunch {
+    private var job: Job? = null
+
+    fun launch(scope: CoroutineScope, block: suspend CoroutineScope.() -> Unit): Job {
+        job?.cancel()
+        return scope.launch(block = block).also { job = it }
+    }
+}
+
+internal suspend fun updateLibraryLoadStateIfActive(update: () -> Unit) {
+    if (currentCoroutineContext().isActive) update()
+}
+
 // ─── ViewModel ───────────────────────────────────────────────────────────
 
 @HiltViewModel
@@ -135,6 +171,18 @@ class LibraryViewModel @Inject constructor(
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val errorMessage: String? = null,
         val totalBookCount: Int = 0,
+        val lastSyncResult: SyncResult? = null,
+        val lastSyncSequence: Long? = null,
+        val lastSyncFailedLibraryIds: List<String>? = null,
+        // The SELECTED library's own most recent direct-fetch outcome, kept
+        // separate from lastSyncResult (the whole-account aggregate) so an
+        // unrelated library's failure can't classify this one's shelf as
+        // failed (issue #14, PR #30 review, finding A). Reset to null on
+        // every selection change and set by loadAudioBooks() once its own
+        // fresh fetch for the newly selected library completes.
+        val selectedLibraryFetchResult: SyncResult? = null,
+        val selectedLibraryFetchSequence: Long? = null,
+        val selectedLibraryFetchPersisted: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -156,6 +204,10 @@ class LibraryViewModel @Inject constructor(
 
     // Search debounce
     private var searchJob: Job? = null
+
+    // Initial load, refresh, and selection all write the same shelf state.
+    // Keep them in one lane so an older operation cannot finish last.
+    private val libraryLoadLaunch = ExclusiveLaunch()
 
     init {
         // Observe connectivity and auto-filter to downloaded when offline
@@ -181,8 +233,28 @@ class LibraryViewModel @Inject constructor(
             }
         }
 
-        // Initial load
+        // Keep the screen tied to the durable result across process restarts
+        // and background syncs.
         viewModelScope.launch {
+            settingsManager.settings
+                .map { settings ->
+                    settings.lastSyncForCurrentServer()
+                        ?.takeIf { settings.appMode != AppMode.LOCAL }
+                }
+                .distinctUntilChanged()
+                .collect { record ->
+                    _uiState.update {
+                        it.copy(
+                            lastSyncResult = record?.result,
+                            lastSyncSequence = record?.outcomeSequence,
+                            lastSyncFailedLibraryIds = record?.failedLibraryIds,
+                        )
+                    }
+                }
+        }
+
+        // Initial load
+        libraryLoadLaunch.launch(viewModelScope) {
             loadLibraries()
         }
     }
@@ -194,40 +266,83 @@ class LibraryViewModel @Inject constructor(
 
         try {
             val settings = settingsManager.currentSettings
-            val libs = if (settings.appMode == AppMode.LOCAL) {
+            val serverUrlAtStart = settings.serverUrl
+            val isLocalMode = settings.appMode == AppMode.LOCAL
+            var libraryResult: RemoteResult<List<Library>>? = null
+            val libs = if (isLocalMode) {
                 libraryRepository.getLocalLibraries()
             } else {
-                loadAudiobookshelfLibraries()
+                if (shouldSyncOnLibraryLoad(
+                        isLocalLibrary = false,
+                        isOnline = connectivityMonitor.isOnline.value,
+                    )
+                ) {
+                    refreshRemoteLibraryList(
+                        readCached = {
+                            visibleCachedLibraries(
+                                settings = settingsManager.currentSettings,
+                                cached = libraryRepository.getAudiobookshelf(),
+                            )
+                        },
+                        fetchRemote = libraryRepository::syncFromServerForLibraryLoad,
+                    ).also { libraryResult = it.result }.libraries
+                } else {
+                    visibleCachedLibraries(
+                        settings = settingsManager.currentSettings,
+                        cached = libraryRepository.getAudiobookshelf(),
+                    )
+                }
             }
 
-            val selection = resolveActiveLibrarySelection(libs, settings)
-            if (selection.requiresPersistence) {
-                settingsManager.saveSettings(selection.settings)
-            }
+            val selection = persistActiveLibrarySelection(
+                libraries = libs,
+                settings = settingsManager.currentSettings,
+                updateSettings = settingsManager::updateSettings,
+            )
             val selected = selection.library
 
             _uiState.update {
-                it.copy(
+                it.withLibrarySelection(
                     libraries = libs,
                     selectedLibrary = selected,
-                    isLocalMode = settings.appMode == AppMode.LOCAL,
+                    isLocalMode = isLocalMode,
                 )
             }
 
-            if (selected != null) {
-                loadAudioBooks(selected.id)
+            val itemResult = selected?.let {
+                loadAudioBooks(it.id, persistResult = false)
+            }
+            if (!isLocalMode) {
+                buildShelfSyncReport(libraryResult, selected, itemResult)?.let { report ->
+                    val selectedLibraryFetchResult = selected?.let {
+                        buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)?.result
+                    }
+                    persistLastSync(
+                        report = report,
+                        serverUrlAtStart = serverUrlAtStart,
+                        selectedLibraryFetchResult = selectedLibraryFetchResult,
+                    )
+                }
             }
         } catch (e: Exception) {
+            rethrowLibraryLoadCancellation(e)
             _uiState.update {
                 it.copy(errorMessage = "Failed to load libraries: ${e.message}")
             }
         } finally {
-            _uiState.update { it.copy(isLoading = false) }
+            updateLibraryLoadStateIfActive {
+                _uiState.update { it.copy(isLoading = false) }
+            }
         }
     }
 
-    private suspend fun loadAudioBooks(libraryId: String) {
+    private suspend fun loadAudioBooks(
+        libraryId: String,
+        persistResult: Boolean = true,
+    ): RemoteResult<List<AudioBook>>? {
+        var itemResult: RemoteResult<List<AudioBook>>? = null
         try {
+            val serverUrlAtStart = settingsManager.currentSettings.serverUrl
             val selected = _uiState.value.selectedLibrary
             // Only hit the network when a remote library is selected AND we have
             // connectivity. In airplane mode the old code attempted syncLibraryItems
@@ -238,20 +353,78 @@ class LibraryViewModel @Inject constructor(
                     isOnline = connectivityMonitor.isOnline.value,
                 )
             ) {
-                try {
-                    audioBookRepository.syncLibraryItems(libraryId)
-                } catch (_: Exception) {
-                    // Use cached
+                itemResult = refreshSelectedLibraryItems(
+                    libraryId = libraryId,
+                    fetchRemote = audioBookRepository::syncLibraryItems,
+                )
+                // The selected library's own outcome, tracked separately
+                // from the whole-account aggregate lastSyncResult (issue
+                // #14, PR #30 review, finding A) — see decideLibraryShelf.
+                val ownShelfReport = selected?.let {
+                    buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)
+                }
+                _uiState.update {
+                    it.copy(
+                        selectedLibraryFetchResult = ownShelfReport?.result,
+                        selectedLibraryFetchSequence = null,
+                        selectedLibraryFetchPersisted = false,
+                    )
+                }
+                if (persistResult && ownShelfReport != null) {
+                    persistLastSync(
+                        report = ownShelfReport,
+                        serverUrlAtStart = serverUrlAtStart,
+                        selectedLibraryFetchResult = ownShelfReport.result,
+                    )
                 }
             }
 
             updateAvailableGroups(libraryId)
             applyFilterSuspend()
         } catch (e: Exception) {
+            rethrowLibraryLoadCancellation(e)
             _uiState.update {
                 it.copy(errorMessage = "Failed to load audiobooks: ${e.message}")
             }
         }
+        return itemResult
+    }
+
+    private suspend fun persistLastSync(
+        report: com.ninelivesaudio.app.service.SyncReport,
+        serverUrlAtStart: String,
+        completedAtMs: Long = System.currentTimeMillis(),
+        selectedLibraryFetchResult: SyncResult? = null,
+    ): Long? {
+        val outcome = persistSyncOutcome(
+            report = report,
+            completedAtMs = completedAtMs,
+            serverUrlAtStart = serverUrlAtStart,
+            isEligibleSession = { it.appMode == AppMode.AUDIOBOOKSHELF },
+            updateSettingsIfAuthenticated = settingsManager::updateSettingsIfAuthenticated,
+        )
+        val selectedFetchSequence = selectedLibraryFetchSequence(outcome)
+        val selectedFetchPersisted = outcome.recorded && outcome.persisted
+        val currentRecord = settingsManager.currentSettings.lastSyncForCurrentServer()
+            ?.takeIf { settingsManager.currentSettings.appMode != AppMode.LOCAL }
+        _uiState.update {
+            val current = it.copy(
+                lastSyncResult = currentRecord?.result,
+                lastSyncSequence = currentRecord?.outcomeSequence,
+                lastSyncFailedLibraryIds = currentRecord?.failedLibraryIds,
+            )
+            if (selectedLibraryFetchResult != null &&
+                current.selectedLibraryFetchResult == selectedLibraryFetchResult
+            ) {
+                current.copy(
+                    selectedLibraryFetchSequence = selectedFetchSequence,
+                    selectedLibraryFetchPersisted = selectedFetchPersisted,
+                )
+            } else {
+                current
+            }
+        }
+        return selectedFetchSequence
     }
 
     // ─── User Actions ─────────────────────────────────────────────────────
@@ -262,9 +435,14 @@ class LibraryViewModel @Inject constructor(
                 selectedLibrary = library,
                 searchQuery = "",
                 isLoading = true,
+                // A stale outcome from whatever was previously selected must
+                // never be read as this library's own verdict.
+                selectedLibraryFetchResult = null,
+                selectedLibraryFetchSequence = null,
+                selectedLibraryFetchPersisted = false,
             )
         }
-        viewModelScope.launch {
+        libraryLoadLaunch.launch(viewModelScope) {
             // Persist selection so the whole app picks it up
             settingsManager.updateSettings {
                 if (library.isLocal) {
@@ -348,10 +526,15 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun refresh() {
-        viewModelScope.launch {
+        libraryLoadLaunch.launch(viewModelScope) {
             _uiState.update { it.copy(isRefreshing = true) }
-            loadLibraries()
-            _uiState.update { it.copy(isRefreshing = false) }
+            try {
+                loadLibraries()
+            } finally {
+                updateLibraryLoadStateIfActive {
+                    _uiState.update { it.copy(isRefreshing = false) }
+                }
+            }
         }
     }
 
@@ -446,30 +629,170 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch { applyFilterSuspend() }
     }
 
-    private suspend fun loadAudiobookshelfLibraries(): List<Library> {
-        var libs = libraryRepository.getAudiobookshelf()
-        // Only hit the network when online. The unconditional syncFromServer()
-        // fired a doomed OkHttp request in airplane mode that blocked the Library
-        // screen on the timeout before cached libraries could display. This is the
-        // same gate that guards the per-library items sync in loadAudioBooks();
-        // the library list is always remote here, so isLocalLibrary = false.
-        if (shouldSyncOnLibraryLoad(
-                isLocalLibrary = false,
-                isOnline = connectivityMonitor.isOnline.value,
-            )
-        ) {
-            try {
-                val serverLibs = libraryRepository.syncFromServer()
-                if (serverLibs.isNotEmpty()) libs = serverLibs
-            } catch (_: Exception) {
-                // Use cached
-            }
-        }
-        return libs
-    }
 }
 
 // ─── Load-path decisions (internal for testability) ───────────────────────
+
+internal sealed interface LibraryShelfDecision {
+    data object Empty : LibraryShelfDecision
+    data class LoadFailed(val result: SyncResult) : LibraryShelfDecision
+    data class ShowShelf(val warning: SyncResult?) : LibraryShelfDecision
+}
+
+internal data class RemoteLibraryRefresh(
+    val libraries: List<Library>,
+    val result: RemoteResult<List<Library>>,
+)
+
+internal suspend fun refreshRemoteLibraryList(
+    readCached: suspend () -> List<Library>,
+    fetchRemote: suspend () -> ReconciledServerLibraryList,
+): RemoteLibraryRefresh {
+    val cached = readCached()
+    val remote = try {
+        fetchRemote()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        ReconciledServerLibraryList(RemoteResult.Failed(describeFailure(e)), null)
+    }
+    val result = remote.result
+    val fetched = result.valueOrEmpty()
+    return RemoteLibraryRefresh(
+        libraries = when (result) {
+            is RemoteResult.Ok -> {
+                val reconciled = remote.reconciledLibraries ?: result.value
+                val fetchedIds = result.value.mapTo(mutableSetOf()) { it.id }
+                result.value + reconciled.filterNot { it.id in fetchedIds }
+            }
+            is RemoteResult.Partial -> fetched.ifEmpty { cached }
+            is RemoteResult.Failed -> cached
+        },
+        result = result,
+    )
+}
+
+internal suspend fun refreshSelectedLibraryItems(
+    libraryId: String,
+    fetchRemote: suspend (String) -> RemoteResult<List<AudioBook>>,
+): RemoteResult<List<AudioBook>> = try {
+    fetchRemote(libraryId)
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    RemoteResult.Failed(describeFailure(e))
+}
+
+internal fun rethrowLibraryLoadCancellation(error: Exception) {
+    if (error is CancellationException) throw error
+}
+
+internal fun LibraryViewModel.UiState.withLibrarySelection(
+    libraries: List<Library>,
+    selectedLibrary: Library?,
+    isLocalMode: Boolean,
+): LibraryViewModel.UiState = copy(
+    libraries = libraries,
+    selectedLibrary = selectedLibrary,
+    isLocalMode = isLocalMode,
+    filteredBooks = if (selectedLibrary == null) emptyList() else filteredBooks,
+    availableGroups = if (selectedLibrary == null) emptyList() else availableGroups,
+    groupedSections = if (selectedLibrary == null) emptyList() else groupedSections,
+    expandedGroups = if (selectedLibrary == null) emptySet() else expandedGroups,
+    totalBookCount = if (selectedLibrary == null) 0 else totalBookCount,
+    // A stale outcome from whatever was PREVIOUSLY selected must never be
+    // read as this (possibly different) library's own verdict — cleared on
+    // every selection pass and re-set once loadAudioBooks() gets a fresh
+    // result for the current selection.
+    selectedLibraryFetchResult = null,
+    selectedLibraryFetchSequence = null,
+    selectedLibraryFetchPersisted = false,
+)
+
+/**
+ * The persisted sync record, but only if it was produced against the server
+ * currently configured. A record left over from a server the user has since
+ * switched away from is not a verdict about this server's shelf. A switch to
+ * a new server (or back to LOCAL and back) must not have that other
+ * server's failure or "confirmed empty" render here.
+ */
+internal fun visibleCachedLibraries(
+    settings: AppSettings,
+    cached: List<Library>,
+): List<Library> {
+    val lastSync = settings.lastSyncForCurrentServer()
+    val serverConfirmedEmpty = settings.appMode == AppMode.AUDIOBOOKSHELF &&
+        lastSync?.result == SyncResult.SUCCESS &&
+        lastSync.libraryCount == 0
+    // Complete reconciliation removes each library without downloaded books
+    // before it records an empty result. Any row left in the cache belongs to
+    // a download and must remain selectable while offline.
+    return if (serverConfirmedEmpty && cached.isEmpty()) emptyList() else cached
+}
+
+internal fun librarySyncResult(settings: AppSettings): SyncResult? =
+    settings.lastSyncForCurrentServer()?.result?.takeIf { settings.appMode != AppMode.LOCAL }
+
+/**
+ * [lastSyncResult] is ONE aggregate for the whole account: SyncManager's
+ * background sync folds every library's item fetch into it, and the first
+ * failure wins. Applying that aggregate directly to whichever library the
+ * user happens to have open would fail an unrelated, perfectly healthy
+ * shelf just because some OTHER library timed out (issue #14, PR #30
+ * review, finding A).
+ *
+ * [selectedLibraryFetchResult] is the SELECTED library's own most recent
+ * direct fetch outcome (set by loadAudioBooks() from the exact RemoteResult
+ * it already fetches for that library specifically), and takes priority only
+ * while it has a newer sequence than the aggregate record. An equal sequence
+ * stays authoritative only when the selected result was durably recorded with
+ * that aggregate. A later successful aggregate always supersedes an
+ * unpersisted direct verdict. A later degraded aggregate supersedes it only
+ * when its failure scope includes this library, or is null for a legacy or
+ * otherwise unscoped record. The aggregate is still
+ * consulted as a fallback when there is no per-library signal yet (a fresh
+ * load that never ran its own live fetch, e.g. offline), but only when its
+ * scope applies to the selected library.
+ */
+internal fun decideLibraryShelf(
+    lastSyncResult: SyncResult?,
+    lastSyncSequence: Long? = null,
+    lastSyncFailedLibraryIds: List<String>? = null,
+    selectedLibraryFetchResult: SyncResult? = null,
+    selectedLibraryFetchSequence: Long? = null,
+    selectedLibraryFetchPersisted: Boolean = false,
+    selectedLibraryId: String? = null,
+    cachedCount: Int,
+): LibraryShelfDecision {
+    val aggregateIsNewer = selectedLibraryFetchResult != null && lastSyncSequence != null &&
+        (selectedLibraryFetchSequence == null ||
+            lastSyncSequence > selectedLibraryFetchSequence ||
+            (lastSyncSequence == selectedLibraryFetchSequence && !selectedLibraryFetchPersisted))
+    val aggregateAppliesToSelectedLibrary = lastSyncResult == SyncResult.SUCCESS ||
+        lastSyncFailedLibraryIds == null ||
+        selectedLibraryId in lastSyncFailedLibraryIds
+    val effectiveResult = if (aggregateIsNewer && aggregateAppliesToSelectedLibrary) {
+        lastSyncResult
+    } else {
+        selectedLibraryFetchResult ?: lastSyncResult?.takeIf { aggregateAppliesToSelectedLibrary }
+            ?: SyncResult.SUCCESS
+    }
+    val degraded = effectiveResult?.takeIf { it != SyncResult.SUCCESS }
+    return when {
+        cachedCount > 0 -> LibraryShelfDecision.ShowShelf(warning = degraded)
+        degraded != null -> LibraryShelfDecision.LoadFailed(result = degraded)
+        else -> LibraryShelfDecision.Empty
+    }
+}
+
+/**
+ * The settings transform resolves its candidate record before attempting the
+ * encrypted write. Keep that record's sequence for the selected shelf even
+ * when storage rejects the write, so the fresh fetch cannot be hidden by an
+ * older durable aggregate.
+ */
+internal fun selectedLibraryFetchSequence(outcome: PersistedSyncOutcome): Long? =
+    outcome.record?.outcomeSequence
 
 /**
  * Whether loading a library should attempt a remote sync. Local libraries never

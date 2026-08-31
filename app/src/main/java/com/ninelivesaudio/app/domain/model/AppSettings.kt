@@ -47,6 +47,10 @@ data class AppSettings(
     // Dossier: count archived (LOCAL soft-deleted) books in listening stats.
     val includeArchivedInStats: Boolean = true,
     val lastSeenChangelogVersion: String = "",
+    val lastSync: LastSyncRecord? = null,
+    // Per-install high water mark for persisted sync outcomes. Ordering a
+    // verdict by wall time lets a clock rollback reject every later sync.
+    val lastSyncOutcomeSequence: Long = 0L,
 ) {
     /** The selected library for the current source mode. The two modes never share a fallback. */
     val activeLibraryId: String?
@@ -55,6 +59,39 @@ data class AppSettings(
             AppMode.AUDIOBOOKSHELF -> selectedLibraryId
         }
 }
+
+@Serializable
+enum class SyncResult {
+    SUCCESS,
+    PARTIAL,
+    FAILED,
+}
+
+@Serializable
+data class LastSyncRecord(
+    val result: SyncResult,
+    val libraryCount: Int,
+    val bookCount: Int,
+    val failure: String? = null,
+    val completedAtMs: Long,
+    // A persisted outcome order, independent from the wall clock used for
+    // support-facing age text. Defaults preserve records from before this
+    // ordering field existed.
+    val outcomeSequence: Long = 0L,
+    // The item-library IDs whose fetches did not complete cleanly in this
+    // sync run. Null preserves the conservative behavior for records stored
+    // before this scope existed, or outcomes that failed before item scope
+    // was knowable. An empty list means every attempted item fetch was clean.
+    val failedLibraryIds: List<String>? = null,
+    // The server this record was produced against (AppSettings.serverUrl at
+    // persist time). A record is only a verdict about the shelf for the
+    // server that is CURRENTLY configured. A leftover record from a server
+    // the user has since switched away from must never render as that other
+    // server's sync state. Defaults to "" so a record deserialized from
+    // before this field existed is treated as belonging to no known server
+    // (never matches a real serverUrl) rather than crashing on missing JSON.
+    val serverUrl: String = "",
+)
 
 @Serializable
 data class ServerProfile(

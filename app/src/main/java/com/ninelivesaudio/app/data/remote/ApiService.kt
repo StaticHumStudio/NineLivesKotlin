@@ -589,56 +589,77 @@ class ApiService @Inject constructor(
 
     // ─── Libraries ───────────────────────────────────────────────────────
 
-    suspend fun getLibraries(): List<Library> = withContext(Dispatchers.IO) {
-        try {
+    /**
+     * The library list. Returns [RemoteResult] rather than a list because an
+     * empty list used to mean four different things (HTTP error, empty body,
+     * thrown exception, genuinely no libraries) and a user reporting "my shelf
+     * is empty" could not be told which one they hit.
+     */
+    suspend fun getLibraries(): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
+        // remoteResultCatching lets CancellationException escape uncaught
+        // (see its kdoc). A plain `catch (e: Exception)` here would turn a
+        // stopped sync into a persisted failure instead of a silently
+        // cancelled request.
+        remoteResultCatching(onFailure = { Log.w(TAG, "getLibraries failed", it) }) {
             val response = api.getLibraries()
-            if (!response.isSuccessful) return@withContext emptyList()
+            if (!response.isSuccessful) {
+                Log.w(TAG, "getLibraries: HTTP ${response.code()}")
+                return@remoteResultCatching RemoteResult.Failed("HTTP ${response.code()}")
+            }
 
-            response.body()?.libraries?.map { apiLib ->
-                Library(
-                    id = apiLib.id,
-                    name = apiLib.name,
-                    displayOrder = apiLib.displayOrder,
-                    icon = apiLib.icon ?: "audiobook",
-                    mediaType = apiLib.mediaType ?: "book",
-                    folders = apiLib.folders?.map { f ->
-                        Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
-                    } ?: emptyList()
-                )
-            } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
+            val body = response.body()
+            if (body == null) {
+                Log.w(TAG, "getLibraries: successful response with no body")
+                return@remoteResultCatching RemoteResult.Failed("empty body")
+            }
+
+            RemoteResult.Ok(
+                body.libraries.map { apiLib ->
+                    Library(
+                        id = apiLib.id,
+                        name = apiLib.name,
+                        displayOrder = apiLib.displayOrder,
+                        icon = apiLib.icon ?: "audiobook",
+                        mediaType = apiLib.mediaType ?: "book",
+                        folders = apiLib.folders?.map { f ->
+                            Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
+                        } ?: emptyList()
+                    )
+                }
+            )
         }
     }
 
     // ─── Library Items (Paginated batch load) ────────────────────────────
 
-    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): List<AudioBook> =
+    /**
+     * Every item in a library, paginated. A page that fails part-way through
+     * yields [RemoteResult.Partial]: the books already fetched are still worth
+     * showing, but the caller has to know the shelf stopped short rather than
+     * ended. The same is true when a page merely comes back empty or shorter
+     * than [limit] while the server's own reported total says more exist —
+     * [runPaginatedFetch] is what decides that (issue #14, PR #30 review,
+     * finding B); only actually reaching the reported total is a genuine Ok.
+     */
+    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
         withContext(Dispatchers.IO) {
-            try {
-                val allItems = mutableListOf<AudioBook>()
-                var currentPage = 0
-
-                while (true) {
-                    val response = api.getLibraryItems(libraryId, limit, currentPage)
-                    if (!response.isSuccessful) break
-
-                    val body = response.body() ?: break
-                    if (body.results.isEmpty()) break
-
-                    allItems.addAll(body.results.map { mapToAudioBook(it, libraryId) })
-
-                    if (allItems.size >= body.total) break
-                    // A page smaller than the requested limit is the last page.
-                    // This also guarantees termination if a misbehaving server
-                    // keeps reporting a `total` larger than it ever delivers.
-                    if (body.results.size < limit) break
-                    currentPage++
+            runPaginatedFetch(
+                limit = limit,
+                onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
+            ) { page ->
+                val response = api.getLibraryItems(libraryId, limit, page)
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
+                    return@runPaginatedFetch PageOutcome.Stopped("page $page: HTTP ${response.code()}")
                 }
 
-                allItems
-            } catch (e: Exception) {
-                emptyList()
+                val body = response.body()
+                if (body == null) {
+                    Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
+                    return@runPaginatedFetch PageOutcome.Stopped("page $page: empty body")
+                }
+
+                PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
             }
         }
 

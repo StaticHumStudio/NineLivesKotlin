@@ -46,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.CornerSigils
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
@@ -83,6 +84,27 @@ fun LibraryScreen(
     // Flatten grouped items only when groupedSections or expandedGroups change
     val groupedListItems = remember(uiState.groupedSections, uiState.expandedGroups) {
         flattenGroupedItems(uiState.groupedSections, uiState.expandedGroups)
+    }
+    val shelfDecision = remember(
+        uiState.lastSyncResult,
+        uiState.lastSyncSequence,
+        uiState.lastSyncFailedLibraryIds,
+        uiState.selectedLibraryFetchResult,
+        uiState.selectedLibraryFetchSequence,
+        uiState.selectedLibraryFetchPersisted,
+        uiState.selectedLibrary?.id,
+        uiState.totalBookCount,
+    ) {
+        decideLibraryShelf(
+            lastSyncResult = uiState.lastSyncResult,
+            lastSyncSequence = uiState.lastSyncSequence,
+            lastSyncFailedLibraryIds = uiState.lastSyncFailedLibraryIds,
+            selectedLibraryFetchResult = uiState.selectedLibraryFetchResult,
+            selectedLibraryFetchSequence = uiState.selectedLibraryFetchSequence,
+            selectedLibraryFetchPersisted = uiState.selectedLibraryFetchPersisted,
+            selectedLibraryId = uiState.selectedLibrary?.id,
+            cachedCount = uiState.totalBookCount,
+        )
     }
 
     val archiveSubtitle = CopyEngine.getSubtitle(
@@ -186,8 +208,27 @@ fun LibraryScreen(
                     uiState.isLoading && uiState.filteredBooks.isEmpty() -> {
                         LoadingState()
                     }
+                    shelfDecision is LibraryShelfDecision.LoadFailed && uiState.filteredBooks.isEmpty() -> {
+                        LibraryLoadFailedState(
+                            result = shelfDecision.result,
+                            onRetry = viewModel::refresh,
+                        )
+                    }
                     uiState.filteredBooks.isEmpty() -> {
-                        EmptyState(uiState)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            (shelfDecision as? LibraryShelfDecision.ShowShelf)
+                                ?.warning
+                                ?.let { warning ->
+                                    SyncWarningBanner(
+                                        result = warning,
+                                        onRetry = viewModel::refresh,
+                                        modifier = Modifier.padding(horizontal = 18.dp),
+                                    )
+                                }
+                            Box(modifier = Modifier.weight(1f)) {
+                                EmptyState(uiState)
+                            }
+                        }
                     }
                     else -> {
                         LazyColumn(
@@ -200,6 +241,16 @@ fun LibraryScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            (shelfDecision as? LibraryShelfDecision.ShowShelf)
+                                ?.warning
+                                ?.let { warning ->
+                                    item(key = "sync-warning") {
+                                        SyncWarningBanner(
+                                            result = warning,
+                                            onRetry = viewModel::refresh,
+                                        )
+                                    }
+                                }
                             if (uiState.viewMode == ViewMode.ALL) {
                                 // Flat list in ALL mode
                                 itemsIndexed(
@@ -932,6 +983,79 @@ private fun LoadingState() {
             color = NineLivesTheme.colors.goldFilament,
             strokeWidth = 2.dp,
         )
+    }
+}
+
+@Composable
+private fun LibraryLoadFailedState(
+    result: SyncResult,
+    onRetry: () -> Unit,
+) {
+    val message = when (result) {
+        SyncResult.PARTIAL -> "The last sync was incomplete. Try again to load the full library."
+        SyncResult.FAILED -> "The last sync failed. Check your connection and try again."
+        SyncResult.SUCCESS -> "Try again to load your library."
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "Library could not be loaded",
+            style = MaterialTheme.typography.titleMedium,
+            color = NineLivesTheme.colors.archiveTextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = NineLivesTheme.colors.archiveTextMuted,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        TextButton(onClick = onRetry) {
+            Text("Retry")
+        }
+    }
+}
+
+@Composable
+private fun SyncWarningBanner(
+    result: SyncResult,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val message = when (result) {
+        SyncResult.PARTIAL -> "Last sync was incomplete. Showing saved books."
+        SyncResult.FAILED -> "Last sync failed. Showing saved books."
+        SyncResult.SUCCESS -> return
+    }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = NineLivesTheme.colors.archiveVoidSurface,
+        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = NineLivesTheme.colors.archiveTextSecondary,
+            )
+            TextButton(onClick = onRetry) {
+                Text("Retry")
+            }
+        }
     }
 }
 

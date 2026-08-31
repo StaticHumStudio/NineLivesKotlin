@@ -170,6 +170,13 @@ class LibraryViewModel @Inject constructor(
         val errorMessage: String? = null,
         val totalBookCount: Int = 0,
         val lastSyncResult: SyncResult? = null,
+        // The SELECTED library's own most recent direct-fetch outcome, kept
+        // separate from lastSyncResult (the whole-account aggregate) so an
+        // unrelated library's failure can't classify this one's shelf as
+        // failed (issue #14, PR #30 review, finding A). Reset to null on
+        // every selection change and set by loadAudioBooks() once its own
+        // fresh fetch for the newly selected library completes.
+        val selectedLibraryFetchResult: SyncResult? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -327,12 +334,15 @@ class LibraryViewModel @Inject constructor(
                     libraryId = libraryId,
                     fetchRemote = audioBookRepository::syncLibraryItems,
                 )
-                if (persistResult && selected != null) {
-                    buildShelfSyncReport(
-                        libraries = null,
-                        selectedLibrary = selected,
-                        items = itemResult,
-                    )?.let { report -> persistLastSync(report, serverUrlAtStart) }
+                // The selected library's own outcome, tracked separately
+                // from the whole-account aggregate lastSyncResult (issue
+                // #14, PR #30 review, finding A) — see decideLibraryShelf.
+                val ownShelfReport = selected?.let {
+                    buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)
+                }
+                _uiState.update { it.copy(selectedLibraryFetchResult = ownShelfReport?.result) }
+                if (persistResult && ownShelfReport != null) {
+                    persistLastSync(ownShelfReport, serverUrlAtStart)
                 }
             }
 
@@ -371,6 +381,9 @@ class LibraryViewModel @Inject constructor(
                 selectedLibrary = library,
                 searchQuery = "",
                 isLoading = true,
+                // A stale outcome from whatever was previously selected must
+                // never be read as this library's own verdict.
+                selectedLibraryFetchResult = null,
             )
         }
         libraryLoadLaunch.launch(viewModelScope) {
@@ -626,6 +639,11 @@ internal fun LibraryViewModel.UiState.withLibrarySelection(
     groupedSections = if (selectedLibrary == null) emptyList() else groupedSections,
     expandedGroups = if (selectedLibrary == null) emptySet() else expandedGroups,
     totalBookCount = if (selectedLibrary == null) 0 else totalBookCount,
+    // A stale outcome from whatever was PREVIOUSLY selected must never be
+    // read as this (possibly different) library's own verdict — cleared on
+    // every selection pass and re-set once loadAudioBooks() gets a fresh
+    // result for the current selection.
+    selectedLibraryFetchResult = null,
 )
 
 /**
@@ -649,11 +667,28 @@ internal fun visibleCachedLibraries(
 internal fun librarySyncResult(settings: AppSettings): SyncResult? =
     settings.lastSyncForCurrentServer()?.result?.takeIf { settings.appMode != AppMode.LOCAL }
 
+/**
+ * [lastSyncResult] is ONE aggregate for the whole account: SyncManager's
+ * background sync folds every library's item fetch into it, and the first
+ * failure wins. Applying that aggregate directly to whichever library the
+ * user happens to have open would fail an unrelated, perfectly healthy
+ * shelf just because some OTHER library timed out (issue #14, PR #30
+ * review, finding A).
+ *
+ * [selectedLibraryFetchResult] is the SELECTED library's own most recent
+ * direct fetch outcome (set by loadAudioBooks() from the exact RemoteResult
+ * it already fetches for that library specifically), and takes priority
+ * over the aggregate whenever it is present. The aggregate is still
+ * consulted as a fallback when there is no per-library signal yet (a fresh
+ * load that never ran its own live fetch, e.g. offline) — same behavior as
+ * before this fix for that case.
+ */
 internal fun decideLibraryShelf(
     lastSyncResult: SyncResult?,
+    selectedLibraryFetchResult: SyncResult? = null,
     cachedCount: Int,
 ): LibraryShelfDecision {
-    val degraded = lastSyncResult?.takeIf { it != SyncResult.SUCCESS }
+    val degraded = (selectedLibraryFetchResult ?: lastSyncResult)?.takeIf { it != SyncResult.SUCCESS }
     return when {
         cachedCount > 0 -> LibraryShelfDecision.ShowShelf(warning = degraded)
         degraded != null -> LibraryShelfDecision.LoadFailed(result = degraded)

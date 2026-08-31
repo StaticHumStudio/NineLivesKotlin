@@ -65,6 +65,71 @@ class LibraryShelfDecisionTest {
         )
     }
 
+    // ─── The selected library's own outcome, not an unrelated one's ────────
+    //
+    // GitHub codex review of PR #30, finding A: lastSyncResult is ONE
+    // aggregate for the whole account -- SyncManager's background sync folds
+    // every library's item fetch into it, and the first failure wins. If
+    // library B times out while library A (currently selected, genuinely
+    // empty) synced fine, the aggregate reads FAILED and decideLibraryShelf
+    // used to apply that to A's empty shelf, rendering a load-failed state
+    // for a library that was never actually a problem.
+    //
+    // selectedLibraryFetchResult is LibraryViewModel's own record of the
+    // CURRENTLY SELECTED library's most recent direct fetch (set by
+    // loadAudioBooks() from the same RemoteResult it already fetches for
+    // that library specifically) -- when present, it is authoritative for
+    // this shelf and the stale/unrelated aggregate is not consulted.
+
+    @Test
+    fun `an unrelated aggregate failure does not fail a selected library that synced fine`() {
+        assertEquals(
+            LibraryShelfDecision.Empty,
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED, // some OTHER library's item fetch timed out
+                selectedLibraryFetchResult = SyncResult.SUCCESS, // but the selected one's own fetch succeeded
+                cachedCount = 0, // and it is genuinely, confirmedly empty
+            ),
+        )
+    }
+
+    @Test
+    fun `a selected library whose own fetch failed still renders the failed state`() {
+        // The aggregate is irrelevant here -- the selected library's own
+        // fetch is what failed, and that must still surface.
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.SUCCESS, // the account-wide aggregate looks fine
+                selectedLibraryFetchResult = SyncResult.FAILED, // but THIS library's own fetch failed
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `a selected library's own partial fetch still warns even with cached books`() {
+        assertEquals(
+            LibraryShelfDecision.ShowShelf(warning = SyncResult.PARTIAL),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.SUCCESS,
+                selectedLibraryFetchResult = SyncResult.PARTIAL,
+                cachedCount = 5,
+            ),
+        )
+    }
+
+    @Test
+    fun `with no per-library signal yet, the aggregate is still consulted as before`() {
+        // First launch, or a load that never ran its own live fetch (e.g.
+        // offline) -- selectedLibraryFetchResult defaults to null, and the
+        // aggregate is the only signal available, matching today's behavior.
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(lastSyncResult = SyncResult.FAILED, cachedCount = 0),
+        )
+    }
+
     @Test
     fun `server mode exposes the persisted sync result`() {
         val settings = AppSettings(

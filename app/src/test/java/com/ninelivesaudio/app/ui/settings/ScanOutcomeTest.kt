@@ -28,11 +28,13 @@ class ScanOutcomeTest {
         skippedCount: Int = 0,
         errorMessages: List<String> = emptyList(),
         foldersScanned: Int = 10,
+        archiveFileCount: Int = 0,
     ) = LocalLibraryScanner.ScanResult(
         books = (0 until bookCount).map { book("book$it") },
         skippedCount = skippedCount,
         errorMessages = errorMessages,
         foldersScanned = foldersScanned,
+        archiveFileCount = archiveFileCount,
     )
 
     @Test
@@ -57,6 +59,44 @@ class ScanOutcomeTest {
     }
 
     @Test
+    fun `a scan with no archives adds no extraction hint`() {
+        val outcome = buildScanOutcome(result(bookCount = 2), countedAs = "imported")
+
+        assertEquals("2 books imported", outcome.successMessage)
+        assertNull(outcome.errorMessage)
+    }
+
+    @Test
+    fun `an empty scan with one archive adds the singular extraction hint`() {
+        val outcome = buildScanOutcome(
+            result(bookCount = 0, foldersScanned = 3, archiveFileCount = 1),
+            countedAs = "imported",
+        )
+
+        assertNull(outcome.successMessage)
+        assertEquals(
+            "No books found in 3 folders. Nine Lives looks for folders with audio files " +
+                "inside. Check the folder layout guide in Settings.\n\n" +
+                "1 archive found. Extract it into a folder to import.",
+            outcome.errorMessage,
+        )
+    }
+
+    @Test
+    fun `a books found scan with several archives adds the plural extraction hint`() {
+        val outcome = buildScanOutcome(
+            result(bookCount = 2, archiveFileCount = 3),
+            countedAs = "imported",
+        )
+
+        assertEquals(
+            "2 books imported\n\n3 archives found. Extract them into folders to import.",
+            outcome.successMessage,
+        )
+        assertNull(outcome.errorMessage)
+    }
+
+    @Test
     fun `books found alongside a cap warning surfaces the warning, not a bare success`() {
         val outcome = buildScanOutcome(
             result(
@@ -72,6 +112,45 @@ class ScanOutcomeTest {
             "Scan stopped early: more than 1000 folders. Pick a more specific folder.",
             outcome.errorMessage,
         )
+    }
+
+    @Test
+    fun `an archive only scan failure pairs the cap warning with its extraction hint`() {
+        val error = try {
+            failEmptyScanWithErrors(
+                result(
+                    bookCount = 0,
+                    errorMessages = listOf("Scan stopped early: more than 1000 folders. Pick a more specific folder."),
+                    archiveFileCount = 2,
+                ),
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+
+        assertEquals(
+            "Scan stopped early: more than 1000 folders. Pick a more specific folder.\n\n" +
+                "2 archives found. Extract them into folders to import.",
+            error?.message,
+        )
+    }
+
+    @Test
+    fun `a scan failure without archives keeps today's cap warning`() {
+        val error = try {
+            failEmptyScanWithErrors(
+                result(
+                    bookCount = 0,
+                    errorMessages = listOf("Scan stopped early: more than 1000 folders. Pick a more specific folder."),
+                ),
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+
+        assertEquals("Scan stopped early: more than 1000 folders. Pick a more specific folder.", error?.message)
     }
 
     @Test

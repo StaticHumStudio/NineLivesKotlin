@@ -551,9 +551,7 @@ class SettingsViewModel @Inject constructor(
                 val scanResult = withContext(Dispatchers.IO) {
                     localScanner.scan(uri)
                 }
-                if (scanResult.errorMessages.isNotEmpty() && scanResult.books.isEmpty()) {
-                    throw IllegalStateException(scanResult.errorMessages.joinToString("; "))
-                }
+                failEmptyScanWithErrors(scanResult)
 
                 // Create or reuse the local library row after confirming the folder is readable.
                 val library = libraryRepository.createLocalLibrary(displayName, uriString)
@@ -599,9 +597,7 @@ class SettingsViewModel @Inject constructor(
                 val scanResult = withContext(Dispatchers.IO) {
                     localScanner.scan(Uri.parse(folderUri))
                 }
-                if (scanResult.errorMessages.isNotEmpty() && scanResult.books.isEmpty()) {
-                    throw IllegalStateException(scanResult.errorMessages.joinToString("; "))
-                }
+                failEmptyScanWithErrors(scanResult)
 
                 // Import discovered books, but only delete missing books after a clean scan.
                 val books = scanResult.books.map { it.toAudioBook(library.id) }
@@ -1947,9 +1943,27 @@ internal fun buildScanOutcome(
 
     return ScanOutcome(
         lastScanMessage = msg,
-        successMessage = if (warning != null) null else successMessage(msg),
-        errorMessage = warning,
+        successMessage = if (warning != null) null else withArchiveHint(successMessage(msg), scanResult.archiveFileCount),
+        errorMessage = warning?.let { withArchiveHint(it, scanResult.archiveFileCount) },
     )
+}
+
+private fun withArchiveHint(message: String, archiveFileCount: Int): String {
+    val hint = when (archiveFileCount) {
+        0 -> return message
+        1 -> "1 archive found. Extract it into a folder to import."
+        else -> "$archiveFileCount archives found. Extract them into folders to import."
+    }
+    return "$message\n\n$hint"
+}
+
+internal fun scanFailureMessage(scanResult: LocalLibraryScanner.ScanResult): String =
+    withArchiveHint(scanResult.errorMessages.joinToString("; "), scanResult.archiveFileCount)
+
+internal fun failEmptyScanWithErrors(scanResult: LocalLibraryScanner.ScanResult) {
+    if (scanResult.errorMessages.isNotEmpty() && scanResult.books.isEmpty()) {
+        throw IllegalStateException(scanFailureMessage(scanResult))
+    }
 }
 
 /** The first scan warning, plus a count of the rest so none of them are silently dropped. */

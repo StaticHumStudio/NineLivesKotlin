@@ -208,20 +208,10 @@ class AudioBookRepository @Inject constructor(
         mutex = syncLibraryItemsMutex,
         libraryId = libraryId,
         fetchItems = { apiService.getLibraryItems(libraryId) },
-        mergeItems = { remote ->
-            // Preserve local download info when syncing. Query by book IDs
-            // rather than libraryId so an existing row is found regardless
-            // of how it was originally saved. An empty list cannot be passed
-            // to SQLite IN (:ids), and has nothing to merge anyway.
-            if (remote.isEmpty()) {
-                emptyList()
-            } else {
-                val localBooks = audioBookDao.getByIds(remote.map { it.id }).associateBy { it.id }
-                remote.map { remoteBook -> mergeSyncedBook(remoteBook, localBooks[remoteBook.id]) }
-            }
-        },
+        mergeItems = { remote -> mergeSyncedBooks(remote, audioBookDao::getByIds) },
         upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
-        deleteMissing = { id, keptIds -> audioBookDao.deleteMissingServerBooks(id, keptIds) },
+        cachedNonDownloadedIds = audioBookDao::getNonDownloadedServerIdsByLibrary,
+        deleteByIds = audioBookDao::deleteServerBooksByIds,
         deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },
     )
 
@@ -254,7 +244,7 @@ class AudioBookRepository @Inject constructor(
     /** Import scanned Local Library books into one local library. */
     suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
         if (books.isEmpty()) return
-        val existingById = audioBookDao.getByIds(books.map { it.id }).associateBy { it.id }
+        val existingById = fetchByIdChunks(books.map { it.id }, audioBookDao::getByIds).associateBy { it.id }
         audioBookDao.upsertAll(
             books.map { book ->
                 val existing = existingById[book.id]
@@ -350,6 +340,34 @@ class AudioBookRepository @Inject constructor(
     }
 }
 
+private const val MAXIMUM_AUDIOBOOK_LOOKUP_BIND_COUNT = 500
+private const val MAXIMUM_SERVER_BOOK_DELETE_BIND_COUNT = 499
+
+private suspend fun <T> fetchByIdChunks(
+    ids: List<String>,
+    fetchByIds: suspend (List<String>) -> List<T>,
+): List<T> {
+    val rows = mutableListOf<T>()
+    for (idChunk in ids.chunked(MAXIMUM_AUDIOBOOK_LOOKUP_BIND_COUNT)) {
+        rows += fetchByIds(idChunk)
+    }
+    return rows
+}
+
+/**
+ * Preserves local state while merging a server response, without binding more
+ * than 500 book IDs in one cached-row lookup.
+ */
+internal suspend fun mergeSyncedBooks(
+    remote: List<AudioBook>,
+    getByIds: suspend (List<String>) -> List<AudioBookEntity>,
+): List<AudioBook> {
+    if (remote.isEmpty()) return emptyList()
+
+    val localBooks = fetchByIdChunks(remote.map { it.id }, getByIds).associateBy { it.id }
+    return remote.map { remoteBook -> mergeSyncedBook(remoteBook, localBooks[remoteBook.id]) }
+}
+
 /**
  * Reconciles the DAO's cached SERVER rows for one library against a
  * completed [syncLibraryItems] fetch, extracted so the branching is
@@ -363,10 +381,9 @@ class AudioBookRepository @Inject constructor(
  * because a page it couldn't reach is not proof those books are gone —
  * that retention is unchanged from before this fix.
  *
- * [deleteMissing] and [deleteAllServerBooks] are expected to scope to
- * server (non-local) rows and exempt downloaded books — see
- * AudioBookDao.deleteMissingServerBooks / deleteServerBooksByLibrary — a
- * sync must never take away the user's own downloaded audio, only refresh
+ * [cachedNonDownloadedIds], [deleteByIds], and [deleteAllServerBooks] are
+ * expected to scope to server (non-local) rows and exempt downloaded books.
+ * A sync must never take away the user's own downloaded audio, only refresh
  * what the server confirms is still there.
  */
 internal suspend fun reconcileServerLibrary(
@@ -374,7 +391,8 @@ internal suspend fun reconcileServerLibrary(
     merged: List<AudioBook>,
     libraryId: String,
     upsertAll: suspend (List<AudioBook>) -> Unit,
-    deleteMissing: suspend (libraryId: String, keptIds: List<String>) -> Unit,
+    cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
+    deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
 ) {
     if (merged.isNotEmpty()) {
@@ -384,7 +402,11 @@ internal suspend fun reconcileServerLibrary(
     if (merged.isEmpty()) {
         deleteAllServerBooks(libraryId)
     } else {
-        deleteMissing(libraryId, merged.map { it.id })
+        val keptIds = merged.mapTo(mutableSetOf()) { it.id }
+        val missingIds = cachedNonDownloadedIds(libraryId).filterNot { it in keptIds }
+        for (ids in missingIds.chunked(MAXIMUM_SERVER_BOOK_DELETE_BIND_COUNT)) {
+            deleteByIds(libraryId, ids)
+        }
     }
 }
 
@@ -401,7 +423,8 @@ internal suspend fun runSerializedLibraryItemSync(
     fetchItems: suspend () -> RemoteResult<List<AudioBook>>,
     mergeItems: suspend (List<AudioBook>) -> List<AudioBook>,
     upsertAll: suspend (List<AudioBook>) -> Unit,
-    deleteMissing: suspend (libraryId: String, keptIds: List<String>) -> Unit,
+    cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
+    deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
 ): RemoteResult<List<AudioBook>> = mutex.withLock {
     val result = fetchItems()
@@ -418,7 +441,8 @@ internal suspend fun runSerializedLibraryItemSync(
             merged = merged,
             libraryId = libraryId,
             upsertAll = upsertAll,
-            deleteMissing = deleteMissing,
+            cachedNonDownloadedIds = cachedNonDownloadedIds,
+            deleteByIds = deleteByIds,
             deleteAllServerBooks = deleteAllServerBooks,
         )
     }

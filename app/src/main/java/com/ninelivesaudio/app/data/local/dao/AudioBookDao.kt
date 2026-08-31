@@ -60,25 +60,23 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND Id NOT IN (:scannedIds)")
     suspend fun deleteMissingLocalBooks(libraryId: String, scannedIds: List<String>)
 
+    /** Non-downloaded SERVER row IDs in one library for bind-safe reconciliation. */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0")
+    suspend fun getNonDownloadedServerIdsByLibrary(libraryId: String): List<String>
+
     /**
-     * Prune cached SERVER rows a complete library sync no longer reports.
-     * Scoped to [ids] rather than a bare libraryId match so a book that
-     * moved between libraries mid-sync is not deleted out from under the
-     * fetch that just re-homed it. Downloaded books are exempt — a sync
-     * must never take away the user's own downloaded audio, only refresh
-     * what the server confirms is still there (issue #14, PR #30 review).
-     * [ids] must be non-empty — SQLite rejects an empty NOT IN list; use
-     * [deleteServerBooksByLibrary] when a complete fetch found nothing.
+     * Deletes a bind-safe chunk of non-downloaded SERVER rows. [ids] are
+     * kept library-scoped so a rehomed row is never deleted by a stale sync.
      */
-    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND Id NOT IN (:ids)")
-    suspend fun deleteMissingServerBooks(libraryId: String, ids: List<String>)
+    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND Id IN (:ids)")
+    suspend fun deleteServerBooksByIds(libraryId: String, ids: List<String>)
 
     /**
      * Prune every cached, non-downloaded SERVER row for a library a complete
      * fetch confirmed is now empty (issue #14, PR #30 review — a previously
      * populated library that genuinely emptied out must not keep showing
      * its stale cached rows on the shelf). Downloaded books are exempt, same
-     * as [deleteMissingServerBooks].
+     * as [deleteServerBooksByIds].
      */
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0")
     suspend fun deleteServerBooksByLibrary(libraryId: String)

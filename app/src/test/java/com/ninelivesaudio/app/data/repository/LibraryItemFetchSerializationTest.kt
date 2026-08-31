@@ -25,7 +25,8 @@ class LibraryItemFetchSerializationTest {
             fetchItems = fetchItems,
             mergeItems = { it },
             upsertAll = { books -> books.forEach { if (it.id !in cache) cache.add(it.id) } },
-            deleteMissing = { _, keptIds -> cache.retainAll { it in keptIds } },
+            cachedNonDownloadedIds = { cache.toList() },
+            deleteByIds = { _, ids -> cache.retainAll { it !in ids } },
             deleteAllServerBooks = { cache.clear() },
         )
     }
@@ -104,10 +105,11 @@ class LibraryItemFetchSerializationTest {
                     cache.addAll(books.map { it.id })
                     upserted.complete(Unit)
                 },
-                deleteMissing = { _, keptIds ->
+                cachedNonDownloadedIds = { cache.toList() },
+                deleteByIds = { _, ids ->
                     pruneBlocked.complete(Unit)
                     releasePrune.await()
-                    cache.retainAll { it in keptIds }
+                    cache.retainAll { it !in ids }
                 },
                 deleteAllServerBooks = { error("a non-empty complete fetch uses the scoped prune") },
             )

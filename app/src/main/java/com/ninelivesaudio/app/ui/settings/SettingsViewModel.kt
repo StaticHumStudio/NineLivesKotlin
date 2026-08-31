@@ -2,8 +2,8 @@ package com.ninelivesaudio.app.ui.settings
 
 import com.ninelivesaudio.app.service.describeLastSync
 import com.ninelivesaudio.app.service.atAge
-import com.ninelivesaudio.app.service.lastSyncForCurrentServer
 import com.ninelivesaudio.app.service.SyncAttempt
+import com.ninelivesaudio.app.service.SyncNowResult
 import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import android.content.Context
 import android.content.Intent
@@ -1255,24 +1255,33 @@ class SettingsViewModel @Inject constructor(
             return
         }
 
+        // Manual sync is guarded by the same auth-UI generation Connect,
+        // Disconnect, Refresh, and Test Connection use. Without it, a slow
+        // manual sync's completion could land after the user disconnected or
+        // reconnected and stomp that newer operation's banner with this
+        // tap's stale success/error.
+        val uiGeneration = authUiGeneration.get()
         viewModelScope.launch {
-            _uiState.update { it.copy(errorMessage = null, successMessage = null) }
+            updateAuthUi(uiGeneration) { it.copy(errorMessage = null, successMessage = null) }
             try {
-                val attempt = syncManager.syncNow()
                 // syncNow() doesn't throw for a failed remote result. It
-                // records the failure in LastSyncRecord instead, so read
-                // that record rather than assuming a clean return means
-                // success. And when the attempt itself was skipped (another
-                // sync already running, or the gate wasn't ready), that
-                // record may belong to an earlier attempt entirely, not this
-                // tap, so lastSyncForCurrentServer() is only consulted for a
-                // real RAN attempt (see syncNowOutcome).
-                val outcome = syncNowOutcome(attempt, settingsManager.currentSettings.lastSyncForCurrentServer())
-                _uiState.update {
-                    it.copy(successMessage = outcome.successMessage, errorMessage = outcome.errorMessage)
+                // records the failure in the returned SyncNowResult instead
+                // of throwing, so read that record rather than assuming a
+                // clean return means success — and render THAT record, never
+                // a reread of settingsManager.currentSettings, which a
+                // concurrent periodic sync could overwrite in between and
+                // make this tap report the background attempt's outcome.
+                val outcome = runGuardedManualSync(
+                    isCurrent = { authUiGeneration.get() == uiGeneration },
+                    syncNow = { syncManager.syncNow() },
+                )
+                if (outcome != null) {
+                    updateAuthUi(uiGeneration) {
+                        it.copy(successMessage = outcome.successMessage, errorMessage = outcome.errorMessage)
+                    }
                 }
             } catch (e: Exception) {
-                _uiState.update { it.copy(errorMessage = "Sync failed: ${e.message}") }
+                updateAuthUi(uiGeneration) { it.copy(errorMessage = "Sync failed: ${e.message}") }
             }
         }
     }
@@ -1570,19 +1579,24 @@ internal data class SyncNowOutcome(val successMessage: String?, val errorMessage
  * an HTTP 500 on /libraries shows up in diagnostics as FAILED while the
  * screen says "Sync completed successfully."
  *
- * [attempt] being anything other than [SyncAttempt.RAN] means syncNow()
- * returned without doing any work at all (its own gate failed, or another
- * sync already held the mutex). [record] is then whatever was already there
- * from some earlier attempt, so it must not be read as this call's result: a
- * background sync in progress plus a manual "Sync Now" tap used to read that
- * stale record and report a false "Sync completed successfully."
+ * [SyncNowResult.attempt] being anything other than [SyncAttempt.RAN] means
+ * syncNow() returned without doing any work at all (its own gate failed, or
+ * another sync already held the mutex) — [SyncNowResult.record] is then
+ * always null for that case and must not be treated as this call's result.
  *
- * [record] being null while [attempt] is [SyncAttempt.RAN] (no sync has ever
- * completed, e.g. right after a fresh install) keeps the prior best-effort
- * "success" message rather than inventing a new failure state for a case
- * outside this fix's scope.
+ * [SyncNowResult.record] being null while [SyncNowResult.attempt] is
+ * [SyncAttempt.RAN] (no sync has ever completed, e.g. right after a fresh
+ * install) keeps the prior best-effort "success" message rather than
+ * inventing a new failure state for a case outside this fix's scope.
+ *
+ * [SyncNowResult.persisted] being false (the outcome record failed to save
+ * to disk) does NOT change which message renders here — [record] is still
+ * the truthful in-memory answer for what this attempt did, and the user
+ * taps "Sync Now" to find out whether IT worked, not whether the diagnostics
+ * log survived a storage hiccup. The failed write is logged internally
+ * instead (see SyncManager.syncNow()).
  */
-internal fun syncNowOutcome(attempt: SyncAttempt, record: LastSyncRecord?): SyncNowOutcome = when (attempt) {
+internal fun syncNowOutcome(result: SyncNowResult): SyncNowOutcome = when (result.attempt) {
     SyncAttempt.SKIPPED_BUSY -> SyncNowOutcome(
         successMessage = null,
         errorMessage = "Sync already in progress. Try again in a moment.",
@@ -1595,17 +1609,46 @@ internal fun syncNowOutcome(attempt: SyncAttempt, record: LastSyncRecord?): Sync
         successMessage = null,
         errorMessage = "The server changed while syncing. Sync again to refresh the new server.",
     )
-    SyncAttempt.RAN -> when (record?.result) {
-        null, SyncResult.SUCCESS -> SyncNowOutcome(successMessage = "Sync completed successfully", errorMessage = null)
-        SyncResult.PARTIAL -> SyncNowOutcome(
-            successMessage = null,
-            errorMessage = "Sync finished incomplete" + (record.failure?.let { ": $it" } ?: ""),
-        )
-        SyncResult.FAILED -> SyncNowOutcome(
-            successMessage = null,
-            errorMessage = "Sync failed" + (record.failure?.let { ": $it" } ?: ""),
-        )
+    SyncAttempt.RAN -> when (val record = result.record) {
+        null -> SyncNowOutcome(successMessage = "Sync completed successfully", errorMessage = null)
+        else -> when (record.result) {
+            SyncResult.SUCCESS -> SyncNowOutcome(successMessage = "Sync completed successfully", errorMessage = null)
+            SyncResult.PARTIAL -> SyncNowOutcome(
+                successMessage = null,
+                errorMessage = "Sync finished incomplete" + (record.failure?.let { ": $it" } ?: ""),
+            )
+            SyncResult.FAILED -> SyncNowOutcome(
+                successMessage = null,
+                errorMessage = "Sync failed" + (record.failure?.let { ": $it" } ?: ""),
+            )
+        }
     }
+}
+
+/**
+ * The manual "Sync Now" flow: run the sync, then decide what to show — but
+ * only if this tap is still the current auth-UI operation once the sync
+ * finishes. Without this, a slow manual sync's completion could land after
+ * the user disconnected or reconnected and overwrite that newer operation's
+ * banner with this tap's stale success/error (issue #14's adversarial
+ * review, finding 2). [isCurrent] is evaluated AFTER [syncNow] completes,
+ * not before — the whole point is to catch a generation change that
+ * happened WHILE the sync was running, not just one that already happened
+ * before it started.
+ *
+ * Renders [SyncNowResult.record] returned by [syncNow] directly and never
+ * rereads the shared settings store: a periodic sync can write its own
+ * [LastSyncRecord] in the gap between this attempt finishing and a reread,
+ * and the reread would then report that OTHER attempt's outcome as this
+ * tap's result (finding 3). Returns null when superseded, meaning the
+ * caller must write nothing.
+ */
+internal suspend fun runGuardedManualSync(
+    isCurrent: () -> Boolean,
+    syncNow: suspend () -> SyncNowResult,
+): SyncNowOutcome? {
+    val result = syncNow()
+    return if (isCurrent()) syncNowOutcome(result) else null
 }
 
 internal suspend fun activateSessionAfterLogin(

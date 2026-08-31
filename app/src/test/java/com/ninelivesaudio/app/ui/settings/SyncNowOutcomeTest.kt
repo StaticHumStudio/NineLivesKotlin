@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.ui.settings
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.service.SyncAttempt
+import com.ninelivesaudio.app.service.SyncNowResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -22,14 +23,21 @@ import org.junit.Test
  * [SyncAttempt] distinguishes an attempt that actually ran from one that was
  * skipped, so the skipped case gets its own honest message instead of
  * borrowing a leftover record.
+ *
+ * A third gap (issue #14's adversarial review, findings 1 and 3): syncNow()
+ * now returns the record it produced directly, as [SyncNowResult], instead
+ * of the caller rereading settingsManager.currentSettings afterward — a
+ * reread a concurrent periodic sync could have already overwritten.
  */
 class SyncNowOutcomeTest {
 
     @Test
     fun `a successful record reports success`() {
         val outcome = syncNowOutcome(
-            SyncAttempt.RAN,
-            LastSyncRecord(result = SyncResult.SUCCESS, libraryCount = 2, bookCount = 40, completedAtMs = 1L),
+            SyncNowResult(
+                SyncAttempt.RAN,
+                LastSyncRecord(result = SyncResult.SUCCESS, libraryCount = 2, bookCount = 40, completedAtMs = 1L),
+            ),
         )
         assertEquals("Sync completed successfully", outcome.successMessage)
         assertNull(outcome.errorMessage)
@@ -38,13 +46,15 @@ class SyncNowOutcomeTest {
     @Test
     fun `a failed remote result is reported as an error, not success`() {
         val outcome = syncNowOutcome(
-            SyncAttempt.RAN,
-            LastSyncRecord(
-                result = SyncResult.FAILED,
-                libraryCount = 0,
-                bookCount = 0,
-                failure = "libraries: HTTP 500",
-                completedAtMs = 1L,
+            SyncNowResult(
+                SyncAttempt.RAN,
+                LastSyncRecord(
+                    result = SyncResult.FAILED,
+                    libraryCount = 0,
+                    bookCount = 0,
+                    failure = "libraries: HTTP 500",
+                    completedAtMs = 1L,
+                ),
             ),
         )
         assertNull(outcome.successMessage)
@@ -54,13 +64,15 @@ class SyncNowOutcomeTest {
     @Test
     fun `a partial remote result is reported as an error`() {
         val outcome = syncNowOutcome(
-            SyncAttempt.RAN,
-            LastSyncRecord(
-                result = SyncResult.PARTIAL,
-                libraryCount = 1,
-                bookCount = 100,
-                failure = "items[Books]: page 3: timeout",
-                completedAtMs = 1L,
+            SyncNowResult(
+                SyncAttempt.RAN,
+                LastSyncRecord(
+                    result = SyncResult.PARTIAL,
+                    libraryCount = 1,
+                    bookCount = 100,
+                    failure = "items[Books]: page 3: timeout",
+                    completedAtMs = 1L,
+                ),
             ),
         )
         assertNull(outcome.successMessage)
@@ -69,7 +81,7 @@ class SyncNowOutcomeTest {
 
     @Test
     fun `a run with no recorded sync at all falls back to success, matching the prior best-effort behavior`() {
-        val outcome = syncNowOutcome(SyncAttempt.RAN, null)
+        val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.RAN, null))
         assertEquals("Sync completed successfully", outcome.successMessage)
         assertNull(outcome.errorMessage)
     }
@@ -80,7 +92,7 @@ class SyncNowOutcomeTest {
     fun `a sync skipped because another one is already running reports that honestly, not a stale success`() {
         val staleSuccess = LastSyncRecord(result = SyncResult.SUCCESS, libraryCount = 2, bookCount = 40, completedAtMs = 1L)
 
-        val outcome = syncNowOutcome(SyncAttempt.SKIPPED_BUSY, staleSuccess)
+        val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.SKIPPED_BUSY, staleSuccess))
 
         assertNull(outcome.successMessage)
         assertEquals("Sync already in progress. Try again in a moment.", outcome.errorMessage)
@@ -96,7 +108,7 @@ class SyncNowOutcomeTest {
             completedAtMs = 1L,
         )
 
-        val outcome = syncNowOutcome(SyncAttempt.SKIPPED_NOT_READY, staleFailure)
+        val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.SKIPPED_NOT_READY, staleFailure))
 
         assertNull(outcome.successMessage)
         assertEquals("Sync did not run. Check your connection and try again.", outcome.errorMessage)
@@ -104,7 +116,7 @@ class SyncNowOutcomeTest {
 
     @Test
     fun `a skipped attempt with no prior record at all still reports skipped, not success`() {
-        val outcome = syncNowOutcome(SyncAttempt.SKIPPED_BUSY, null)
+        val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.SKIPPED_BUSY, null))
 
         assertNull(outcome.successMessage)
         assertEquals("Sync already in progress. Try again in a moment.", outcome.errorMessage)
@@ -121,7 +133,7 @@ class SyncNowOutcomeTest {
             serverUrl = "https://server-b.example",
         )
 
-        val outcome = syncNowOutcome(SyncAttempt.DISCARDED_SERVER_CHANGED, otherServersRecord)
+        val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.DISCARDED_SERVER_CHANGED, otherServersRecord))
 
         assertNull(outcome.successMessage)
         assertEquals("The server changed while syncing. Sync again to refresh the new server.", outcome.errorMessage)
@@ -129,9 +141,49 @@ class SyncNowOutcomeTest {
 
     @Test
     fun `a discarded attempt with no record on the new server does not claim success`() {
-        val outcome = syncNowOutcome(SyncAttempt.DISCARDED_SERVER_CHANGED, null)
+        val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.DISCARDED_SERVER_CHANGED, null))
 
         assertNull(outcome.successMessage)
         assertEquals("The server changed while syncing. Sync again to refresh the new server.", outcome.errorMessage)
+    }
+
+    // ─── A storage failure changes no user-visible text (findings 1 & 3) ───
+
+    @Test
+    fun `an unpersisted record still renders its truthful outcome, not a new message`() {
+        // The record is what actually happened; persisted=false only means
+        // it didn't make it to disk. The user tapped "Sync Now" to find out
+        // whether THIS attempt worked, and no new UI string is introduced
+        // for a storage hiccup -- it's logged internally instead.
+        val outcome = syncNowOutcome(
+            SyncNowResult(
+                attempt = SyncAttempt.RAN,
+                record = LastSyncRecord(result = SyncResult.SUCCESS, libraryCount = 2, bookCount = 40, completedAtMs = 1L),
+                persisted = false,
+            ),
+        )
+
+        assertEquals("Sync completed successfully", outcome.successMessage)
+        assertNull(outcome.errorMessage)
+    }
+
+    @Test
+    fun `an unpersisted failure still renders as the same failure message`() {
+        val outcome = syncNowOutcome(
+            SyncNowResult(
+                attempt = SyncAttempt.RAN,
+                record = LastSyncRecord(
+                    result = SyncResult.FAILED,
+                    libraryCount = 0,
+                    bookCount = 0,
+                    failure = "libraries: HTTP 500",
+                    completedAtMs = 1L,
+                ),
+                persisted = false,
+            ),
+        )
+
+        assertNull(outcome.successMessage)
+        assertEquals("Sync failed: libraries: HTTP 500", outcome.errorMessage)
     }
 }

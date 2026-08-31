@@ -55,6 +55,7 @@ import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.components.StatusPill
+import com.ninelivesaudio.app.ui.components.connectionStatusPresentation
 import com.ninelivesaudio.app.ui.changelog.ChangelogData
 import com.ninelivesaudio.app.ui.changelog.ChangelogViewModel
 import com.ninelivesaudio.app.ui.changelog.shouldShowChangelogBadge
@@ -70,6 +71,20 @@ import com.ninelivesaudio.app.ui.theme.unhinged.*
  * is local, so the picker must remain reachable offline (airplane mode).
  */
 internal fun shouldShowLibrarySelector(libraryCount: Int): Boolean = libraryCount > 1
+
+internal enum class DisconnectDialogAction { REQUEST, CANCEL, CONFIRM }
+
+internal data class DisconnectDialogDecision(
+    val showDialog: Boolean,
+    val disconnect: Boolean,
+)
+
+internal fun disconnectDialogDecision(action: DisconnectDialogAction): DisconnectDialogDecision =
+    when (action) {
+        DisconnectDialogAction.REQUEST -> DisconnectDialogDecision(showDialog = true, disconnect = false)
+        DisconnectDialogAction.CANCEL -> DisconnectDialogDecision(showDialog = false, disconnect = false)
+        DisconnectDialogAction.CONFIRM -> DisconnectDialogDecision(showDialog = false, disconnect = true)
+    }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -89,6 +104,13 @@ fun SettingsScreen(
     val gatesLocked = !unlockState.isUnlocked
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+    var showDisconnectDialog by remember { mutableStateOf(false) }
+
+    fun handleDisconnectDialogAction(action: DisconnectDialogAction) {
+        val decision = disconnectDialogDecision(action)
+        showDisconnectDialog = decision.showDialog
+        if (decision.disconnect) viewModel.disconnect()
+    }
 
     // SAF folder picker launcher
     val folderPickerLauncher = rememberLauncherForActivityResult(
@@ -130,6 +152,13 @@ fun SettingsScreen(
         )
     }
 
+    if (showDisconnectDialog) {
+        DisconnectConfirmDialog(
+            onConfirm = { handleDisconnectDialogAction(DisconnectDialogAction.CONFIRM) },
+            onDismiss = { handleDisconnectDialogAction(DisconnectDialogAction.CANCEL) },
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -144,8 +173,11 @@ fun SettingsScreen(
             ),
             trailing = {
                 StatusPill(
-                    connectionStatus = uiState.connectionStatus,
-                    isLocalMode = uiState.appMode == AppMode.LOCAL,
+                    presentation = connectionStatusPresentation(
+                        appMode = uiState.appMode,
+                        hasAuthToken = uiState.hasAuthToken,
+                        connectionStatus = uiState.connectionStatus,
+                    ),
                 )
             },
         )
@@ -247,8 +279,11 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     StatusPill(
-                        connectionStatus = uiState.connectionStatus,
-                        isLocalMode = uiState.appMode == AppMode.LOCAL,
+                        presentation = connectionStatusPresentation(
+                            appMode = uiState.appMode,
+                            hasAuthToken = uiState.hasAuthToken,
+                            connectionStatus = uiState.connectionStatus,
+                        ),
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     Text(
@@ -456,7 +491,9 @@ fun SettingsScreen(
 
                 if (uiState.isConnected) {
                     Button(
-                        onClick = viewModel::disconnect,
+                        onClick = {
+                            handleDisconnectDialogAction(DisconnectDialogAction.REQUEST)
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = NineLivesTheme.colors.archiveError.copy(alpha = 0.15f),
@@ -1671,6 +1708,29 @@ private fun ArchiveSweepConfirmDialog(
         confirmButton = {
             TextButton(onClick = onConfirm) {
                 Text("Delete", color = NineLivesTheme.colors.archiveError)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+        containerColor = NineLivesTheme.colors.archiveVoidSurface,
+    )
+}
+
+@Composable
+private fun DisconnectConfirmDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Are you sure you want to disconnect?") },
+        text = {
+            Text("Playback stops, you are signed out, and your listening progress stays saved.")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Disconnect", color = NineLivesTheme.colors.archiveError)
             }
         },
         dismissButton = {

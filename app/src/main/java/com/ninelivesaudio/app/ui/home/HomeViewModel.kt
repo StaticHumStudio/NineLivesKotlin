@@ -11,8 +11,13 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.ui.components.ConnectionStatusPresentation
+import com.ninelivesaudio.app.ui.components.connectionStatusPresentation
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -24,6 +29,7 @@ import kotlin.math.roundToInt
 class HomeViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val syncManager: SyncManager,
     private val settingsManager: SettingsManager,
     private val libraryRepository: LibraryRepository,
     private val localFolderAccess: LocalFolderAccess,
@@ -57,10 +63,12 @@ class HomeViewModel @Inject constructor(
         val totalListeningSeconds: Double = 0.0,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val isLocalMode: Boolean = false,
+        val hasAuthToken: Boolean? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val reconnectJobOwner = HomeReconnectJobOwner(viewModelScope)
 
     init {
         // Observe connection status
@@ -77,6 +85,18 @@ class HomeViewModel @Inject constructor(
                 .distinctUntilChanged()
                 .collect { isLocal ->
                     _uiState.update { it.copy(isLocalMode = isLocal) }
+                }
+        }
+
+        // Session state is independent of server reachability. A reachable
+        // /ping endpoint cannot make a signed-out ABS session usable.
+        viewModelScope.launch {
+            // Do not publish the StateFlow's construction-time false before
+            // encrypted storage has had a chance to restore a saved session.
+            settingsManager.loadSettings()
+            settingsManager.hasAuthToken
+                .collect { hasAuthToken ->
+                    _uiState.update { it.copy(hasAuthToken = hasAuthToken) }
                 }
         }
 
@@ -123,6 +143,27 @@ class HomeViewModel @Inject constructor(
             } finally {
                 _uiState.update { it.copy(isLoading = false) }
             }
+        }
+    }
+
+    fun reconnect() {
+        val state = _uiState.value
+        if (
+            !isHomeReconnectAvailable(
+                isLocalMode = state.isLocalMode,
+                hasAuthToken = settingsManager.hasAuthToken.value,
+                connectionStatus = state.connectionStatus,
+            )
+        ) return
+
+        reconnectJobOwner.joinOrStart {
+            performHomeReconnect(
+                isAudiobookshelfMode = {
+                    settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF
+                },
+                refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
+                syncNow = syncManager::syncNow,
+            )
         }
     }
 
@@ -288,4 +329,86 @@ internal fun canShowHomeBooks(
     AppMode.AUDIOBOOKSHELF ->
         hasAuthToken && settings.serverUrl.isNotBlank() && settings.selectedLibraryId != null
     AppMode.LOCAL -> settings.selectedLocalLibraryId != null
+}
+
+internal fun isHomeReconnectAvailable(
+    isLocalMode: Boolean,
+    hasAuthToken: Boolean,
+    connectionStatus: ConnectionStatus,
+): Boolean = !isLocalMode && hasAuthToken && (
+    connectionStatus == ConnectionStatus.SERVER_UNREACHABLE ||
+        connectionStatus == ConnectionStatus.OFFLINE
+    )
+
+internal data class HomeConnectionPillState(
+    val presentation: ConnectionStatusPresentation,
+    val action: HomeConnectionPillAction,
+    val actionContentDescription: String?,
+)
+
+internal enum class HomeConnectionPillAction { NONE, RECONNECT, OPEN_SETTINGS }
+
+internal fun homeConnectionPillState(uiState: HomeViewModel.UiState): HomeConnectionPillState {
+    val presentation = connectionStatusPresentation(
+        appMode = if (uiState.isLocalMode) AppMode.LOCAL else AppMode.AUDIOBOOKSHELF,
+        hasAuthToken = uiState.hasAuthToken,
+        connectionStatus = uiState.connectionStatus,
+    )
+    val action = when {
+        presentation == ConnectionStatusPresentation.SIGNED_OUT ->
+            HomeConnectionPillAction.OPEN_SETTINGS
+        isHomeReconnectAvailable(
+            isLocalMode = uiState.isLocalMode,
+            hasAuthToken = uiState.hasAuthToken == true,
+            connectionStatus = uiState.connectionStatus,
+        ) ->
+            HomeConnectionPillAction.RECONNECT
+        else -> HomeConnectionPillAction.NONE
+    }
+    val contentDescription = when (action) {
+        HomeConnectionPillAction.OPEN_SETTINGS -> "Signed out. Tap to open Settings."
+        HomeConnectionPillAction.RECONNECT -> "Connection lost. Tap to reconnect."
+        HomeConnectionPillAction.NONE -> null
+    }
+
+    return HomeConnectionPillState(
+        presentation = presentation,
+        action = action,
+        actionContentDescription = contentDescription,
+    )
+}
+
+internal class HomeReconnectJobOwner(
+    private val scope: CoroutineScope,
+) {
+    private val lock = Any()
+    private var activeJob: Job? = null
+
+    fun joinOrStart(block: suspend CoroutineScope.() -> Unit): Job = synchronized(lock) {
+        activeJob?.takeIf { it.isActive }
+            ?: scope.launch(block = block).also { activeJob = it }
+    }
+}
+
+/**
+ * [refreshIsOnline] must re-read the OS network state before [syncNow] runs,
+ * not leave the pill's cached isOnline flag stale. Right after connectivity
+ * returns (before the OS NetworkCallback lands, or when it never lands at
+ * all), that cached flag can still read false with a real network already
+ * up, and [syncNow]'s own shouldRunSync pre-check trusts that same flag.
+ *
+ * The refresh itself makes no network request. It only re-reads OS state,
+ * so the single /ping for this whole action is the one [syncNow] already
+ * performs internally once its pre-check sees a fresh flag. Probing here
+ * too would double the request, letting a flaky second ping suppress a
+ * sync the first probe already proved was reachable.
+ */
+internal suspend fun performHomeReconnect(
+    isAudiobookshelfMode: () -> Boolean,
+    refreshIsOnline: () -> Unit,
+    syncNow: suspend () -> Unit,
+) {
+    if (!isAudiobookshelfMode()) return
+    refreshIsOnline()
+    syncNow()
 }

@@ -21,29 +21,52 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 
+enum class ConnectionStatusPresentation {
+    LOCAL,
+    SIGNED_OUT,
+    CONNECTED,
+    SYNCING,
+    SERVER_UNREACHABLE,
+    OFFLINE,
+}
+
+internal fun connectionStatusPresentation(
+    appMode: AppMode,
+    hasAuthToken: Boolean?,
+    connectionStatus: ConnectionStatus,
+): ConnectionStatusPresentation = when {
+    appMode == AppMode.LOCAL -> ConnectionStatusPresentation.LOCAL
+    hasAuthToken == false -> ConnectionStatusPresentation.SIGNED_OUT
+    else -> when (connectionStatus) {
+        ConnectionStatus.CONNECTED -> ConnectionStatusPresentation.CONNECTED
+        ConnectionStatus.SYNCING -> ConnectionStatusPresentation.SYNCING
+        ConnectionStatus.SERVER_UNREACHABLE -> ConnectionStatusPresentation.SERVER_UNREACHABLE
+        ConnectionStatus.OFFLINE -> ConnectionStatusPresentation.OFFLINE
+    }
+}
+
 /**
  * Connection status indicator pill, matching the Windows app's status dot + label.
- * Shows: Local (violet) when in LOCAL source mode, regardless of network state.
- * Otherwise: Connected (green), Syncing (gold), Server Unreachable (warning), Offline (gray).
+ * Shows the local source, signed-out session, or current server reachability.
  */
 @Composable
 fun StatusPill(
-    connectionStatus: ConnectionStatus,
+    presentation: ConnectionStatusPresentation,
     modifier: Modifier = Modifier,
-    isLocalMode: Boolean = false,
 ) {
-    val (label, dotColor) = when {
-        isLocalMode -> "Local" to NineLivesTheme.colors.archiveLocalAccent
-        else -> when (connectionStatus) {
-            ConnectionStatus.CONNECTED -> "Connected" to NineLivesTheme.colors.archiveSuccess
-            ConnectionStatus.SYNCING -> "Syncing" to NineLivesTheme.colors.goldFilament
-            ConnectionStatus.SERVER_UNREACHABLE -> "Server Unreachable" to NineLivesTheme.colors.archiveWarning
-            ConnectionStatus.OFFLINE -> "Offline" to NineLivesTheme.colors.archiveTextMuted
-        }
+    val (label, dotColor) = when (presentation) {
+        ConnectionStatusPresentation.LOCAL -> "Local" to NineLivesTheme.colors.archiveLocalAccent
+        ConnectionStatusPresentation.SIGNED_OUT -> "Signed out" to NineLivesTheme.colors.archiveTextMuted
+        ConnectionStatusPresentation.CONNECTED -> "Connected" to NineLivesTheme.colors.archiveSuccess
+        ConnectionStatusPresentation.SYNCING -> "Syncing" to NineLivesTheme.colors.goldFilament
+        ConnectionStatusPresentation.SERVER_UNREACHABLE ->
+            "Server Unreachable" to NineLivesTheme.colors.archiveWarning
+        ConnectionStatusPresentation.OFFLINE -> "Offline" to NineLivesTheme.colors.archiveTextMuted
     }
 
     val animatedDotColor by animateColorAsState(

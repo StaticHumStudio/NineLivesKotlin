@@ -15,6 +15,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,10 +57,13 @@ fun HomeScreen(
 ) {
     val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val connectionPillState = homeConnectionPillState(uiState)
 
     if (uiState.showEmptyState && !uiState.isLoading) {
         EmptyHomeState(
             isLocalMode = uiState.isLocalMode,
+            connectionPillState = connectionPillState,
+            onReconnect = viewModel::reconnect,
             onNavigateToLibrary = onNavigateToLibrary,
             onNavigateToSettings = onNavigateToSettings,
         )
@@ -78,8 +84,9 @@ fun HomeScreen(
             NineLivesAltar(
                 totalListeningTime = uiState.totalListeningTimeText,
                 totalListeningSeconds = uiState.totalListeningSeconds,
-                connectionStatus = uiState.connectionStatus,
-                isLocalMode = uiState.isLocalMode,
+                connectionPillState = connectionPillState,
+                onReconnect = viewModel::reconnect,
+                onNavigateToSettings = onNavigateToSettings,
                 onSecretUnlocked = { viewModel.triggerVaultEasterEgg() },
             )
 
@@ -233,8 +240,9 @@ private fun NineLivesGrid(
 private fun NineLivesAltar(
     totalListeningTime: String,
     totalListeningSeconds: Double,
-    connectionStatus: com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus,
-    isLocalMode: Boolean,
+    connectionPillState: HomeConnectionPillState,
+    onReconnect: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     onSecretUnlocked: () -> Unit = {},
 ) {
     var tapCount by remember { mutableStateOf(0) }
@@ -274,7 +282,11 @@ private fun NineLivesAltar(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
         ) {
-            StatusPill(connectionStatus = connectionStatus, isLocalMode = isLocalMode)
+            HomeConnectionStatusPill(
+                state = connectionPillState,
+                onReconnect = onReconnect,
+                onNavigateToSettings = onNavigateToSettings,
+            )
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -409,75 +421,118 @@ private fun NineLivesAltar(
 @Composable
 private fun EmptyHomeState(
     isLocalMode: Boolean,
+    connectionPillState: HomeConnectionPillState,
+    onReconnect: () -> Unit,
     onNavigateToLibrary: () -> Unit,
     onNavigateToSettings: () -> Unit,
 ) {
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(NineLivesTheme.colors.archiveVoidDeep),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
-        Image(
-            painter = painterResource(R.drawable.nine_lives_logo),
-            contentDescription = null,
-            modifier = Modifier.size(96.dp),
+        HomeConnectionStatusPill(
+            state = connectionPillState,
+            onReconnect = onReconnect,
+            onNavigateToSettings = onNavigateToSettings,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Text(
-            text = "NINE LIVES AWAIT",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 3.sp,
-            color = NineLivesTheme.colors.goldFilament,
-            textAlign = TextAlign.Center,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = if (isLocalMode) "No local audio yet" else "The Archive stands empty",
-            style = MaterialTheme.typography.titleMedium,
-            color = NineLivesTheme.colors.archiveTextSecondary,
-            textAlign = TextAlign.Center,
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = if (isLocalMode) {
-                "Add a folder of audiobooks in Settings to begin"
-            } else {
-                CopyEngine.getEmptyStateFlavor(
-                    CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
-                    CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
-                ) ?: "Begin listening to fill these halls with your progress"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = NineLivesTheme.colors.archiveTextMuted,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 48.dp),
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Button(
-            onClick = if (isLocalMode) onNavigateToSettings else onNavigateToLibrary,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = NineLivesTheme.colors.goldFilament,
-                contentColor = NineLivesTheme.colors.onAccent,
-            ),
-            shape = RoundedCornerShape(12.dp),
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
-            Text(
-                text = if (isLocalMode) "Open Settings" else "Enter The Archive",
-                fontWeight = FontWeight.SemiBold,
+            Image(
+                painter = painterResource(R.drawable.nine_lives_logo),
+                contentDescription = null,
+                modifier = Modifier.size(96.dp),
             )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "NINE LIVES AWAIT",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 3.sp,
+                color = NineLivesTheme.colors.goldFilament,
+                textAlign = TextAlign.Center,
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = if (isLocalMode) "No local audio yet" else "The Archive stands empty",
+                style = MaterialTheme.typography.titleMedium,
+                color = NineLivesTheme.colors.archiveTextSecondary,
+                textAlign = TextAlign.Center,
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = if (isLocalMode) {
+                    "Add a folder of audiobooks in Settings to begin"
+                } else {
+                    CopyEngine.getEmptyStateFlavor(
+                        CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
+                        CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
+                    ) ?: "Begin listening to fill these halls with your progress"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = NineLivesTheme.colors.archiveTextMuted,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 48.dp),
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = if (isLocalMode) onNavigateToSettings else onNavigateToLibrary,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = NineLivesTheme.colors.goldFilament,
+                    contentColor = NineLivesTheme.colors.onAccent,
+                ),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(
+                    text = if (isLocalMode) "Open Settings" else "Enter The Archive",
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun HomeConnectionStatusPill(
+    state: HomeConnectionPillState,
+    onReconnect: () -> Unit,
+    onNavigateToSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val onClick = when (state.action) {
+        HomeConnectionPillAction.RECONNECT -> onReconnect
+        HomeConnectionPillAction.OPEN_SETTINGS -> onNavigateToSettings
+        HomeConnectionPillAction.NONE -> null
+    }
+    val actionModifier = if (onClick != null && state.actionContentDescription != null) {
+        Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics {
+                contentDescription = state.actionContentDescription
+            }
+    } else {
+        Modifier
+    }
+    StatusPill(
+        presentation = state.presentation,
+        modifier = modifier.then(actionModifier),
+    )
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

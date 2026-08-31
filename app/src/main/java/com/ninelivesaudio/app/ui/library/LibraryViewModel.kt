@@ -70,6 +70,36 @@ private const val UNKNOWN_SERIES_GROUP = "Standalone/Unknown Series"
 private const val UNKNOWN_AUTHOR_GROUP = "Unknown Author"
 private const val UNKNOWN_GENRE_GROUP = "Uncategorized Genre"
 
+internal data class DownloadedOnlyFilterState(
+    val showDownloadedOnly: Boolean,
+    val autoDownloadedOnly: Boolean,
+)
+
+internal fun decideDownloadedOnlyFilter(
+    previousStatus: ConnectionStatus,
+    newStatus: ConnectionStatus,
+    current: DownloadedOnlyFilterState,
+): DownloadedOnlyFilterState {
+    val connectionWasLost = previousStatus == ConnectionStatus.OFFLINE ||
+        previousStatus == ConnectionStatus.SERVER_UNREACHABLE
+    val connectionLost = newStatus == ConnectionStatus.OFFLINE ||
+        newStatus == ConnectionStatus.SERVER_UNREACHABLE
+    return when {
+        !connectionWasLost &&
+            connectionLost &&
+            !current.showDownloadedOnly -> current.copy(
+                showDownloadedOnly = true,
+                autoDownloadedOnly = true,
+            )
+        newStatus == ConnectionStatus.CONNECTED && current.autoDownloadedOnly ->
+            DownloadedOnlyFilterState(
+                showDownloadedOnly = false,
+                autoDownloadedOnly = false,
+            )
+        else -> current
+    }
+}
+
 // ─── ViewModel ───────────────────────────────────────────────────────────
 
 @HiltViewModel
@@ -109,6 +139,7 @@ class LibraryViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private var autoDownloadedOnly = false
 
     /**
      * Epoch counter that increments each time the Library screen is entered.
@@ -130,16 +161,23 @@ class LibraryViewModel @Inject constructor(
         // Observe connectivity and auto-filter to downloaded when offline
         viewModelScope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
-                val wasConnected = _uiState.value.connectionStatus == ConnectionStatus.CONNECTED
-                val isNowOffline = status == ConnectionStatus.OFFLINE || status == ConnectionStatus.SERVER_UNREACHABLE
-
-                _uiState.update { it.copy(connectionStatus = status) }
-
-                // Auto-enable "Downloaded Only" when going offline or server becomes unreachable
-                if (wasConnected && isNowOffline && !_uiState.value.showDownloadedOnly) {
-                    _uiState.update { it.copy(showDownloadedOnly = true) }
-                    applyFilter()
+                val currentState = _uiState.value
+                val decision = decideDownloadedOnlyFilter(
+                    previousStatus = currentState.connectionStatus,
+                    newStatus = status,
+                    current = DownloadedOnlyFilterState(
+                        showDownloadedOnly = currentState.showDownloadedOnly,
+                        autoDownloadedOnly = autoDownloadedOnly,
+                    ),
+                )
+                autoDownloadedOnly = decision.autoDownloadedOnly
+                _uiState.update {
+                    it.copy(
+                        connectionStatus = status,
+                        showDownloadedOnly = decision.showDownloadedOnly,
+                    )
                 }
+                if (decision.showDownloadedOnly != currentState.showDownloadedOnly) applyFilter()
             }
         }
 
@@ -278,6 +316,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun onShowDownloadedOnlyChanged(value: Boolean) {
+        autoDownloadedOnly = false
         _uiState.update { it.copy(showDownloadedOnly = value) }
         applyFilter()
     }
@@ -292,6 +331,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun resetFilters() {
+        autoDownloadedOnly = false
         _uiState.update {
             it.copy(
                 searchQuery = "",

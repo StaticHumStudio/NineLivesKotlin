@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.AuthSessionIdentity
 import com.ninelivesaudio.app.data.remote.CredentialLoginResult
 import com.ninelivesaudio.app.data.remote.StoredTokenValidation
 import com.ninelivesaudio.app.data.remote.TokenValidationResult
@@ -32,6 +33,7 @@ import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -40,6 +42,73 @@ import kotlinx.coroutines.withContext
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
+
+internal suspend fun disconnectSession(
+    appMode: AppMode,
+    resetNowPlaying: suspend () -> Unit,
+    logout: suspend () -> Unit,
+    holdsRemoteBook: Boolean = false,
+) {
+    // The UI mode alone cannot decide this: switching a live server session
+    // to Local keeps the remote book in the mini player, and logging out must
+    // not leave it there. A local book, by contrast, survives the logout.
+    if (appMode == AppMode.AUDIOBOOKSHELF || holdsRemoteBook) {
+        resetNowPlaying()
+    }
+    logout()
+}
+
+internal suspend fun runConfirmedDisconnectOperation(
+    authOperationMutex: Mutex,
+    isCurrent: () -> Boolean,
+    operation: suspend () -> Unit,
+) = withContext(NonCancellable) {
+    authOperationMutex.withLock {
+        if (isCurrent()) operation()
+    }
+}
+
+/**
+ * Disconnects the session captured by [captureSession], not whatever session
+ * happens to be live once [resetNowPlaying] finally returns.
+ *
+ * [captureSession] runs before [resetNowPlaying] can await pending terminal
+ * progress, so its snapshot cannot be the session a DIFFERENT SettingsViewModel
+ * instance (a freshly opened Settings screen, with its own authUiGeneration and
+ * mutex) has already replaced by the time [logoutIfCurrent] runs. Only a
+ * session that is STILL the captured one gets logged out; a session that moved
+ * on is left alone rather than clearing the newer login's token.
+ *
+ * [raiseDisconnectBarrier] goes up before any of that starts and
+ * [lowerDisconnectBarrier] only comes back down in a finally, so a load that
+ * starts partway through this wait (leaving Settings triggers a home-screen
+ * load, or Android Auto browses) can't claim a remote book and outlive the
+ * logout it raced. It must come down on every path, including no captured
+ * session and an exception from either callback, or the barrier sticks and
+ * every later remote load is refused forever.
+ */
+internal suspend fun disconnectSessionGuarded(
+    appMode: AppMode,
+    captureSession: suspend () -> AuthSessionIdentity?,
+    resetNowPlaying: suspend () -> Unit,
+    logoutIfCurrent: suspend (AuthSessionIdentity) -> Unit,
+    holdsRemoteBook: Boolean = false,
+    raiseDisconnectBarrier: () -> Unit = {},
+    lowerDisconnectBarrier: () -> Unit = {},
+) {
+    raiseDisconnectBarrier()
+    try {
+        val disconnectingSession = captureSession()
+        disconnectSession(
+            appMode = appMode,
+            resetNowPlaying = resetNowPlaying,
+            logout = { disconnectingSession?.let { logoutIfCurrent(it) } },
+            holdsRemoteBook = holdsRemoteBook,
+        )
+    } finally {
+        lowerDisconnectBarrier()
+    }
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -75,6 +144,7 @@ class SettingsViewModel @Inject constructor(
         val isConnecting: Boolean = false,
         val connectionStatusText: String = "Not connected",
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
+        val hasAuthToken: Boolean? = null,
 
         // Libraries (ABS)
         val libraries: List<Library> = emptyList(),
@@ -249,6 +319,7 @@ class SettingsViewModel @Inject constructor(
                 hasTrustedFingerprint = configuredHost?.let {
                     settingsManager.getTrustedCertificateFingerprint(it) != null
                 } == true,
+                hasAuthToken = settingsManager.hasAuthToken.value,
                 settingsFilePath = settingsManager.settingsFilePath,
                 appVersion = getAppVersion(),
                 selectedLocalLibrary = resolveSelectedLocalLibrary(
@@ -265,6 +336,15 @@ class SettingsViewModel @Inject constructor(
                 includeArchivedInStats = settings.includeArchivedInStats,
                 themeMode = settings.themeMode,
             )
+        }
+
+        // The auth token is the session signal for status presentation. Start
+        // observing only after encrypted storage restores the initial value.
+        // Explicit logout and expiry both publish their clears immediately.
+        viewModelScope.launch {
+            settingsManager.hasAuthToken.collect { hasAuthToken ->
+                _uiState.update { it.copy(hasAuthToken = hasAuthToken) }
+            }
         }
 
         // Check if already connected by validating stored token. Only an
@@ -987,24 +1067,34 @@ class SettingsViewModel @Inject constructor(
     fun disconnect() {
         val uiGeneration = authUiGeneration.incrementAndGet()
         viewModelScope.launch {
-            authUiOperationMutex.withLock {
-                if (authUiGeneration.get() != uiGeneration) return@withLock
-            try {
-                apiService.logout()
-                updateAuthUi(uiGeneration) {
-                    it.copy(
-                        isConnected = false,
-                        connectionStatusText = "Not connected",
-                        successMessage = "Disconnected successfully",
-                        password = "",
-                        errorMessage = null,
+            runConfirmedDisconnectOperation(
+                authOperationMutex = authUiOperationMutex,
+                isCurrent = { authUiGeneration.get() == uiGeneration },
+            ) {
+                try {
+                    disconnectSessionGuarded(
+                        appMode = _uiState.value.appMode,
+                        captureSession = apiService::currentAuthSession,
+                        resetNowPlaying = playbackManager::resetNowPlayingForDisconnect,
+                        logoutIfCurrent = { apiService.logoutIfCurrentSession(it) },
+                        holdsRemoteBook = playbackManager.currentBook.value?.isLocal == false,
+                        raiseDisconnectBarrier = playbackManager::raiseDisconnectBarrier,
+                        lowerDisconnectBarrier = playbackManager::lowerDisconnectBarrier,
                     )
+                    updateAuthUi(uiGeneration) {
+                        it.copy(
+                            isConnected = false,
+                            connectionStatusText = "Not connected",
+                            successMessage = "Disconnected successfully",
+                            password = "",
+                            errorMessage = null,
+                        )
+                    }
+                } catch (e: Exception) {
+                    updateAuthUi(uiGeneration) {
+                        it.copy(errorMessage = "Error disconnecting: ${e.message}")
+                    }
                 }
-            } catch (e: Exception) {
-                updateAuthUi(uiGeneration) {
-                    it.copy(errorMessage = "Error disconnecting: ${e.message}")
-                }
-            }
             }
         }
     }

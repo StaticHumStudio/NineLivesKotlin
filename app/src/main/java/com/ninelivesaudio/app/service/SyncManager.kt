@@ -48,12 +48,11 @@ class SyncManager @Inject constructor(
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lifecycleOwner = SyncLifecycleOwner(scope)
     private val syncMutex = Mutex()
     private val activeItemMutationMutex = Mutex()
 
     // Sync state
-    private var syncJob: Job? = null
-    private var connectivityJob: Job? = null
     @Volatile private var activeItemId: String? = null
 
     private val playbackThrottleOwner = PlaybackThrottleOwner()
@@ -73,49 +72,67 @@ class SyncManager @Inject constructor(
      * Call this once when the app is initialized and authenticated.
      */
     fun start() {
-        stop()
-        syncJob = scope.launch {
-            // Fast first sync
-            delay(INITIAL_DELAY_MS)
-            syncNow()
-
-            // Periodic sync
-            while (isActive) {
-                delay(DEFAULT_SYNC_INTERVAL_MS)
+        lifecycleOwner.restart {
+            launch {
+                // Fast first sync
+                delay(INITIAL_DELAY_MS)
                 syncNow()
-                // Also retry the offline queue here. The rising-edge flush only
-                // fires once per reconnect, so a push that failed right after
-                // reconnect would otherwise sit queued until the next full
-                // disconnect/reconnect cycle.
-                flushOfflineQueue()
-            }
-        }
 
-        // Flush offline queue on the rising edge of (connected AND not LOCAL).
-        // Triggers on both connectivity returns and mode switches back to AUDIOBOOKSHELF
-        // while already connected, so progress queued during LOCAL mode doesn't sit indefinitely.
-        connectivityJob?.cancel()
-        connectivityJob = scope.launch {
-            combine(
-                connectivityMonitor.connectionStatus,
-                settingsManager.settings,
-            ) { status, settings ->
-                status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
-                        settings.appMode != AppMode.LOCAL
-            }
-                .distinctUntilChanged()
-                .collect { canFlush ->
-                    if (canFlush) flushOfflineQueue()
+                // Periodic sync
+                while (isActive) {
+                    delay(DEFAULT_SYNC_INTERVAL_MS)
+                    syncNow()
+                    // Also retry the offline queue here. The rising-edge flush only
+                    // fires once per reconnect, so a push that failed right after
+                    // reconnect would otherwise sit queued until the next full
+                    // disconnect/reconnect cycle.
+                    flushOfflineQueue()
                 }
+            }
+
+            // Flush offline queue on the rising edge of (connected AND not LOCAL).
+            // Triggers on both connectivity returns and mode switches back to AUDIOBOOKSHELF
+            // while already connected, so progress queued during LOCAL mode doesn't sit indefinitely.
+            launch {
+                combine(
+                    connectivityMonitor.connectionStatus,
+                    settingsManager.settings,
+                ) { status, settings ->
+                    status == ConnectivityMonitor.ConnectionStatus.CONNECTED &&
+                            settings.appMode != AppMode.LOCAL
+                }
+                    .distinctUntilChanged()
+                    .collect { canFlush ->
+                        if (canFlush) flushOfflineQueue()
+                    }
+            }
+
+            launch {
+                var previousMode: AppMode? = null
+                settingsManager.settings
+                    .map { it.appMode }
+                    .distinctUntilChanged()
+                    .map { newMode ->
+                        val transition = previousMode to newMode
+                        previousMode = newMode
+                        transition
+                    }
+                    .drop(1)
+                    .collect { (oldMode, newMode) ->
+                        if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
+                            performModeSwitchReconnect(
+                                refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
+                                syncNow = { syncNow() },
+                            )
+                        }
+                    }
+            }
         }
     }
 
     /** Stop the periodic sync timer and connectivity listener. */
     fun stop() {
-        syncJob?.cancel()
-        syncJob = null
-        connectivityJob?.cancel()
-        connectivityJob = null
+        lifecycleOwner.stop()
     }
 
     // ─── Sync Operations ─────────────────────────────────────────────────────
@@ -137,7 +154,17 @@ class SyncManager @Inject constructor(
         // interface (e.g. Tailscale) keeps isOnline=true with no real connectivity,
         // so without this fast probe the sync fires and hangs on the full 30s
         // request timeout — the "still trying to sync" symptom in airplane mode.
-        if (!connectivityMonitor.probeServerReachable()) return
+        if (!isSyncEligibleAfterReachability(
+                checkServerReachable = connectivityMonitor::checkServerReachable,
+                isStillEligible = {
+                    shouldRunSync(
+                        isOnline = connectivityMonitor.isOnline.value,
+                        isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                        hasAuth = hasAuthToken(),
+                    )
+                },
+            )
+        ) return
 
         // Prevent concurrent syncs
         if (!syncMutex.tryLock()) return
@@ -418,6 +445,52 @@ class SyncManager @Inject constructor(
         return settingsManager.getAuthToken()?.isNotBlank() == true
     }
 }
+
+internal class SyncLifecycleOwner(
+    private val scope: CoroutineScope,
+) {
+    private val lock = Any()
+    private var job: Job? = null
+
+    fun restart(block: suspend CoroutineScope.() -> Unit): Job = synchronized(lock) {
+        job?.cancel()
+        scope.launch {
+            supervisorScope(block)
+        }.also { job = it }
+    }
+
+    fun stop() {
+        synchronized(lock) {
+            job?.cancel()
+            job = null
+        }
+    }
+}
+
+/**
+ * The mode-switch reconnect has the same blind spot the Home pill had: right
+ * after connectivity returns, the cached isOnline flag can still say false
+ * because the OS callback is delayed or missed, and both the reachability
+ * check and syncNow short-circuit on that cache. Re-read the OS state first,
+ * then let syncNow own the single reachability probe.
+ */
+internal suspend fun performModeSwitchReconnect(
+    refreshIsOnline: () -> Unit,
+    syncNow: suspend () -> Unit,
+) {
+    refreshIsOnline()
+    syncNow()
+}
+
+internal fun shouldReconnectForModeTransition(
+    previousMode: AppMode,
+    newMode: AppMode,
+): Boolean = previousMode != AppMode.AUDIOBOOKSHELF && newMode == AppMode.AUDIOBOOKSHELF
+
+internal suspend fun isSyncEligibleAfterReachability(
+    checkServerReachable: suspend () -> Boolean,
+    isStillEligible: suspend () -> Boolean,
+): Boolean = checkServerReachable() && isStillEligible()
 
 /**
  * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an

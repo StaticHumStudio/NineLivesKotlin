@@ -46,6 +46,16 @@ interface LibraryDao {
     @Query("DELETE FROM Libraries WHERE Id = :id AND IsLocal = 1")
     suspend fun deleteLocalById(id: String)
 
+    /**
+     * Prune cached SERVER libraries a complete /libraries fetch no longer
+     * reports (issue #14, PR #30 review, finding A — mirrors
+     * AudioBookDao.deleteMissingServerBooks one level up). [ids] must be
+     * non-empty — SQLite rejects an empty NOT IN list; use
+     * [deleteAudiobookshelf] when a complete fetch found nothing.
+     */
+    @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND Id NOT IN (:ids)")
+    suspend fun deleteMissingAudiobookshelf(ids: List<String>)
+
     /** Library count for the bug report's stored-state line. */
     @Query("SELECT COUNT(*) FROM Libraries")
     suspend fun countAll(): Int

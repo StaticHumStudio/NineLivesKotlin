@@ -63,12 +63,36 @@ class LibraryRepository @Inject constructor(
         return library
     }
 
-    /** Fetch libraries from server and save to local DB. */
+    /**
+     * Fetch libraries from server and save to local DB.
+     *
+     * A complete (Ok) fetch is authoritative — the cache is reconciled to
+     * match it exactly, including pruning a library (and its cached books)
+     * that the server no longer reports, down to nothing when the account
+     * genuinely has zero libraries. A Partial fetch never prunes: it saves
+     * what it got, but a page it couldn't reach is not proof a library is
+     * gone (issue #14, PR #30 review, finding A — mirrors
+     * AudioBookRepository.syncLibraryItems's reconcileServerLibrary one
+     * level up). See [reconcileServerLibraries].
+     */
     suspend fun syncFromServer(): RemoteResult<List<Library>> {
         val result = apiService.getLibraries()
-        if (result is RemoteResult.Ok && result.value.isNotEmpty()) {
-            libraryDao.upsertAll(result.value.map { it.toEntity() })
+        val fetched = when (result) {
+            is RemoteResult.Ok -> result.value
+            is RemoteResult.Partial -> result.value
+            is RemoteResult.Failed -> return result
         }
+
+        reconcileServerLibraries(
+            isComplete = result is RemoteResult.Ok,
+            fetched = fetched,
+            cachedServerLibraryIds = { libraryDao.getAudiobookshelf().map { it.id } },
+            upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
+            deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
+            deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
+            pruneLibraryBooks = { libraryId -> audioBookDao.deleteServerBooksByLibrary(libraryId) },
+        )
+
         return result
     }
 
@@ -100,4 +124,51 @@ class LibraryRepository @Inject constructor(
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
     }
+}
+
+/**
+ * Reconciles the DAO's cached SERVER library rows against a completed
+ * /libraries fetch, mirroring AudioBookRepository.reconcileServerLibrary's
+ * semantics one level up (issue #14, PR #30 review, finding A).
+ *
+ * A complete ([isComplete]) fetch is authoritative — the cache should end
+ * up matching [fetched] exactly, including down to nothing when [fetched]
+ * is empty (the account genuinely has zero libraries now). An incomplete
+ * (Partial) fetch is never authoritative: it upserts what it got (some of
+ * the library list beats none of it) but never prunes, because a page it
+ * couldn't reach is not proof those libraries are gone — that retention is
+ * the same as before this fix.
+ *
+ * Local libraries are never touched: [cachedServerLibraryIds],
+ * [upsertAll], [deleteMissing], and [deleteAllServerLibraries] are all
+ * expected to scope to server (non-local) rows only — see
+ * LibraryDao.getAudiobookshelf / upsertAll / deleteMissingAudiobookshelf /
+ * deleteAudiobookshelf. A pruned library's cached books are pruned too via
+ * [pruneLibraryBooks], expected to carry the SAME downloaded-book
+ * exemption as AudioBookRepository.reconcileServerLibrary — see
+ * AudioBookDao.deleteServerBooksByLibrary.
+ */
+internal suspend fun reconcileServerLibraries(
+    isComplete: Boolean,
+    fetched: List<Library>,
+    cachedServerLibraryIds: suspend () -> List<String>,
+    upsertAll: suspend (List<Library>) -> Unit,
+    deleteMissing: suspend (keptIds: List<String>) -> Unit,
+    deleteAllServerLibraries: suspend () -> Unit,
+    pruneLibraryBooks: suspend (libraryId: String) -> Unit,
+) {
+    if (fetched.isNotEmpty()) {
+        upsertAll(fetched)
+    }
+    if (!isComplete) return
+
+    val keptIds = fetched.map { it.id }.toSet()
+    val omittedIds = cachedServerLibraryIds().filterNot { it in keptIds }
+
+    if (fetched.isEmpty()) {
+        deleteAllServerLibraries()
+    } else {
+        deleteMissing(fetched.map { it.id })
+    }
+    omittedIds.forEach { pruneLibraryBooks(it) }
 }

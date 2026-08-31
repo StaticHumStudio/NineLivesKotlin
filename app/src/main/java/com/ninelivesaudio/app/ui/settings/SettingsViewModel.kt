@@ -117,6 +117,68 @@ internal suspend fun disconnectSessionGuarded(
     }
 }
 
+/**
+ * The value an observational tap (Refresh, Test Connection, manual Sync)
+ * captures from [AuthUiGenerationCoordinator.beginObservational] and later
+ * re-checks via [AuthUiGenerationCoordinator.isObservationalCurrent].
+ */
+internal data class AuthUiGeneration(val auth: Long, val banner: Long)
+
+/**
+ * Owns the two-generation invariant every banner-writing auth-UI operation
+ * on this screen depends on (issue #14 round 3 — the fix for the P2-2
+ * regression). A single shared counter let an observational tap (Refresh,
+ * Test Connection, manual Sync) invalidate a CONFIRMED mutation (Connect,
+ * Disconnect) queued behind it on the auth-UI mutex: Refresh holds the
+ * mutex, the user confirms Disconnect (queued waiting for it), and taps
+ * Sync while waiting — Sync doesn't need the mutex, runs immediately, and
+ * if its tap moved the SAME counter Disconnect's currency check depended
+ * on, the confirmed logout silently no-op'd and the token stayed active.
+ *
+ * Two independent counters fix that:
+ * - The auth generation moves only on [beginMutation] (Connect, Disconnect).
+ *   [isMutationCurrent] depends on it alone, so no observational tap can
+ *   ever cancel a queued mutation.
+ * - The banner generation moves on BOTH [beginMutation] and
+ *   [beginObservational]. A mutation still invalidates any in-flight
+ *   observational banner — Connect/Disconnect always wins — but an
+ *   observational tap only ever invalidates an EARLIER observational tap,
+ *   never a mutation.
+ * - [isObservationalCurrent] requires BOTH captured values to still match,
+ *   so an observational write is suppressed by either a newer mutation or a
+ *   newer observational tap.
+ *
+ * Deliberately owns both counters as one unit rather than two independent
+ * AtomicLongs scattered across call sites: which counter a given operation
+ * should touch is exactly what round 2 got wrong, and a bare pair of
+ * AtomicLongs makes that mistake easy to reintroduce silently. The method
+ * names here make the two kinds of operation impossible to confuse.
+ */
+internal class AuthUiGenerationCoordinator {
+    private val authGeneration = AtomicLong()
+    private val bannerGeneration = AtomicLong()
+
+    /** The raw auth generation, for a caller that only ever needs [isMutationCurrent] (e.g. startup token validation). */
+    fun currentAuthGeneration(): Long = authGeneration.get()
+
+    /** Starts a mutation (Connect, Disconnect). Advances both counters. */
+    fun beginMutation(): Long {
+        bannerGeneration.incrementAndGet()
+        return authGeneration.incrementAndGet()
+    }
+
+    /** Starts an observational tap (Refresh, Test Connection, manual Sync). Advances only the banner generation. */
+    fun beginObservational(): AuthUiGeneration =
+        AuthUiGeneration(auth = authGeneration.get(), banner = bannerGeneration.incrementAndGet())
+
+    /** A mutation's own currency check. Never invalidated by an observational tap. */
+    fun isMutationCurrent(captured: Long): Boolean = authGeneration.get() == captured
+
+    /** An observational tap's currency check. Invalidated by either a newer mutation or a newer observational tap. */
+    fun isObservationalCurrent(captured: AuthUiGeneration): Boolean =
+        authGeneration.get() == captured.auth && bannerGeneration.get() == captured.banner
+}
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -235,7 +297,7 @@ class SettingsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
-    private val authUiGeneration = AtomicLong()
+    private val authUiGeneration = AuthUiGenerationCoordinator()
     private val authUiOperationMutex = Mutex()
 
     // ─── Init ─────────────────────────────────────────────────────────────
@@ -358,9 +420,9 @@ class SettingsViewModel @Inject constructor(
         // explicit INVALID verdict (server rejected the token) clears it — a
         // transient UNREACHABLE must keep the token so the user stays signed in
         // and reconnects automatically once the server is back.
-        val uiGeneration = authUiGeneration.get()
+        val uiGeneration = authUiGeneration.currentAuthGeneration()
         authUiOperationMutex.withLock {
-            if (authUiGeneration.get() != uiGeneration) return@withLock
+            if (!authUiGeneration.isMutationCurrent(uiGeneration)) return@withLock
             try {
                 val validation = apiService.validateStoredTokenSession() ?: return@withLock
                 if (!validationResultIsCurrent(uiGeneration, validation)) return@withLock
@@ -368,7 +430,7 @@ class SettingsViewModel @Inject constructor(
                 when (result) {
                     TokenValidationResult.VALID -> {
                         _uiState.update { state ->
-                            if (authUiGeneration.get() != uiGeneration) state else {
+                            if (!authUiGeneration.isMutationCurrent(uiGeneration)) state else {
                                 state.copy(
                                     isConnected = true,
                                     connectionStatusText = "Connected to ${validation.session.serverUrl}",
@@ -379,7 +441,7 @@ class SettingsViewModel @Inject constructor(
                     TokenValidationResult.INVALID -> {
                         if (apiService.logoutIfCurrentSession(validation.session)) {
                             _uiState.update { state ->
-                                if (authUiGeneration.get() != uiGeneration) state else {
+                                if (!authUiGeneration.isMutationCurrent(uiGeneration)) state else {
                                     state.copy(
                                         isConnected = false,
                                         connectionStatusText = "Session expired — please reconnect",
@@ -391,7 +453,7 @@ class SettingsViewModel @Inject constructor(
                     TokenValidationResult.UNREACHABLE -> {
                         // Keep the token; just reflect that we couldn't reach the server.
                         _uiState.update { state ->
-                            if (authUiGeneration.get() != uiGeneration) state else {
+                            if (!authUiGeneration.isMutationCurrent(uiGeneration)) state else {
                                 state.copy(
                                     isConnected = false,
                                     connectionStatusText = "Server unreachable — will retry automatically",
@@ -412,7 +474,7 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _uiState.update { state ->
-                    if (authUiGeneration.get() != uiGeneration) state else {
+                    if (!authUiGeneration.isMutationCurrent(uiGeneration)) state else {
                         state.copy(
                             isConnected = false,
                             connectionStatusText = "Connection check failed: ${e.message}",
@@ -428,13 +490,21 @@ class SettingsViewModel @Inject constructor(
         validation: StoredTokenValidation,
     ): Boolean = shouldApplyStoredValidation(
         result = validation.result,
-        uiGenerationUnchanged = authUiGeneration.get() == uiGeneration,
+        uiGenerationUnchanged = authUiGeneration.isMutationCurrent(uiGeneration),
         authSessionCurrent = apiService.isCurrentAuthSession(validation.session),
     )
 
+    /** Applies [transform] only if [uiGeneration] is still the current MUTATION (Connect/Disconnect) generation. Never invalidated by an observational tap — see [AuthUiGenerationCoordinator]. */
     private fun updateAuthUi(uiGeneration: Long, transform: (UiState) -> UiState) {
         _uiState.update { state ->
-            if (authUiGeneration.get() == uiGeneration) transform(state) else state
+            if (authUiGeneration.isMutationCurrent(uiGeneration)) transform(state) else state
+        }
+    }
+
+    /** Applies [transform] only if [generation] is still current for an OBSERVATIONAL tap (Refresh, Test Connection, manual Sync) — see [AuthUiGenerationCoordinator.isObservationalCurrent]. */
+    private fun updateBannerUi(generation: AuthUiGeneration, transform: (UiState) -> UiState) {
+        _uiState.update { state ->
+            if (authUiGeneration.isObservationalCurrent(generation)) transform(state) else state
         }
     }
 
@@ -904,9 +974,10 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
-        // Invalidates every startup validation side effect before the new login
-        // coroutine can yield, including same-token reconnects.
-        val uiGeneration = authUiGeneration.incrementAndGet()
+        // A mutation: invalidates every startup validation side effect AND
+        // any in-flight observational banner (Refresh/Test/Sync) before the
+        // new login coroutine can yield, including same-token reconnects.
+        val uiGeneration = authUiGeneration.beginMutation()
 
         viewModelScope.launch {
             // Login, the settings activation, and loadLibraries stay inside the
@@ -918,7 +989,7 @@ class SettingsViewModel @Inject constructor(
             var runPostLoginSync = false
 
             authUiOperationMutex.withLock {
-                if (authUiGeneration.get() != uiGeneration) return@withLock
+                if (!authUiGeneration.isMutationCurrent(uiGeneration)) return@withLock
             updateAuthUi(uiGeneration) {
                 it.copy(
                     isConnecting = true,
@@ -959,7 +1030,7 @@ class SettingsViewModel @Inject constructor(
                     passwordOutcome == PasswordLoginOutcome.RETAINED_SESSION ||
                     (s.useApiToken && apiService.loginWithToken(s.serverUrl, s.apiToken))
 
-                if (authUiGeneration.get() != uiGeneration) return@withLock
+                if (!authUiGeneration.isMutationCurrent(uiGeneration)) return@withLock
                 if (success) {
                     // RETAINED_SESSION means the typed server never answered and
                     // the session that validated belongs to the STORED server
@@ -998,7 +1069,7 @@ class SettingsViewModel @Inject constructor(
                         // loadLibraries deliberately refuses to replace the active
                         // local-folder selection and fresh login stays on Local.
                         activateAudiobookshelf = {
-                            if (authUiGeneration.get() == uiGeneration) {
+                            if (authUiGeneration.isMutationCurrent(uiGeneration)) {
                                 settingsManager.updateSettings {
                                     it.copy(
                                         appMode = AppMode.AUDIOBOOKSHELF,
@@ -1012,7 +1083,7 @@ class SettingsViewModel @Inject constructor(
                         // Establish the active library before importing progress so
                         // Home observes the correct library as the database fills.
                         loadLibraries = {
-                            if (authUiGeneration.get() == uiGeneration) loadLibraries()
+                            if (authUiGeneration.isMutationCurrent(uiGeneration)) loadLibraries()
                         },
                     )
                     runPostLoginSync = true
@@ -1052,10 +1123,10 @@ class SettingsViewModel @Inject constructor(
                 try {
                     syncAfterLogin(
                         syncNow = {
-                            if (authUiGeneration.get() == uiGeneration) syncManager.syncNow()
+                            if (authUiGeneration.isMutationCurrent(uiGeneration)) syncManager.syncNow()
                         },
                         checkServerReachable = {
-                            if (authUiGeneration.get() == uiGeneration) {
+                            if (authUiGeneration.isMutationCurrent(uiGeneration)) {
                                 connectivityMonitor.checkServerReachable()
                             }
                         },
@@ -1072,11 +1143,15 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun disconnect() {
-        val uiGeneration = authUiGeneration.incrementAndGet()
+        // A mutation: checked only against the auth generation, so a
+        // Refresh/Test/Sync tap running concurrently (or queued behind the
+        // same mutex) can never cancel this confirmed logout (issue #14
+        // round 3 — the fix for the P2-2 regression).
+        val uiGeneration = authUiGeneration.beginMutation()
         viewModelScope.launch {
             runConfirmedDisconnectOperation(
                 authOperationMutex = authUiOperationMutex,
-                isCurrent = { authUiGeneration.get() == uiGeneration },
+                isCurrent = { authUiGeneration.isMutationCurrent(uiGeneration) },
             ) {
                 try {
                     disconnectSessionGuarded(
@@ -1107,23 +1182,27 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun refreshConnection() {
-        // Refresh is a banner-writing auth-UI operation like Connect and
-        // Disconnect, so it advances the same generation counter (issue #14
-        // round 2, finding P2-2): without this, a slow manual sync tapped
-        // before Refresh could still overwrite Refresh's banner afterward,
-        // because nothing had moved the generation the sync's own guard
-        // checked against.
-        val uiGeneration = authUiGeneration.incrementAndGet()
+        // Refresh is an OBSERVATIONAL auth-UI operation, not a mutation: it
+        // advances only the banner generation, never the auth generation
+        // (issue #14 round 3 — the fix for the P2-2 regression). Round 2
+        // made it advance authUiGeneration directly, which fixed Refresh
+        // stomping a stale Sync banner but broke the reverse: a confirmed
+        // Disconnect queued behind Refresh's mutex hold could have its own
+        // isCurrent check invalidated by a Refresh/Test/Sync tap that landed
+        // while it waited, silently skipping the logout. The auth
+        // generation now moves only for Connect/Disconnect, so no
+        // observational tap can ever cancel one.
+        val generation = authUiGeneration.beginObservational()
         viewModelScope.launch {
             authUiOperationMutex.withLock {
-                if (authUiGeneration.get() != uiGeneration) return@withLock
-            updateAuthUi(uiGeneration) {
+                if (!authUiGeneration.isObservationalCurrent(generation)) return@withLock
+            updateBannerUi(generation) {
                 it.copy(errorMessage = null, successMessage = null, isConnecting = true)
             }
             try {
                 val hasToken = settingsManager.getAuthToken()?.isNotEmpty() == true
                 if (!hasToken) {
-                    updateAuthUi(uiGeneration) {
+                    updateBannerUi(generation) {
                         it.copy(
                             isConnecting = false,
                             isConnected = false,
@@ -1134,15 +1213,17 @@ class SettingsViewModel @Inject constructor(
                 }
                 // validateStoredTokenSession() returning null (no stored token,
                 // or a verdict discarded because a concurrent auth mutation
-                // moved the session) and a superseded uiGeneration both used to
+                // moved the session) and a superseded generation both used to
                 // bail out here with isConnecting left true forever — the
                 // finally below is what actually resets it.
                 val validation = apiService.validateStoredTokenSession() ?: return@withLock
-                if (!validationResultIsCurrent(uiGeneration, validation)) return@withLock
+                if (!validationResultIsCurrent(generation.auth, validation) ||
+                    !authUiGeneration.isObservationalCurrent(generation)
+                ) return@withLock
                 dispatchStoredValidation(
                     result = validation.result,
                     onValid = {
-                        updateAuthUi(uiGeneration) {
+                        updateBannerUi(generation) {
                             it.copy(
                                 isConnecting = false,
                                 isConnected = true,
@@ -1151,7 +1232,9 @@ class SettingsViewModel @Inject constructor(
                                 errorMessage = null,
                             )
                         }
-                        if (validationResultIsCurrent(uiGeneration, validation)) {
+                        if (validationResultIsCurrent(generation.auth, validation) &&
+                            authUiGeneration.isObservationalCurrent(generation)
+                        ) {
                             loadLibraries()
                         }
                     },
@@ -1159,7 +1242,7 @@ class SettingsViewModel @Inject constructor(
                         apiService.logoutIfCurrentSession(validation.session)
                     },
                     onInvalidCleared = {
-                        updateAuthUi(uiGeneration) {
+                        updateBannerUi(generation) {
                             it.copy(
                                 isConnecting = false,
                                 isConnected = false,
@@ -1170,7 +1253,7 @@ class SettingsViewModel @Inject constructor(
                         }
                     },
                     onUnreachable = {
-                        updateAuthUi(uiGeneration) {
+                        updateBannerUi(generation) {
                             it.copy(
                                 isConnecting = false,
                                 isConnected = false,
@@ -1182,7 +1265,7 @@ class SettingsViewModel @Inject constructor(
                     },
                 )
             } catch (e: Exception) {
-                updateAuthUi(uiGeneration) {
+                updateBannerUi(generation) {
                     it.copy(
                         isConnecting = false,
                         errorMessage = "Refresh failed: ${e.message}",
@@ -1192,7 +1275,7 @@ class SettingsViewModel @Inject constructor(
                 // Belt-and-suspenders for the two early-return paths above: no
                 // matter how this block exits, isConnecting must not stay true.
                 // A no-op for every path that already set it false explicitly.
-                updateAuthUi(uiGeneration) { it.copy(isConnecting = false) }
+                updateBannerUi(generation) { it.copy(isConnecting = false) }
             }
             }
         }
@@ -1204,23 +1287,25 @@ class SettingsViewModel @Inject constructor(
             return
         }
 
-        // Test Connection is a banner-writing auth-UI operation like Connect
-        // and Disconnect, so it advances the same generation counter too
-        // (issue #14 round 2, finding P2-2) — see the comment on
-        // refreshConnection() for the failure mode this closes.
-        val uiGeneration = authUiGeneration.incrementAndGet()
+        // Test Connection is an OBSERVATIONAL auth-UI operation, not a
+        // mutation — see the comment on refreshConnection() for why it must
+        // advance only the banner generation, never the auth generation
+        // (issue #14 round 3 — the fix for the P2-2 regression).
+        val generation = authUiGeneration.beginObservational()
         viewModelScope.launch {
             authUiOperationMutex.withLock {
-                if (authUiGeneration.get() != uiGeneration) return@withLock
-            updateAuthUi(uiGeneration) { it.copy(errorMessage = null, successMessage = null) }
+                if (!authUiGeneration.isObservationalCurrent(generation)) return@withLock
+            updateBannerUi(generation) { it.copy(errorMessage = null, successMessage = null) }
 
             try {
                 val validation = apiService.validateStoredTokenSession() ?: return@launch
-                if (!validationResultIsCurrent(uiGeneration, validation)) return@launch
+                if (!validationResultIsCurrent(generation.auth, validation) ||
+                    !authUiGeneration.isObservationalCurrent(generation)
+                ) return@launch
                 dispatchStoredValidation(
                     result = validation.result,
                     onValid = {
-                        updateAuthUi(uiGeneration) {
+                        updateBannerUi(generation) {
                             it.copy(successMessage = "Connection test successful!")
                         }
                     },
@@ -1228,7 +1313,7 @@ class SettingsViewModel @Inject constructor(
                         apiService.logoutIfCurrentSession(validation.session)
                     },
                     onInvalidCleared = {
-                        updateAuthUi(uiGeneration) {
+                        updateBannerUi(generation) {
                             it.copy(
                                 errorMessage = "Connection test failed. Token expired.",
                                 isConnected = false,
@@ -1237,7 +1322,7 @@ class SettingsViewModel @Inject constructor(
                         }
                     },
                     onUnreachable = {
-                        updateAuthUi(uiGeneration) {
+                        updateBannerUi(generation) {
                             it.copy(
                                 errorMessage = "Connection test could not reach the server. Your saved session was kept.",
                                 isConnected = false,
@@ -1247,7 +1332,7 @@ class SettingsViewModel @Inject constructor(
                     },
                 )
             } catch (e: Exception) {
-                updateAuthUi(uiGeneration) {
+                updateBannerUi(generation) {
                     it.copy(errorMessage = "Connection test error: ${e.message}")
                 }
             }
@@ -1261,18 +1346,15 @@ class SettingsViewModel @Inject constructor(
             return
         }
 
-        // Manual sync is guarded by the same auth-UI generation Connect,
-        // Disconnect, Refresh, and Test Connection use, and advances it too
-        // (issue #14 round 2, finding P2-2) — a captured-but-unincremented
-        // generation only protects THIS tap from being superseded, not any
-        // OTHER pending tap (e.g. Refresh) from being stomped by this one's
-        // later completion. Without it, a slow manual sync's completion
-        // could land after the user tapped Refresh, disconnected, or
-        // reconnected, and stomp that newer operation's banner with this
-        // tap's stale success/error.
-        val uiGeneration = authUiGeneration.incrementAndGet()
+        // Manual sync is an OBSERVATIONAL auth-UI operation, not a mutation
+        // — see the comment on refreshConnection() for why it must advance
+        // only the banner generation, never the auth generation (issue #14
+        // round 3 — the fix for the P2-2 regression: a slow manual sync
+        // tapped while a confirmed Disconnect is queued behind Refresh's
+        // mutex hold must never be able to cancel that logout).
+        val generation = authUiGeneration.beginObservational()
         viewModelScope.launch {
-            updateAuthUi(uiGeneration) { it.copy(errorMessage = null, successMessage = null) }
+            updateBannerUi(generation) { it.copy(errorMessage = null, successMessage = null) }
             try {
                 // syncNow() doesn't throw for a failed remote result. It
                 // records the failure in the returned SyncNowResult instead
@@ -1282,16 +1364,16 @@ class SettingsViewModel @Inject constructor(
                 // concurrent periodic sync could overwrite in between and
                 // make this tap report the background attempt's outcome.
                 val outcome = runGuardedManualSync(
-                    isCurrent = { authUiGeneration.get() == uiGeneration },
+                    isCurrent = { authUiGeneration.isObservationalCurrent(generation) },
                     syncNow = { syncManager.syncNow() },
                 )
                 if (outcome != null) {
-                    updateAuthUi(uiGeneration) {
+                    updateBannerUi(generation) {
                         it.copy(successMessage = outcome.successMessage, errorMessage = outcome.errorMessage)
                     }
                 }
             } catch (e: Exception) {
-                updateAuthUi(uiGeneration) { it.copy(errorMessage = "Sync failed: ${e.message}") }
+                updateBannerUi(generation) { it.copy(errorMessage = "Sync failed: ${e.message}") }
             }
         }
     }

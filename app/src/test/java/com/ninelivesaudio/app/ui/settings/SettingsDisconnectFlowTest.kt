@@ -2,6 +2,8 @@ package com.ninelivesaudio.app.ui.settings
 
 import com.ninelivesaudio.app.data.remote.AuthSessionIdentity
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.service.DisconnectBarrier
+import com.ninelivesaudio.app.service.disconnectBarrierBlocksLoad
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -306,6 +308,61 @@ class SettingsDisconnectFlowTest {
         }
 
         assertEquals(listOf("barrier-up", "reset", "logout", "barrier-down"), effects)
+    }
+
+    // ─── Overlapping disconnects (two SettingsViewModel instances) ────────
+    //
+    // Each SettingsViewModel instance owns its own authUiOperationMutex, so
+    // it cannot serialize against a DIFFERENT instance's in-flight
+    // disconnect. A user can confirm disconnect, leave Settings while the
+    // terminal-progress flush is still pending, come back to a freshly
+    // built Settings screen, and confirm again. Both raise the SAME
+    // PlaybackManager-owned barrier. Whichever operation lowers it first
+    // must not let the barrier drop while the other is still tearing down.
+
+    @Test
+    fun `overlapping guarded disconnects keep the barrier up until the last one finishes`() = runBlocking {
+        val barrier = DisconnectBarrier()
+        val firstResetStarted = CompletableDeferred<Unit>()
+        val releaseFirstReset = CompletableDeferred<Unit>()
+
+        val firstDisconnect = launch(start = CoroutineStart.UNDISPATCHED) {
+            disconnectSessionGuarded(
+                appMode = AppMode.AUDIOBOOKSHELF,
+                captureSession = { sessionA },
+                resetNowPlaying = {
+                    firstResetStarted.complete(Unit)
+                    releaseFirstReset.await()
+                },
+                logoutIfCurrent = {},
+                raiseDisconnectBarrier = barrier::raise,
+                lowerDisconnectBarrier = barrier::lower,
+            )
+        }
+
+        // First disconnect is now blocked awaiting its terminal-progress
+        // flush. User left Settings and came back to a fresh screen,
+        // confirming disconnect again before the first one finishes.
+        firstResetStarted.await()
+        disconnectSessionGuarded(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            captureSession = { sessionB },
+            resetNowPlaying = {},
+            logoutIfCurrent = {},
+            raiseDisconnectBarrier = barrier::raise,
+            lowerDisconnectBarrier = barrier::lower,
+        )
+
+        // The second disconnect fully finished (raised and lowered its own),
+        // but the first is still tearing down. A remote load must still be
+        // refused.
+        assertTrue(disconnectBarrierBlocksLoad(barrier.isUp, bookIsLocal = false))
+
+        releaseFirstReset.complete(Unit)
+        firstDisconnect.join()
+
+        // Only now, with both operations finished, may a remote load proceed.
+        assertFalse(disconnectBarrierBlocksLoad(barrier.isUp, bookIsLocal = false))
     }
 
     @Test

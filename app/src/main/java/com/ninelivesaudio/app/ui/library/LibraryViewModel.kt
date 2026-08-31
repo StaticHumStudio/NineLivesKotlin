@@ -18,11 +18,12 @@ import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import com.ninelivesaudio.app.service.PersistedSyncOutcome
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.buildShelfSyncReport
-import com.ninelivesaudio.app.service.persistActiveLibrarySelection
 import com.ninelivesaudio.app.service.lastSyncForCurrentServer
-import com.ninelivesaudio.app.service.withLastSyncIfServerUnchanged
+import com.ninelivesaudio.app.service.persistActiveLibrarySelection
+import com.ninelivesaudio.app.service.persistSyncOutcome
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -180,6 +181,7 @@ class LibraryViewModel @Inject constructor(
         // fresh fetch for the newly selected library completes.
         val selectedLibraryFetchResult: SyncResult? = null,
         val selectedLibraryFetchSequence: Long? = null,
+        val selectedLibraryFetchPersisted: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -363,6 +365,7 @@ class LibraryViewModel @Inject constructor(
                     it.copy(
                         selectedLibraryFetchResult = ownShelfReport?.result,
                         selectedLibraryFetchSequence = null,
+                        selectedLibraryFetchPersisted = false,
                     )
                 }
                 if (persistResult && ownShelfReport != null) {
@@ -391,20 +394,15 @@ class LibraryViewModel @Inject constructor(
         completedAtMs: Long = System.currentTimeMillis(),
         selectedLibraryFetchResult: SyncResult? = null,
     ): Long? {
-        var recordedSequence: Long? = null
-        settingsManager.updateSettingsIfAuthenticated { settings ->
-            val updated = if (settings.appMode == AppMode.AUDIOBOOKSHELF) {
-                settings.withLastSyncIfServerUnchanged(
-                    report = report,
-                    completedAtMs = completedAtMs,
-                    serverUrlAtStart = serverUrlAtStart,
-                )
-            } else {
-                settings
-            }
-            if (updated !== settings) recordedSequence = updated.lastSync?.outcomeSequence
-            updated
-        }
+        val outcome = persistSyncOutcome(
+            report = report,
+            completedAtMs = completedAtMs,
+            serverUrlAtStart = serverUrlAtStart,
+            isEligibleSession = { it.appMode == AppMode.AUDIOBOOKSHELF },
+            updateSettingsIfAuthenticated = settingsManager::updateSettingsIfAuthenticated,
+        )
+        val selectedFetchSequence = selectedLibraryFetchSequence(outcome)
+        val selectedFetchPersisted = outcome.recorded && outcome.persisted
         val currentRecord = settingsManager.currentSettings.lastSyncForCurrentServer()
             ?.takeIf { settingsManager.currentSettings.appMode != AppMode.LOCAL }
         _uiState.update {
@@ -415,12 +413,15 @@ class LibraryViewModel @Inject constructor(
             if (selectedLibraryFetchResult != null &&
                 current.selectedLibraryFetchResult == selectedLibraryFetchResult
             ) {
-                current.copy(selectedLibraryFetchSequence = recordedSequence)
+                current.copy(
+                    selectedLibraryFetchSequence = selectedFetchSequence,
+                    selectedLibraryFetchPersisted = selectedFetchPersisted,
+                )
             } else {
                 current
             }
         }
-        return recordedSequence
+        return selectedFetchSequence
     }
 
     // ─── User Actions ─────────────────────────────────────────────────────
@@ -435,6 +436,7 @@ class LibraryViewModel @Inject constructor(
                 // never be read as this library's own verdict.
                 selectedLibraryFetchResult = null,
                 selectedLibraryFetchSequence = null,
+                selectedLibraryFetchPersisted = false,
             )
         }
         libraryLoadLaunch.launch(viewModelScope) {
@@ -701,6 +703,7 @@ internal fun LibraryViewModel.UiState.withLibrarySelection(
     // result for the current selection.
     selectedLibraryFetchResult = null,
     selectedLibraryFetchSequence = null,
+    selectedLibraryFetchPersisted = false,
 )
 
 /**
@@ -738,8 +741,10 @@ internal fun librarySyncResult(settings: AppSettings): SyncResult? =
  * [selectedLibraryFetchResult] is the SELECTED library's own most recent
  * direct fetch outcome (set by loadAudioBooks() from the exact RemoteResult
  * it already fetches for that library specifically), and takes priority only
- * while it has at least as new a persisted sequence as the aggregate record.
- * A later recorded background sync supersedes the direct verdict. The aggregate is still
+ * while it has a newer sequence than the aggregate record. An equal sequence
+ * stays authoritative only when the selected result was durably recorded with
+ * that aggregate. A later recorded background sync supersedes an unpersisted
+ * direct verdict. The aggregate is still
  * consulted as a fallback when there is no per-library signal yet (a fresh
  * load that never ran its own live fetch, e.g. offline).
  */
@@ -748,12 +753,15 @@ internal fun decideLibraryShelf(
     lastSyncSequence: Long? = null,
     selectedLibraryFetchResult: SyncResult? = null,
     selectedLibraryFetchSequence: Long? = null,
+    selectedLibraryFetchPersisted: Boolean = false,
     cachedCount: Int,
 ): LibraryShelfDecision {
     val selectedFetchIsCurrent = selectedLibraryFetchResult != null &&
         (lastSyncSequence == null ||
             (selectedLibraryFetchSequence != null &&
-                selectedLibraryFetchSequence >= lastSyncSequence))
+                (selectedLibraryFetchSequence > lastSyncSequence ||
+                    (selectedLibraryFetchSequence == lastSyncSequence &&
+                        selectedLibraryFetchPersisted))))
     val effectiveResult = if (selectedFetchIsCurrent) selectedLibraryFetchResult else lastSyncResult
     val degraded = effectiveResult?.takeIf { it != SyncResult.SUCCESS }
     return when {
@@ -762,6 +770,15 @@ internal fun decideLibraryShelf(
         else -> LibraryShelfDecision.Empty
     }
 }
+
+/**
+ * The settings transform resolves its candidate record before attempting the
+ * encrypted write. Keep that record's sequence for the selected shelf even
+ * when storage rejects the write, so the fresh fetch cannot be hidden by an
+ * older durable aggregate.
+ */
+internal fun selectedLibraryFetchSequence(outcome: PersistedSyncOutcome): Long? =
+    outcome.record?.outcomeSequence
 
 /**
  * Whether loading a library should attempt a remote sync. Local libraries never

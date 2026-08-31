@@ -5,7 +5,11 @@ import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -118,7 +122,46 @@ class ActiveLibrarySelectionPolicyTest {
         )
 
         assertEquals(serverOne, selection.library)
+        assertEquals(persisted, selection.settings)
         assertEquals(1, writes)
         assertEquals(serverOne.id, persisted.selectedLibraryId)
+    }
+
+    @Test
+    fun `selection resolved after waiting for the settings lock is returned and persisted`() = runBlocking {
+        val initial = AppSettings(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            selectedLibraryId = "missing-server-library",
+            selectedLocalLibraryId = local.id,
+        )
+        var persisted = initial
+        val settingsLock = Mutex(locked = true)
+        val transformWaitingForLock = CompletableDeferred<Unit>()
+        var returned: ActiveLibrarySelection? = null
+
+        val persist = launch {
+            returned = persistActiveLibrarySelection(
+                libraries = listOf(local, serverOne),
+                settings = initial,
+                updateSettings = { transform ->
+                    transformWaitingForLock.complete(Unit)
+                    settingsLock.withLock {
+                        persisted = transform(persisted)
+                    }
+                },
+            )
+        }
+
+        transformWaitingForLock.await()
+        persisted = persisted.copy(
+            appMode = AppMode.LOCAL,
+            selectedLocalLibraryId = "missing-local-library",
+        )
+        settingsLock.unlock()
+        persist.join()
+
+        assertEquals(local, returned?.library)
+        assertEquals(persisted, returned?.settings)
+        assertEquals(local.id, persisted.selectedLocalLibraryId)
     }
 }

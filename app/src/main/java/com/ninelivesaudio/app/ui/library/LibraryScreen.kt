@@ -90,6 +90,7 @@ fun LibraryScreen(
         uiState.lastSyncSequence,
         uiState.selectedLibraryFetchResult,
         uiState.selectedLibraryFetchSequence,
+        uiState.selectedLibraryFetchPersisted,
         uiState.totalBookCount,
     ) {
         decideLibraryShelf(
@@ -97,6 +98,7 @@ fun LibraryScreen(
             lastSyncSequence = uiState.lastSyncSequence,
             selectedLibraryFetchResult = uiState.selectedLibraryFetchResult,
             selectedLibraryFetchSequence = uiState.selectedLibraryFetchSequence,
+            selectedLibraryFetchPersisted = uiState.selectedLibraryFetchPersisted,
             cachedCount = uiState.totalBookCount,
         )
     }

@@ -44,10 +44,13 @@ internal suspend fun persistActiveLibrarySelection(
     updateSettings: suspend ((AppSettings) -> AppSettings) -> Unit,
 ): ActiveLibrarySelection {
     val selection = resolveActiveLibrarySelection(libraries, settings)
+    var persistedSelection: ActiveLibrarySelection? = null
     if (selection.requiresPersistence) {
         updateSettings { latest ->
-            resolveActiveLibrarySelection(libraries, latest).settings
+            resolveActiveLibrarySelection(libraries, latest)
+                .also { persistedSelection = it }
+                .settings
         }
     }
-    return selection
+    return persistedSelection ?: selection
 }

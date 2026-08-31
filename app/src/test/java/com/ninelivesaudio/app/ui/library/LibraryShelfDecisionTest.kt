@@ -4,7 +4,12 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.SyncResult
+import com.ninelivesaudio.app.service.SyncReport
+import com.ninelivesaudio.app.service.persistSyncOutcome
+import java.io.IOException
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class LibraryShelfDecisionTest {
@@ -144,6 +149,76 @@ class LibraryShelfDecisionTest {
                 lastSyncSequence = 10L,
                 selectedLibraryFetchResult = SyncResult.SUCCESS,
                 selectedLibraryFetchSequence = null,
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `a persistence failure after a direct fetch keeps its fresh verdict over durable state`() = runBlocking {
+        val olderDurableFailure = LastSyncRecord(
+            result = SyncResult.FAILED,
+            libraryCount = 0,
+            bookCount = 0,
+            completedAtMs = 100L,
+            outcomeSequence = 7L,
+            serverUrl = "https://server.example",
+        )
+        val settings = AppSettings(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            serverUrl = "https://server.example",
+            lastSync = olderDurableFailure,
+            lastSyncOutcomeSequence = olderDurableFailure.outcomeSequence,
+        )
+
+        val outcome = persistSyncOutcome(
+            report = SyncReport(libraryCount = 1, bookCount = 0),
+            completedAtMs = 200L,
+            serverUrlAtStart = settings.serverUrl,
+            isEligibleSession = { it.appMode == AppMode.AUDIOBOOKSHELF },
+            updateSettingsIfAuthenticated = { transform ->
+                transform(settings)
+                throw IOException("disk full")
+            },
+        )
+
+        assertFalse(outcome.persisted)
+        val directFetchSequence = selectedLibraryFetchSequence(outcome)
+        assertEquals(8L, directFetchSequence)
+        assertEquals(
+            LibraryShelfDecision.Empty,
+            decideLibraryShelf(
+                lastSyncResult = olderDurableFailure.result,
+                lastSyncSequence = olderDurableFailure.outcomeSequence,
+                selectedLibraryFetchResult = SyncResult.SUCCESS,
+                selectedLibraryFetchSequence = directFetchSequence,
+                selectedLibraryFetchPersisted = false,
+                cachedCount = 0,
+            ),
+        )
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = directFetchSequence,
+                selectedLibraryFetchResult = SyncResult.SUCCESS,
+                selectedLibraryFetchSequence = directFetchSequence,
+                selectedLibraryFetchPersisted = false,
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `a selected fetch from the shared persisted record wins an equal aggregate sequence`() {
+        assertEquals(
+            LibraryShelfDecision.Empty,
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = 8L,
+                selectedLibraryFetchResult = SyncResult.SUCCESS,
+                selectedLibraryFetchSequence = 8L,
+                selectedLibraryFetchPersisted = true,
                 cachedCount = 0,
             ),
         )

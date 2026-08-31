@@ -42,7 +42,7 @@ class LibraryFetchSerializationTest {
             upsertAll = { libraries -> libraries.forEach { if (it.id !in cache) cache.add(it.id) } },
             deleteMissing = { keptIds -> cache.retainAll { it in keptIds } },
             deleteAllServerLibraries = { cache.clear() },
-            pruneLibraryBooks = { /* not under test here */ },
+            pruneLibraryBooks = { false },
         )
     }
 
@@ -93,7 +93,7 @@ class LibraryFetchSerializationTest {
             upsertAll = { libraries -> libraries.forEach { if (it.id !in cache) cache.add(it.id) } },
             deleteMissing = { keptIds -> cache.retainAll { it in keptIds } },
             deleteAllServerLibraries = { cache.clear() },
-            pruneLibraryBooks = { },
+            pruneLibraryBooks = { false },
         )
 
         assertEquals(RemoteResult.Ok(listOf(lib("lib-a"))), result)
@@ -112,7 +112,7 @@ class LibraryFetchSerializationTest {
             upsertAll = { libraries -> libraries.forEach { if (it.id !in cache) cache.add(it.id) } },
             deleteMissing = { org.junit.Assert.fail("a partial fetch never prunes") },
             deleteAllServerLibraries = { org.junit.Assert.fail("a partial fetch never prunes") },
-            pruneLibraryBooks = { org.junit.Assert.fail("a partial fetch never prunes") },
+            pruneLibraryBooks = { org.junit.Assert.fail("a partial fetch never prunes"); false },
         )
 
         assertEquals(RemoteResult.Partial(listOf(lib("lib-a")), "page 1: timeout"), result)
@@ -131,7 +131,7 @@ class LibraryFetchSerializationTest {
             upsertAll = { org.junit.Assert.fail("a failed fetch never reconciles") },
             deleteMissing = { org.junit.Assert.fail("a failed fetch never reconciles") },
             deleteAllServerLibraries = { org.junit.Assert.fail("a failed fetch never reconciles") },
-            pruneLibraryBooks = { org.junit.Assert.fail("a failed fetch never reconciles") },
+            pruneLibraryBooks = { org.junit.Assert.fail("a failed fetch never reconciles"); false },
         )
 
         assertEquals(RemoteResult.Failed("HTTP 500"), result)

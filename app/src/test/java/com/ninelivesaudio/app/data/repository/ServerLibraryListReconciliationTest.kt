@@ -27,6 +27,7 @@ import org.junit.Test
 class ServerLibraryListReconciliationTest {
 
     private fun lib(id: String) = Library(id = id, name = id)
+    private data class CachedBook(val id: String, val libraryId: String, val downloaded: Boolean)
 
     @Test
     fun `a complete fetch that omits a previously cached library prunes it and its books`() = runBlocking {
@@ -43,7 +44,10 @@ class ServerLibraryListReconciliationTest {
             upsertAll = { upserted.addAll(it) },
             deleteMissing = { keptIds -> prunedLibraries.add("deleteMissing($keptIds)") },
             deleteAllServerLibraries = { fail("a non-empty fetch prunes what's missing, not everything") },
-            pruneLibraryBooks = { libraryId -> prunedBooksFor.add(libraryId) },
+            pruneLibraryBooks = { libraryId ->
+                prunedBooksFor.add(libraryId)
+                false
+            },
         )
 
         assertEquals(listOf(lib("lib-a")), upserted)
@@ -63,7 +67,10 @@ class ServerLibraryListReconciliationTest {
             upsertAll = { fail("nothing to upsert for an empty fetch") },
             deleteMissing = { fail("an empty complete fetch deletes everything, not a scoped subset") },
             deleteAllServerLibraries = { deletedAll = true },
-            pruneLibraryBooks = { libraryId -> prunedBooksFor.add(libraryId) },
+            pruneLibraryBooks = { libraryId ->
+                prunedBooksFor.add(libraryId)
+                false
+            },
         )
 
         assertEquals(true, deletedAll)
@@ -82,7 +89,10 @@ class ServerLibraryListReconciliationTest {
             upsertAll = { upserted.addAll(it) },
             deleteMissing = { keptIds -> assertEquals(listOf("lib-a", "lib-b"), keptIds) },
             deleteAllServerLibraries = { fail("not empty") },
-            pruneLibraryBooks = { prunedAnyBooks = true },
+            pruneLibraryBooks = {
+                prunedAnyBooks = true
+                false
+            },
         )
 
         assertEquals(listOf(lib("lib-a"), lib("lib-b")), upserted)
@@ -98,7 +108,7 @@ class ServerLibraryListReconciliationTest {
             upsertAll = { fail("a partial fetch with nothing new must not touch the DAO") },
             deleteMissing = { fail("a partial fetch never prunes") },
             deleteAllServerLibraries = { fail("a partial fetch never prunes") },
-            pruneLibraryBooks = { fail("a partial fetch never prunes") },
+            pruneLibraryBooks = { fail("a partial fetch never prunes"); false },
         )
     }
 
@@ -113,9 +123,56 @@ class ServerLibraryListReconciliationTest {
             upsertAll = { upserted.addAll(it) },
             deleteMissing = { fail("a partial fetch never prunes") },
             deleteAllServerLibraries = { fail("a partial fetch never prunes") },
-            pruneLibraryBooks = { fail("a partial fetch never prunes") },
+            pruneLibraryBooks = { fail("a partial fetch never prunes"); false },
         )
 
         assertEquals(listOf(lib("lib-a")), upserted)
+    }
+
+    @Test
+    fun `an omitted library with a downloaded book remains reachable after its other books are pruned`() = runBlocking {
+        val libraries = mutableListOf("lib-a", "lib-b")
+        val books = mutableListOf(
+            CachedBook(id = "downloaded-book", libraryId = "lib-b", downloaded = true),
+            CachedBook(id = "stale-book", libraryId = "lib-b", downloaded = false),
+        )
+
+        reconcileServerLibraries(
+            isComplete = true,
+            fetched = listOf(lib("lib-a")),
+            cachedServerLibraryIds = { libraries.toList() },
+            upsertAll = { },
+            deleteMissing = { keptIds -> libraries.retainAll { it in keptIds } },
+            deleteAllServerLibraries = { libraries.clear() },
+            pruneLibraryBooks = { libraryId ->
+                books.removeAll { it.libraryId == libraryId && !it.downloaded }
+                books.any { it.libraryId == libraryId && it.downloaded }
+            },
+        )
+
+        assertEquals(listOf("lib-a", "lib-b"), libraries)
+        assertEquals(listOf(CachedBook("downloaded-book", "lib-b", downloaded = true)), books)
+    }
+
+    @Test
+    fun `an omitted library with no downloaded books is pruned`() = runBlocking {
+        val libraries = mutableListOf("lib-a", "lib-b")
+        val books = mutableListOf(CachedBook("stale-book", "lib-b", downloaded = false))
+
+        reconcileServerLibraries(
+            isComplete = true,
+            fetched = listOf(lib("lib-a")),
+            cachedServerLibraryIds = { libraries.toList() },
+            upsertAll = { },
+            deleteMissing = { keptIds -> libraries.retainAll { it in keptIds } },
+            deleteAllServerLibraries = { libraries.clear() },
+            pruneLibraryBooks = { libraryId ->
+                books.removeAll { it.libraryId == libraryId && !it.downloaded }
+                books.any { it.libraryId == libraryId && it.downloaded }
+            },
+        )
+
+        assertEquals(listOf("lib-a"), libraries)
+        assertEquals(emptyList<CachedBook>(), books)
     }
 }

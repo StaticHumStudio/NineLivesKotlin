@@ -83,6 +83,9 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0")
     suspend fun deleteServerBooksByLibrary(libraryId: String)
 
+    @Query("SELECT EXISTS(SELECT 1 FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 1)")
+    suspend fun hasDownloadedServerBooks(libraryId: String): Boolean
+
     /** Ids of all LOCAL books in a library (live or archived). */
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
     suspend fun getLocalIdsByLibrary(libraryId: String): List<String>

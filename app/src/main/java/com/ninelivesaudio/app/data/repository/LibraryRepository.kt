@@ -152,9 +152,10 @@ class LibraryRepository @Inject constructor(
  * expected to scope to server (non-local) rows only — see
  * LibraryDao.getAudiobookshelf / upsertAll / deleteMissingAudiobookshelf /
  * deleteAudiobookshelf. A pruned library's cached books are pruned too via
- * [pruneLibraryBooks], expected to carry the SAME downloaded-book
- * exemption as AudioBookRepository.reconcileServerLibrary — see
- * AudioBookDao.deleteServerBooksByLibrary.
+ * [pruneLibraryBooks] removes non-downloaded books from omitted libraries,
+ * then reports whether a downloaded server book survived. A library with a
+ * surviving download stays selectable, so Home and Android Auto can still
+ * reach it.
  */
 internal suspend fun reconcileServerLibraries(
     isComplete: Boolean,
@@ -163,7 +164,7 @@ internal suspend fun reconcileServerLibraries(
     upsertAll: suspend (List<Library>) -> Unit,
     deleteMissing: suspend (keptIds: List<String>) -> Unit,
     deleteAllServerLibraries: suspend () -> Unit,
-    pruneLibraryBooks: suspend (libraryId: String) -> Unit,
+    pruneLibraryBooks: suspend (libraryId: String) -> Boolean,
 ) {
     if (fetched.isNotEmpty()) {
         upsertAll(fetched)
@@ -173,12 +174,14 @@ internal suspend fun reconcileServerLibraries(
     val keptIds = fetched.map { it.id }.toSet()
     val omittedIds = cachedServerLibraryIds().filterNot { it in keptIds }
 
-    if (fetched.isEmpty()) {
+    val retainedOmittedIds = omittedIds.filter { libraryId -> pruneLibraryBooks(libraryId) }
+    val keptIdsIncludingDownloads = fetched.map { it.id } + retainedOmittedIds
+
+    if (keptIdsIncludingDownloads.isEmpty()) {
         deleteAllServerLibraries()
     } else {
-        deleteMissing(fetched.map { it.id })
+        deleteMissing(keptIdsIncludingDownloads)
     }
-    omittedIds.forEach { pruneLibraryBooks(it) }
 }
 
 /**
@@ -209,7 +212,7 @@ internal suspend fun runSerializedLibrarySync(
     upsertAll: suspend (List<Library>) -> Unit,
     deleteMissing: suspend (keptIds: List<String>) -> Unit,
     deleteAllServerLibraries: suspend () -> Unit,
-    pruneLibraryBooks: suspend (libraryId: String) -> Unit,
+    pruneLibraryBooks: suspend (libraryId: String) -> Boolean,
 ): RemoteResult<List<Library>> = mutex.withLock {
     val result = fetchLibraries()
     val fetched = when (result) {

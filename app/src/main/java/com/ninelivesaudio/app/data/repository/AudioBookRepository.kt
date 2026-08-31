@@ -14,10 +14,12 @@ import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -228,11 +230,11 @@ class AudioBookRepository @Inject constructor(
      * item sync. A list response cannot prune this library while an older item
      * response is still in flight and about to upsert its stale books.
      */
-    internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String) {
+    internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String): Boolean =
         runSerializedLibraryItemPrune(syncLibraryItemsMutex) {
             audioBookDao.deleteServerBooksByLibrary(libraryId)
+            audioBookDao.hasDownloadedServerBooks(libraryId)
         }
-    }
 
     /** Fetch expanded item details from server. */
     suspend fun fetchFromServer(itemId: String): AudioBook? {
@@ -410,14 +412,16 @@ internal suspend fun runSerializedLibraryItemSync(
     }
     val merged = mergeItems(remote)
 
-    reconcileServerLibrary(
-        isComplete = result is RemoteResult.Ok,
-        merged = merged,
-        libraryId = libraryId,
-        upsertAll = upsertAll,
-        deleteMissing = deleteMissing,
-        deleteAllServerBooks = deleteAllServerBooks,
-    )
+    withContext(NonCancellable) {
+        reconcileServerLibrary(
+            isComplete = result is RemoteResult.Ok,
+            merged = merged,
+            libraryId = libraryId,
+            upsertAll = upsertAll,
+            deleteMissing = deleteMissing,
+            deleteAllServerBooks = deleteAllServerBooks,
+        )
+    }
 
     when (result) {
         is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
@@ -426,12 +430,10 @@ internal suspend fun runSerializedLibraryItemSync(
 }
 
 /** Runs an authoritative item prune in the same ordering domain as item sync. */
-internal suspend fun runSerializedLibraryItemPrune(
+internal suspend fun <T> runSerializedLibraryItemPrune(
     mutex: Mutex,
-    prune: suspend () -> Unit,
-) {
-    mutex.withLock { prune() }
-}
+    prune: suspend () -> T,
+): T = mutex.withLock { prune() }
 
 /**
  * Merge a server book with its local row during sync, preserving local-only

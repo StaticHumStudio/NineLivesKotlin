@@ -42,6 +42,7 @@ class LibraryListItemReconciliationCancellationTest {
                 pruneLibraryBooks = {
                     pruneRequested.complete(Unit)
                     runSerializedLibraryItemPrune(itemSyncMutex) { books.clear() }
+                    false
                 },
             )
         }

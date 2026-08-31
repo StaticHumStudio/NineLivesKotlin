@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.data.repository
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -83,5 +84,41 @@ class LibraryItemFetchSerializationTest {
         removalJob.join()
 
         assertEquals(emptyList<String>(), cache)
+    }
+
+    @Test
+    fun `cancelling after upsert still completes a complete sync prune`() = runBlocking {
+        val mutex = Mutex()
+        val cache = mutableListOf("stale-book")
+        val upserted = CompletableDeferred<Unit>()
+        val pruneBlocked = CompletableDeferred<Unit>()
+        val releasePrune = CompletableDeferred<Unit>()
+
+        val sync = launch {
+            runSerializedLibraryItemSync(
+                mutex = mutex,
+                libraryId = "lib-a",
+                fetchItems = { RemoteResult.Ok(listOf(book("current-book"))) },
+                mergeItems = { it },
+                upsertAll = { books ->
+                    cache.addAll(books.map { it.id })
+                    upserted.complete(Unit)
+                },
+                deleteMissing = { _, keptIds ->
+                    pruneBlocked.complete(Unit)
+                    releasePrune.await()
+                    cache.retainAll { it in keptIds }
+                },
+                deleteAllServerBooks = { error("a non-empty complete fetch uses the scoped prune") },
+            )
+        }
+
+        upserted.await()
+        pruneBlocked.await()
+        sync.cancel()
+        releasePrune.complete(Unit)
+        sync.join()
+
+        assertEquals(listOf("current-book"), cache)
     }
 }

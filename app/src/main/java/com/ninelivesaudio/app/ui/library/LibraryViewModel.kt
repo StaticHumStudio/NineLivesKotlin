@@ -695,7 +695,10 @@ internal fun visibleCachedLibraries(
     val serverConfirmedEmpty = settings.appMode == AppMode.AUDIOBOOKSHELF &&
         lastSync?.result == SyncResult.SUCCESS &&
         lastSync.libraryCount == 0
-    return if (serverConfirmedEmpty) emptyList() else cached
+    // Complete reconciliation removes each library without downloaded books
+    // before it records an empty result. Any row left in the cache belongs to
+    // a download and must remain selectable while offline.
+    return if (serverConfirmedEmpty && cached.isEmpty()) emptyList() else cached
 }
 
 internal fun librarySyncResult(settings: AppSettings): SyncResult? =

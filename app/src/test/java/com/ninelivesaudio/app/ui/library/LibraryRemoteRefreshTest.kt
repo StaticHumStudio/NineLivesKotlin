@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.library
 
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
+import com.ninelivesaudio.app.data.repository.reconcileServerLibraries
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -140,8 +141,53 @@ class LibraryRemoteRefreshTest {
     }
 
     @Test
-    fun `offline restart after successful empty sync suppresses stale cached libraries`() {
-        val stale = listOf(Library(id = "stale", name = "Stale"))
+    fun `offline restart keeps a downloaded retained library selectable after an empty sync`() = runBlocking {
+        val retainedForDownloads = Library(id = "downloaded", name = "Downloaded")
+        val cachedLibraries = mutableListOf(retainedForDownloads)
+        val cachedBooks = mutableListOf(
+            AudioBook(
+                id = "downloaded-book",
+                libraryId = retainedForDownloads.id,
+                isDownloaded = true,
+            ),
+        )
+
+        reconcileServerLibraries(
+            isComplete = true,
+            fetched = emptyList(),
+            cachedServerLibraryIds = { cachedLibraries.map { it.id } },
+            upsertAll = { throw AssertionError("empty sync must not upsert libraries") },
+            deleteMissing = { keptIds ->
+                cachedLibraries.retainAll { it.id in keptIds }
+            },
+            deleteAllServerLibraries = { cachedLibraries.clear() },
+            pruneLibraryBooks = { libraryId ->
+                cachedBooks.removeAll { it.libraryId == libraryId && !it.isDownloaded }
+                cachedBooks.any { it.libraryId == libraryId && it.isDownloaded }
+            },
+        )
+        val restoredSettings = AppSettings(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            selectedLibraryId = retainedForDownloads.id,
+            lastSync = LastSyncRecord(
+                result = SyncResult.SUCCESS,
+                libraryCount = 0,
+                bookCount = 0,
+                completedAtMs = 123L,
+            ),
+        )
+
+        val visible = visibleCachedLibraries(restoredSettings, cachedLibraries)
+        val selection = resolveActiveLibrarySelection(visible, restoredSettings)
+
+        assertEquals(listOf(retainedForDownloads), visible)
+        assertEquals(retainedForDownloads, selection.library)
+        assertFalse(selection.requiresPersistence)
+    }
+
+    @Test
+    fun `offline restart after successful empty sync suppresses cache when no downloads were retained`() {
+        val cached = emptyList<Library>()
         val restoredSettings = AppSettings(
             appMode = AppMode.AUDIOBOOKSHELF,
             lastSync = LastSyncRecord(
@@ -154,7 +200,7 @@ class LibraryRemoteRefreshTest {
 
         assertEquals(
             emptyList<Library>(),
-            visibleCachedLibraries(restoredSettings, stale),
+            visibleCachedLibraries(restoredSettings, cached),
         )
     }
 

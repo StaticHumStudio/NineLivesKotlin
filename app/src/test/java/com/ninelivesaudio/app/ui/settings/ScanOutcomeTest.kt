@@ -115,6 +115,45 @@ class ScanOutcomeTest {
     }
 
     @Test
+    fun `an archive only scan failure pairs the cap warning with its extraction hint`() {
+        val error = try {
+            failEmptyScanWithErrors(
+                result(
+                    bookCount = 0,
+                    errorMessages = listOf("Scan stopped early: more than 1000 folders. Pick a more specific folder."),
+                    archiveFileCount = 2,
+                ),
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+
+        assertEquals(
+            "Scan stopped early: more than 1000 folders. Pick a more specific folder.\n\n" +
+                "2 archives found. Extract them into folders to import.",
+            error?.message,
+        )
+    }
+
+    @Test
+    fun `a scan failure without archives keeps today's cap warning`() {
+        val error = try {
+            failEmptyScanWithErrors(
+                result(
+                    bookCount = 0,
+                    errorMessages = listOf("Scan stopped early: more than 1000 folders. Pick a more specific folder."),
+                ),
+            )
+            null
+        } catch (error: IllegalStateException) {
+            error
+        }
+
+        assertEquals("Scan stopped early: more than 1000 folders. Pick a more specific folder.", error?.message)
+    }
+
+    @Test
     fun `multiple warnings collapse to the first message plus a count`() {
         val outcome = buildScanOutcome(
             result(

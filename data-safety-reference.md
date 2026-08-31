@@ -1,12 +1,57 @@
 # Nine Lives Audio Play Store Data Safety Reference
 
-Last updated: 2026-06-05
+Last updated: 2026-08-31 (live-listing verification: 2026-08-24)
 
-Use this file as the source of truth when filling out the Play Console Data safety form for `com.ninelivesaudio.app`.
+> **STATUS 2026-08-24: this document does NOT describe what is currently
+> declared.** The live Play listing for `com.ninelivesaudio.app` declares
+> **"No data collected"** and **"No data shared with third parties"**, verified
+> by reading the public store page on 2026-08-24. The June recommendation below
+> ("Answer: Yes") was never what shipped. The 2.1.0 store listing copy makes no
+> claim about what the Data safety section says, but its PRIVACY FIRST
+> paragraph is consistent with the live form: no analytics, no tracking, no
+> ads, the studio runs no servers, and the only paths that reach the studio at
+> all (crash reports and feedback) are opt-in and go through the user's own
+> email client. The listing does describe automatic traffic in server mode
+> (position sync both ways, the offline queue flushing on reconnect), but that
+> traffic goes to the server the user configured, not to the studio. Do not
+> "correct" the Console form to match the June analysis... the form's No is
+> about the studio collecting, and the shipped listing promises the same
+> thing: nothing reaches Static Hum Studio except the opt-in emails.
+>
+> Who set the form to No, and on what reasoning, is NOT recorded anywhere and
+> was not reconstructed. Do not cite a named Play exemption for it. Google's
+> current guidance (checked 2026-08-31) defines collect as transmitting data
+> off the device, "irrespective of whether data is transmitted to you or a
+> third-party server", and its exemption list (on-device only, ephemeral,
+> end-to-end encryption, open webview) has no user-chosen-destination entry.
+> E2EE does not fit either: Audiobookshelf serves plain HTTP by default.
+> What the No actually rests on, as a judgment call (Jeff, 2026-08-31):
+> Static Hum Studio can never access any of it. Server-mode data goes only to
+> the Audiobookshelf server the user chose (usually their own box, sometimes
+> a friend's or a hosted instance they merely have access to, which is why
+> the per-category analysis below marks the shared question a Console
+> judgment call rather than settled). Declaring No on that basis is the
+> common pattern for self-hosted client apps on Play, and this declaration
+> has already survived multiple Google review rounds as filed. The two paths
+> that DO reach the studio, opt-in crash reports and manual feedback, leave
+> through an email the user composes and sends from their own mail client.
+>
+> The per-category analysis below is kept ON PURPOSE. If Google ever challenges
+> the "No data collected" declaration, this is the fallback: it is the work of
+> deciding what each category would say under the opposite reading.
+>
+> Note that the "encrypted in transit" question below is moot while "No data
+> collected" stands, because Play only asks it once collection is declared. The
+> underlying fact is still true: the build allows a user-configured `http://`
+> server, so that question could not be answered Yes today.
 
-This is based on the current release code path, the live privacy URL, and the pre AAB Play compliance audit in `docs/play-store-compliance-audit-2026-06-04.md`.
+Use this file as background analysis, not as the form's current answers.
 
-## Play Console Overview
+This is based on the release code path as of 2026-06-05, the live privacy URL,
+and the pre AAB Play compliance audit in
+`docs/play-store-compliance-audit-2026-06-04.md`.
+
+## Play Console Overview (JUNE ANALYSIS, SUPERSEDED BY THE LIVE FORM)
 
 Question: Does the app collect or share any required user data types?
 

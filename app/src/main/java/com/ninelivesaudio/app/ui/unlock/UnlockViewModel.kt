@@ -28,6 +28,19 @@ data class UnlockUiState(
     val priceLookupSettled: Boolean = false,
 ) {
     val isUnlocked: Boolean get() = entitlement.isUnlocked
+    val isTrialActive: Boolean get() = entitlement.source == EntitlementSource.TRIAL
+    val canStartTrial: Boolean
+        get() = entitlement.isFree && entitlement.trialOfferAvailable
+    val canPurchase: Boolean
+        get() = entitlement.source == null || entitlement.source == EntitlementSource.TRIAL
+    val trialRemainingText: String?
+        get() = entitlement.trialDaysRemaining?.let { days ->
+            if (days == 1) {
+                "1 day remains in your trial."
+            } else {
+                "$days days remain in your trial."
+            }
+        }
 
     /**
      * Grandfathered owners see a different screen. They own everything and there
@@ -43,14 +56,14 @@ data class UnlockUiState(
      * normal state for the first second or two after a cold start.
      */
     val isPriceLoading: Boolean
-        get() = !isUnlocked && formattedPrice == null && !priceLookupSettled
+        get() = canPurchase && formattedPrice == null && !priceLookupSettled
 
     /**
      * Play answered and there is no purchasable product. Distinct from loading,
      * and the state a missing or misconfigured Console product produces.
      */
     val isPriceUnavailable: Boolean
-        get() = !isUnlocked && formattedPrice == null && priceLookupSettled
+        get() = canPurchase && formattedPrice == null && priceLookupSettled
 }
 
 @HiltViewModel
@@ -113,9 +126,15 @@ class UnlockViewModel @Inject constructor(
         // narrow, where the UI has not caught up with entitlement yet. A
         // grandfathered owner has no Play purchase record, so Play would happily
         // charge them a second time for something they already own.
-        if (entitlements.current.isUnlocked) return
+        if (!UnlockUiState(entitlement = entitlements.current).canPurchase) return
 
         billing.launchPurchase(activity)
+    }
+
+    fun startTrial() {
+        viewModelScope.launch {
+            entitlements.startTrial()
+        }
     }
 
     /**

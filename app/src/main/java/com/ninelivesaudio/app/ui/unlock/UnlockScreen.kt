@@ -28,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -91,35 +92,55 @@ fun UnlockScreen(
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             ArchiveScreenHeader(
-                title = if (uiState.isUnlocked) "Unlocked" else "Unlock Nine Lives",
-                subtitle = if (uiState.isUnlocked) {
-                    "The lights are on. Nothing left to buy."
-                } else {
-                    // Reworded 2026-08-20. The old line ("Lighting is a
-                    // privilege you buy") stopped being true the moment BRIGHT
-                    // went free, and a paywall that lies about what it gates is
-                    // the same con as an unlock list selling what you already
-                    // own.
-                    "The vault is yours, lit well enough to read. The comforts are what you buy."
+                title = when {
+                    uiState.isTrialActive -> "Trial active"
+                    uiState.isUnlocked -> "Unlocked"
+                    else -> "Unlock Nine Lives"
+                },
+                subtitle = when {
+                    uiState.isTrialActive -> "Everything is open. Buying keeps it that way."
+                    uiState.isUnlocked -> "The lights are on. Nothing left to buy."
+                    else -> {
+                        // Reworded 2026-08-20. The old line ("Lighting is a
+                        // privilege you buy") stopped being true the moment
+                        // BRIGHT went free. A paywall must tell the truth.
+                        "The vault is yours, lit well enough to read. The comforts are what you buy."
+                    }
                 },
             )
 
             when {
                 uiState.isGrandfathered -> GrandfatheredCard()
+                uiState.isTrialActive -> {
+                    TrialActiveCard()
+                    PurchaseCard(
+                        formattedPrice = uiState.formattedPrice,
+                        isPriceLoading = uiState.isPriceLoading,
+                        isPriceUnavailable = uiState.isPriceUnavailable,
+                        onPurchase = {
+                            context.findActivity()?.let(viewModel::purchase)
+                        },
+                    )
+                }
                 uiState.isUnlocked -> UnlockedCard()
-                else -> PurchaseCard(
-                    formattedPrice = uiState.formattedPrice,
-                    isPriceLoading = uiState.isPriceLoading,
-                    isPriceUnavailable = uiState.isPriceUnavailable,
-                    onPurchase = {
-                        context.findActivity()?.let(viewModel::purchase)
-                    },
-                )
+                else -> {
+                    if (uiState.canStartTrial) {
+                        TrialOfferCard(onStartTrial = viewModel::startTrial)
+                    }
+                    PurchaseCard(
+                        formattedPrice = uiState.formattedPrice,
+                        isPriceLoading = uiState.isPriceLoading,
+                        isPriceUnavailable = uiState.isPriceUnavailable,
+                        onPurchase = {
+                            context.findActivity()?.let(viewModel::purchase)
+                        },
+                    )
+                }
             }
 
             BenefitsCard()
 
-            if (!uiState.isUnlocked) {
+            if (uiState.canPurchase) {
                 Text(
                     text = "One payment, once. No subscription. No ads either way.",
                     style = MaterialTheme.typography.bodySmall,
@@ -155,6 +176,42 @@ fun UnlockScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun TrialOfferCard(onStartTrial: () -> Unit) {
+    ArchiveCard {
+        OutlinedButton(
+            onClick = onStartTrial,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = NineLivesTheme.colors.goldFilament,
+            ),
+        ) {
+            Text(
+                text = "Try everything free for 14 days",
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TrialActiveCard() {
+    ArchiveCard {
+        Text(
+            text = "Everything is open during your trial.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = NineLivesTheme.colors.archiveTextPrimary,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Buy once to keep everything open after the trial.",
+            style = MaterialTheme.typography.bodySmall,
+            color = NineLivesTheme.colors.archiveTextMuted,
+        )
     }
 }
 

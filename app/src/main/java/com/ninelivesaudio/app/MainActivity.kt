@@ -41,6 +41,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
+import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.review.InAppReviewManager
 import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.SettingsManager
@@ -80,6 +81,9 @@ class MainActivity : ComponentActivity() {
      */
     @Inject
     lateinit var effectiveSettings: EffectiveSettingsRepository
+
+    @Inject
+    lateinit var entitlementRepository: EntitlementRepository
 
     /**
      * The Play review flow has to launch from an Activity, so the trigger lives
@@ -262,6 +266,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // Trial expiry does not depend on Play answering. A foreground refresh
+        // re-runs the pure resolver, whose unlocked-to-free emission is already
+        // collected by NineLivesApp for slot and live-rendering revocation.
+        lifecycleScope.launch {
+            entitlementRepository.refresh()
+        }
         // App is visible — evict stale connections and recover playback session
         connectivityMonitor.onAppForegrounded()
     }

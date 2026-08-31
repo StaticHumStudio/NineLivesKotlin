@@ -1026,6 +1026,7 @@ private fun UnlockSettingsGroup(
                 Text(
                     text = when {
                         uiState.isGrandfathered -> "Unlocked, from the paid app"
+                        uiState.isTrialActive -> "Trial active"
                         uiState.isUnlocked -> "Unlocked"
                         else -> "Unlock Nine Lives"
                     },
@@ -1036,6 +1037,7 @@ private fun UnlockSettingsGroup(
                     text = when {
                         uiState.isGrandfathered ->
                             "You bought this before it was free. Nothing to do."
+                        uiState.isTrialActive -> uiState.trialRemainingText.orEmpty()
                         uiState.isUnlocked -> "Every feature is open."
                         else -> "One payment. Every speed, unlimited offline books, full timer."
                     },

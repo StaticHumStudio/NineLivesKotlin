@@ -2012,27 +2012,42 @@ class PlaybackManager @Inject constructor(
     fun applyEntitlementToActivePlayback() {
         val effective = effectiveSettings.current
 
-        // Clamped against the PLAYER, not the cached value. A controller that
-        // set 2x through the media session may have left _speed at 1.0, and
-        // clamping a stale 1.0 would compute "already fine" and leave the real
-        // player running at 2x for a user who just lost entitlement.
-        //
-        // Written unconditionally. Assigning identical playback parameters is a
-        // no-op in ExoPlayer and never seeks.
-        val allowedSpeed = clampSpeed(exoPlayer?.playbackParameters?.speed ?: _speed.value)
-        _speed.value = allowedSpeed
-        exoPlayer?.playbackParameters = PlaybackParameters(allowedSpeed)
+        ActivePlaybackEntitlementApplier.apply(
+            settings = effective,
+            target = object : ActivePlaybackRenderTarget {
+                override var speed: Float
+                    get() = exoPlayer?.playbackParameters?.speed ?: _speed.value
+                    set(value) {
+                        // Written unconditionally. Assigning identical playback
+                        // parameters is a no-op in ExoPlayer and never seeks.
+                        _speed.value = value
+                        exoPlayer?.playbackParameters = PlaybackParameters(value)
+                    }
 
-        _eqEnabled.value = effective.eqEnabled
-        equalizer?.enabled = effective.eqEnabled
+                override var equalizerEnabled: Boolean
+                    get() = _eqEnabled.value
+                    set(value) {
+                        _eqEnabled.value = value
+                        equalizer?.enabled = value
+                    }
 
-        _volumeBoost.value = effective.volumeBoostGain
-        loudnessEnhancer?.let {
-            it.setTargetGain(effective.volumeBoostGain)
-            it.enabled = effective.volumeBoostGain > 0
-        }
+                override var volumeBoostGain: Int
+                    get() = _volumeBoost.value
+                    set(value) {
+                        _volumeBoost.value = value
+                        loudnessEnhancer?.let {
+                            it.setTargetGain(value)
+                            it.enabled = value > 0
+                        }
+                    }
 
-        exoPlayer?.skipSilenceEnabled = effective.skipSilenceEnabled
+                override var silenceSkippingEnabled: Boolean
+                    get() = exoPlayer?.skipSilenceEnabled ?: false
+                    set(value) {
+                        exoPlayer?.skipSilenceEnabled = value
+                    }
+            },
+        )
     }
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)

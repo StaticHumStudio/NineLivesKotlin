@@ -16,7 +16,7 @@ object ChangelogData {
 
     val releases = listOf(
         ChangelogRelease(
-            version = "2.1.0",
+            version = "2.1.3",
             dateLabel = "Current",
             sections = listOf(
                 ChangelogSection(

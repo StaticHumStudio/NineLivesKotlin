@@ -21,12 +21,14 @@ and the app never touches payment data, card details, or billing addresses. Play
 Billing returns a purchase token and an acknowledgement state, both of which stay
 on device in `nine_lives_entitlement_cache` and are excluded from backup.
 
-Nothing here collapses or softens an existing disclosure. The source of truth
-already answers **Yes** to collect-or-share, covering Audiobookshelf server-mode
-traffic, optional crash reports, and optional emailed feedback. Every one of
-those Yes answers stands. The framing to avoid is "does *no data collected*
-survive Billing", because this app never claimed that and answering it would
-produce a wrong declaration.
+Nothing here changes the standing declaration either. The live Console form
+declares **No data collected / No data shared**, verified from the public store
+page on 2026-08-24 (see the status header in the canonical reference). The Yes
+analysis in that file was the June recommendation, never what shipped, and it
+is kept as the fallback position, not the answer. The Billing conclusion holds
+under either reading: the purchase flow adds no new data type, whether the form
+says No (nothing to add) or the fallback Yes analysis ever gets invoked (no new
+category joins it).
 
 **Still to confirm against the actual Console form before submission**, since the
 form's categories are the only authority on this:

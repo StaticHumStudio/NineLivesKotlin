@@ -6,19 +6,24 @@ Last updated: 2026-08-24
 > declared.** The live Play listing for `com.ninelivesaudio.app` declares
 > **"No data collected"** and **"No data shared with third parties"**, verified
 > by reading the public store page on 2026-08-24. The June recommendation below
-> ("Answer: Yes") was never what shipped, and the 2.1.0 store listing copy
-> states in the NOTHING PHONES HOME paragraph that the Data safety section says
-> no data collected. Listing and form agree. Do not "correct" the Console form
-> to match the June analysis... that would break the agreement and contradict
-> shipped copy.
+> ("Answer: Yes") was never what shipped. The 2.1.0 store listing copy makes no
+> claim about what the Data safety section says, but its PRIVACY FIRST
+> paragraph is consistent with the live form: no analytics, no tracking, no
+> ads, the studio runs no servers, and the only paths that reach the studio at
+> all (crash reports and feedback) are opt-in and go through the user's own
+> email client. Do not "correct" the Console form to match the June
+> analysis... that would contradict what the shipped listing promises about
+> nothing automatic leaving the device.
 >
 > Who set the form to No, and on what reasoning, is NOT recorded anywhere and
 > was not reconstructed. The defensible argument is Play's user-initiated
-> transfer exemption: everything the June analysis lists as collected goes to
-> an Audiobookshelf server the user configured and controls, and Static Hum
-> Studio receives none of it. That argument is plausible, it is not verified as
-> the actual reasoning, and it is a genuine judgment call rather than a settled
-> question.
+> transfer exemption, and it has two legs. Server-mode data goes to an
+> Audiobookshelf server the user configured and controls, and Static Hum
+> Studio receives none of it. The two paths that DO reach the studio, opt-in
+> crash reports and manual feedback, leave through an email the user composes
+> and sends from their own mail client, which is user-initiated in the most
+> literal sense. Both legs are plausible, neither is verified as the actual
+> reasoning, and it is a genuine judgment call rather than a settled question.
 >
 > The per-category analysis below is kept ON PURPOSE. If Google ever challenges
 > the "No data collected" declaration, this is the fallback: it is the work of

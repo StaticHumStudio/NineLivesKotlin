@@ -193,6 +193,10 @@ class AudioBookRepository @Inject constructor(
      * Fetch all items for a library from server and save to local DB. A
      * partial fetch still saves what it got: some of the shelf beats none of
      * it, and the caller keeps the failure reason for the bug report.
+     *
+     * A complete (Ok) fetch, by contrast, is authoritative for this library
+     * — including a confirmed-empty one, so the cache is reconciled to match
+     * it exactly rather than just upserted-into. See [reconcileServerLibrary].
      */
     suspend fun syncLibraryItems(libraryId: String): RemoteResult<List<AudioBook>> {
         val result = apiService.getLibraryItems(libraryId)
@@ -201,22 +205,33 @@ class AudioBookRepository @Inject constructor(
             is RemoteResult.Partial -> result.value
             is RemoteResult.Failed -> return result
         }
-        if (remote.isNotEmpty()) {
-            // Preserve local download info when syncing.
-            // Query by book IDs (not by libraryId) so we find existing entries
-            // regardless of how they were originally saved — prevents full-row
-            // REPLACE from wiping isDownloaded/localPath on libraryId mismatch.
+
+        // Preserve local download info when syncing.
+        // Query by book IDs (not by libraryId) so we find existing entries
+        // regardless of how they were originally saved — prevents full-row
+        // REPLACE from wiping isDownloaded/localPath on libraryId mismatch.
+        // Skipped entirely when remote is empty: an empty IN (:ids) list is
+        // invalid SQLite, and there is nothing to look up anyway.
+        val merged = if (remote.isEmpty()) {
+            emptyList()
+        } else {
             val localBooks = audioBookDao.getByIds(remote.map { it.id }).associateBy { it.id }
-            val merged = remote.map { remoteBook ->
-                mergeSyncedBook(remoteBook, localBooks[remoteBook.id])
-            }
-            audioBookDao.upsertAll(merged.map { it.toEntity() })
-            return when (result) {
-                is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
-                else -> RemoteResult.Ok(merged)
-            }
+            remote.map { remoteBook -> mergeSyncedBook(remoteBook, localBooks[remoteBook.id]) }
         }
-        return result
+
+        reconcileServerLibrary(
+            isComplete = result is RemoteResult.Ok,
+            merged = merged,
+            libraryId = libraryId,
+            upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
+            deleteMissing = { id, keptIds -> audioBookDao.deleteMissingServerBooks(id, keptIds) },
+            deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },
+        )
+
+        return when (result) {
+            is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
+            else -> RemoteResult.Ok(merged)
+        }
     }
 
     /** Fetch expanded item details from server. */
@@ -330,6 +345,44 @@ class AudioBookRepository @Inject constructor(
     /** Delete all audiobooks from local DB. */
     suspend fun deleteAll() {
         audioBookDao.deleteAll()
+    }
+}
+
+/**
+ * Reconciles the DAO's cached SERVER rows for one library against a
+ * completed [syncLibraryItems] fetch, extracted so the branching is
+ * unit-testable without Room (issue #14, PR #30 review).
+ *
+ * A complete ([isComplete]) fetch is authoritative for [libraryId] — the
+ * cache should end up matching it exactly, including down to nothing when
+ * [merged] is empty (a previously populated library that genuinely emptied
+ * out). An incomplete (Partial) fetch is never authoritative: it upserts
+ * what it got (some of the shelf beats none of it) but never prunes,
+ * because a page it couldn't reach is not proof those books are gone —
+ * that retention is unchanged from before this fix.
+ *
+ * [deleteMissing] and [deleteAllServerBooks] are expected to scope to
+ * server (non-local) rows and exempt downloaded books — see
+ * AudioBookDao.deleteMissingServerBooks / deleteServerBooksByLibrary — a
+ * sync must never take away the user's own downloaded audio, only refresh
+ * what the server confirms is still there.
+ */
+internal suspend fun reconcileServerLibrary(
+    isComplete: Boolean,
+    merged: List<AudioBook>,
+    libraryId: String,
+    upsertAll: suspend (List<AudioBook>) -> Unit,
+    deleteMissing: suspend (libraryId: String, keptIds: List<String>) -> Unit,
+    deleteAllServerBooks: suspend (libraryId: String) -> Unit,
+) {
+    if (merged.isNotEmpty()) {
+        upsertAll(merged)
+    }
+    if (!isComplete) return
+    if (merged.isEmpty()) {
+        deleteAllServerBooks(libraryId)
+    } else {
+        deleteMissing(libraryId, merged.map { it.id })
     }
 }
 

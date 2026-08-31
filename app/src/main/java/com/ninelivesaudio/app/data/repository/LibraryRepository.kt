@@ -9,6 +9,8 @@ import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.Library
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,6 +21,17 @@ class LibraryRepository @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val apiService: ApiService,
 ) {
+    // Serializes syncFromServer(): SyncManager's account-wide sync and
+    // LibraryViewModel's own screen-triggered refresh both call it
+    // independently with no other coordination. Without this, overlapping
+    // calls could apply their complete responses out of order -- an older,
+    // slower fetch finishing AFTER a newer one and upserting back a library
+    // the newer fetch had just correctly pruned (issue #14, PR #30 review,
+    // finding B). Scoped to just this one /libraries call plus its DB
+    // reconcile, not SyncManager's whole multi-library item sync, and this
+    // repository never calls back into SyncManager, so holding it cannot
+    // deadlock SyncManager's own syncMutex.
+    private val syncFromServerMutex = Mutex()
     /** Observe all libraries from local DB (reactive). */
     fun observeAll(): Flow<List<Library>> =
         libraryDao.observeAll().map { entities -> entities.map { it.toDomain() } }
@@ -74,27 +87,19 @@ class LibraryRepository @Inject constructor(
      * gone (issue #14, PR #30 review, finding A — mirrors
      * AudioBookRepository.syncLibraryItems's reconcileServerLibrary one
      * level up). See [reconcileServerLibraries].
+     *
+     * The fetch and its reconcile are serialized behind [syncFromServerMutex]
+     * (issue #14, PR #30 review, finding B) — see [runSerializedLibrarySync].
      */
-    suspend fun syncFromServer(): RemoteResult<List<Library>> {
-        val result = apiService.getLibraries()
-        val fetched = when (result) {
-            is RemoteResult.Ok -> result.value
-            is RemoteResult.Partial -> result.value
-            is RemoteResult.Failed -> return result
-        }
-
-        reconcileServerLibraries(
-            isComplete = result is RemoteResult.Ok,
-            fetched = fetched,
-            cachedServerLibraryIds = { libraryDao.getAudiobookshelf().map { it.id } },
-            upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
-            deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
-            deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
-            pruneLibraryBooks = { libraryId -> audioBookDao.deleteServerBooksByLibrary(libraryId) },
-        )
-
-        return result
-    }
+    suspend fun syncFromServer(): RemoteResult<List<Library>> = runSerializedLibrarySync(
+        mutex = syncFromServerMutex,
+        fetchLibraries = apiService::getLibraries,
+        cachedServerLibraryIds = { libraryDao.getAudiobookshelf().map { it.id } },
+        upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
+        deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
+        deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
+        pruneLibraryBooks = { libraryId -> audioBookDao.deleteServerBooksByLibrary(libraryId) },
+    )
 
     /** Save a single library to local DB. */
     suspend fun save(library: Library) {
@@ -171,4 +176,54 @@ internal suspend fun reconcileServerLibraries(
         deleteMissing(fetched.map { it.id })
     }
     omittedIds.forEach { pruneLibraryBooks(it) }
+}
+
+/**
+ * The full syncFromServer() operation — fetch, then [reconcileServerLibraries]
+ * if warranted — held for its entire duration behind [mutex] (issue #14, PR
+ * #30 review, finding B).
+ *
+ * SyncManager's account-wide sync and LibraryViewModel's own screen-triggered
+ * refresh both call syncFromServer() independently, with nothing else
+ * coordinating them. Without serialization, an older call's fetch could
+ * still be in flight when a newer call starts, finishes, and reconciles a
+ * fresher snapshot — the older call then finishing afterward would apply
+ * its now-stale response and could upsert back a library the newer call had
+ * just correctly pruned.
+ *
+ * Wrapping the FETCH itself in the mutex (not just the reconcile) is what
+ * actually closes this: a caller can only start its own network call once
+ * every earlier call's fetch-and-reconcile has completely finished, so
+ * whichever fetch genuinely happens later is guaranteed to reflect a
+ * same-or-newer look at the server — there is no ordering ambiguity left to
+ * get wrong. Guarding only the reconcile step would still let two fetches
+ * race, leaving the same stale-overwrites-fresh hazard.
+ */
+internal suspend fun runSerializedLibrarySync(
+    mutex: Mutex,
+    fetchLibraries: suspend () -> RemoteResult<List<Library>>,
+    cachedServerLibraryIds: suspend () -> List<String>,
+    upsertAll: suspend (List<Library>) -> Unit,
+    deleteMissing: suspend (keptIds: List<String>) -> Unit,
+    deleteAllServerLibraries: suspend () -> Unit,
+    pruneLibraryBooks: suspend (libraryId: String) -> Unit,
+): RemoteResult<List<Library>> = mutex.withLock {
+    val result = fetchLibraries()
+    val fetched = when (result) {
+        is RemoteResult.Ok -> result.value
+        is RemoteResult.Partial -> result.value
+        is RemoteResult.Failed -> return@withLock result
+    }
+
+    reconcileServerLibraries(
+        isComplete = result is RemoteResult.Ok,
+        fetched = fetched,
+        cachedServerLibraryIds = cachedServerLibraryIds,
+        upsertAll = upsertAll,
+        deleteMissing = deleteMissing,
+        deleteAllServerLibraries = deleteAllServerLibraries,
+        pruneLibraryBooks = pruneLibraryBooks,
+    )
+
+    result
 }

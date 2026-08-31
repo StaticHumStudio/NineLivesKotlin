@@ -114,6 +114,63 @@ class RemoteResultTest {
         assertEquals(RemoteResult.Failed("page 0: got 0 of 5 reported"), result)
     }
 
+    @Test
+    fun `an omitted final total cannot erase an earlier reported shortfall`() = runBlocking {
+        val result = runPaginatedFetch(limit = 100) { page ->
+            when (page) {
+                0 -> PageOutcome.Page((1..100).toList(), total = 250)
+                1 -> PageOutcome.Page((101..200).toList(), total = 0)
+                2 -> PageOutcome.Page(emptyList(), total = 0)
+                else -> error("unexpected page $page")
+            }
+        }
+
+        assertEquals(
+            RemoteResult.Partial((1..200).toList(), "page 2: got 200 of 250 reported"),
+            result,
+        )
+    }
+
+    @Test
+    fun `a later higher total governs an omitted short final page`() = runBlocking {
+        val result = runPaginatedFetch(limit = 100) { page ->
+            when (page) {
+                0 -> PageOutcome.Page((1..100).toList(), total = 150)
+                1 -> PageOutcome.Page((101..200).toList(), total = 250)
+                2 -> PageOutcome.Page((201..210).toList(), total = 0)
+                else -> error("unexpected page $page")
+            }
+        }
+
+        assertEquals(
+            RemoteResult.Partial((1..210).toList(), "page 2: got 210 of 250 reported"),
+            result,
+        )
+    }
+
+    @Test
+    fun `a single page with its total remains Ok`() = runBlocking {
+        val result = runPaginatedFetch(limit = 100) { page ->
+            check(page == 0)
+            PageOutcome.Page(listOf("a", "b"), total = 2)
+        }
+
+        assertEquals(RemoteResult.Ok(listOf("a", "b")), result)
+    }
+
+    @Test
+    fun `all omitted totals still finish at their natural page end`() = runBlocking {
+        val result = runPaginatedFetch(limit = 2) { page ->
+            when (page) {
+                0 -> PageOutcome.Page(listOf("a", "b"), total = 0)
+                1 -> PageOutcome.Page(emptyList(), total = 0)
+                else -> error("unexpected page $page")
+            }
+        }
+
+        assertEquals(RemoteResult.Ok(listOf("a", "b")), result)
+    }
+
     // ─── Cancellation must escape uncaught ────────────────────────────────
     //
     // getLibraries/getLibraryItems used to catch(e: Exception), which also

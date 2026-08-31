@@ -20,7 +20,7 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.buildShelfSyncReport
-import com.ninelivesaudio.app.service.resolveActiveLibrarySelection
+import com.ninelivesaudio.app.service.persistActiveLibrarySelection
 import com.ninelivesaudio.app.service.lastSyncForCurrentServer
 import com.ninelivesaudio.app.service.withLastSyncIfServerUnchanged
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
@@ -290,10 +290,11 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            val selection = resolveActiveLibrarySelection(libs, settingsManager.currentSettings)
-            if (selection.requiresPersistence) {
-                settingsManager.saveSettings(selection.settings)
-            }
+            val selection = persistActiveLibrarySelection(
+                libraries = libs,
+                settings = settingsManager.currentSettings,
+                updateSettings = settingsManager::updateSettings,
+            )
             val selected = selection.library
 
             _uiState.update {

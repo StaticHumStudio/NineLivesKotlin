@@ -40,9 +40,10 @@ internal fun <T> stoppedShort(fetched: List<T>, reason: String): RemoteResult<Li
  * Decides Ok vs stopped-short for a paginated fetch that just terminated,
  * because a page coming back empty or shorter than the requested limit
  * (the loop's own signal to stop) is normally the last page — but only
- * proves the fetch is COMPLETE when [allItems] has actually reached
- * [total]. If it hasn't, the page was short for some other reason (a
- * server-side page cap, a transient inconsistency), and reporting Ok would
+ * proves the fetch is COMPLETE when [allItems] has actually reached the
+ * highest positive reported [total]. If it hasn't, the page was short for
+ * some other reason (a server-side page cap or transient inconsistency), and
+ * reporting Ok would
  * be a false completeness signal a cache-pruning caller could act on
  * (issue #14, PR #30 review, finding B). [total] of 0 means the server did
  * not report a total at all. It is complete only after the pagination loop
@@ -67,8 +68,8 @@ internal sealed class PageOutcome<T> {
  * a fake [fetchPage] instead of only being exercised through a live Retrofit
  * call. A page whose [PageOutcome.Page.results] come back empty, or shorter
  * than [limit], stops the loop — but [paginationResult] is what decides
- * whether that stop is a genuine Ok or a Partial/Failed shortfall against
- * the page's reported total.
+ * whether that stop is a genuine Ok or a Partial/Failed shortfall against the
+ * highest positive total reported by the run.
  *
  * [onPageFailure] is a side-channel for the caller's own logging (e.g.
  * android.util.Log, which this function must stay free of to remain
@@ -85,15 +86,22 @@ internal suspend fun <T> runPaginatedFetch(
 ): RemoteResult<List<T>> {
     val allItems = mutableListOf<T>()
     var currentPage = 0
+    var highestReportedTotal = 0
     return try {
         while (true) {
             when (val outcome = fetchPage(currentPage)) {
                 is PageOutcome.Stopped -> return stoppedShort(allItems, outcome.reason)
                 is PageOutcome.Page -> {
-                    if (outcome.results.isEmpty()) return paginationResult(allItems, outcome.total, currentPage)
+                    highestReportedTotal = maxOf(highestReportedTotal, outcome.total)
+                    if (outcome.results.isEmpty()) {
+                        return paginationResult(allItems, highestReportedTotal, currentPage)
+                    }
                     allItems.addAll(outcome.results)
-                    if ((outcome.total > 0 && allItems.size >= outcome.total) || outcome.results.size < limit) {
-                        return paginationResult(allItems, outcome.total, currentPage)
+                    if (
+                        (highestReportedTotal > 0 && allItems.size >= highestReportedTotal) ||
+                        outcome.results.size < limit
+                    ) {
+                        return paginationResult(allItems, highestReportedTotal, currentPage)
                     }
                     currentPage++
                 }

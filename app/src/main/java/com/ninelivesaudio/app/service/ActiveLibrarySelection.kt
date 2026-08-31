@@ -37,3 +37,17 @@ internal fun resolveActiveLibrarySelection(
         requiresPersistence = updatedSettings != settings,
     )
 }
+
+internal suspend fun persistActiveLibrarySelection(
+    libraries: List<Library>,
+    settings: AppSettings,
+    updateSettings: suspend ((AppSettings) -> AppSettings) -> Unit,
+): ActiveLibrarySelection {
+    val selection = resolveActiveLibrarySelection(libraries, settings)
+    if (selection.requiresPersistence) {
+        updateSettings { latest ->
+            resolveActiveLibrarySelection(libraries, latest).settings
+        }
+    }
+    return selection
+}

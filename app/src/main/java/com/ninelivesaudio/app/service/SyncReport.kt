@@ -232,14 +232,19 @@ internal suspend fun persistSyncOutcome(
     report: SyncReport,
     completedAtMs: Long,
     serverUrlAtStart: String,
-    updateSettings: suspend ((AppSettings) -> AppSettings) -> Unit,
+    isEligibleSession: (AppSettings) -> Boolean,
+    updateSettingsIfAuthenticated: suspend ((AppSettings) -> AppSettings) -> Boolean,
 ): PersistedSyncOutcome {
     var recorded = false
     var record: LastSyncRecord? = null
     var persisted = true
     try {
-        updateSettings {
-            val updated = it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
+        updateSettingsIfAuthenticated {
+            val updated = if (isEligibleSession(it)) {
+                it.withLastSyncIfServerUnchanged(report, completedAtMs, serverUrlAtStart)
+            } else {
+                it
+            }
             recorded = updated !== it
             if (recorded) record = updated.lastSync
             updated

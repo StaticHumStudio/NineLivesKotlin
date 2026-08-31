@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.domain.model.AppSettings
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.SyncResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -29,15 +30,28 @@ class SyncPersistOutcomeTest {
 
     private val report = SyncReport(libraryCount = 2, bookCount = 40)
 
+    private fun eligibleAudiobookshelfSession(signedIn: Boolean): (AppSettings) -> Boolean = { settings ->
+        settings.appMode == AppMode.AUDIOBOOKSHELF && signedIn
+    }
+
+    private fun remoteSettings() = AppSettings(
+        appMode = AppMode.AUDIOBOOKSHELF,
+        serverUrl = "https://server.example",
+    )
+
     @Test
     fun `a normal write records the outcome and reports it persisted`() = runBlocking {
-        var settings = AppSettings(serverUrl = "https://server.example")
+        var settings = remoteSettings()
 
         val outcome = persistSyncOutcome(
             report = report,
             completedAtMs = 100L,
             serverUrlAtStart = "https://server.example",
-            updateSettings = { transform -> settings = transform(settings) },
+            isEligibleSession = eligibleAudiobookshelfSession(signedIn = true),
+            updateSettingsIfAuthenticated = { transform ->
+                settings = transform(settings)
+                true
+            },
         )
 
         assertTrue(outcome.recorded)
@@ -48,18 +62,73 @@ class SyncPersistOutcomeTest {
 
     @Test
     fun `a server change in flight is discarded, not reported as a failure`() = runBlocking {
-        var settings = AppSettings(serverUrl = "https://server.example")
+        var settings = remoteSettings()
 
         val outcome = persistSyncOutcome(
             report = report,
             completedAtMs = 100L,
             serverUrlAtStart = "https://a-different-server.example",
-            updateSettings = { transform -> settings = transform(settings) },
+            isEligibleSession = eligibleAudiobookshelfSession(signedIn = true),
+            updateSettingsIfAuthenticated = { transform ->
+                settings = transform(settings)
+                true
+            },
         )
 
         assertFalse(outcome.recorded)
         assertTrue(outcome.persisted)
         assertNull(outcome.record)
+    }
+
+    @Test
+    fun `a sign out before persistence discards the completed outcome`() = runBlocking {
+        var settings = remoteSettings()
+        var signedIn = true
+
+        val outcome = persistSyncOutcome(
+            report = report,
+            completedAtMs = 100L,
+            serverUrlAtStart = "https://server.example",
+            isEligibleSession = { current ->
+                current.appMode == AppMode.AUDIOBOOKSHELF && signedIn
+            },
+            updateSettingsIfAuthenticated = { transform ->
+                signedIn = false
+                if (!signedIn) {
+                    false
+                } else {
+                    settings = transform(settings)
+                    true
+                }
+            },
+        )
+
+        assertFalse(outcome.recorded)
+        assertTrue(outcome.persisted)
+        assertNull(outcome.record)
+        assertNull(settings.lastSync)
+    }
+
+    @Test
+    fun `a Local mode switch before persistence discards the completed outcome`() = runBlocking {
+        var settings = remoteSettings()
+
+        val outcome = persistSyncOutcome(
+            report = report,
+            completedAtMs = 100L,
+            serverUrlAtStart = "https://server.example",
+            isEligibleSession = eligibleAudiobookshelfSession(signedIn = true),
+            updateSettingsIfAuthenticated = { transform ->
+                settings = settings.copy(appMode = AppMode.LOCAL)
+                settings = transform(settings)
+                true
+            },
+        )
+
+        assertFalse(outcome.recorded)
+        assertTrue(outcome.persisted)
+        assertNull(outcome.record)
+        assertNull(settings.lastSync)
     }
 
     @Test
@@ -69,13 +138,14 @@ class SyncPersistOutcomeTest {
         // that in-memory decision must not be thrown away along with the
         // exception -- the caller needs both "it failed to save" AND "here
         // is what actually happened."
-        val settings = AppSettings(serverUrl = "https://server.example")
+        val settings = remoteSettings()
 
         val outcome = persistSyncOutcome(
             report = report,
             completedAtMs = 100L,
             serverUrlAtStart = "https://server.example",
-            updateSettings = { transform ->
+            isEligibleSession = eligibleAudiobookshelfSession(signedIn = true),
+            updateSettingsIfAuthenticated = { transform ->
                 transform(settings) // the transform runs and decides the record...
                 throw IOException("disk full") // ...then the write itself fails
             },
@@ -94,7 +164,8 @@ class SyncPersistOutcomeTest {
             report = report,
             completedAtMs = 100L,
             serverUrlAtStart = "https://server.example",
-            updateSettings = { throw IOException("could not read settings") },
+            isEligibleSession = eligibleAudiobookshelfSession(signedIn = true),
+            updateSettingsIfAuthenticated = { throw IOException("could not read settings") },
         )
 
         assertFalse(outcome.recorded)
@@ -111,7 +182,8 @@ class SyncPersistOutcomeTest {
                 report = report,
                 completedAtMs = 100L,
                 serverUrlAtStart = "https://server.example",
-                updateSettings = { throw cancellation },
+                isEligibleSession = eligibleAudiobookshelfSession(signedIn = true),
+                updateSettingsIfAuthenticated = { throw cancellation },
             )
             fail("expected cancellation to propagate")
         } catch (e: CancellationException) {

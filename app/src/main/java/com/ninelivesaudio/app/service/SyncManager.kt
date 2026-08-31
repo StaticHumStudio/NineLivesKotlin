@@ -219,7 +219,10 @@ class SyncManager @Inject constructor(
                     report = report,
                     completedAtMs = System.currentTimeMillis(),
                     serverUrlAtStart = serverUrlAtStart,
-                    updateSettings = settingsManager::updateSettings,
+                    isEligibleSession = { settings ->
+                        settings.appMode == AppMode.AUDIOBOOKSHELF
+                    },
+                    updateSettingsIfAuthenticated = settingsManager::updateSettingsIfAuthenticated,
                 ).also { outcome ->
                     if (!outcome.persisted) {
                         Log.e(TAG, "syncNow: failed to persist sync outcome")
@@ -236,7 +239,10 @@ class SyncManager @Inject constructor(
                     report = unreachableServerSyncReport(),
                     completedAtMs = System.currentTimeMillis(),
                     serverUrlAtStart = serverUrlAtStart,
-                    updateSettings = settingsManager::updateSettings,
+                    isEligibleSession = { settings ->
+                        settings.appMode == AppMode.AUDIOBOOKSHELF
+                    },
+                    updateSettingsIfAuthenticated = settingsManager::updateSettingsIfAuthenticated,
                 ).also { outcome ->
                     if (!outcome.persisted) {
                         Log.e(TAG, "syncNow: failed to persist unreachable-server outcome")

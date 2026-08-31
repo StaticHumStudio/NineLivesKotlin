@@ -369,6 +369,30 @@ class SettingsManager @Inject constructor(
         Log.d(TAG, "updateSettings: Transformed - unhingedThemeEnabled=${updated.unhingedThemeEnabled}")
     }
 
+    /**
+     * Runs a settings mutation only while the auth token remains present.
+     * Holding [authTokenMutex] through the serialized settings write makes a
+     * sign out and a session-bound settings record one ordered operation.
+     */
+    internal suspend fun updateSettingsIfAuthenticated(
+        transform: (AppSettings) -> AppSettings,
+    ): Boolean = authTokenMutex.withLock {
+        val authenticated = withContext(Dispatchers.IO) {
+            !encryptedPrefs.getString(KEY_AUTH_TOKEN, null).isNullOrBlank()
+        }
+        if (!authenticated) {
+            _hasAuthToken.value = false
+            return@withLock false
+        }
+        serializedState.update(
+            read = { readSettingsFromDisk() },
+            persist = { persistSettingsToDisk(it) },
+            transform = transform,
+        )
+        _isLoaded.value = true
+        true
+    }
+
     suspend fun markChangelogVersionSeen(version: String) {
         if (currentSettings.lastSeenChangelogVersion == version) return
         updateSettings { settings ->

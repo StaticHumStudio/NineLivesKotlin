@@ -10,6 +10,7 @@ import com.ninelivesaudio.app.data.remote.describeFailure
 import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -279,7 +280,7 @@ class LibraryViewModel @Inject constructor(
                                 cached = libraryRepository.getAudiobookshelf(),
                             )
                         },
-                        fetchRemote = libraryRepository::syncFromServer,
+                        fetchRemote = libraryRepository::syncFromServerForLibraryLoad,
                     ).also { libraryResult = it.result }.libraries
                 } else {
                     visibleCachedLibraries(
@@ -378,12 +379,16 @@ class LibraryViewModel @Inject constructor(
         serverUrlAtStart: String,
         completedAtMs: Long = System.currentTimeMillis(),
     ) {
-        settingsManager.updateSettings {
-            it.withLastSyncIfServerUnchanged(
-                report = report,
-                completedAtMs = completedAtMs,
-                serverUrlAtStart = serverUrlAtStart,
-            )
+        settingsManager.updateSettingsIfAuthenticated { settings ->
+            if (settings.appMode == AppMode.AUDIOBOOKSHELF) {
+                settings.withLastSyncIfServerUnchanged(
+                    report = report,
+                    completedAtMs = completedAtMs,
+                    serverUrlAtStart = serverUrlAtStart,
+                )
+            } else {
+                settings
+            }
         }
         val currentRecord = settingsManager.currentSettings.lastSyncForCurrentServer()
             ?.takeIf { settingsManager.currentSettings.appMode != AppMode.LOCAL }
@@ -613,20 +618,25 @@ internal data class RemoteLibraryRefresh(
 
 internal suspend fun refreshRemoteLibraryList(
     readCached: suspend () -> List<Library>,
-    fetchRemote: suspend () -> RemoteResult<List<Library>>,
+    fetchRemote: suspend () -> ReconciledServerLibraryList,
 ): RemoteLibraryRefresh {
     val cached = readCached()
-    val result = try {
+    val remote = try {
         fetchRemote()
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        RemoteResult.Failed(describeFailure(e))
+        ReconciledServerLibraryList(RemoteResult.Failed(describeFailure(e)), null)
     }
+    val result = remote.result
     val fetched = result.valueOrEmpty()
     return RemoteLibraryRefresh(
         libraries = when (result) {
-            is RemoteResult.Ok -> result.value
+            is RemoteResult.Ok -> {
+                val reconciled = remote.reconciledLibraries ?: result.value
+                val fetchedIds = result.value.mapTo(mutableSetOf()) { it.id }
+                result.value + reconciled.filterNot { it.id in fetchedIds }
+            }
             is RemoteResult.Partial -> fetched.ifEmpty { cached }
             is RemoteResult.Failed -> cached
         },

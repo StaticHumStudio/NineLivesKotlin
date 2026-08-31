@@ -1,16 +1,20 @@
 package com.ninelivesaudio.app.ui.library
 
 import com.ninelivesaudio.app.data.remote.RemoteResult
+import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
+import com.ninelivesaudio.app.service.resolveActiveLibrarySelection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryRemoteRefreshTest {
@@ -25,7 +29,10 @@ class LibraryRemoteRefreshTest {
             readCached = { cached },
             fetchRemote = {
                 fetchCount += 1
-                RemoteResult.Ok(fetched)
+                ReconciledServerLibraryList(
+                    result = RemoteResult.Ok(fetched),
+                    reconciledLibraries = fetched,
+                )
             },
         )
 
@@ -41,7 +48,12 @@ class LibraryRemoteRefreshTest {
 
         val refresh = refreshRemoteLibraryList(
             readCached = { cached },
-            fetchRemote = { failure },
+            fetchRemote = {
+                ReconciledServerLibraryList(
+                    result = failure,
+                    reconciledLibraries = null,
+                )
+            },
         )
 
         assertEquals(cached, refresh.libraries)
@@ -54,11 +66,77 @@ class LibraryRemoteRefreshTest {
 
         val refresh = refreshRemoteLibraryList(
             readCached = { cached },
-            fetchRemote = { RemoteResult.Ok(emptyList()) },
+            fetchRemote = {
+                ReconciledServerLibraryList(
+                    result = RemoteResult.Ok(emptyList()),
+                    reconciledLibraries = emptyList(),
+                )
+            },
         )
 
         assertEquals(emptyList<Library>(), refresh.libraries)
         assertEquals(RemoteResult.Ok(emptyList<Library>()), refresh.result)
+    }
+
+    @Test
+    fun `successful library refresh uses its captured reconcile snapshot to keep downloads selectable`() = runBlocking {
+        val fetched = Library(id = "server", name = "Server")
+        val retainedForDownloads = Library(id = "downloaded", name = "Downloaded")
+        var reconciledCache = listOf(fetched, retainedForDownloads)
+
+        val refresh = refreshRemoteLibraryList(
+            readCached = { reconciledCache },
+            fetchRemote = {
+                val capturedReconcile = listOf(fetched, retainedForDownloads)
+                // Another complete sync can update Room after this result
+                // returns. The screen must keep using this sync's snapshot.
+                reconciledCache = listOf(Library(id = "newer", name = "Newer"))
+                ReconciledServerLibraryList(
+                    result = RemoteResult.Ok(listOf(fetched)),
+                    reconciledLibraries = capturedReconcile,
+                )
+            },
+        )
+        val selection = resolveActiveLibrarySelection(
+            libraries = refresh.libraries,
+            settings = AppSettings(
+                appMode = AppMode.AUDIOBOOKSHELF,
+                selectedLibraryId = retainedForDownloads.id,
+            ),
+        )
+
+        assertEquals(listOf(fetched, retainedForDownloads), refresh.libraries)
+        assertEquals(retainedForDownloads, selection.library)
+        assertFalse(selection.requiresPersistence)
+    }
+
+    @Test
+    fun `successful library refresh does not restore a fully pruned library`() = runBlocking {
+        val fetched = Library(id = "server", name = "Server")
+        val fullyPruned = Library(id = "pruned", name = "Pruned")
+        var reconciledCache = listOf(fetched, fullyPruned)
+
+        val refresh = refreshRemoteLibraryList(
+            readCached = { reconciledCache },
+            fetchRemote = {
+                reconciledCache = listOf(fetched)
+                ReconciledServerLibraryList(
+                    result = RemoteResult.Ok(listOf(fetched)),
+                    reconciledLibraries = reconciledCache,
+                )
+            },
+        )
+        val selection = resolveActiveLibrarySelection(
+            libraries = refresh.libraries,
+            settings = AppSettings(
+                appMode = AppMode.AUDIOBOOKSHELF,
+                selectedLibraryId = fullyPruned.id,
+            ),
+        )
+
+        assertEquals(listOf(fetched), refresh.libraries)
+        assertEquals(fetched, selection.library)
+        assertTrue(selection.requiresPersistence)
     }
 
     @Test

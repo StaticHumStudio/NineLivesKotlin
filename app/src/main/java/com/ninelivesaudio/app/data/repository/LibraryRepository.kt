@@ -94,15 +94,19 @@ class LibraryRepository @Inject constructor(
      * The fetch and its reconcile are serialized behind [syncFromServerMutex]
      * (issue #14, PR #30 review, finding B) — see [runSerializedLibrarySync].
      */
-    suspend fun syncFromServer(): RemoteResult<List<Library>> = runSerializedLibrarySync(
-        mutex = syncFromServerMutex,
-        fetchLibraries = apiService::getLibraries,
-        cachedServerLibraryIds = { libraryDao.getAudiobookshelf().map { it.id } },
-        upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
-        deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
-        deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
-        pruneLibraryBooks = audioBookRepository::pruneServerBooksForRemovedLibrary,
-    )
+    suspend fun syncFromServer(): RemoteResult<List<Library>> = syncServerLibraries()
+
+    /**
+     * Runs a complete server sync and returns the server response with the
+     * reconciled cache snapshot captured before another sync can modify it.
+     */
+    internal suspend fun syncFromServerForLibraryLoad(): ReconciledServerLibraryList {
+        var reconciledLibraries: List<Library>? = null
+        val result = syncServerLibraries {
+            reconciledLibraries = libraryDao.getAudiobookshelf().map { it.toDomain() }
+        }
+        return ReconciledServerLibraryList(result, reconciledLibraries)
+    }
 
     /** Save a single library to local DB. */
     suspend fun save(library: Library) {
@@ -132,7 +136,25 @@ class LibraryRepository @Inject constructor(
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
     }
+
+    private suspend fun syncServerLibraries(
+        captureReconciledLibraries: suspend () -> Unit = {},
+    ): RemoteResult<List<Library>> = runSerializedLibrarySync(
+        mutex = syncFromServerMutex,
+        fetchLibraries = apiService::getLibraries,
+        cachedServerLibraryIds = { libraryDao.getAudiobookshelf().map { it.id } },
+        upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
+        deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
+        deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
+        pruneLibraryBooks = audioBookRepository::pruneServerBooksForRemovedLibrary,
+        captureReconciledLibraries = captureReconciledLibraries,
+    )
 }
+
+internal data class ReconciledServerLibraryList(
+    val result: RemoteResult<List<Library>>,
+    val reconciledLibraries: List<Library>?,
+)
 
 /**
  * Reconciles the DAO's cached SERVER library rows against a completed
@@ -213,6 +235,7 @@ internal suspend fun runSerializedLibrarySync(
     deleteMissing: suspend (keptIds: List<String>) -> Unit,
     deleteAllServerLibraries: suspend () -> Unit,
     pruneLibraryBooks: suspend (libraryId: String) -> Boolean,
+    captureReconciledLibraries: suspend () -> Unit = {},
 ): RemoteResult<List<Library>> = mutex.withLock {
     val result = fetchLibraries()
     val fetched = when (result) {
@@ -231,6 +254,9 @@ internal suspend fun runSerializedLibrarySync(
             deleteAllServerLibraries = deleteAllServerLibraries,
             pruneLibraryBooks = pruneLibraryBooks,
         )
+        if (result is RemoteResult.Ok) {
+            captureReconciledLibraries()
+        }
     }
 
     result

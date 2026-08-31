@@ -36,6 +36,79 @@ internal fun describeFailure(e: Exception): String {
 internal fun <T> stoppedShort(fetched: List<T>, reason: String): RemoteResult<List<T>> =
     if (fetched.isEmpty()) RemoteResult.Failed(reason) else RemoteResult.Partial(fetched.toList(), reason)
 
+/**
+ * Decides Ok vs stopped-short for a paginated fetch that just terminated,
+ * because a page coming back empty or shorter than the requested limit
+ * (the loop's own signal to stop) is normally the last page — but only
+ * proves the fetch is COMPLETE when [allItems] has actually reached
+ * [total]. If it hasn't, the page was short for some other reason (a
+ * server-side page cap, a transient inconsistency), and reporting Ok would
+ * be a false completeness signal a cache-pruning caller could act on
+ * (issue #14, PR #30 review, finding B). [total] of 0 means the server did
+ * not report a total at all — allItems.size is always >= 0, so that is
+ * trusted as complete rather than misread as a shortfall.
+ */
+internal fun <T> paginationResult(allItems: List<T>, total: Int, currentPage: Int): RemoteResult<List<T>> =
+    if (allItems.size >= total) {
+        RemoteResult.Ok(allItems.toList())
+    } else {
+        stoppedShort(allItems, "page $currentPage: got ${allItems.size} of $total reported")
+    }
+
+/** One page of a paginated fetch: either items (and the server's reported running total), or a reason the fetch stopped (HTTP failure, missing body). */
+internal sealed class PageOutcome<T> {
+    data class Page<T>(val results: List<T>, val total: Int) : PageOutcome<T>()
+    data class Stopped<T>(val reason: String) : PageOutcome<T>()
+}
+
+/**
+ * The pagination loop ApiService.getLibraryItems() (and any future paginated
+ * fetch) runs, extracted so its termination logic is pinned directly against
+ * a fake [fetchPage] instead of only being exercised through a live Retrofit
+ * call. A page whose [PageOutcome.Page.results] come back empty, or shorter
+ * than [limit], stops the loop — but [paginationResult] is what decides
+ * whether that stop is a genuine Ok or a Partial/Failed shortfall against
+ * the page's reported total.
+ *
+ * [onPageFailure] is a side-channel for the caller's own logging (e.g.
+ * android.util.Log, which this function must stay free of to remain
+ * unit-testable) — it does not affect the returned [RemoteResult].
+ * Cancellation is rethrown, never converted to a result: a plain
+ * `catch (Exception)` also catches CancellationException, which would turn
+ * a deliberately cancelled sync into a persisted Partial/Failed instead of
+ * letting structured concurrency unwind.
+ */
+internal suspend fun <T> runPaginatedFetch(
+    limit: Int,
+    onPageFailure: (page: Int, e: Exception) -> Unit = { _, _ -> },
+    fetchPage: suspend (page: Int) -> PageOutcome<T>,
+): RemoteResult<List<T>> {
+    val allItems = mutableListOf<T>()
+    var currentPage = 0
+    return try {
+        while (true) {
+            when (val outcome = fetchPage(currentPage)) {
+                is PageOutcome.Stopped -> return stoppedShort(allItems, outcome.reason)
+                is PageOutcome.Page -> {
+                    if (outcome.results.isEmpty()) return paginationResult(allItems, outcome.total, currentPage)
+                    allItems.addAll(outcome.results)
+                    if (allItems.size >= outcome.total || outcome.results.size < limit) {
+                        return paginationResult(allItems, outcome.total, currentPage)
+                    }
+                    currentPage++
+                }
+            }
+        }
+        @Suppress("UNREACHABLE_CODE")
+        error("unreachable: the while(true) loop above only exits via return")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        onPageFailure(currentPage, e)
+        stoppedShort(allItems, "page $currentPage: ${describeFailure(e)}")
+    }
+}
+
 private const val MAX_FAILURE_REASON = 120
 
 /**

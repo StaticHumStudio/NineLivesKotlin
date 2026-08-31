@@ -71,6 +71,49 @@ class RemoteResultTest {
         assertEquals(RemoteResult.Failed("page 0: HTTP 500"), stoppedShort(emptyList<String>(), "page 0: HTTP 500"))
     }
 
+    // ─── paginationResult: a false Ok must not be able to erase a shelf ────
+    //
+    // GitHub codex review of PR #30, finding B: getLibraryItems() labeled
+    // EVERY loop exit Ok, including a page that came back empty or shorter
+    // than the requested limit while the server's reported `total` said
+    // there was more (a page cap or a transient inconsistency). Now that a
+    // complete Ok prunes the cache (AudioBookRepository.reconcileServerLibrary,
+    // LibraryRepository's library-level reconcile), a false Ok here would
+    // erase the rest of a real shelf and still report success.
+
+    @Test
+    fun `collecting at least the reported total is a genuine Ok`() {
+        assertEquals(RemoteResult.Ok(listOf("a", "b")), paginationResult(listOf("a", "b"), total = 2, currentPage = 0))
+    }
+
+    @Test
+    fun `collecting more than the reported total is still Ok`() {
+        // Can happen if the server's total shrinks between pages. More data
+        // than promised is not a shortfall.
+        assertEquals(RemoteResult.Ok(listOf("a", "b", "c")), paginationResult(listOf("a", "b", "c"), total = 2, currentPage = 0))
+    }
+
+    @Test
+    fun `a total of zero (no total reported) trusts whatever came back as complete`() {
+        // LibraryItemsResponse.total defaults to 0 when the server omits it.
+        // allItems.size is always >= 0, so this must not be misread as a
+        // shortfall against an actual reported total.
+        assertEquals(RemoteResult.Ok(listOf("a")), paginationResult(listOf("a"), total = 0, currentPage = 0))
+        assertEquals(RemoteResult.Ok(emptyList<String>()), paginationResult(emptyList<String>(), total = 0, currentPage = 0))
+    }
+
+    @Test
+    fun `stopping short of a nonzero reported total with some items is Partial, not Ok`() {
+        val result = paginationResult(listOf("a", "b"), total = 5, currentPage = 1)
+        assertEquals(RemoteResult.Partial(listOf("a", "b"), "page 1: got 2 of 5 reported"), result)
+    }
+
+    @Test
+    fun `stopping short of a nonzero reported total with nothing collected is a plain failure`() {
+        val result = paginationResult(emptyList<String>(), total = 5, currentPage = 0)
+        assertEquals(RemoteResult.Failed("page 0: got 0 of 5 reported"), result)
+    }
+
     // ─── Cancellation must escape uncaught ────────────────────────────────
     //
     // getLibraries/getLibraryItems used to catch(e: Exception), which also

@@ -636,48 +636,30 @@ class ApiService @Inject constructor(
      * Every item in a library, paginated. A page that fails part-way through
      * yields [RemoteResult.Partial]: the books already fetched are still worth
      * showing, but the caller has to know the shelf stopped short rather than
-     * ended.
+     * ended. The same is true when a page merely comes back empty or shorter
+     * than [limit] while the server's own reported total says more exist —
+     * [runPaginatedFetch] is what decides that (issue #14, PR #30 review,
+     * finding B); only actually reaching the reported total is a genuine Ok.
      */
     suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
         withContext(Dispatchers.IO) {
-            val allItems = mutableListOf<AudioBook>()
-            var currentPage = 0
-
-            try {
-                while (true) {
-                    val response = api.getLibraryItems(libraryId, limit, currentPage)
-                    if (!response.isSuccessful) {
-                        Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $currentPage")
-                        return@withContext stoppedShort(allItems, "page $currentPage: HTTP ${response.code()}")
-                    }
-
-                    val body = response.body()
-                    if (body == null) {
-                        Log.w(TAG, "getLibraryItems($libraryId): no body at page $currentPage")
-                        return@withContext stoppedShort(allItems, "page $currentPage: empty body")
-                    }
-                    if (body.results.isEmpty()) break
-
-                    allItems.addAll(body.results.map { mapToAudioBook(it, libraryId) })
-
-                    if (allItems.size >= body.total) break
-                    // A page smaller than the requested limit is the last page.
-                    // This also guarantees termination if a misbehaving server
-                    // keeps reporting a `total` larger than it ever delivers.
-                    if (body.results.size < limit) break
-                    currentPage++
+            runPaginatedFetch(
+                limit = limit,
+                onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
+            ) { page ->
+                val response = api.getLibraryItems(libraryId, limit, page)
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
+                    return@runPaginatedFetch PageOutcome.Stopped("page $page: HTTP ${response.code()}")
                 }
 
-                RemoteResult.Ok(allItems.toList())
-            } catch (e: CancellationException) {
-                // Cancellation must escape uncaught. Converting it to a
-                // stoppedShort() result here would persist FAILED/PARTIAL
-                // (and flash a failure banner) for a deliberately cancelled
-                // sync instead of letting structured concurrency unwind.
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "getLibraryItems($libraryId) failed at page $currentPage", e)
-                stoppedShort(allItems, "page $currentPage: ${describeFailure(e)}")
+                val body = response.body()
+                if (body == null) {
+                    Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
+                    return@runPaginatedFetch PageOutcome.Stopped("page $page: empty body")
+                }
+
+                PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
             }
         }
 

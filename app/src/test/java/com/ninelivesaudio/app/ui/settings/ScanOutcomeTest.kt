@@ -28,11 +28,13 @@ class ScanOutcomeTest {
         skippedCount: Int = 0,
         errorMessages: List<String> = emptyList(),
         foldersScanned: Int = 10,
+        archiveFileCount: Int = 0,
     ) = LocalLibraryScanner.ScanResult(
         books = (0 until bookCount).map { book("book$it") },
         skippedCount = skippedCount,
         errorMessages = errorMessages,
         foldersScanned = foldersScanned,
+        archiveFileCount = archiveFileCount,
     )
 
     @Test
@@ -54,6 +56,44 @@ class ScanOutcomeTest {
                 "inside. Check the folder layout guide in Settings.",
             outcome.errorMessage,
         )
+    }
+
+    @Test
+    fun `a scan with no archives adds no extraction hint`() {
+        val outcome = buildScanOutcome(result(bookCount = 2), countedAs = "imported")
+
+        assertEquals("2 books imported", outcome.successMessage)
+        assertNull(outcome.errorMessage)
+    }
+
+    @Test
+    fun `an empty scan with one archive adds the singular extraction hint`() {
+        val outcome = buildScanOutcome(
+            result(bookCount = 0, foldersScanned = 3, archiveFileCount = 1),
+            countedAs = "imported",
+        )
+
+        assertNull(outcome.successMessage)
+        assertEquals(
+            "No books found in 3 folders. Nine Lives looks for folders with audio files " +
+                "inside. Check the folder layout guide in Settings.\n\n" +
+                "1 archive found. Extract it into a folder to import.",
+            outcome.errorMessage,
+        )
+    }
+
+    @Test
+    fun `a books found scan with several archives adds the plural extraction hint`() {
+        val outcome = buildScanOutcome(
+            result(bookCount = 2, archiveFileCount = 3),
+            countedAs = "imported",
+        )
+
+        assertEquals(
+            "2 books imported\n\n3 archives found. Extract them into folders to import.",
+            outcome.successMessage,
+        )
+        assertNull(outcome.errorMessage)
     }
 
     @Test

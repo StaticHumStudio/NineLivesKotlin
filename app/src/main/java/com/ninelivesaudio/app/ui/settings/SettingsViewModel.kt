@@ -1947,9 +1947,18 @@ internal fun buildScanOutcome(
 
     return ScanOutcome(
         lastScanMessage = msg,
-        successMessage = if (warning != null) null else successMessage(msg),
-        errorMessage = warning,
+        successMessage = if (warning != null) null else withArchiveHint(successMessage(msg), scanResult.archiveFileCount),
+        errorMessage = warning?.let { withArchiveHint(it, scanResult.archiveFileCount) },
     )
+}
+
+private fun withArchiveHint(message: String, archiveFileCount: Int): String {
+    val hint = when (archiveFileCount) {
+        0 -> return message
+        1 -> "1 archive found. Extract it into a folder to import."
+        else -> "$archiveFileCount archives found. Extract them into folders to import."
+    }
+    return "$message\n\n$hint"
 }
 
 /** The first scan warning, plus a count of the rest so none of them are silently dropped. */

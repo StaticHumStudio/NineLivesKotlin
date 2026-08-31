@@ -686,6 +686,39 @@ class LocalScanEngineTest {
         assertEquals("track.mp3", book.tracks.single().filename)
     }
 
+    @Test
+    fun `nested archive files are counted while ordinary files are ignored`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Author", "$rootUri/Author", children = listOf(
+                        dir(
+                            "Book", "$rootUri/Author/Book", children = listOf(
+                                file("chapter.mp3", "$rootUri/Author/Book/chapter.mp3"),
+                                file("book.zip", "$rootUri/Author/Book/book.zip"),
+                                file("cover.jpg", "$rootUri/Author/Book/cover.jpg"),
+                                file("notes.txt", "$rootUri/Author/Book/notes.txt"),
+                                dir(
+                                    "Extras", "$rootUri/Author/Book/Extras", children = listOf(
+                                        file("bonus.RAR", "$rootUri/Author/Book/Extras/bonus.RAR"),
+                                        file("backup.7z", "$rootUri/Author/Book/Extras/backup.7z"),
+                                        file("old.tar", "$rootUri/Author/Book/Extras/old.tar"),
+                                        file("compressed.GZ", "$rootUri/Author/Book/Extras/compressed.GZ"),
+                                        file("readme.md", "$rootUri/Author/Book/Extras/readme.md"),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(5, result.archiveFileCount)
+    }
+
     // ─── R7: caps ───────────────────────────────────────────────────────────
 
     @Test
@@ -856,6 +889,26 @@ class LocalScanEngineTest {
         assertEquals(LocalScanEngine.MAX_FOLDERS_SCANNED - 1, result.books.size)
         assertEquals(1, result.errorMessages.count { it.contains("${LocalScanEngine.MAX_FOLDERS_SCANNED}") })
         assertTrue(result.skippedCount > 0)
+    }
+
+    @Test
+    fun `archive count is retained when the folder cap stops the scan`() {
+        val archiveFolderIndex = LocalScanEngine.MAX_FOLDERS_SCANNED - 2
+        val total = LocalScanEngine.MAX_FOLDERS_SCANNED + 6
+        val subfolders = (0 until total).map { index ->
+            val filename = if (index == archiveFolderIndex) "book.zip" else "track.mp3"
+            dir(
+                "Book$index", "$rootUri/Book$index", children = listOf(
+                    file(filename, "$rootUri/Book$index/$filename"),
+                ),
+            )
+        }
+        val root = dir(null, rootUri, children = subfolders)
+
+        val result = engine().scan(root, rootUri)
+
+        assertTrue(result.errorMessages.any { it.contains("${LocalScanEngine.MAX_FOLDERS_SCANNED}") })
+        assertEquals(1, result.archiveFileCount)
     }
 
     @Test

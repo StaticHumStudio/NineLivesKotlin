@@ -33,6 +33,7 @@ class LocalLibraryScanner @Inject constructor(
         val skippedCount: Int,
         val errorMessages: List<String>,
         val foldersScanned: Int,
+        val archiveFileCount: Int = 0,
     )
 
     companion object {
@@ -65,7 +66,8 @@ class LocalLibraryScanner @Inject constructor(
         Log.d(
             TAG,
             "Scan complete: ${result.books.size} books found, " +
-                "${result.skippedCount} skipped, ${result.foldersScanned} folders scanned",
+                "${result.skippedCount} skipped, ${result.foldersScanned} folders scanned, " +
+                "${result.archiveFileCount} archives found",
         )
 
         return ScanResult(
@@ -73,6 +75,7 @@ class LocalLibraryScanner @Inject constructor(
             skippedCount = result.skippedCount,
             errorMessages = result.errorMessages,
             foldersScanned = result.foldersScanned,
+            archiveFileCount = result.archiveFileCount,
         )
     }
 }

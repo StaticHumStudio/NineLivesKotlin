@@ -51,12 +51,15 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         val skippedCount: Int,
         val errorMessages: List<String>,
         val foldersScanned: Int,
+        val archiveFileCount: Int,
     )
 
     companion object {
         internal val AUDIO_EXTENSIONS = setOf(
             "mp3", "m4a", "m4b", "opus", "ogg", "flac", "aac", "wma", "wav",
         )
+
+        internal val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z", "tar", "gz")
 
         internal val COVER_FILENAMES = setOf(
             "cover.jpg", "cover.jpeg", "cover.png",
@@ -118,9 +121,16 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         var depthCapMessageAdded = false
         var folderCapMessageAdded = false
         var folderCapHit = false
+        var archiveFileCount = 0
 
         fun childrenOf(node: ScanNode): List<ScanNode> =
-            childrenCache.getOrPut(node.uriString) { node.children() }
+            childrenCache.getOrPut(node.uriString) {
+                node.children().also { children ->
+                    archiveFileCount += children.count {
+                        !it.isDirectory && !isHidden(it) && isArchiveFile(it)
+                    }
+                }
+            }
 
         fun addDepthCapMessage() {
             if (!depthCapMessageAdded) {
@@ -280,6 +290,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             skippedCount = skippedCount,
             errorMessages = errorMessages,
             foldersScanned = foldersScanned,
+            archiveFileCount = archiveFileCount,
         )
     }
 
@@ -545,6 +556,12 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         val name = node.name?.lowercase() ?: return false
         val ext = name.substringAfterLast('.', "")
         return ext in AUDIO_EXTENSIONS
+    }
+
+    private fun isArchiveFile(node: ScanNode): Boolean {
+        val name = node.name?.lowercase() ?: return false
+        val ext = name.substringAfterLast('.', "")
+        return ext in ARCHIVE_EXTENSIONS
     }
 
     private fun isHidden(node: ScanNode): Boolean {

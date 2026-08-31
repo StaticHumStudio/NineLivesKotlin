@@ -1379,9 +1379,10 @@ private fun LocalLoadingGuide(
             text = "Point Nine Lives at your audiobooks folder. Nesting is fine, an " +
                 "Author folder full of Book folders works, and so does a book split " +
                 "across CD1 and CD2 folders (those get reassembled into one book, in order).\n\n" +
-                "Any folder holding audio files becomes one book. The folder name becomes " +
-                "the title. For multi-part books, tag the tracks or name them 01, 02… so " +
-                "they play in order. Drop a cover.jpg or folder.jpg in for art.\n\n" +
+                "Extract downloaded archives first. Each book is a folder of audio files, and " +
+                "multiple audio files in one folder play as one book (the Audiobookshelf convention). " +
+                "The folder name becomes the title. For multi-part books, tag the tracks or name " +
+                "them 01, 02… so they play in order. Drop a cover.jpg or folder.jpg in for art.\n\n" +
                 "Loose audio files sitting in the top folder each become their own book.\n\n" +
                 "Very deep or very large folder trees get cut off, and the scan tells you " +
                 "when that happens. Supported: m4b, m4a, mp3, opus, ogg, flac, aac, wma, wav.",

@@ -625,7 +625,11 @@ internal fun PersistedSyncOutcome.toSyncNowResult(): SyncNowResult = when {
  * per call. [isSyncReady] is checked once before the probe (cheap, no
  * network) and once more after (the probe takes real time, so a mode switch
  * or sign-out mid-probe still has to block), but that second check must
- * never trigger a second probe.
+ * never trigger a second probe. The post-probe recheck applies regardless of
+ * whether the probe succeeded or failed: a failed probe still has to run it
+ * before persisting anything, or a sign-out/mode-switch landing while the
+ * (failing) probe was in flight would record a FAILED outcome for a session
+ * already left (GitHub codex review of PR #30).
  */
 internal suspend fun runSyncAttempt(
     isSyncReady: suspend () -> Boolean,
@@ -640,14 +644,17 @@ internal suspend fun runSyncAttempt(
 ): SyncNowResult {
     if (!isSyncReady()) return SyncNowResult(SyncAttempt.SKIPPED_NOT_READY, null)
 
-    if (!checkServerReachable()) {
-        return persistUnreachableOutcome().toSyncNowResult()
-    }
+    val reachable = checkServerReachable()
 
     // The probe took real time. Re-check eligibility so a mode switch or
-    // sign-out that landed mid-probe does not start a sync that should no
-    // longer run — but never probe again to do it.
+    // sign-out that landed mid-probe does not start a sync — or persist a
+    // failure for one — that should no longer run. Applies to BOTH probe
+    // outcomes and never triggers a second probe.
     if (!isSyncReady()) return SyncNowResult(SyncAttempt.SKIPPED_NOT_READY, null)
+
+    if (!reachable) {
+        return persistUnreachableOutcome().toSyncNowResult()
+    }
 
     // Prevent concurrent syncs. A caller reporting this outcome to the user
     // must not read the mutex owner's eventual record as its own: that

@@ -98,6 +98,38 @@ class RunSyncAttemptTest {
     }
 
     @Test
+    fun `a probe failure while eligibility was just lost does not persist a failure for a session already left`() = runBlocking {
+        // GitHub codex review of PR #30: the failed-probe branch persisted
+        // unreachableServerSyncReport() WITHOUT the same post-probe
+        // isSyncReady() recheck the successful-probe branch performs. Sign
+        // out or switch to Local mode while the probe is in flight, and the
+        // now-irrelevant attempt still recorded a FAILED outcome (reported
+        // as RAN), overwriting lastSync and later showing a misleading
+        // failure warning for a session the user had already left.
+        var readyCalls = 0
+
+        val result = runSyncAttempt(
+            isSyncReady = {
+                readyCalls++
+                // Ready for the pre-probe check, not ready by the post-probe
+                // recheck -- e.g. sign-out or a mode switch to Local landed
+                // while the (failing) probe was in flight.
+                readyCalls == 1
+            },
+            checkServerReachable = { false },
+            tryLock = { fail("must not lock once the recheck says not ready"); true },
+            unlock = {},
+            runSyncWork = { fail("must not sync once the recheck says not ready"); successReport },
+            persistOutcome = { fail("must not persist once the recheck says not ready"); successOutcome },
+            persistUnreachableOutcome = { fail("no longer eligible -- must not persist the unreachable outcome either"); successOutcome },
+        )
+
+        assertEquals(SyncAttempt.SKIPPED_NOT_READY, result.attempt)
+        assertNull(result.record)
+        assertEquals(2, readyCalls)
+    }
+
+    @Test
     fun `eligibility is rechecked after the probe but that recheck never re-probes`() = runBlocking {
         var probeCalls = 0
         var readyCalls = 0

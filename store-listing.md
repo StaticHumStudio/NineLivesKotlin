@@ -78,7 +78,7 @@ Android 11+ (API 30).
 
 ## What's New (Release Notes)
 
-v2.1.0
+v2.1.3
 
 Nine Lives is now free. Point it at a folder of audiobooks, or your Audiobookshelf server, and start listening. One optional one-time unlock opens every speed, unlimited offline books, and full sleep timer control. Paid-app owners: you're grandfathered, you already have it all. Also new: silence skipping.
 

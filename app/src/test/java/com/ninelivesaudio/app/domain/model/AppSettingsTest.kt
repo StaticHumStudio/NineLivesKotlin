@@ -37,6 +37,22 @@ class AppSettingsTest {
     }
 
     @Test
+    fun `legacy settings without a changelog version decode to the blank default`() {
+        val legacy = """{"appMode":"LOCAL"}"""
+        val decoded = json.decodeFromString<AppSettings>(legacy)
+
+        assertEquals("", decoded.lastSeenChangelogVersion)
+    }
+
+    @Test
+    fun `last seen changelog version round-trips through json`() {
+        val original = AppSettings(lastSeenChangelogVersion = "2.0.1")
+        val decoded = json.decodeFromString<AppSettings>(json.encodeToString(original))
+
+        assertEquals(original, decoded)
+    }
+
+    @Test
     fun `local mode uses only the local library selection`() {
         val settings = AppSettings(
             appMode = AppMode.LOCAL,

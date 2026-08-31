@@ -5,12 +5,15 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.TimeUnit
 
 /**
  * The resolver is the one place a mistake unlocks the whole app for everyone,
  * or locks out the person who paid, so every input combination is covered.
  */
 class EntitlementResolverTest {
+
+    private val trialStart = TimeUnit.DAYS.toMillis(20_000)
 
     // ─── The one that matters most ────────────────────────────────────────────
 
@@ -27,7 +30,8 @@ class EntitlementResolverTest {
         assertFalse(state.isUnlocked)
         assertTrue(state.isFree)
         assertNull(state.source)
-        assertEquals(EntitlementState.FREE, state)
+        assertTrue(state.trialOfferAvailable)
+        assertNull(state.trialDaysRemaining)
     }
 
     // ─── Sources ──────────────────────────────────────────────────────────────
@@ -53,6 +57,93 @@ class EntitlementResolverTest {
         val state = EntitlementResolver.resolve(legacyPaid = true, playUnlocked = true)
 
         assertEquals(EntitlementSource.PLAY_UNLOCK, state.source)
+    }
+
+    @Test
+    fun `an active consumed trial unlocks as TRIAL`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = false,
+            playUnlocked = false,
+            trialStartedAtEpochMs = trialStart,
+            trialConsumed = true,
+            nowEpochMs = trialStart,
+        )
+
+        assertTrue(state.isUnlocked)
+        assertEquals(EntitlementSource.TRIAL, state.source)
+        assertEquals(14, state.trialDaysRemaining)
+        assertFalse(state.trialOfferAvailable)
+    }
+
+    @Test
+    fun `a trial is free and unavailable at the exact expiry boundary`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = false,
+            playUnlocked = false,
+            trialStartedAtEpochMs = trialStart,
+            trialConsumed = true,
+            nowEpochMs = trialStart + TimeUnit.DAYS.toMillis(14),
+        )
+
+        assertTrue(state.isFree)
+        assertNull(state.source)
+        assertFalse(state.trialOfferAvailable)
+    }
+
+    @Test
+    fun `a consumed trial with no start fails closed and stays unavailable`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = false,
+            playUnlocked = false,
+            trialStartedAtEpochMs = null,
+            trialConsumed = true,
+            nowEpochMs = trialStart,
+        )
+
+        assertEquals(EntitlementState.FREE, state)
+        assertFalse(state.trialOfferAvailable)
+    }
+
+    @Test
+    fun `a start without consumption cannot grant or offer another trial`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = false,
+            playUnlocked = false,
+            trialStartedAtEpochMs = trialStart,
+            trialConsumed = false,
+            nowEpochMs = trialStart,
+        )
+
+        assertTrue(state.isFree)
+        assertFalse(state.trialOfferAvailable)
+    }
+
+    @Test
+    fun `a play purchase outranks an active trial`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = false,
+            playUnlocked = true,
+            trialStartedAtEpochMs = trialStart,
+            trialConsumed = true,
+            nowEpochMs = trialStart,
+        )
+
+        assertEquals(EntitlementSource.PLAY_UNLOCK, state.source)
+        assertNull(state.trialDaysRemaining)
+    }
+
+    @Test
+    fun `a legacy grant outranks an active trial`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = true,
+            playUnlocked = false,
+            trialStartedAtEpochMs = trialStart,
+            trialConsumed = true,
+            nowEpochMs = trialStart,
+        )
+
+        assertEquals(EntitlementSource.LEGACY_PAID, state.source)
+        assertNull(state.trialDaysRemaining)
     }
 
     @Test
@@ -106,7 +197,22 @@ class EntitlementResolverTest {
             forceFree = true,
         )
 
-        assertEquals(EntitlementState.FREE, state)
+        assertTrue(state.isFree)
+        assertTrue(state.trialOfferAvailable)
+    }
+
+    @Test
+    fun `force free suppresses legacy but not an active trial`() {
+        val state = EntitlementResolver.resolve(
+            legacyPaid = true,
+            playUnlocked = false,
+            forceFree = true,
+            trialStartedAtEpochMs = trialStart,
+            trialConsumed = true,
+            nowEpochMs = trialStart,
+        )
+
+        assertEquals(EntitlementSource.TRIAL, state.source)
     }
 
     // ─── No hidden inputs ─────────────────────────────────────────────────────
@@ -115,8 +221,8 @@ class EntitlementResolverTest {
      * Guards against a date-based fallback creeping back in. PAID_ERA_CUTOFF was
      * deleted on 2026-08-08 because a guessed cutoff opens a window in which
      * every install self-grandfathers permanently. The resolver takes four
-     * booleans and nothing else, so the same four inputs must always produce the
-     * same answer no matter when it runs.
+     * explicit values and nothing else, so the same inputs must always produce
+     * the same answer.
      */
     @Test
     fun `resolution is a pure function of its inputs`() {

@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.domain.model.Library
@@ -55,6 +56,9 @@ import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.components.connectionStatusPresentation
+import com.ninelivesaudio.app.ui.changelog.ChangelogData
+import com.ninelivesaudio.app.ui.changelog.ChangelogViewModel
+import com.ninelivesaudio.app.ui.changelog.shouldShowChangelogBadge
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyStyleGuide
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
@@ -87,10 +91,13 @@ internal fun disconnectDialogDecision(action: DisconnectDialogAction): Disconnec
 fun SettingsScreen(
     onNavigateToDossier: () -> Unit = {},
     onNavigateToLicenses: () -> Unit = {},
+    onNavigateToChangelog: () -> Unit = {},
     onNavigateToUnlock: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
+    changelogViewModel: ChangelogViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lastSeenChangelogVersion by changelogViewModel.lastSeenChangelogVersion.collectAsStateWithLifecycle()
     val unlockViewModel: UnlockViewModel = hiltViewModel()
     val forceFree by unlockViewModel.forceFree.collectAsStateWithLifecycle()
     val unlockState by unlockViewModel.uiState.collectAsStateWithLifecycle()
@@ -865,6 +872,35 @@ fun SettingsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clickable { onNavigateToChangelog() },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Version history",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                        )
+                        Text(
+                            text = ChangelogData.ARCHIVE_SUBTITLE,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                        )
+                    }
+                    if (shouldShowChangelogBadge(BuildConfig.VERSION_NAME, lastSeenChangelogVersion)) {
+                        Text(
+                            text = "New",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NineLivesTheme.colors.goldFilament,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
                         .clickable { onNavigateToLicenses() },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
@@ -1027,6 +1063,7 @@ private fun UnlockSettingsGroup(
                 Text(
                     text = when {
                         uiState.isGrandfathered -> "Unlocked, from the paid app"
+                        uiState.isTrialActive -> "Trial active"
                         uiState.isUnlocked -> "Unlocked"
                         else -> "Unlock Nine Lives"
                     },
@@ -1037,6 +1074,7 @@ private fun UnlockSettingsGroup(
                     text = when {
                         uiState.isGrandfathered ->
                             "You bought this before it was free. Nothing to do."
+                        uiState.isTrialActive -> uiState.trialRemainingText.orEmpty()
                         uiState.isUnlocked -> "Every feature is open."
                         else -> "One payment. Every speed, unlimited offline books, full timer."
                     },

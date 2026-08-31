@@ -173,6 +173,7 @@ class LibraryViewModel @Inject constructor(
         val totalBookCount: Int = 0,
         val lastSyncResult: SyncResult? = null,
         val lastSyncSequence: Long? = null,
+        val lastSyncFailedLibraryIds: List<String>? = null,
         // The SELECTED library's own most recent direct-fetch outcome, kept
         // separate from lastSyncResult (the whole-account aggregate) so an
         // unrelated library's failure can't classify this one's shelf as
@@ -246,6 +247,7 @@ class LibraryViewModel @Inject constructor(
                         it.copy(
                             lastSyncResult = record?.result,
                             lastSyncSequence = record?.outcomeSequence,
+                            lastSyncFailedLibraryIds = record?.failedLibraryIds,
                         )
                     }
                 }
@@ -409,6 +411,7 @@ class LibraryViewModel @Inject constructor(
             val current = it.copy(
                 lastSyncResult = currentRecord?.result,
                 lastSyncSequence = currentRecord?.outcomeSequence,
+                lastSyncFailedLibraryIds = currentRecord?.failedLibraryIds,
             )
             if (selectedLibraryFetchResult != null &&
                 current.selectedLibraryFetchResult == selectedLibraryFetchResult
@@ -743,26 +746,35 @@ internal fun librarySyncResult(settings: AppSettings): SyncResult? =
  * it already fetches for that library specifically), and takes priority only
  * while it has a newer sequence than the aggregate record. An equal sequence
  * stays authoritative only when the selected result was durably recorded with
- * that aggregate. A later recorded background sync supersedes an unpersisted
- * direct verdict. The aggregate is still
+ * that aggregate. A later successful aggregate always supersedes an
+ * unpersisted direct verdict. A later degraded aggregate supersedes it only
+ * when its failure scope includes this library, or is null for a legacy or
+ * otherwise unscoped record. The aggregate is still
  * consulted as a fallback when there is no per-library signal yet (a fresh
  * load that never ran its own live fetch, e.g. offline).
  */
 internal fun decideLibraryShelf(
     lastSyncResult: SyncResult?,
     lastSyncSequence: Long? = null,
+    lastSyncFailedLibraryIds: List<String>? = null,
     selectedLibraryFetchResult: SyncResult? = null,
     selectedLibraryFetchSequence: Long? = null,
     selectedLibraryFetchPersisted: Boolean = false,
+    selectedLibraryId: String? = null,
     cachedCount: Int,
 ): LibraryShelfDecision {
-    val selectedFetchIsCurrent = selectedLibraryFetchResult != null &&
-        (lastSyncSequence == null ||
-            (selectedLibraryFetchSequence != null &&
-                (selectedLibraryFetchSequence > lastSyncSequence ||
-                    (selectedLibraryFetchSequence == lastSyncSequence &&
-                        selectedLibraryFetchPersisted))))
-    val effectiveResult = if (selectedFetchIsCurrent) selectedLibraryFetchResult else lastSyncResult
+    val aggregateIsNewer = selectedLibraryFetchResult != null && lastSyncSequence != null &&
+        (selectedLibraryFetchSequence == null ||
+            lastSyncSequence > selectedLibraryFetchSequence ||
+            (lastSyncSequence == selectedLibraryFetchSequence && !selectedLibraryFetchPersisted))
+    val aggregateAppliesToSelectedLibrary = lastSyncResult == SyncResult.SUCCESS ||
+        lastSyncFailedLibraryIds == null ||
+        selectedLibraryId in lastSyncFailedLibraryIds
+    val effectiveResult = if (aggregateIsNewer && aggregateAppliesToSelectedLibrary) {
+        lastSyncResult
+    } else {
+        selectedLibraryFetchResult ?: lastSyncResult
+    }
     val degraded = effectiveResult?.takeIf { it != SyncResult.SUCCESS }
     return when {
         cachedCount > 0 -> LibraryShelfDecision.ShowShelf(warning = degraded)

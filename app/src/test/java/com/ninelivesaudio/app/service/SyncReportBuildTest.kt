@@ -4,6 +4,7 @@ import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -36,10 +37,12 @@ class SyncReportBuildTest {
             libraries = RemoteResult.Ok(listOf("Books", "Podcasts")),
             items = listOf(RemoteResult.Ok(200), RemoteResult.Ok(231)),
             ageMinutes = null,
+            libraryIds = listOf("books", "podcasts"),
         )
         assertNull(report.failure)
         assertEquals(2, report.libraryCount)
         assertEquals(431, report.bookCount)
+        assertEquals(emptyList<String>(), report.failedLibraryIds)
     }
 
     @Test
@@ -60,10 +63,12 @@ class SyncReportBuildTest {
             libraries = RemoteResult.Ok(listOf("Books", "Podcasts")),
             items = listOf(RemoteResult.Ok(200), RemoteResult.Failed("timeout")),
             ageMinutes = null,
+            libraryIds = listOf("books", "podcasts"),
         )
         assertEquals("items[Podcasts]: timeout", report.failure)
         assertEquals(2, report.libraryCount)
         assertEquals(200, report.bookCount)
+        assertEquals(listOf("podcasts"), report.failedLibraryIds)
     }
 
     @Test
@@ -133,6 +138,31 @@ class SyncReportBuildTest {
         assertEquals("items[Books]: page 2: timeout", report?.failure)
         assertEquals(1, report?.libraryCount)
         assertEquals(1, report?.bookCount)
+        assertEquals(listOf("books"), report?.failedLibraryIds)
+    }
+
+    @Test
+    fun `a full account sync retains the IDs of only the item fetches that did not finish cleanly`() = runBlocking {
+        val report = fetchLibrarySyncReport(
+            fetchLibraries = {
+                RemoteResult.Ok(
+                    listOf(
+                        Library(id = "books", name = "Books"),
+                        Library(id = "podcasts", name = "Podcasts"),
+                    ),
+                )
+            },
+            fetchItems = { library ->
+                if (library.id == "books") {
+                    RemoteResult.Ok(emptyList())
+                } else {
+                    RemoteResult.Failed("timeout")
+                }
+            },
+        )
+
+        assertEquals(SyncResult.FAILED, report.result)
+        assertEquals(listOf("podcasts"), report.failedLibraryIds)
     }
 
     // ─── Failed reachability probe ─────────────────────────────────────────

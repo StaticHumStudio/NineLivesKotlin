@@ -75,6 +75,7 @@ class AppSettingsTest {
         val roundTrip = json.parseToJsonElement(json.encodeToString(decoded)).jsonObject
         val lastSync = roundTrip["lastSync"]?.jsonObject
 
+        assertNull(decoded.lastSync?.failedLibraryIds)
         assertEquals("PARTIAL", lastSync?.get("result")?.jsonPrimitive?.content)
         assertEquals("2", lastSync?.get("libraryCount")?.jsonPrimitive?.content)
         assertEquals("200", lastSync?.get("bookCount")?.jsonPrimitive?.content)
@@ -83,6 +84,25 @@ class AppSettingsTest {
         assertEquals("7", lastSync?.get("outcomeSequence")?.jsonPrimitive?.content)
         assertEquals("https://server.example", lastSync?.get("serverUrl")?.jsonPrimitive?.content)
         assertEquals("7", roundTrip["lastSyncOutcomeSequence"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `last sync failure scope survives settings json round trip`() {
+        val original = AppSettings(
+            lastSync = LastSyncRecord(
+                result = SyncResult.FAILED,
+                libraryCount = 2,
+                bookCount = 40,
+                failure = "items[Podcasts]: timeout",
+                completedAtMs = 123456789L,
+                failedLibraryIds = listOf("podcasts"),
+                serverUrl = "https://server.example",
+            ),
+        )
+
+        val decoded = json.decodeFromString<AppSettings>(json.encodeToString(original))
+
+        assertEquals(listOf("podcasts"), decoded.lastSync?.failedLibraryIds)
     }
 
     @Test

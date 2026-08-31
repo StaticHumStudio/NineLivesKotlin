@@ -23,6 +23,7 @@ internal data class SyncReport(
     val failure: String? = null,
     val ageMinutes: Long? = null,
     val result: SyncResult = if (failure == null) SyncResult.SUCCESS else SyncResult.FAILED,
+    val failedLibraryIds: List<String>? = if (result == SyncResult.SUCCESS) emptyList() else null,
 )
 
 /** One line for the bug report body. */
@@ -48,6 +49,7 @@ internal fun buildSyncReport(
     libraries: RemoteResult<List<String>>,
     items: List<RemoteResult<Int>>,
     ageMinutes: Long?,
+    libraryIds: List<String>? = null,
 ): SyncReport {
     if (libraries is RemoteResult.Failed) {
         return SyncReport(
@@ -66,6 +68,11 @@ internal fun buildSyncReport(
     var books = 0
     var failure: String? = null
     var syncResult = if (libraries is RemoteResult.Partial) SyncResult.PARTIAL else SyncResult.SUCCESS
+    val failedLibraryIds = libraryIds?.takeIf {
+        libraries is RemoteResult.Ok && it.size == items.size
+    }?.mapIndexedNotNull { index, libraryId ->
+        libraryId.takeIf { items[index] !is RemoteResult.Ok }
+    }
     items.forEachIndexed { index, itemResult ->
         when (itemResult) {
             is RemoteResult.Ok -> books += itemResult.value
@@ -80,7 +87,14 @@ internal fun buildSyncReport(
             }
         }
     }
-    return SyncReport(names.size, books, failure, ageMinutes, syncResult)
+    return SyncReport(
+        libraryCount = names.size,
+        bookCount = books,
+        failure = failure,
+        ageMinutes = ageMinutes,
+        result = syncResult,
+        failedLibraryIds = failedLibraryIds,
+    )
 }
 
 /**
@@ -119,12 +133,18 @@ internal fun buildShelfSyncReport(
             SyncResult.PARTIAL to "items[$itemName]: ${items.reason}"
         else -> SyncResult.SUCCESS to null
     }
+    val failedLibraryIds = when {
+        libraries is RemoteResult.Failed || libraries is RemoteResult.Partial -> null
+        items is RemoteResult.Failed || items is RemoteResult.Partial -> selectedLibrary?.id?.let(::listOf)
+        else -> emptyList()
+    }
 
     return SyncReport(
         libraryCount = libraryCount,
         bookCount = bookCount,
         failure = failure,
         result = result,
+        failedLibraryIds = failedLibraryIds,
     )
 }
 
@@ -154,7 +174,8 @@ internal suspend fun fetchLibrarySyncReport(
         RemoteResult.Failed(describeFailure(e))
     }
 
-    val itemResults = librariesResult.valueOrEmpty().map { library ->
+    val libraries = librariesResult.valueOrEmpty()
+    val itemResults = libraries.map { library ->
         val result = try {
             fetchItems(library)
         } catch (e: CancellationException) {
@@ -169,6 +190,7 @@ internal suspend fun fetchLibrarySyncReport(
         libraries = librariesResult.map { libraries -> libraries.map { it.name } },
         items = itemResults,
         ageMinutes = null,
+        libraryIds = libraries.map { it.id },
     )
 }
 
@@ -195,6 +217,7 @@ internal fun AppSettings.withLastSyncIfServerUnchanged(
             failure = report.failure,
             completedAtMs = completedAtMs,
             outcomeSequence = nextOutcomeSequence,
+            failedLibraryIds = report.failedLibraryIds,
             serverUrl = serverUrlAtStart,
         ),
         lastSyncOutcomeSequence = nextOutcomeSequence,

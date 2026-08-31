@@ -25,6 +25,7 @@ class SyncReportTest {
     fun `a clean sync reports what it found`() {
         val report = SyncReport(libraryCount = 2, bookCount = 431, ageMinutes = 3)
         assertEquals("2 libraries, 431 books, 3m ago", describeLastSync(report))
+        assertEquals(emptyList<String>(), report.failedLibraryIds)
     }
 
     @Test
@@ -81,6 +82,7 @@ class SyncReportTest {
                 bookCount = 200,
                 failure = "items[Books]: timeout",
                 result = SyncResult.PARTIAL,
+                failedLibraryIds = listOf("books"),
             ),
             completedAtMs = 123_456_789L,
             serverUrlAtStart = "https://server.example",
@@ -95,6 +97,7 @@ class SyncReportTest {
                 failure = "items[Books]: timeout",
                 completedAtMs = 123_456_789L,
                 outcomeSequence = 1L,
+                failedLibraryIds = listOf("books"),
                 // Stamped with the server this sync actually ran against, so
                 // a later switch to a different server can tell this record
                 // isn't about it. See LibraryShelfDecisionTest and
@@ -159,6 +162,7 @@ class SyncReportTest {
         assertEquals(SyncResult.SUCCESS, updated.lastSync?.result)
         assertEquals(100L, updated.lastSync?.completedAtMs)
         assertEquals(2L, updated.lastSync?.outcomeSequence)
+        assertEquals(emptyList<String>(), updated.lastSync?.failedLibraryIds)
         assertEquals(2L, updated.lastSyncOutcomeSequence)
     }
 

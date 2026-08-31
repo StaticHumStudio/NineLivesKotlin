@@ -78,6 +78,11 @@ data class LastSyncRecord(
     // support-facing age text. Defaults preserve records from before this
     // ordering field existed.
     val outcomeSequence: Long = 0L,
+    // The item-library IDs whose fetches did not complete cleanly in this
+    // sync run. Null preserves the conservative behavior for records stored
+    // before this scope existed, or outcomes that failed before item scope
+    // was knowable. An empty list means every attempted item fetch was clean.
+    val failedLibraryIds: List<String>? = null,
     // The server this record was produced against (AppSettings.serverUrl at
     // persist time). A record is only a verdict about the shelf for the
     // server that is CURRENTLY configured. A leftover record from a server

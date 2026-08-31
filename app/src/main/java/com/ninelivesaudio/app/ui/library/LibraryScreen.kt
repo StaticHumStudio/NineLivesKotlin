@@ -88,17 +88,21 @@ fun LibraryScreen(
     val shelfDecision = remember(
         uiState.lastSyncResult,
         uiState.lastSyncSequence,
+        uiState.lastSyncFailedLibraryIds,
         uiState.selectedLibraryFetchResult,
         uiState.selectedLibraryFetchSequence,
         uiState.selectedLibraryFetchPersisted,
+        uiState.selectedLibrary?.id,
         uiState.totalBookCount,
     ) {
         decideLibraryShelf(
             lastSyncResult = uiState.lastSyncResult,
             lastSyncSequence = uiState.lastSyncSequence,
+            lastSyncFailedLibraryIds = uiState.lastSyncFailedLibraryIds,
             selectedLibraryFetchResult = uiState.selectedLibraryFetchResult,
             selectedLibraryFetchSequence = uiState.selectedLibraryFetchSequence,
             selectedLibraryFetchPersisted = uiState.selectedLibraryFetchPersisted,
+            selectedLibraryId = uiState.selectedLibrary?.id,
             cachedCount = uiState.totalBookCount,
         )
     }

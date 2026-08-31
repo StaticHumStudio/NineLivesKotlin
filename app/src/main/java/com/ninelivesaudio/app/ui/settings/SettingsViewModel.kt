@@ -1107,9 +1107,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun refreshConnection() {
-        // Refresh observes the current auth intent. It must not supersede an
-        // explicit queued Connect or Disconnect operation.
-        val uiGeneration = authUiGeneration.get()
+        // Refresh is a banner-writing auth-UI operation like Connect and
+        // Disconnect, so it advances the same generation counter (issue #14
+        // round 2, finding P2-2): without this, a slow manual sync tapped
+        // before Refresh could still overwrite Refresh's banner afterward,
+        // because nothing had moved the generation the sync's own guard
+        // checked against.
+        val uiGeneration = authUiGeneration.incrementAndGet()
         viewModelScope.launch {
             authUiOperationMutex.withLock {
                 if (authUiGeneration.get() != uiGeneration) return@withLock
@@ -1200,9 +1204,11 @@ class SettingsViewModel @Inject constructor(
             return
         }
 
-        // A connection test is observational too. Only Connect and Disconnect
-        // advance the generation that determines the winning auth intent.
-        val uiGeneration = authUiGeneration.get()
+        // Test Connection is a banner-writing auth-UI operation like Connect
+        // and Disconnect, so it advances the same generation counter too
+        // (issue #14 round 2, finding P2-2) — see the comment on
+        // refreshConnection() for the failure mode this closes.
+        val uiGeneration = authUiGeneration.incrementAndGet()
         viewModelScope.launch {
             authUiOperationMutex.withLock {
                 if (authUiGeneration.get() != uiGeneration) return@withLock
@@ -1256,11 +1262,15 @@ class SettingsViewModel @Inject constructor(
         }
 
         // Manual sync is guarded by the same auth-UI generation Connect,
-        // Disconnect, Refresh, and Test Connection use. Without it, a slow
-        // manual sync's completion could land after the user disconnected or
-        // reconnected and stomp that newer operation's banner with this
+        // Disconnect, Refresh, and Test Connection use, and advances it too
+        // (issue #14 round 2, finding P2-2) — a captured-but-unincremented
+        // generation only protects THIS tap from being superseded, not any
+        // OTHER pending tap (e.g. Refresh) from being stomped by this one's
+        // later completion. Without it, a slow manual sync's completion
+        // could land after the user tapped Refresh, disconnected, or
+        // reconnected, and stomp that newer operation's banner with this
         // tap's stale success/error.
-        val uiGeneration = authUiGeneration.get()
+        val uiGeneration = authUiGeneration.incrementAndGet()
         viewModelScope.launch {
             updateAuthUi(uiGeneration) { it.copy(errorMessage = null, successMessage = null) }
             try {
@@ -1636,15 +1646,39 @@ internal fun syncNowOutcome(result: SyncNowResult): SyncNowOutcome = when (resul
 }
 
 /**
+ * Runs [operation] and returns its result only if [isCurrent] still holds by
+ * the time it finishes. Every banner-writing auth-UI action on this screen
+ * (Connect, Disconnect, Refresh, Test Connection, manual Sync) shares one
+ * generation counter (authUiGeneration) so that whichever tap is newest
+ * always wins, no matter which one finishes first. Before issue #14 round
+ * 2's finding P2-2, only Connect and Disconnect actually advanced that
+ * counter — Refresh and Test Connection captured it with a plain `.get()`
+ * and stayed enabled during a sync, so a slow manual sync tapped before a
+ * Refresh could still land its stale banner afterward: nothing had moved
+ * the generation Refresh (or the sync itself) checked against. Connect and
+ * Disconnect still use `.incrementAndGet()` directly rather than this
+ * helper, since their own bodies need the mutex-guarded generation check
+ * threaded through multiple steps — but the underlying invariant is
+ * identical.
+ *
+ * [isCurrent] is evaluated AFTER [operation] completes, not before — the
+ * whole point is to catch a generation change that happened WHILE the
+ * operation was running, not just one that already happened before it
+ * started.
+ */
+internal suspend fun <T> runGenerationGuarded(
+    isCurrent: () -> Boolean,
+    operation: suspend () -> T,
+): T? {
+    val result = operation()
+    return if (isCurrent()) result else null
+}
+
+/**
  * The manual "Sync Now" flow: run the sync, then decide what to show — but
  * only if this tap is still the current auth-UI operation once the sync
- * finishes. Without this, a slow manual sync's completion could land after
- * the user disconnected or reconnected and overwrite that newer operation's
- * banner with this tap's stale success/error (issue #14's adversarial
- * review, finding 2). [isCurrent] is evaluated AFTER [syncNow] completes,
- * not before — the whole point is to catch a generation change that
- * happened WHILE the sync was running, not just one that already happened
- * before it started.
+ * finishes (see [runGenerationGuarded]; issue #14's adversarial review,
+ * finding 2).
  *
  * Renders [SyncNowResult.record] returned by [syncNow] directly and never
  * rereads the shared settings store: a periodic sync can write its own
@@ -1656,10 +1690,7 @@ internal fun syncNowOutcome(result: SyncNowResult): SyncNowOutcome = when (resul
 internal suspend fun runGuardedManualSync(
     isCurrent: () -> Boolean,
     syncNow: suspend () -> SyncNowResult,
-): SyncNowOutcome? {
-    val result = syncNow()
-    return if (isCurrent()) syncNowOutcome(result) else null
-}
+): SyncNowOutcome? = runGenerationGuarded(isCurrent) { syncNowOutcome(syncNow()) }
 
 internal suspend fun activateSessionAfterLogin(
     activateAudiobookshelf: suspend () -> Unit,

@@ -82,6 +82,8 @@ v2.1.0
 
 Nine Lives is now free. Point it at a folder of audiobooks, or your Audiobookshelf server, and start listening. One optional one-time unlock opens every speed, unlimited offline books, and full sleep timer control. Paid-app owners: you're grandfathered, you already have it all. Also new: silence skipping.
 
+Fixed: the reported import bug. Nested folders and multi-disc sets now scan correctly, sync failures are shown instead of hidden, and reconnecting after a network drop just works.
+
 v2.0.0
 
 Local playback is here. You can now load audiobooks straight from your device and listen with no Audiobookshelf server required.

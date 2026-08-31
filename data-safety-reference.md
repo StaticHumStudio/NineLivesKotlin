@@ -20,9 +20,13 @@ Last updated: 2026-08-24
 >
 > Who set the form to No, and on what reasoning, is NOT recorded anywhere and
 > was not reconstructed. The defensible argument is Play's user-initiated
-> transfer exemption, and it has two legs. Server-mode data goes to an
-> Audiobookshelf server the user configured and controls, and Static Hum
-> Studio receives none of it. The two paths that DO reach the studio, opt-in
+> transfer exemption, and it has two legs. Server-mode data goes to the
+> Audiobookshelf server the user chose. That is usually their own box, but
+> nothing stops a user from pointing the app at a friend's or a hosted
+> instance they do not control, which is exactly why the per-category
+> analysis below marks the shared question a Console judgment call rather
+> than settled. Static Hum Studio receives none of it either way. The two
+> paths that DO reach the studio, opt-in
 > crash reports and manual feedback, leave through an email the user composes
 > and sends from their own mail client, which is user-initiated in the most
 > literal sense. Both legs are plausible, neither is verified as the actual

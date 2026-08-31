@@ -64,8 +64,10 @@ class AppSettingsTest {
                 "bookCount": 200,
                 "failure": "items[Books]: timeout",
                 "completedAtMs": 123456789,
+                "outcomeSequence": 7,
                 "serverUrl": "https://server.example"
-              }
+              },
+              "lastSyncOutcomeSequence": 7
             }
         """.trimIndent()
 
@@ -78,7 +80,9 @@ class AppSettingsTest {
         assertEquals("200", lastSync?.get("bookCount")?.jsonPrimitive?.content)
         assertEquals("items[Books]: timeout", lastSync?.get("failure")?.jsonPrimitive?.content)
         assertEquals("123456789", lastSync?.get("completedAtMs")?.jsonPrimitive?.content)
+        assertEquals("7", lastSync?.get("outcomeSequence")?.jsonPrimitive?.content)
         assertEquals("https://server.example", lastSync?.get("serverUrl")?.jsonPrimitive?.content)
+        assertEquals("7", roundTrip["lastSyncOutcomeSequence"]?.jsonPrimitive?.content)
     }
 
     @Test

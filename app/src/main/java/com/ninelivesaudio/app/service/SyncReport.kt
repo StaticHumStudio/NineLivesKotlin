@@ -185,7 +185,8 @@ internal fun AppSettings.withLastSyncIfServerUnchanged(
     serverUrlAtStart: String,
 ): AppSettings {
     if (serverUrl != serverUrlAtStart) return this
-    if (lastSyncForCurrentServer()?.completedAtMs?.let { it >= completedAtMs } == true) return this
+    val nextOutcomeSequence = nextSyncOutcomeSequence()
+    if (lastSyncForCurrentServer()?.outcomeSequence?.let { it >= nextOutcomeSequence } == true) return this
     return copy(
         lastSync = LastSyncRecord(
             result = report.result,
@@ -193,9 +194,21 @@ internal fun AppSettings.withLastSyncIfServerUnchanged(
             bookCount = report.bookCount,
             failure = report.failure,
             completedAtMs = completedAtMs,
+            outcomeSequence = nextOutcomeSequence,
             serverUrl = serverUrlAtStart,
         ),
+        lastSyncOutcomeSequence = nextOutcomeSequence,
     )
+}
+
+/**
+ * A sync outcome is ordered by the durable write that records it, never by a
+ * device wall clock. Include the record's sequence in the high water mark so
+ * a restored older settings document cannot move the counter backward.
+ */
+private fun AppSettings.nextSyncOutcomeSequence(): Long {
+    val highWater = maxOf(lastSyncOutcomeSequence, lastSync?.outcomeSequence ?: 0L)
+    return if (highWater == Long.MAX_VALUE) Long.MAX_VALUE else highWater + 1L
 }
 
 internal fun AppSettings.lastSyncForCurrentServer(): LastSyncRecord? =

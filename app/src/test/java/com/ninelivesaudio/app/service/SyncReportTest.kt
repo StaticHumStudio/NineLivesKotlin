@@ -94,6 +94,7 @@ class SyncReportTest {
                 bookCount = 200,
                 failure = "items[Books]: timeout",
                 completedAtMs = 123_456_789L,
+                outcomeSequence = 1L,
                 // Stamped with the server this sync actually ran against, so
                 // a later switch to a different server can tell this record
                 // isn't about it. See LibraryShelfDecisionTest and
@@ -102,6 +103,7 @@ class SyncReportTest {
             ),
             updated.lastSync,
         )
+        assertEquals(1L, updated.lastSyncOutcomeSequence)
     }
 
     @Test
@@ -133,7 +135,7 @@ class SyncReportTest {
     }
 
     @Test
-    fun `an older sync completion cannot overwrite a newer current server record`() {
+    fun `a later recorded outcome replaces an earlier outcome when the clock rolls back`() {
         val current = AppSettings(
             serverUrl = "https://server.example",
             lastSync = LastSyncRecord(
@@ -142,8 +144,10 @@ class SyncReportTest {
                 bookCount = 0,
                 failure = "background sync failed",
                 completedAtMs = 200L,
+                outcomeSequence = 1L,
                 serverUrl = "https://server.example",
             ),
+            lastSyncOutcomeSequence = 1L,
         )
 
         val updated = current.withLastSyncIfServerUnchanged(
@@ -152,7 +156,38 @@ class SyncReportTest {
             serverUrlAtStart = "https://server.example",
         )
 
-        assertEquals(current, updated)
+        assertEquals(SyncResult.SUCCESS, updated.lastSync?.result)
+        assertEquals(100L, updated.lastSync?.completedAtMs)
+        assertEquals(2L, updated.lastSync?.outcomeSequence)
+        assertEquals(2L, updated.lastSyncOutcomeSequence)
+    }
+
+    @Test
+    fun `a later recorded outcome keeps normal forward time behavior`() {
+        val current = AppSettings(
+            serverUrl = "https://server.example",
+            lastSync = LastSyncRecord(
+                result = SyncResult.FAILED,
+                libraryCount = 0,
+                bookCount = 0,
+                failure = "background sync failed",
+                completedAtMs = 100L,
+                outcomeSequence = 1L,
+                serverUrl = "https://server.example",
+            ),
+            lastSyncOutcomeSequence = 1L,
+        )
+
+        val updated = current.withLastSyncIfServerUnchanged(
+            report = SyncReport(libraryCount = 1, bookCount = 10, result = SyncResult.SUCCESS),
+            completedAtMs = 200L,
+            serverUrlAtStart = "https://server.example",
+        )
+
+        assertEquals(SyncResult.SUCCESS, updated.lastSync?.result)
+        assertEquals(200L, updated.lastSync?.completedAtMs)
+        assertEquals(2L, updated.lastSync?.outcomeSequence)
+        assertEquals(2L, updated.lastSyncOutcomeSequence)
     }
 
     @Test

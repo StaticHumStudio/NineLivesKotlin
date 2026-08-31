@@ -48,6 +48,9 @@ data class AppSettings(
     val includeArchivedInStats: Boolean = true,
     val lastSeenChangelogVersion: String = "",
     val lastSync: LastSyncRecord? = null,
+    // Per-install high water mark for persisted sync outcomes. Ordering a
+    // verdict by wall time lets a clock rollback reject every later sync.
+    val lastSyncOutcomeSequence: Long = 0L,
 ) {
     /** The selected library for the current source mode. The two modes never share a fallback. */
     val activeLibraryId: String?
@@ -71,6 +74,10 @@ data class LastSyncRecord(
     val bookCount: Int,
     val failure: String? = null,
     val completedAtMs: Long,
+    // A persisted outcome order, independent from the wall clock used for
+    // support-facing age text. Defaults preserve records from before this
+    // ordering field existed.
+    val outcomeSequence: Long = 0L,
     // The server this record was produced against (AppSettings.serverUrl at
     // persist time). A record is only a verdict about the shelf for the
     // server that is CURRENTLY configured. A leftover record from a server

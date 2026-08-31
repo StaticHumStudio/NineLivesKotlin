@@ -108,28 +108,42 @@ class LibraryShelfDecisionTest {
     }
 
     @Test
-    fun `a newer aggregate failure replaces an older selected success`() {
+    fun `a later sequence aggregate failure replaces an earlier selected success after clock rollback`() {
         assertEquals(
             LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
             decideLibraryShelf(
                 lastSyncResult = SyncResult.FAILED,
-                lastSyncCompletedAtMs = 200L,
+                lastSyncSequence = 2L,
                 selectedLibraryFetchResult = SyncResult.SUCCESS,
-                selectedLibraryFetchCompletedAtMs = 100L,
+                selectedLibraryFetchSequence = 1L,
                 cachedCount = 0,
             ),
         )
     }
 
     @Test
-    fun `a newer aggregate success replaces an older selected failure`() {
+    fun `a later sequence aggregate success replaces an earlier selected failure after clock rollback`() {
         assertEquals(
             LibraryShelfDecision.Empty,
             decideLibraryShelf(
                 lastSyncResult = SyncResult.SUCCESS,
-                lastSyncCompletedAtMs = 200L,
+                lastSyncSequence = 2L,
                 selectedLibraryFetchResult = SyncResult.FAILED,
-                selectedLibraryFetchCompletedAtMs = 100L,
+                selectedLibraryFetchSequence = 1L,
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `an unsequenced selected result cannot mask a persisted aggregate`() {
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = 10L,
+                selectedLibraryFetchResult = SyncResult.SUCCESS,
+                selectedLibraryFetchSequence = null,
                 cachedCount = 0,
             ),
         )

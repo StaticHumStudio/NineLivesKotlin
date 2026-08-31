@@ -4,7 +4,7 @@ import com.ninelivesaudio.app.service.describeLastSync
 import com.ninelivesaudio.app.service.atAge
 import com.ninelivesaudio.app.service.SyncAttempt
 import com.ninelivesaudio.app.service.SyncNowResult
-import com.ninelivesaudio.app.data.remote.valueOrEmpty
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -1563,8 +1563,10 @@ class SettingsViewModel @Inject constructor(
 
             // Sync from server if possible (server returns ABS libraries only)
             try {
-                val serverLibs = libraryRepository.syncFromServer().valueOrEmpty()
-                if (serverLibs.isNotEmpty()) libs = serverLibs
+                libs = settingsLibrariesAfterServerSync(
+                    cached = libs,
+                    result = libraryRepository.syncFromServer(),
+                )
             } catch (_: Exception) {
                 // Use cached
             }
@@ -1623,6 +1625,16 @@ class SettingsViewModel @Inject constructor(
  */
 internal fun shouldLoadCachedLibrariesAfterValidation(result: TokenValidationResult): Boolean =
     result != TokenValidationResult.INVALID
+
+/** A complete server response is authoritative, including an empty library list. */
+internal fun settingsLibrariesAfterServerSync(
+    cached: List<Library>,
+    result: RemoteResult<List<Library>>,
+): List<Library> = when (result) {
+    is RemoteResult.Ok -> result.value
+    is RemoteResult.Partial,
+    is RemoteResult.Failed -> cached
+}
 
 internal fun shouldApplyStoredValidation(
     result: TokenValidationResult,

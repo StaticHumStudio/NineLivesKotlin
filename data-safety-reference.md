@@ -1,12 +1,41 @@
 # Nine Lives Audio Play Store Data Safety Reference
 
-Last updated: 2026-06-05
+Last updated: 2026-08-24
 
-Use this file as the source of truth when filling out the Play Console Data safety form for `com.ninelivesaudio.app`.
+> **STATUS 2026-08-24: this document does NOT describe what is currently
+> declared.** The live Play listing for `com.ninelivesaudio.app` declares
+> **"No data collected"** and **"No data shared with third parties"**, verified
+> by reading the public store page on 2026-08-24. The June recommendation below
+> ("Answer: Yes") was never what shipped, and the 2.1.0 store listing copy
+> states in the NOTHING PHONES HOME paragraph that the Data safety section says
+> no data collected. Listing and form agree. Do not "correct" the Console form
+> to match the June analysis... that would break the agreement and contradict
+> shipped copy.
+>
+> Who set the form to No, and on what reasoning, is NOT recorded anywhere and
+> was not reconstructed. The defensible argument is Play's user-initiated
+> transfer exemption: everything the June analysis lists as collected goes to
+> an Audiobookshelf server the user configured and controls, and Static Hum
+> Studio receives none of it. That argument is plausible, it is not verified as
+> the actual reasoning, and it is a genuine judgment call rather than a settled
+> question.
+>
+> The per-category analysis below is kept ON PURPOSE. If Google ever challenges
+> the "No data collected" declaration, this is the fallback: it is the work of
+> deciding what each category would say under the opposite reading.
+>
+> Note that the "encrypted in transit" question below is moot while "No data
+> collected" stands, because Play only asks it once collection is declared. The
+> underlying fact is still true: the build allows a user-configured `http://`
+> server, so that question could not be answered Yes today.
 
-This is based on the current release code path, the live privacy URL, and the pre AAB Play compliance audit in `docs/play-store-compliance-audit-2026-06-04.md`.
+Use this file as background analysis, not as the form's current answers.
 
-## Play Console Overview
+This is based on the release code path as of 2026-06-05, the live privacy URL,
+and the pre AAB Play compliance audit in
+`docs/play-store-compliance-audit-2026-06-04.md`.
+
+## Play Console Overview (JUNE ANALYSIS, SUPERSEDED BY THE LIVE FORM)
 
 Question: Does the app collect or share any required user data types?
 

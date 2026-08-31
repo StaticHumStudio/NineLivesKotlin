@@ -47,6 +47,23 @@ class PaginatedFetchTest {
     }
 
     @Test
+    fun `a full page with no reported total keeps fetching until a natural terminator`() = runBlocking {
+        val pagesFetched = mutableListOf<Int>()
+
+        val result = runPaginatedFetch<String>(limit = 2) { page ->
+            pagesFetched += page
+            when (page) {
+                0 -> PageOutcome.Page(listOf("a", "b"), total = 0)
+                1 -> PageOutcome.Page(listOf("c"), total = 0)
+                else -> unreachablePage("the short second page must end this fetch")
+            }
+        }
+
+        assertEquals(RemoteResult.Ok(listOf("a", "b", "c")), result)
+        assertEquals(listOf(0, 1), pagesFetched)
+    }
+
+    @Test
     fun `a short page while the reported total says more exist is Partial, not Ok`() = runBlocking {
         // The exact scenario from finding B: a page comes back shorter than
         // the requested limit (a page cap, or a transient inconsistency)

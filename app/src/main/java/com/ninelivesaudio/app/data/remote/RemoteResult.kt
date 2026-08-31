@@ -45,11 +45,11 @@ internal fun <T> stoppedShort(fetched: List<T>, reason: String): RemoteResult<Li
  * server-side page cap, a transient inconsistency), and reporting Ok would
  * be a false completeness signal a cache-pruning caller could act on
  * (issue #14, PR #30 review, finding B). [total] of 0 means the server did
- * not report a total at all — allItems.size is always >= 0, so that is
- * trusted as complete rather than misread as a shortfall.
+ * not report a total at all. It is complete only after the pagination loop
+ * reached its own short or empty page terminator.
  */
 internal fun <T> paginationResult(allItems: List<T>, total: Int, currentPage: Int): RemoteResult<List<T>> =
-    if (allItems.size >= total) {
+    if (total == 0 || allItems.size >= total) {
         RemoteResult.Ok(allItems.toList())
     } else {
         stoppedShort(allItems, "page $currentPage: got ${allItems.size} of $total reported")
@@ -92,7 +92,7 @@ internal suspend fun <T> runPaginatedFetch(
                 is PageOutcome.Page -> {
                     if (outcome.results.isEmpty()) return paginationResult(allItems, outcome.total, currentPage)
                     allItems.addAll(outcome.results)
-                    if (allItems.size >= outcome.total || outcome.results.size < limit) {
+                    if ((outcome.total > 0 && allItems.size >= outcome.total) || outcome.results.size < limit) {
                         return paginationResult(allItems, outcome.total, currentPage)
                     }
                     currentPage++

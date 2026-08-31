@@ -133,6 +133,29 @@ class SyncReportTest {
     }
 
     @Test
+    fun `an older sync completion cannot overwrite a newer current server record`() {
+        val current = AppSettings(
+            serverUrl = "https://server.example",
+            lastSync = LastSyncRecord(
+                result = SyncResult.FAILED,
+                libraryCount = 0,
+                bookCount = 0,
+                failure = "background sync failed",
+                completedAtMs = 200L,
+                serverUrl = "https://server.example",
+            ),
+        )
+
+        val updated = current.withLastSyncIfServerUnchanged(
+            report = SyncReport(libraryCount = 1, bookCount = 10, result = SyncResult.SUCCESS),
+            completedAtMs = 100L,
+            serverUrlAtStart = "https://server.example",
+        )
+
+        assertEquals(current, updated)
+    }
+
+    @Test
     fun `diagnostic snapshot is hidden when it belongs to another server`() {
         val settings = AppSettings(
             serverUrl = "https://b.example",

@@ -85,10 +85,18 @@ fun LibraryScreen(
     val groupedListItems = remember(uiState.groupedSections, uiState.expandedGroups) {
         flattenGroupedItems(uiState.groupedSections, uiState.expandedGroups)
     }
-    val shelfDecision = remember(uiState.lastSyncResult, uiState.selectedLibraryFetchResult, uiState.totalBookCount) {
+    val shelfDecision = remember(
+        uiState.lastSyncResult,
+        uiState.lastSyncCompletedAtMs,
+        uiState.selectedLibraryFetchResult,
+        uiState.selectedLibraryFetchCompletedAtMs,
+        uiState.totalBookCount,
+    ) {
         decideLibraryShelf(
             lastSyncResult = uiState.lastSyncResult,
+            lastSyncCompletedAtMs = uiState.lastSyncCompletedAtMs,
             selectedLibraryFetchResult = uiState.selectedLibraryFetchResult,
+            selectedLibraryFetchCompletedAtMs = uiState.selectedLibraryFetchCompletedAtMs,
             cachedCount = uiState.totalBookCount,
         )
     }

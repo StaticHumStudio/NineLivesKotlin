@@ -108,6 +108,34 @@ class LibraryShelfDecisionTest {
     }
 
     @Test
+    fun `a newer aggregate failure replaces an older selected success`() {
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncCompletedAtMs = 200L,
+                selectedLibraryFetchResult = SyncResult.SUCCESS,
+                selectedLibraryFetchCompletedAtMs = 100L,
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `a newer aggregate success replaces an older selected failure`() {
+        assertEquals(
+            LibraryShelfDecision.Empty,
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.SUCCESS,
+                lastSyncCompletedAtMs = 200L,
+                selectedLibraryFetchResult = SyncResult.FAILED,
+                selectedLibraryFetchCompletedAtMs = 100L,
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
     fun `a selected library's own partial fetch still warns even with cached books`() {
         assertEquals(
             LibraryShelfDecision.ShowShelf(warning = SyncResult.PARTIAL),

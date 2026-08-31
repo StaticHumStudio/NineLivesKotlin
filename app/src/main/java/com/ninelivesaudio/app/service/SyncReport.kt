@@ -185,6 +185,7 @@ internal fun AppSettings.withLastSyncIfServerUnchanged(
     serverUrlAtStart: String,
 ): AppSettings {
     if (serverUrl != serverUrlAtStart) return this
+    if (lastSyncForCurrentServer()?.completedAtMs?.let { it >= completedAtMs } == true) return this
     return copy(
         lastSync = LastSyncRecord(
             result = report.result,

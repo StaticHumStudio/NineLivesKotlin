@@ -1,6 +1,6 @@
 # Nine Lives Audio Play Store Data Safety Reference
 
-Last updated: 2026-08-24
+Last updated: 2026-08-31 (live-listing verification: 2026-08-24)
 
 > **STATUS 2026-08-24: this document does NOT describe what is currently
 > declared.** The live Play listing for `com.ninelivesaudio.app` declares

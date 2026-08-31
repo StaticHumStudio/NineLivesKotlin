@@ -11,9 +11,12 @@ Last updated: 2026-08-24
 > paragraph is consistent with the live form: no analytics, no tracking, no
 > ads, the studio runs no servers, and the only paths that reach the studio at
 > all (crash reports and feedback) are opt-in and go through the user's own
-> email client. Do not "correct" the Console form to match the June
-> analysis... that would contradict what the shipped listing promises about
-> nothing automatic leaving the device.
+> email client. The listing does describe automatic traffic in server mode
+> (position sync both ways, the offline queue flushing on reconnect), but that
+> traffic goes to the server the user configured, not to the studio. Do not
+> "correct" the Console form to match the June analysis... the form's No is
+> about the studio collecting, and the shipped listing promises the same
+> thing: nothing reaches Static Hum Studio except the opt-in emails.
 >
 > Who set the form to No, and on what reasoning, is NOT recorded anywhere and
 > was not reconstructed. The defensible argument is Play's user-initiated

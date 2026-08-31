@@ -62,7 +62,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -584,6 +584,34 @@ internal suspend fun runNowPlayingDisconnectReset(
 internal fun disconnectBarrierBlocksLoad(barrierUp: Boolean, bookIsLocal: Boolean): Boolean =
     barrierUp && !bookIsLocal
 
+/**
+ * Counts in-flight confirmed disconnects, rather than a single up/down
+ * flag. SettingsViewModel builds a fresh instance (and mutex) every time
+ * Settings opens, but PlaybackManager is the singleton every instance
+ * shares, so two disconnects CAN overlap: confirm, leave Settings while the
+ * terminal-progress flush is still pending, come back to a fresh Settings
+ * screen, confirm again. A boolean would let whichever operation finishes
+ * first lower the barrier while the other is still tearing down, letting a
+ * remote load slip through during the still-live logout window. The count
+ * only reaches zero once every raise has been matched by its own lower, so
+ * overlapping disconnects keep the barrier up until the last one finishes.
+ */
+internal class DisconnectBarrier {
+    private val count = AtomicInteger(0)
+
+    fun raise() {
+        count.incrementAndGet()
+    }
+
+    fun lower() {
+        // Floored at zero: a stray unpaired lower must not wedge the count
+        // negative and refuse every later disconnect forever.
+        count.updateAndGet { if (it > 0) it - 1 else 0 }
+    }
+
+    val isUp: Boolean get() = count.get() > 0
+}
+
 internal fun autoBookLoadAllowed(
     book: AudioBook,
     settings: AppSettings,
@@ -862,19 +890,24 @@ class PlaybackManager @Inject constructor(
     private val pendingTerminalOwner = PendingTerminalOwner()
     private val playbackLoadOwner = PlaybackLoadOwner()
 
-    // Raised by SettingsViewModel's disconnect flow before it starts tearing
-    // the session down, lowered only after the logout it guards completes
-    // (see disconnectSessionGuarded). PlaybackManager is the singleton every
-    // ViewModel shares, so this is the one place a load started mid-disconnect
-    // can be told a logout is in flight and refuse to claim a remote book.
-    private val disconnectBarrierUp = AtomicBoolean(false)
+    // A count of in-flight confirmed disconnects, not a single flag. Raised
+    // by SettingsViewModel's disconnect flow before it starts tearing the
+    // session down, lowered per-operation only after the logout it guards
+    // completes (see disconnectSessionGuarded). PlaybackManager is the
+    // singleton every ViewModel shares, so overlapping disconnects (confirm,
+    // leave Settings mid-teardown, come back, confirm again) both raise this
+    // same barrier, and it must stay up until the last one finishes lowering
+    // its own. Otherwise a load started mid-disconnect could be told a
+    // logout is no longer in flight and claim a remote book that should
+    // still be refused.
+    private val disconnectBarrier = DisconnectBarrier()
 
     fun raiseDisconnectBarrier() {
-        disconnectBarrierUp.set(true)
+        disconnectBarrier.raise()
     }
 
     fun lowerDisconnectBarrier() {
-        disconnectBarrierUp.set(false)
+        disconnectBarrier.lower()
     }
 
     // Auto-rewind: timestamp of last pause
@@ -1148,7 +1181,7 @@ class PlaybackManager @Inject constructor(
         // claim a fresh request id for a remote book until the barrier the
         // disconnect flow raised comes back down. A local book never touches
         // the session being torn down, so it is left alone.
-        if (disconnectBarrierBlocksLoad(disconnectBarrierUp.get(), book.isLocal)) {
+        if (disconnectBarrierBlocksLoad(disconnectBarrier.isUp, book.isLocal)) {
             if (playbackLoadOwner.abandon(loadRequest)) {
                 _events.tryEmit(PlaybackEvent.Error("Signing out. Try again once you're disconnected."))
             }

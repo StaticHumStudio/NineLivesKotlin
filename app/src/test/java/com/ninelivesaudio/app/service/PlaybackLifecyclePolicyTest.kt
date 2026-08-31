@@ -118,4 +118,37 @@ class PlaybackLifecyclePolicyTest {
     fun `barrier down allows a local load`() {
         assertFalse(disconnectBarrierBlocksLoad(barrierUp = false, bookIsLocal = true))
     }
+
+    // ─── Disconnect barrier counts overlapping disconnects ────────────────
+    //
+    // SettingsViewModel is a fresh instance every time Settings opens, but
+    // PlaybackManager (and its barrier) is the singleton every instance
+    // shares. Two raises can land before either lower does, and the count
+    // must not reach zero until both operations have lowered their own.
+
+    @Test
+    fun `two overlapping raises need two lowers before the barrier drops`() {
+        val barrier = DisconnectBarrier()
+
+        barrier.raise()
+        barrier.raise()
+        barrier.lower()
+        assertTrue(disconnectBarrierBlocksLoad(barrier.isUp, bookIsLocal = false))
+
+        barrier.lower()
+        assertFalse(disconnectBarrierBlocksLoad(barrier.isUp, bookIsLocal = false))
+    }
+
+    @Test
+    fun `an unpaired lower floors at zero instead of wedging negative`() {
+        val barrier = DisconnectBarrier()
+
+        // Defensive: should not happen, but a stray extra lower must not
+        // wedge the count negative and refuse every disconnect forever.
+        barrier.lower()
+        assertFalse(disconnectBarrierBlocksLoad(barrier.isUp, bookIsLocal = false))
+
+        barrier.raise()
+        assertTrue(disconnectBarrierBlocksLoad(barrier.isUp, bookIsLocal = false))
+    }
 }

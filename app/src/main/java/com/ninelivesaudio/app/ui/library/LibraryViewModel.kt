@@ -751,7 +751,8 @@ internal fun librarySyncResult(settings: AppSettings): SyncResult? =
  * when its failure scope includes this library, or is null for a legacy or
  * otherwise unscoped record. The aggregate is still
  * consulted as a fallback when there is no per-library signal yet (a fresh
- * load that never ran its own live fetch, e.g. offline).
+ * load that never ran its own live fetch, e.g. offline), but only when its
+ * scope applies to the selected library.
  */
 internal fun decideLibraryShelf(
     lastSyncResult: SyncResult?,
@@ -773,7 +774,8 @@ internal fun decideLibraryShelf(
     val effectiveResult = if (aggregateIsNewer && aggregateAppliesToSelectedLibrary) {
         lastSyncResult
     } else {
-        selectedLibraryFetchResult ?: lastSyncResult
+        selectedLibraryFetchResult ?: lastSyncResult?.takeIf { aggregateAppliesToSelectedLibrary }
+            ?: SyncResult.SUCCESS
     }
     val degraded = effectiveResult?.takeIf { it != SyncResult.SUCCESS }
     return when {

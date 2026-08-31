@@ -113,6 +113,82 @@ class LibraryShelfDecisionTest {
     }
 
     @Test
+    fun `a persisted B only failure preserves the selected library cached state after restart`() {
+        assertEquals(
+            LibraryShelfDecision.Empty,
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = 2L,
+                lastSyncFailedLibraryIds = listOf("library-b"),
+                selectedLibraryId = "library-a",
+                cachedCount = 0,
+            ),
+        )
+        assertEquals(
+            LibraryShelfDecision.ShowShelf(warning = null),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = 2L,
+                lastSyncFailedLibraryIds = listOf("library-b"),
+                selectedLibraryId = "library-a",
+                cachedCount = 12,
+            ),
+        )
+    }
+
+    @Test
+    fun `a persisted B only partial result preserves the selected library cached state after restart`() {
+        assertEquals(
+            LibraryShelfDecision.Empty,
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.PARTIAL,
+                lastSyncSequence = 2L,
+                lastSyncFailedLibraryIds = listOf("library-b"),
+                selectedLibraryId = "library-a",
+                cachedCount = 0,
+            ),
+        )
+        assertEquals(
+            LibraryShelfDecision.ShowShelf(warning = null),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.PARTIAL,
+                lastSyncSequence = 2L,
+                lastSyncFailedLibraryIds = listOf("library-b"),
+                selectedLibraryId = "library-a",
+                cachedCount = 12,
+            ),
+        )
+    }
+
+    @Test
+    fun `a persisted failure scoped to the selected library still fails it after restart`() {
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = 2L,
+                lastSyncFailedLibraryIds = listOf("library-a"),
+                selectedLibraryId = "library-a",
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `a persisted legacy failure without scope still fails the selected library after restart`() {
+        assertEquals(
+            LibraryShelfDecision.LoadFailed(SyncResult.FAILED),
+            decideLibraryShelf(
+                lastSyncResult = SyncResult.FAILED,
+                lastSyncSequence = 2L,
+                lastSyncFailedLibraryIds = null,
+                selectedLibraryId = "library-a",
+                cachedCount = 0,
+            ),
+        )
+    }
+
+    @Test
     fun `a newer aggregate failure scoped to another library does not replace the selected success`() {
         assertEquals(
             LibraryShelfDecision.Empty,

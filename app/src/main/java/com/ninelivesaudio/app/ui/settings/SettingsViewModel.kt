@@ -1585,9 +1585,15 @@ internal data class SyncNowOutcome(val successMessage: String?, val errorMessage
  * always null for that case and must not be treated as this call's result.
  *
  * [SyncNowResult.record] being null while [SyncNowResult.attempt] is
- * [SyncAttempt.RAN] (no sync has ever completed, e.g. right after a fresh
- * install) keeps the prior best-effort "success" message rather than
- * inventing a new failure state for a case outside this fix's scope.
+ * [SyncAttempt.RAN] renders as a failure ("Sync failed: no result
+ * recorded"), not a success. SyncManager's toSyncNowResult() no longer
+ * produces this combination at all — a truthful FAILED record is
+ * synthesized at the source whenever nothing else was recorded (issue #14
+ * round 2, finding P2-1) — but this render path stays defensive anyway
+ * rather than reaching for the earlier "no sync has ever completed, e.g.
+ * fresh install" success fallback: that fallback let an unexpected failure
+ * masquerade as success in exactly the shape codex's round-2 review caught,
+ * and reusing the existing "Sync failed: ..." wording here costs nothing.
  *
  * [SyncNowResult.persisted] being false (the outcome record failed to save
  * to disk) does NOT change which message renders here — [record] is still
@@ -1610,7 +1616,11 @@ internal fun syncNowOutcome(result: SyncNowResult): SyncNowOutcome = when (resul
         errorMessage = "The server changed while syncing. Sync again to refresh the new server.",
     )
     SyncAttempt.RAN -> when (val record = result.record) {
-        null -> SyncNowOutcome(successMessage = "Sync completed successfully", errorMessage = null)
+        // Defense in depth (issue #14 round 2, finding P2-1): a RAN attempt
+        // should never actually reach here with no record at all — see the
+        // doc comment above — but if it ever does anyway, fail closed
+        // rather than claim a success nobody can verify.
+        null -> SyncNowOutcome(successMessage = null, errorMessage = "Sync failed: no result recorded")
         else -> when (record.result) {
             SyncResult.SUCCESS -> SyncNowOutcome(successMessage = "Sync completed successfully", errorMessage = null)
             SyncResult.PARTIAL -> SyncNowOutcome(

@@ -80,10 +80,17 @@ class SyncNowOutcomeTest {
     }
 
     @Test
-    fun `a run with no recorded sync at all falls back to success, matching the prior best-effort behavior`() {
+    fun `a RAN result with no record at all fails closed, not a claimed success`() {
+        // Codex round 2, finding P2-1: this used to fall back to "Sync
+        // completed successfully" on the theory that a null record only
+        // ever meant "never synced before." SyncManager no longer produces
+        // RAN with a null record (toSyncNowResult always synthesizes a
+        // truthful FAILED record when nothing else did), but this render
+        // path stays defensive anyway -- an unrepresentable-at-the-source
+        // invariant is still worth failing safe against here too.
         val outcome = syncNowOutcome(SyncNowResult(SyncAttempt.RAN, null))
-        assertEquals("Sync completed successfully", outcome.successMessage)
-        assertNull(outcome.errorMessage)
+        assertNull(outcome.successMessage)
+        assertEquals("Sync failed: no result recorded", outcome.errorMessage)
     }
 
     // ─── Skipped attempts must not borrow a stale record ───────────────────

@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
+import com.ninelivesaudio.app.domain.model.SyncResult
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -576,12 +577,39 @@ internal data class SyncNowResult(
     val persisted: Boolean = true,
 )
 
-private fun PersistedSyncOutcome.toSyncNowResult(): SyncNowResult = when {
+/**
+ * The in-memory stand-in used when nothing else produced a [LastSyncRecord]
+ * at all — an unexpected exception during the sync, or a settings-storage
+ * failure before the persist transform ever got to decide anything. Never
+ * itself persisted (the [PersistedSyncOutcome] that reaches this point
+ * already has `persisted = false`), but returned so the render side sees a
+ * real, honest failure instead of null — which [syncNowOutcome] would
+ * otherwise be able to render as a false "Sync completed successfully"
+ * (issue #14 round 2, finding P2-1).
+ */
+private fun unpersistedFailureRecord(completedAtMs: Long = System.currentTimeMillis()): LastSyncRecord =
+    LastSyncRecord(
+        result = SyncResult.FAILED,
+        libraryCount = 0,
+        bookCount = 0,
+        failure = "sync attempt did not complete",
+        completedAtMs = completedAtMs,
+    )
+
+/**
+ * The single choke point every sync attempt's outcome passes through on its
+ * way to a [SyncNowResult]. A [SyncAttempt.RAN] result must never carry a
+ * null record — when [PersistedSyncOutcome.persisted] is false and nothing
+ * was ever decided ([PersistedSyncOutcome.record] is null too), an honest
+ * [unpersistedFailureRecord] stand-in is synthesized instead of letting a
+ * null slip through and get misread as success one layer up.
+ */
+internal fun PersistedSyncOutcome.toSyncNowResult(): SyncNowResult = when {
     // A failed write is reported honestly regardless of what the transform
     // decided — see issue #14's adversarial review, finding 1. Silently
     // falling back to DISCARDED_SERVER_CHANGED here would misreport a
     // storage failure as a server-changed race that never happened.
-    !persisted -> SyncNowResult(SyncAttempt.RAN, record, persisted = false)
+    !persisted -> SyncNowResult(SyncAttempt.RAN, record ?: unpersistedFailureRecord(), persisted = false)
     recorded -> SyncNowResult(SyncAttempt.RAN, record, persisted = true)
     else -> SyncNowResult(SyncAttempt.DISCARDED_SERVER_CHANGED, null)
 }
@@ -634,10 +662,13 @@ internal suspend fun runSyncAttempt(
         throw e
     } catch (e: Exception) {
         // Truly unexpected — runSyncWork's own internals already catch and
-        // report their own failures as a FAILED SyncReport. Still honest
-        // rather than a clean-looking RAN: no report was produced, so
-        // nothing was persisted.
-        SyncNowResult(SyncAttempt.RAN, null, persisted = false)
+        // report their own failures as a FAILED SyncReport, so reaching
+        // here means something outside that blew up instead. Routed through
+        // the same toSyncNowResult() mapping as every other unpersisted
+        // outcome so the render side gets an honest FAILED record, not a
+        // null one that used to read as a clean success (issue #14 round 2,
+        // finding P2-1).
+        PersistedSyncOutcome(recorded = false, persisted = false, record = null).toSyncNowResult()
     } finally {
         onLockReleasing()
         unlock()

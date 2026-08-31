@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -158,7 +159,12 @@ class RunSyncAttemptTest {
     }
 
     @Test
-    fun `an unexpected failure during the sync still unlocks and reports honestly`() = runBlocking {
+    fun `an unexpected failure during the sync still unlocks and reports a truthful FAILED record, not null`() = runBlocking {
+        // Codex round 2, finding P2-1: RAN + a null record used to render as
+        // a false "Sync completed successfully" one layer up in
+        // syncNowOutcome(). A null record must be unrepresentable here --
+        // an unexpected failure still has to leave behind something honest
+        // for the caller to render.
         var unlocked = false
 
         val result = runSyncAttempt(
@@ -172,9 +178,34 @@ class RunSyncAttemptTest {
         )
 
         assertEquals(SyncAttempt.RAN, result.attempt)
-        assertNull(result.record)
+        assertNotNull(result.record)
+        assertEquals(SyncResult.FAILED, result.record?.result)
         assertFalse(result.persisted)
         assertTrue(unlocked)
+    }
+
+    @Test
+    fun `a persistence failure before the transform ever ran still reports a truthful FAILED record, not null`() = runBlocking {
+        // The second source named in finding P2-1: settingsManager access
+        // itself can fail before the transform even runs, producing a
+        // PersistedSyncOutcome with recorded=false, persisted=false,
+        // record=null. That must not surface as RAN + null either.
+        val nothingRecorded = PersistedSyncOutcome(recorded = false, persisted = false, record = null)
+
+        val result = runSyncAttempt(
+            isSyncReady = { true },
+            checkServerReachable = { true },
+            tryLock = { true },
+            unlock = {},
+            runSyncWork = { successReport },
+            persistOutcome = { nothingRecorded },
+            persistUnreachableOutcome = { fail("the probe succeeded"); successOutcome },
+        )
+
+        assertEquals(SyncAttempt.RAN, result.attempt)
+        assertNotNull(result.record)
+        assertEquals(SyncResult.FAILED, result.record?.result)
+        assertFalse(result.persisted)
     }
 
     @Test

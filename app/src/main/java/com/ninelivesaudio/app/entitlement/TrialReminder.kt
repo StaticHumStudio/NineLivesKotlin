@@ -83,7 +83,6 @@ internal const val MAX_BUSY_REMINDER_RETRIES = 5
  */
 internal sealed interface TrialReminderCopy {
     data object Today : TrialReminderCopy
-    data object OneDay : TrialReminderCopy
     data class Many(val days: Int) : TrialReminderCopy
 }
 
@@ -97,7 +96,8 @@ internal fun trialReminderCopy(trialEndsAtEpochMs: Long?, nowEpochMs: Long): Tri
         // trial too, which can reach this selector even though it can never
         // reach POST (the refresh-and-check guard upstream rules that out).
         remainingMs < TRIAL_REMINDER_DAY_MS -> TrialReminderCopy.Today
-        remainingMs < 2 * TRIAL_REMINDER_DAY_MS -> TrialReminderCopy.OneDay
+        // Whole days, always rounded up. A count that can only overstate
+        // needs no calendar words and cannot mislead.
         else -> TrialReminderCopy.Many(((remainingMs - 1) / TRIAL_REMINDER_DAY_MS + 1).toInt())
     }
 }
@@ -218,12 +218,10 @@ private object TrialNotifications {
     fun show(context: Context, copy: TrialReminderCopy) {
         val title = when (copy) {
             is TrialReminderCopy.Today -> context.getString(R.string.trial_reminder_title_today)
-            is TrialReminderCopy.OneDay -> context.getString(R.string.trial_reminder_title_one)
             is TrialReminderCopy.Many -> context.getString(R.string.trial_reminder_title_many, copy.days)
         }
         val body = when (copy) {
             is TrialReminderCopy.Today -> context.getString(R.string.trial_reminder_body_today)
-            is TrialReminderCopy.OneDay -> context.getString(R.string.trial_reminder_body_one)
             is TrialReminderCopy.Many -> context.getString(R.string.trial_reminder_body_many, copy.days)
         }
         try {

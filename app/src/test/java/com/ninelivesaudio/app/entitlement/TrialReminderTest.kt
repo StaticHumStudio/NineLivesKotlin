@@ -251,11 +251,20 @@ class TrialReminderTest {
     }
 
     @Test
-    fun `a trial ending in thirty hours reads as one day`() {
+    fun `a trial ending in thirty hours rounds up to two days, never understating`() {
         val now = start
         assertEquals(
-            TrialReminderCopy.OneDay,
+            TrialReminderCopy.Many(2),
             trialReminderCopy(now + TimeUnit.HOURS.toMillis(30), now),
+        )
+    }
+
+    @Test
+    fun `a trial ending in forty seven hours also reads as two days`() {
+        val now = start
+        assertEquals(
+            TrialReminderCopy.Many(2),
+            trialReminderCopy(now + TimeUnit.HOURS.toMillis(47), now),
         )
     }
 

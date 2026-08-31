@@ -16,6 +16,8 @@ import com.ninelivesaudio.app.domain.util.toEpochMillis
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,6 +32,8 @@ class AudioBookRepository @Inject constructor(
     private val localBookmarkDao: LocalBookmarkDao,
     private val playbackProgressDao: PlaybackProgressDao,
 ) {
+    private val syncLibraryItemsMutex = Mutex()
+
     /** Observe all audiobooks (reactive). */
     fun observeAll(): Flow<List<AudioBook>> =
         audioBookDao.observeAll().map { entities -> entities.map { it.toDomain() } }
@@ -198,39 +202,35 @@ class AudioBookRepository @Inject constructor(
      * — including a confirmed-empty one, so the cache is reconciled to match
      * it exactly rather than just upserted-into. See [reconcileServerLibrary].
      */
-    suspend fun syncLibraryItems(libraryId: String): RemoteResult<List<AudioBook>> {
-        val result = apiService.getLibraryItems(libraryId)
-        val remote = when (result) {
-            is RemoteResult.Ok -> result.value
-            is RemoteResult.Partial -> result.value
-            is RemoteResult.Failed -> return result
-        }
+    suspend fun syncLibraryItems(libraryId: String): RemoteResult<List<AudioBook>> = runSerializedLibraryItemSync(
+        mutex = syncLibraryItemsMutex,
+        libraryId = libraryId,
+        fetchItems = { apiService.getLibraryItems(libraryId) },
+        mergeItems = { remote ->
+            // Preserve local download info when syncing. Query by book IDs
+            // rather than libraryId so an existing row is found regardless
+            // of how it was originally saved. An empty list cannot be passed
+            // to SQLite IN (:ids), and has nothing to merge anyway.
+            if (remote.isEmpty()) {
+                emptyList()
+            } else {
+                val localBooks = audioBookDao.getByIds(remote.map { it.id }).associateBy { it.id }
+                remote.map { remoteBook -> mergeSyncedBook(remoteBook, localBooks[remoteBook.id]) }
+            }
+        },
+        upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
+        deleteMissing = { id, keptIds -> audioBookDao.deleteMissingServerBooks(id, keptIds) },
+        deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },
+    )
 
-        // Preserve local download info when syncing.
-        // Query by book IDs (not by libraryId) so we find existing entries
-        // regardless of how they were originally saved — prevents full-row
-        // REPLACE from wiping isDownloaded/localPath on libraryId mismatch.
-        // Skipped entirely when remote is empty: an empty IN (:ids) list is
-        // invalid SQLite, and there is nothing to look up anyway.
-        val merged = if (remote.isEmpty()) {
-            emptyList()
-        } else {
-            val localBooks = audioBookDao.getByIds(remote.map { it.id }).associateBy { it.id }
-            remote.map { remoteBook -> mergeSyncedBook(remoteBook, localBooks[remoteBook.id]) }
-        }
-
-        reconcileServerLibrary(
-            isComplete = result is RemoteResult.Ok,
-            merged = merged,
-            libraryId = libraryId,
-            upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
-            deleteMissing = { id, keptIds -> audioBookDao.deleteMissingServerBooks(id, keptIds) },
-            deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },
-        )
-
-        return when (result) {
-            is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
-            else -> RemoteResult.Ok(merged)
+    /**
+     * Applies an authoritative library-list removal through the same mutex as
+     * item sync. A list response cannot prune this library while an older item
+     * response is still in flight and about to upsert its stale books.
+     */
+    internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String) {
+        runSerializedLibraryItemPrune(syncLibraryItemsMutex) {
+            audioBookDao.deleteServerBooksByLibrary(libraryId)
         }
     }
 
@@ -384,6 +384,53 @@ internal suspend fun reconcileServerLibrary(
     } else {
         deleteMissing(libraryId, merged.map { it.id })
     }
+}
+
+/**
+ * Serializes one item's full fetch, merge, and reconciliation sequence. Both
+ * SyncManager and LibraryViewModel can refresh the same library independently.
+ * Holding [mutex] across the network fetch makes a later caller fetch only
+ * after every earlier response has been applied, so an old response cannot
+ * upsert books that a newer complete response already pruned.
+ */
+internal suspend fun runSerializedLibraryItemSync(
+    mutex: Mutex,
+    libraryId: String,
+    fetchItems: suspend () -> RemoteResult<List<AudioBook>>,
+    mergeItems: suspend (List<AudioBook>) -> List<AudioBook>,
+    upsertAll: suspend (List<AudioBook>) -> Unit,
+    deleteMissing: suspend (libraryId: String, keptIds: List<String>) -> Unit,
+    deleteAllServerBooks: suspend (libraryId: String) -> Unit,
+): RemoteResult<List<AudioBook>> = mutex.withLock {
+    val result = fetchItems()
+    val remote = when (result) {
+        is RemoteResult.Ok -> result.value
+        is RemoteResult.Partial -> result.value
+        is RemoteResult.Failed -> return@withLock result
+    }
+    val merged = mergeItems(remote)
+
+    reconcileServerLibrary(
+        isComplete = result is RemoteResult.Ok,
+        merged = merged,
+        libraryId = libraryId,
+        upsertAll = upsertAll,
+        deleteMissing = deleteMissing,
+        deleteAllServerBooks = deleteAllServerBooks,
+    )
+
+    when (result) {
+        is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
+        else -> RemoteResult.Ok(merged)
+    }
+}
+
+/** Runs an authoritative item prune in the same ordering domain as item sync. */
+internal suspend fun runSerializedLibraryItemPrune(
+    mutex: Mutex,
+    prune: suspend () -> Unit,
+) {
+    mutex.withLock { prune() }
 }
 
 /**

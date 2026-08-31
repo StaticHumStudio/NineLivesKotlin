@@ -7,10 +7,12 @@ import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.Library
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,6 +21,7 @@ import javax.inject.Singleton
 class LibraryRepository @Inject constructor(
     private val libraryDao: LibraryDao,
     private val audioBookDao: AudioBookDao,
+    private val audioBookRepository: AudioBookRepository,
     private val apiService: ApiService,
 ) {
     // Serializes syncFromServer(): SyncManager's account-wide sync and
@@ -98,7 +101,7 @@ class LibraryRepository @Inject constructor(
         upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
         deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
         deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
-        pruneLibraryBooks = { libraryId -> audioBookDao.deleteServerBooksByLibrary(libraryId) },
+        pruneLibraryBooks = audioBookRepository::pruneServerBooksForRemovedLibrary,
     )
 
     /** Save a single library to local DB. */
@@ -215,15 +218,17 @@ internal suspend fun runSerializedLibrarySync(
         is RemoteResult.Failed -> return@withLock result
     }
 
-    reconcileServerLibraries(
-        isComplete = result is RemoteResult.Ok,
-        fetched = fetched,
-        cachedServerLibraryIds = cachedServerLibraryIds,
-        upsertAll = upsertAll,
-        deleteMissing = deleteMissing,
-        deleteAllServerLibraries = deleteAllServerLibraries,
-        pruneLibraryBooks = pruneLibraryBooks,
-    )
+    withContext(NonCancellable) {
+        reconcileServerLibraries(
+            isComplete = result is RemoteResult.Ok,
+            fetched = fetched,
+            cachedServerLibraryIds = cachedServerLibraryIds,
+            upsertAll = upsertAll,
+            deleteMissing = deleteMissing,
+            deleteAllServerLibraries = deleteAllServerLibraries,
+            pruneLibraryBooks = pruneLibraryBooks,
+        )
+    }
 
     result
 }

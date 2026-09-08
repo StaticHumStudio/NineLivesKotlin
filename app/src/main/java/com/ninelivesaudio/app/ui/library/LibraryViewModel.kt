@@ -462,12 +462,23 @@ class LibraryViewModel @Inject constructor(
         }
         libraryLoadLaunch.launch(viewModelScope) {
             // Persist selection so the whole app picks it up
-            settingsManager.updateSettings {
-                if (library.isLocal) {
-                    it.copy(selectedLocalLibraryId = library.id)
-                } else {
-                    it.copy(selectedLibraryId = library.id)
+            val selectionAccepted = if (library.isLocal) {
+                settingsManager.updateSettings { it.copy(selectedLocalLibraryId = library.id) }
+                true
+            } else {
+                val scope = apiService.captureActiveRemoteScope()
+                if (scope?.decodeForEgress(library.id) == null) false else {
+                    settingsManager.updateSettingsIfCurrent(
+                        isCurrent = {
+                            apiService.isCurrentActiveRemoteScope(scope) &&
+                                scope.decodeForEgress(library.id) != null
+                        },
+                    ) { it.copy(selectedLibraryId = library.id) }
                 }
+            }
+            if (!selectionAccepted) {
+                _uiState.update { it.withLibrarySelection(it.libraries, null, it.isLocalMode) }
+                return@launch
             }
             // Full resync for the newly selected library
             loadAudioBooks(library.id)

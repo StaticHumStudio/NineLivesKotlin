@@ -1385,8 +1385,16 @@ class SettingsViewModel @Inject constructor(
                 // the user added in Local mode, causing silent data loss.
                 val scope = apiService.captureActiveRemoteScope()
                     ?: return@launch
-                audioBookDao.deleteActiveAudiobookshelf(scope.idPrefix)
-                libraryDao.deleteActiveAudiobookshelf(scope.idPrefix)
+                if (!apiService.isCurrentActiveRemoteScope(scope)) return@launch
+                val bookIds = audioBookDao.getActiveCatalog(scope.idPrefix)
+                    .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null } }
+                if (!apiService.isCurrentActiveRemoteScope(scope)) return@launch
+                if (bookIds.isNotEmpty()) audioBookDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, bookIds)
+                if (!apiService.isCurrentActiveRemoteScope(scope)) return@launch
+                val libraryIds = libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                    .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null } }
+                if (!apiService.isCurrentActiveRemoteScope(scope)) return@launch
+                if (libraryIds.isNotEmpty()) libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, libraryIds)
                 _uiState.update { it.copy(successMessage = "Cache cleared successfully") }
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = "Failed to clear cache: ${e.message}") }

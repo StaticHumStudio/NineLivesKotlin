@@ -20,13 +20,13 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks ORDER BY Title")
     suspend fun getAll(): List<AudioBookEntity>
 
-    @Query("SELECT * FROM AudioBooks WHERE IsLocal = 1 OR (IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%') ORDER BY Title")
+    @Query("SELECT * FROM AudioBooks WHERE IsLocal = 1 OR (IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix) ORDER BY Title")
     suspend fun getActiveCatalog(idPrefix: String): List<AudioBookEntity>
 
     @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId ORDER BY Title")
     fun observeByLibrary(libraryId: String): Flow<List<AudioBookEntity>>
 
-    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' ORDER BY Title")
+    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix ORDER BY Title")
     fun observeActiveRemoteByLibrary(libraryId: String, idPrefix: String): Flow<List<AudioBookEntity>>
 
     @Query("SELECT * FROM AudioBooks WHERE IsLocal = :isLocal ORDER BY Title")
@@ -38,7 +38,7 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal ORDER BY Title")
     suspend fun getByLibraryAndSource(libraryId: String, isLocal: Int): List<AudioBookEntity>
 
-    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' ORDER BY Title")
+    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix ORDER BY Title")
     suspend fun getActiveRemoteByLibrary(libraryId: String, idPrefix: String): List<AudioBookEntity>
 
     @Query("SELECT * FROM AudioBooks WHERE IsLocal = :isLocal ORDER BY Title")
@@ -76,7 +76,7 @@ interface AudioBookDao {
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0")
     suspend fun getNonDownloadedServerIdsByLibrary(libraryId: String): List<String>
 
-    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%'")
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix")
     suspend fun getNonDownloadedActiveServerIdsByLibrary(libraryId: String, idPrefix: String): List<String>
 
     /**
@@ -86,7 +86,7 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND Id IN (:ids)")
     suspend fun deleteServerBooksByIds(libraryId: String, ids: List<String>)
 
-    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' AND Id IN (:ids)")
+    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND Id IN (:ids)")
     suspend fun deleteActiveServerBooksByIds(libraryId: String, idPrefix: String, ids: List<String>)
 
     /**
@@ -99,13 +99,13 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0")
     suspend fun deleteServerBooksByLibrary(libraryId: String)
 
-    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%'")
+    @Query("DELETE FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix")
     suspend fun deleteActiveServerBooksByLibrary(libraryId: String, idPrefix: String)
 
     @Query("SELECT EXISTS(SELECT 1 FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 1)")
     suspend fun hasDownloadedServerBooks(libraryId: String): Boolean
 
-    @Query("SELECT EXISTS(SELECT 1 FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 1 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%')")
+    @Query("SELECT EXISTS(SELECT 1 FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 1 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix)")
     suspend fun hasDownloadedActiveServerBooks(libraryId: String, idPrefix: String): Boolean
 
     /** Ids of all LOCAL books in a library (live or archived). */
@@ -130,8 +130,11 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE IsLocal = 0")
     suspend fun deleteAudiobookshelf()
 
-    @Query("DELETE FROM AudioBooks WHERE IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%'")
+    @Query("DELETE FROM AudioBooks WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix")
     suspend fun deleteActiveAudiobookshelf(idPrefix: String)
+
+    @Query("DELETE FROM AudioBooks WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND Id IN (:ids)")
+    suspend fun deleteActiveAudiobookshelfByIds(idPrefix: String, ids: List<String>)
 
     /** Nine Lives — recently played books with their last-played timestamp. */
     @Query("""
@@ -169,7 +172,7 @@ interface AudioBookDao {
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
-        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = 0 AND ab.Id LIKE :idPrefix || '%' AND ab.LibraryId LIKE :idPrefix || '%' AND ab.ArchivedAt IS NULL
+        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = 0 AND substr(ab.Id, 1, length(:idPrefix)) = :idPrefix AND substr(ab.LibraryId, 1, length(:idPrefix)) = :idPrefix AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC LIMIT :limit
     """)
     suspend fun getActiveRemoteRecentlyPlayedByLibrary(libraryId: String, idPrefix: String, limit: Int): List<RecentlyPlayedResult>
@@ -177,7 +180,7 @@ interface AudioBookDao {
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab
         INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
-        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = 0 AND ab.Id LIKE :idPrefix || '%' AND ab.LibraryId LIKE :idPrefix || '%' AND ab.ArchivedAt IS NULL
+        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = 0 AND substr(ab.Id, 1, length(:idPrefix)) = :idPrefix AND substr(ab.LibraryId, 1, length(:idPrefix)) = :idPrefix AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC LIMIT :limit
     """)
     fun observeActiveRemoteRecentlyPlayedByLibrary(libraryId: String, idPrefix: String, limit: Int): Flow<List<RecentlyPlayedResult>>
@@ -228,7 +231,7 @@ interface AudioBookDao {
     suspend fun search(query: String): List<AudioBookEntity>
 
     @Query("""
-        SELECT * FROM AudioBooks WHERE IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%'
+        SELECT * FROM AudioBooks WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix
         AND (Title LIKE '%' || :query || '%' OR Author LIKE '%' || :query || '%') ORDER BY Title
     """)
     suspend fun searchActiveRemote(query: String, idPrefix: String): List<AudioBookEntity>
@@ -250,14 +253,20 @@ interface AudioBookDao {
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL")
     suspend fun countByLibrary(libraryId: String): Int
 
-    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' AND ArchivedAt IS NULL")
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND ArchivedAt IS NULL")
     suspend fun countActiveRemoteByLibrary(libraryId: String, idPrefix: String): Int
 
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL")
     suspend fun countByLibraryAndSource(libraryId: String, isLocal: Int): Int
 
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND ArchivedAt IS NULL")
+    suspend fun countActiveRemoteForAuto(libraryId: String, idPrefix: String): Int
+
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL AND IsDownloaded = 1")
     suspend fun countDownloadedByLibrary(libraryId: String, isLocal: Int): Int
+
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND ArchivedAt IS NULL AND IsDownloaded = 1")
+    suspend fun countDownloadedActiveRemoteForAuto(libraryId: String, idPrefix: String): Int
 
     @Query("""
         SELECT COUNT(DISTINCT ab.Id)
@@ -266,6 +275,13 @@ interface AudioBookDao {
         WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
     """)
     suspend fun countRecentlyPlayedByLibrary(libraryId: String, isLocal: Int): Int
+
+    @Query("""
+        SELECT COUNT(DISTINCT ab.Id) FROM AudioBooks ab
+        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        WHERE ab.LibraryId = :libraryId AND ab.IsLocal = 0 AND substr(ab.Id, 1, length(:idPrefix)) = :idPrefix AND substr(ab.LibraryId, 1, length(:idPrefix)) = :idPrefix AND ab.ArchivedAt IS NULL
+    """)
+    suspend fun countRecentlyPlayedActiveRemoteForAuto(libraryId: String, idPrefix: String): Int
 
     /** Distinct series names for a library. */
     @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
@@ -279,12 +295,12 @@ interface AudioBookDao {
     @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
     suspend fun getDistinctGenresJson(libraryId: String): List<String>
 
-    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
+    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
     suspend fun getDistinctActiveRemoteSeries(libraryId: String, idPrefix: String): List<String>
 
-    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' AND ArchivedAt IS NULL AND Author IS NOT NULL AND Author != '' ORDER BY Author")
+    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND ArchivedAt IS NULL AND Author IS NOT NULL AND Author != '' ORDER BY Author")
     suspend fun getDistinctActiveRemoteAuthors(libraryId: String, idPrefix: String): List<String>
 
-    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id LIKE :idPrefix || '%' AND LibraryId LIKE :idPrefix || '%' AND ArchivedAt IS NULL AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
+    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix AND ArchivedAt IS NULL AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
     suspend fun getDistinctActiveRemoteGenresJson(libraryId: String, idPrefix: String): List<String>
 }

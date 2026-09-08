@@ -25,10 +25,10 @@ interface LibraryDao {
     @Query("SELECT * FROM Libraries WHERE IsLocal = 0 ORDER BY DisplayOrder")
     suspend fun getAudiobookshelf(): List<LibraryEntity>
 
-    @Query("SELECT * FROM Libraries WHERE IsLocal = 0 AND Id LIKE :idPrefix || '%' ORDER BY DisplayOrder")
+    @Query("SELECT * FROM Libraries WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix ORDER BY DisplayOrder")
     fun observeActiveAudiobookshelf(idPrefix: String): Flow<List<LibraryEntity>>
 
-    @Query("SELECT * FROM Libraries WHERE IsLocal = 0 AND Id LIKE :idPrefix || '%' ORDER BY DisplayOrder")
+    @Query("SELECT * FROM Libraries WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix ORDER BY DisplayOrder")
     suspend fun getActiveAudiobookshelf(idPrefix: String): List<LibraryEntity>
 
     @Query("SELECT * FROM Libraries WHERE IsLocal = 1 ORDER BY DisplayOrder")
@@ -37,7 +37,7 @@ interface LibraryDao {
     @Query("SELECT * FROM Libraries WHERE Id = :id")
     suspend fun getById(id: String): LibraryEntity?
 
-    @Query("SELECT * FROM Libraries WHERE Id = :id AND IsLocal = 0 AND Id LIKE :idPrefix || '%'")
+    @Query("SELECT * FROM Libraries WHERE Id = :id AND IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix")
     suspend fun getActiveRemoteById(id: String, idPrefix: String): LibraryEntity?
 
     @Query("SELECT * FROM Libraries WHERE FolderUri = :folderUri AND IsLocal = 1 LIMIT 1")
@@ -63,8 +63,11 @@ interface LibraryDao {
     @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND Id NOT IN (:ids)")
     suspend fun deleteMissingAudiobookshelf(ids: List<String>)
 
-    @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND Id LIKE :idPrefix || '%' AND Id NOT IN (:ids)")
+    @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND Id NOT IN (:ids)")
     suspend fun deleteMissingActiveAudiobookshelf(idPrefix: String, ids: List<String>)
+
+    @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND Id IN (:ids)")
+    suspend fun deleteActiveAudiobookshelfByIds(idPrefix: String, ids: List<String>)
 
     /** Library count for the bug report's stored-state line. */
     @Query("SELECT COUNT(*) FROM Libraries")
@@ -76,6 +79,6 @@ interface LibraryDao {
     @Query("DELETE FROM Libraries WHERE IsLocal = 0")
     suspend fun deleteAudiobookshelf()
 
-    @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND Id LIKE :idPrefix || '%'")
+    @Query("DELETE FROM Libraries WHERE IsLocal = 0 AND substr(Id, 1, length(:idPrefix)) = :idPrefix")
     suspend fun deleteActiveAudiobookshelf(idPrefix: String)
 }

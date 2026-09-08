@@ -11,7 +11,9 @@ import com.ninelivesaudio.app.domain.model.Library
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -43,11 +45,15 @@ class LibraryRepository @Inject constructor(
         libraryDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
     /** Observe Audiobookshelf libraries from local DB (reactive). */
-    fun observeAudiobookshelf(): Flow<List<Library>> = flow {
-        val scope = apiService.captureActiveRemoteScope() ?: return@flow
-        libraryDao.observeActiveAudiobookshelf(scope.idPrefix)
-            .collect { entities -> emit(entities.map { it.toDomain() }) }
-    }
+    fun observeAudiobookshelf(): Flow<List<Library>> = apiService.activeRemoteScope
+        .flatMapLatest { scope ->
+            scope?.let { active ->
+                libraryDao.observeActiveAudiobookshelf(active.idPrefix)
+                    .map { entities -> entities
+                        .filter { active.decodeForEgress(it.id) != null }
+                        .map { it.toDomain() } }
+            } ?: flowOf(emptyList())
+        }
 
     /** Observe Local Library roots from local DB (reactive). */
     fun observeLocalLibraries(): Flow<List<Library>> =
@@ -60,7 +66,9 @@ class LibraryRepository @Inject constructor(
     /** Get Audiobookshelf libraries from local DB (one-shot). */
     suspend fun getAudiobookshelf(): List<Library> {
         val scope = apiService.captureActiveRemoteScope() ?: return emptyList()
-        return libraryDao.getActiveAudiobookshelf(scope.idPrefix).map { it.toDomain() }
+        return libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+            .filter { scope.decodeForEgress(it.id) != null }
+            .map { it.toDomain() }
     }
 
     /** Get Local Library roots from local DB (one-shot). */
@@ -117,7 +125,9 @@ class LibraryRepository @Inject constructor(
         val scope = apiService.captureActiveRemoteScope()
             ?: return ReconciledServerLibraryList(RemoteResult.Failed("Auth session changed"), null)
         val result = syncServerLibraries(scope) {
-            reconciledLibraries = libraryDao.getActiveAudiobookshelf(scope.idPrefix).map { it.toDomain() }
+            reconciledLibraries = libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                .filter { scope.decodeForEgress(it.id) != null }
+                .map { it.toDomain() }
         }
         return ReconciledServerLibraryList(result, reconciledLibraries)
     }
@@ -165,12 +175,24 @@ class LibraryRepository @Inject constructor(
     ): RemoteResult<List<Library>> = runSerializedLibrarySync(
         mutex = syncFromServerMutex,
         fetchLibraries = { apiService.getLibraries(scope) },
-        cachedServerLibraryIds = { libraryDao.getActiveAudiobookshelf(scope.idPrefix).map { it.id } },
+        cachedServerLibraryIds = {
+            libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null } }
+        },
         upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
-        deleteMissing = { keptIds -> libraryDao.deleteMissingActiveAudiobookshelf(scope.idPrefix, keptIds) },
-        deleteAllServerLibraries = { libraryDao.deleteActiveAudiobookshelf(scope.idPrefix) },
+        deleteMissing = { keptIds ->
+            val ids = libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null && id !in keptIds } }
+            if (ids.isNotEmpty()) libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, ids)
+        },
+        deleteAllServerLibraries = {
+            val ids = libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null } }
+            if (ids.isNotEmpty()) libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, ids)
+        },
         pruneLibraryBooks = { libraryId -> audioBookRepository.pruneServerBooksForRemovedLibrary(scope, libraryId) },
         captureReconciledLibraries = captureReconciledLibraries,
+        isCurrentScope = { apiService.isCurrentActiveRemoteScope(scope) },
     )
 }
 
@@ -210,23 +232,33 @@ internal suspend fun reconcileServerLibraries(
     deleteMissing: suspend (keptIds: List<String>) -> Unit,
     deleteAllServerLibraries: suspend () -> Unit,
     pruneLibraryBooks: suspend (libraryId: String) -> Boolean,
-) {
+    isCurrentScope: suspend () -> Boolean = { true },
+): Boolean {
+    if (!isCurrentScope()) return false
     if (fetched.isNotEmpty()) {
+        if (!isCurrentScope()) return false
         upsertAll(fetched)
     }
-    if (!isComplete) return
+    if (!isComplete) return true
 
+    if (!isCurrentScope()) return false
     val keptIds = fetched.map { it.id }.toSet()
     val omittedIds = cachedServerLibraryIds().filterNot { it in keptIds }
 
-    val retainedOmittedIds = omittedIds.filter { libraryId -> pruneLibraryBooks(libraryId) }
+    val retainedOmittedIds = mutableListOf<String>()
+    for (libraryId in omittedIds) {
+        if (!isCurrentScope()) return false
+        if (pruneLibraryBooks(libraryId)) retainedOmittedIds += libraryId
+    }
     val keptIdsIncludingDownloads = fetched.map { it.id } + retainedOmittedIds
 
+    if (!isCurrentScope()) return false
     if (keptIdsIncludingDownloads.isEmpty()) {
         deleteAllServerLibraries()
     } else {
         deleteMissing(keptIdsIncludingDownloads)
     }
+    return true
 }
 
 /**
@@ -259,6 +291,7 @@ internal suspend fun runSerializedLibrarySync(
     deleteAllServerLibraries: suspend () -> Unit,
     pruneLibraryBooks: suspend (libraryId: String) -> Boolean,
     captureReconciledLibraries: suspend () -> Unit = {},
+    isCurrentScope: suspend () -> Boolean = { true },
 ): RemoteResult<List<Library>> = mutex.withLock {
     val result = fetchLibraries()
     val fetched = when (result) {
@@ -267,7 +300,8 @@ internal suspend fun runSerializedLibrarySync(
         is RemoteResult.Failed -> return@withLock result
     }
 
-    withContext(NonCancellable) {
+    if (!isCurrentScope()) return@withLock RemoteResult.Failed("Auth session changed")
+    val reconciled = withContext(NonCancellable) {
         reconcileServerLibraries(
             isComplete = result is RemoteResult.Ok,
             fetched = fetched,
@@ -276,9 +310,14 @@ internal suspend fun runSerializedLibrarySync(
             deleteMissing = deleteMissing,
             deleteAllServerLibraries = deleteAllServerLibraries,
             pruneLibraryBooks = pruneLibraryBooks,
+            isCurrentScope = isCurrentScope,
         )
-        if (result is RemoteResult.Ok) {
-            captureReconciledLibraries()
+    }
+    if (!reconciled) return@withLock RemoteResult.Failed("Auth session changed")
+    if (result is RemoteResult.Ok) {
+        if (!isCurrentScope()) return@withLock RemoteResult.Failed("Auth session changed")
+        withContext(NonCancellable) {
+            if (isCurrentScope()) captureReconciledLibraries()
         }
     }
 

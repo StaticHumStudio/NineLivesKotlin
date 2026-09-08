@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -31,6 +32,7 @@ class HomeViewModel @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val syncManager: SyncManager,
     private val settingsManager: SettingsManager,
+    private val apiService: ApiService,
     private val libraryRepository: LibraryRepository,
     private val localFolderAccess: LocalFolderAccess,
 ) : ViewModel() {
@@ -119,11 +121,15 @@ class HomeViewModel @Inject constructor(
             combine(
                 settingsManager.settings,
                 settingsManager.hasAuthToken,
-            ) { settings, hasAuthToken -> settings to hasAuthToken }
+                apiService.activeRemoteScope,
+            ) { settings, hasAuthToken, scope -> Triple(settings, hasAuthToken, scope) }
                 .distinctUntilChanged()
-                .collectLatest { (settings, hasAuthToken) ->
+                .collectLatest { (settings, hasAuthToken, scope) ->
                     val libraryId = settings.activeLibraryId
-                    if (libraryId != null && canShowHomeBooks(settings, hasAuthToken)) {
+                    if (
+                        libraryId != null && canShowHomeBooks(settings, hasAuthToken) &&
+                        (settings.appMode == AppMode.LOCAL || scope?.decodeForEgress(libraryId) != null)
+                    ) {
                         audioBookRepository.observeRecentlyPlayedRows(
                             libraryId = libraryId,
                             isLocal = settings.appMode == AppMode.LOCAL,

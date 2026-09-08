@@ -18,8 +18,9 @@ import com.ninelivesaudio.app.domain.util.toEpochMillis
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -41,41 +42,59 @@ class AudioBookRepository @Inject constructor(
     private val syncLibraryItemsMutex = Mutex()
 
     /** Observe all audiobooks (reactive). */
-    fun observeAll(): Flow<List<AudioBook>> = flow {
-        val scope = apiService.captureActiveRemoteScope() ?: return@flow
-        emit(audioBookDao.getActiveCatalog(scope.idPrefix).map { it.toDomain() })
-    }
+    fun observeAll(): Flow<List<AudioBook>> = apiService.activeRemoteScope
+        .flatMapLatest { scope ->
+            scope?.let { active ->
+                flow {
+                    emit(audioBookDao.getActiveCatalog(active.idPrefix)
+                        .filter { it.isLocal == 1 || (active.decodeForEgress(it.id) != null && it.libraryId?.let(active::decodeForEgress) != null) }
+                        .map { it.toDomain() })
+                }
+            } ?: audioBookDao.observeBySource(1).map { rows -> rows.map { it.toDomain() } }
+        }
 
     /** Observe audiobooks for a specific library. */
-    fun observeByLibrary(libraryId: String): Flow<List<AudioBook>> = flow {
-        val scope = activeRemoteScopeFor(libraryId)
-        if (scope != null) {
-            audioBookDao.observeActiveRemoteByLibrary(libraryId, scope.idPrefix)
-                .collect { emit(it.map { entity -> entity.toDomain() }) }
-        } else {
-            audioBookDao.observeByLibrary(libraryId)
-                .collect { rows -> emit(rows.filter { it.isLocal == 1 }.map { it.toDomain() }) }
+    fun observeByLibrary(libraryId: String): Flow<List<AudioBook>> = apiService.activeRemoteScope
+        .flatMapLatest { scope ->
+            when {
+                scope?.decodeForEgress(libraryId) != null ->
+                    audioBookDao.observeActiveRemoteByLibrary(libraryId, scope.idPrefix)
+                        .map { rows -> rows.filter { scope.decodeForEgress(it.id) != null }.map { it.toDomain() } }
+                libraryId.startsWith("nlr1:") -> flowOf(emptyList())
+                else -> audioBookDao.observeByLibrary(libraryId)
+                    .map { rows -> rows.filter { it.isLocal == 1 }.map { it.toDomain() } }
+            }
         }
-    }
 
     /** Observe all local-source audiobooks. */
     fun observeLocalBooks(): Flow<List<AudioBook>> =
         audioBookDao.observeBySource(isLocal = 1).map { entities -> entities.map { it.toDomain() } }
 
     /** Observe a single audiobook. */
-    fun observeById(id: String): Flow<AudioBook?> =
-        audioBookDao.observeById(id).map { it?.toDomain() }
+    fun observeById(id: String): Flow<AudioBook?> = apiService.activeRemoteScope
+        .flatMapLatest { scope ->
+            when {
+                scope?.decodeForEgress(id) != null -> audioBookDao.observeById(id)
+                    .map { row -> row?.takeIf { it.isLocal == 0 && scope.decodeForEgress(it.id) != null }?.toDomain() }
+                id.startsWith("nlr1:") -> flowOf(null)
+                else -> audioBookDao.observeById(id).map { row -> row?.takeIf { it.isLocal == 1 }?.toDomain() }
+            }
+        }
 
     /** Get all audiobooks from local DB (one-shot). */
     suspend fun getAll(): List<AudioBook> =
         apiService.captureActiveRemoteScope()?.let { scope ->
-            audioBookDao.getActiveCatalog(scope.idPrefix).map { it.toDomain() }
+            audioBookDao.getActiveCatalog(scope.idPrefix)
+                .filter { it.isLocal == 1 || (scope.decodeForEgress(it.id) != null && it.libraryId?.let(scope::decodeForEgress) != null) }
+                .map { it.toDomain() }
         } ?: audioBookDao.getBySource(1).map { it.toDomain() }
 
     /** Get audiobooks by library (one-shot). */
     suspend fun getByLibrary(libraryId: String): List<AudioBook> =
         activeRemoteScopeFor(libraryId)?.let { scope ->
-            audioBookDao.getActiveRemoteByLibrary(libraryId, scope.idPrefix).map { it.toDomain() }
+            audioBookDao.getActiveRemoteByLibrary(libraryId, scope.idPrefix)
+                .filter { scope.decodeForEgress(it.id) != null }
+                .map { it.toDomain() }
         } ?: audioBookDao.getByLibraryAndSource(libraryId, isLocal = 1).map { it.toDomain() }
 
     /** Get audiobooks for one library and source mode (one-shot). */
@@ -84,7 +103,9 @@ class AudioBookRepository @Inject constructor(
             audioBookDao.getByLibraryAndSource(libraryId, 1).map { it.toDomain() }
         } else {
             activeRemoteScopeFor(libraryId)?.let { scope ->
-                audioBookDao.getActiveRemoteByLibrary(libraryId, scope.idPrefix).map { it.toDomain() }
+                audioBookDao.getActiveRemoteByLibrary(libraryId, scope.idPrefix)
+                    .filter { scope.decodeForEgress(it.id) != null }
+                    .map { it.toDomain() }
             } ?: emptyList()
         }
 
@@ -94,7 +115,12 @@ class AudioBookRepository @Inject constructor(
 
     /** Get audiobooks by library with last-played timestamps enriched. */
     suspend fun getByLibraryWithLastPlayed(libraryId: String): List<AudioBook> =
-        audioBookDao.getByLibraryWithLastPlayed(libraryId).map { result ->
+        audioBookDao.getByLibraryWithLastPlayed(libraryId)
+            .filter { result ->
+                result.audioBook.isLocal == 1 || activeRemoteScopeFor(libraryId)
+                    ?.decodeForEgress(result.audioBook.id) != null
+            }
+            .map { result ->
             result.audioBook.toDomain().copy(
                 lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
             )
@@ -103,7 +129,7 @@ class AudioBookRepository @Inject constructor(
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =
         activeRemoteScopeFor(id)?.let { scope ->
-            audioBookDao.getById(id)?.takeIf { it.isLocal == 0 && it.id.startsWith(scope.idPrefix) }?.toDomain()
+            audioBookDao.getById(id)?.takeIf { it.isLocal == 0 && scope.decodeForEgress(it.id) != null }?.toDomain()
         } ?: audioBookDao.getById(id)?.takeIf { it.isLocal == 1 }?.toDomain()
 
     /** Search audiobooks by title or author. */
@@ -115,7 +141,12 @@ class AudioBookRepository @Inject constructor(
 
     /** Get recently played audiobooks for Nine Lives home screen. */
     suspend fun getRecentlyPlayed(limit: Int = 9): List<Pair<AudioBook, Long>> =
-        audioBookDao.getRecentlyPlayed(limit).map { result ->
+        audioBookDao.getRecentlyPlayed(limit)
+            .filter { result ->
+                result.audioBook.isLocal == 1 || apiService.captureActiveRemoteScope()
+                    ?.decodeForEgress(result.audioBook.id) != null
+            }
+            .map { result ->
             val book = result.audioBook.toDomain()
             val lastPlayed = result.lastPlayedAt?.toEpochMillis() ?: 0L
             book to lastPlayed
@@ -152,11 +183,15 @@ class AudioBookRepository @Inject constructor(
 
     /** Observe recently played audiobooks (reactive). */
     fun observeRecentlyPlayed(limit: Int = 9): Flow<List<Pair<AudioBook, Long>>> =
-        audioBookDao.observeRecentlyPlayed(limit).map { results ->
-            results.map { result ->
+        apiService.activeRemoteScope.flatMapLatest { scope ->
+            audioBookDao.observeRecentlyPlayed(limit).map { results ->
+                results.filter { result ->
+                    result.audioBook.isLocal == 1 || scope?.decodeForEgress(result.audioBook.id) != null
+                }.map { result ->
                 val book = result.audioBook.toDomain()
                 val lastPlayed = result.lastPlayedAt?.toEpochMillis() ?: 0L
                 book to lastPlayed
+            }
             }
         }
 
@@ -166,10 +201,11 @@ class AudioBookRepository @Inject constructor(
         limit: Int,
     ): Flow<List<RecentlyPlayedResult>> = if (isLocal) {
         audioBookDao.observeRecentlyPlayedByLibrary(libraryId, limit)
-    } else {
-        activeRemoteScopeFor(libraryId)?.let {
-            audioBookDao.observeActiveRemoteRecentlyPlayedByLibrary(libraryId, it.idPrefix, limit)
-        } ?: kotlinx.coroutines.flow.flowOf(emptyList())
+    } else apiService.activeRemoteScope.flatMapLatest { scope ->
+        if (scope?.decodeForEgress(libraryId) != null) {
+            audioBookDao.observeActiveRemoteRecentlyPlayedByLibrary(libraryId, scope.idPrefix, limit)
+                .map { rows -> rows.filter { scope.decodeForEgress(it.audioBook.id) != null } }
+        } else flowOf(emptyList())
     }
 
     suspend fun getRecentlyPlayedRows(
@@ -205,7 +241,7 @@ class AudioBookRepository @Inject constructor(
         val sql = buildLibrarySql(tab, hideFinished, downloadedOnly, searchQuery.isNotBlank(), scope?.idPrefix)
 
         val args = mutableListOf<Any>(libraryId)
-        if (scope != null) args.addAll(listOf(scope.idPrefix, scope.idPrefix))
+        if (scope != null) args.addAll(List(4) { scope.idPrefix })
         if (searchQuery.isNotBlank()) {
             val pattern = "%${searchQuery}%"
             args.addAll(listOf(pattern, pattern, pattern, pattern))
@@ -225,13 +261,29 @@ class AudioBookRepository @Inject constructor(
             ?: audioBookDao.countByLibraryAndSource(libraryId, 1)
 
     suspend fun countForAuto(libraryId: String, isLocal: Boolean): Int =
-        audioBookDao.countByLibraryAndSource(libraryId, if (isLocal) 1 else 0)
+        countForAuto(apiService.captureActiveRemoteScope(), libraryId, isLocal)
+
+    suspend fun countForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
+        if (isLocal) audioBookDao.countByLibraryAndSource(libraryId, 1)
+        else scope?.takeIf { it.decodeForEgress(libraryId) != null }
+            ?.let { active -> audioBookDao.getActiveRemoteByLibrary(libraryId, active.idPrefix).count { active.decodeForEgress(it.id) != null } } ?: 0
 
     suspend fun countDownloadedForAuto(libraryId: String, isLocal: Boolean): Int =
-        audioBookDao.countDownloadedByLibrary(libraryId, if (isLocal) 1 else 0)
+        countDownloadedForAuto(apiService.captureActiveRemoteScope(), libraryId, isLocal)
+
+    suspend fun countDownloadedForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
+        if (isLocal) audioBookDao.countDownloadedByLibrary(libraryId, 1)
+        else scope?.takeIf { it.decodeForEgress(libraryId) != null }
+            ?.let { active -> audioBookDao.getActiveRemoteByLibrary(libraryId, active.idPrefix).count { it.isDownloaded == 1 && active.decodeForEgress(it.id) != null } } ?: 0
 
     suspend fun countRecentlyPlayedForAuto(libraryId: String, isLocal: Boolean): Int =
-        audioBookDao.countRecentlyPlayedByLibrary(libraryId, if (isLocal) 1 else 0)
+        countRecentlyPlayedForAuto(apiService.captureActiveRemoteScope(), libraryId, isLocal)
+
+    suspend fun countRecentlyPlayedForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
+        if (isLocal) audioBookDao.countRecentlyPlayedByLibrary(libraryId, 1)
+        else scope?.takeIf { it.decodeForEgress(libraryId) != null }
+            ?.let { active -> audioBookDao.getActiveRemoteRecentlyPlayedByLibrary(libraryId, active.idPrefix, Int.MAX_VALUE)
+                .map { it.audioBook }.filter { active.decodeForEgress(it.id) != null }.distinctBy { it.id }.size } ?: 0
 
     /** Get distinct series names for a library. */
     suspend fun getDistinctSeries(libraryId: String): List<String> =
@@ -282,9 +334,17 @@ class AudioBookRepository @Inject constructor(
         fetchItems = { apiService.getLibraryItems(scope, libraryId) },
         mergeItems = { remote -> mergeSyncedBooks(remote, audioBookDao::getByIds) },
         upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
-        cachedNonDownloadedIds = { id -> audioBookDao.getNonDownloadedActiveServerIdsByLibrary(id, scope.idPrefix) },
+        cachedNonDownloadedIds = { id ->
+            audioBookDao.getNonDownloadedActiveServerIdsByLibrary(id, scope.idPrefix)
+                .filter { scope.decodeForEgress(it) != null }
+        },
         deleteByIds = { id, ids -> audioBookDao.deleteActiveServerBooksByIds(id, scope.idPrefix, ids) },
-        deleteAllServerBooks = { id -> audioBookDao.deleteActiveServerBooksByLibrary(id, scope.idPrefix) },
+        deleteAllServerBooks = { id ->
+            val ids = audioBookDao.getNonDownloadedActiveServerIdsByLibrary(id, scope.idPrefix)
+                .filter { scope.decodeForEgress(it) != null }
+            if (ids.isNotEmpty()) audioBookDao.deleteActiveServerBooksByIds(id, scope.idPrefix, ids)
+        },
+        isCurrentScope = { apiService.isCurrentActiveRemoteScope(scope) },
     )
 
     /**
@@ -294,7 +354,11 @@ class AudioBookRepository @Inject constructor(
      */
     internal suspend fun pruneServerBooksForRemovedLibrary(scope: ActiveRemoteScope, libraryId: String): Boolean =
         runSerializedLibraryItemPrune(syncLibraryItemsMutex) {
-            audioBookDao.deleteActiveServerBooksByLibrary(libraryId, scope.idPrefix)
+            if (!apiService.isCurrentActiveRemoteScope(scope)) return@runSerializedLibraryItemPrune false
+            val ids = audioBookDao.getNonDownloadedActiveServerIdsByLibrary(libraryId, scope.idPrefix)
+                .filter { scope.decodeForEgress(it) != null }
+            if (ids.isNotEmpty()) audioBookDao.deleteActiveServerBooksByIds(libraryId, scope.idPrefix, ids)
+            if (!apiService.isCurrentActiveRemoteScope(scope)) return@runSerializedLibraryItemPrune false
             audioBookDao.hasDownloadedActiveServerBooks(libraryId, scope.idPrefix)
         }
 
@@ -470,20 +534,27 @@ internal suspend fun reconcileServerLibrary(
     cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
     deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
-) {
+    isCurrentScope: suspend () -> Boolean = { true },
+): Boolean {
+    if (!isCurrentScope()) return false
     if (merged.isNotEmpty()) {
+        if (!isCurrentScope()) return false
         upsertAll(merged)
     }
-    if (!isComplete) return
+    if (!isComplete) return true
+    if (!isCurrentScope()) return false
     if (merged.isEmpty()) {
+        if (!isCurrentScope()) return false
         deleteAllServerBooks(libraryId)
     } else {
         val keptIds = merged.mapTo(mutableSetOf()) { it.id }
         val missingIds = cachedNonDownloadedIds(libraryId).filterNot { it in keptIds }
         for (ids in missingIds.chunked(MAXIMUM_SERVER_BOOK_DELETE_BIND_COUNT)) {
+            if (!isCurrentScope()) return false
             deleteByIds(libraryId, ids)
         }
     }
+    return true
 }
 
 /**
@@ -502,6 +573,7 @@ internal suspend fun runSerializedLibraryItemSync(
     cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
     deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
+    isCurrentScope: suspend () -> Boolean = { true },
 ): RemoteResult<List<AudioBook>> = mutex.withLock {
     val result = fetchItems()
     val remote = when (result) {
@@ -511,7 +583,8 @@ internal suspend fun runSerializedLibraryItemSync(
     }
     val merged = mergeItems(remote)
 
-    withContext(NonCancellable) {
+    if (!isCurrentScope()) return@withLock RemoteResult.Failed("Auth session changed")
+    val reconciled = withContext(NonCancellable) {
         reconcileServerLibrary(
             isComplete = result is RemoteResult.Ok,
             merged = merged,
@@ -520,8 +593,10 @@ internal suspend fun runSerializedLibraryItemSync(
             cachedNonDownloadedIds = cachedNonDownloadedIds,
             deleteByIds = deleteByIds,
             deleteAllServerBooks = deleteAllServerBooks,
+            isCurrentScope = isCurrentScope,
         )
     }
+    if (!reconciled) return@withLock RemoteResult.Failed("Auth session changed")
 
     when (result) {
         is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
@@ -594,7 +669,7 @@ internal fun buildLibrarySql(
     append(" LEFT JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId")
     append(" WHERE ab.LibraryId = ?")
     if (remoteIdPrefix != null) {
-        append(" AND ab.IsLocal = 0 AND ab.Id LIKE ? || '%' AND ab.LibraryId LIKE ? || '%'")
+        append(" AND ab.IsLocal = 0 AND substr(ab.Id, 1, length(?)) = ? AND substr(ab.LibraryId, 1, length(?)) = ?")
     }
 
     // Archive visibility: the Archive tab shows only archived; every other tab

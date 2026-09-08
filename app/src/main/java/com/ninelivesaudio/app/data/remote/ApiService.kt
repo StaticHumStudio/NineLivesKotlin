@@ -7,6 +7,9 @@ import com.ninelivesaudio.app.domain.model.*
 import com.ninelivesaudio.app.service.SettingsManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -198,6 +201,7 @@ class ApiService @Inject constructor(
     private val tokenValidationMutex = Mutex()
     private val authMutationMutex = Mutex()
     private val authReadiness = AuthReadiness()
+    private val scopeGeneration = MutableStateFlow(0L)
     @Volatile private var authGeneration: Long = 0L
     @Volatile private var lastPersistedAuthRecord: StoredAuthRecord? = null
     @Volatile private var lastValidatedSession: AuthSessionIdentity? = null
@@ -232,6 +236,17 @@ class ApiService @Inject constructor(
     /** Delegates to C1b instead of comparing only owner or target identity. */
     internal suspend fun isCurrentActiveRemoteScope(scope: ActiveRemoteScope): Boolean =
         isCurrentFrozenRemoteRequest(scope.frozenRequest)
+
+    /**
+     * Every active-owner collector must restart from this full C1b identity,
+     * not merely selected settings or an owner prefix. Settings publication
+     * covers route revisions while [scopeGeneration] covers bearer, owner, and
+     * auth generation mutation.
+     */
+    internal val activeRemoteScope: Flow<ActiveRemoteScope?> = combine(
+        settingsManager.settings,
+        scopeGeneration,
+    ) { _, _ -> captureActiveRemoteScope() }
 
     /**
      * Binds a legacy, ownerless session only after its route and bearer are
@@ -763,6 +778,7 @@ class ApiService @Inject constructor(
     /** Validation verdicts belong to one exact auth generation and server. */
     private fun recordAuthMutation() {
         authGeneration++
+        scopeGeneration.value++
         authInterceptor.updateGeneration(authGeneration)
         if (!authInterceptor.hasToken()) lastPersistedAuthRecord = null
         clearValidationCache()

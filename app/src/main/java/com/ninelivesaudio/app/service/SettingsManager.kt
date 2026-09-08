@@ -108,6 +108,8 @@ internal fun clearInvalidRemoteLibrarySelection(
     ?.let { settings.copy(selectedLibraryId = null) }
     ?: settings
 
+private class StaleSettingsMutation : IllegalStateException()
+
 /** Serializes the first disk load with every later settings mutation. */
 internal class SerializedSettingsState<T>(
     initial: T,
@@ -401,6 +403,26 @@ class SettingsManager @Inject constructor(
         updateSettings { settings ->
             clearInvalidRemoteLibrarySelection(settings, isActiveRemoteLibraryId)
         }
+    }
+
+    /** Performs the durable write only when the caller's full remote scope is still current. */
+    internal suspend fun updateSettingsIfCurrent(
+        isCurrent: suspend () -> Boolean,
+        transform: (AppSettings) -> AppSettings,
+    ): Boolean = try {
+        if (!isCurrent()) return false
+        serializedState.update(
+            read = { readSettingsFromDisk() },
+            persist = { candidate ->
+                if (!isCurrent()) throw StaleSettingsMutation()
+                persistSettingsToDisk(candidate)
+            },
+            transform = transform,
+        )
+        _isLoaded.value = true
+        true
+    } catch (_: StaleSettingsMutation) {
+        false
     }
 
     /**

@@ -3,38 +3,29 @@ package com.ninelivesaudio.app.data.remote
 import android.util.Log
 import com.ninelivesaudio.app.service.SettingsManager
 import okhttp3.OkHttpClient
+import java.net.Socket
 import java.net.URI
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.util.Locale
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLEngine
+import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509ExtendedTrustManager
 import javax.net.ssl.X509TrustManager
 
 /**
- * Provides scoped SSL bypass for self-hosted Audiobookshelf servers.
+ * Provides opt-in, host-scoped trust on self-hosted Audiobookshelf servers.
  *
- * ## Security Trade-off
- *
- * Many Audiobookshelf users run self-hosted servers on their LAN with self-signed
- * certificates. Without this bypass, those users cannot connect at all. This is an
- * accepted trade-off for a self-hosted server client.
- *
- * ## Safeguards
- *
- * 1. **Opt-in only:** `allowSelfSignedCertificates` defaults to `false` in [AppSettings].
- *    The permissive trust manager is never installed unless the user explicitly enables it.
- * 2. **Host-scoped:** The custom [javax.net.ssl.HostnameVerifier] restricts certificate
- *    acceptance to the single hostname extracted from the configured server URL. Requests
- *    to any other host use standard certificate validation.
- * 3. **No MITM for third parties:** Only the configured Audiobookshelf server is affected.
- *    All other HTTPS connections (analytics, CDNs, etc.) use the system CA store.
- *
- * ## TOFU Protection
- *
- * With self-signed cert opt-in enabled, the app stores a SHA-256 fingerprint for the
- * configured host on first successful handshake and rejects future mismatches.
+ * The opt-in is snapshotted when the process singleton OkHttp client is built.
+ * The selected server host is resolved at each host-aware TLS handshake because
+ * the first authorized login route is not durable until that login begins.
  */
 object SelfSignedCertTrustManager {
     private const val TAG = "SelfSignedTrustManager"
@@ -48,124 +39,178 @@ object SelfSignedCertTrustManager {
             "Possible MITM attack or intentional server certificate rotation."
     )
 
+    internal enum class HostAwareTrustCall { SOCKET, ENGINE }
 
     /**
-     * Configures the OkHttpClient.Builder to accept self-signed certificates
-     * ONLY for the server host from settings, and ONLY if the user opted in.
-     *
-     * When `allowSelfSignedCertificates` is `false` (the default), this method is a
-     * no-op — the default OkHttp trust manager validates certificate chains against
-     * the system CA store as normal.
+     * Configures the process client from a durable opt-in read. Updating the
+     * setting later does not mutate this client's TLS policy.
      */
-    fun OkHttpClient.Builder.configureSelfSignedCerts(
+    internal fun OkHttpClient.Builder.configureSelfSignedCerts(
         settingsManager: SettingsManager,
+        onHostAwareTrustCheck: ((HostAwareTrustCall, String?) -> Unit)? = null,
     ): OkHttpClient.Builder {
-        // Only install the permissive trust manager when the user has opted in.
-        // Without this guard, the no-op checkServerTrusted() accepts every cert.
-        val settings = settingsManager.currentSettings
-        if (!settings.allowSelfSignedCertificates) {
-            return this
-        }
+        if (!settingsManager.readPersistedAllowSelfSignedCertificates()) return this
 
-        val trustManager = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                throw CertificateException("Client certificates not supported")
-            }
-
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                if (chain.isNullOrEmpty()) {
-                    throw CertificateException("Server certificate chain is empty")
-                }
-
-                chain.forEach { cert -> cert.checkValidity() }
-
-                val serverUrl = settingsManager.currentSettings.serverUrl
-                val configuredHost = try {
-                    URI(serverUrl).host?.lowercase()
-                } catch (_: Exception) {
-                    null
-                }
-
-                if (configuredHost.isNullOrEmpty()) {
-                    throw CertificateException("Configured server host is invalid")
-                }
-
-                val leafCert = chain.first()
-                val fingerprint = leafCert.sha256Fingerprint()
-                val trustedFingerprint = settingsManager.getTrustedCertificateFingerprint(configuredHost)
-
-                if (trustedFingerprint == null) {
-                    // First-time connection: accept here. Enrollment happens in the
-                    // hostnameVerifier from this session's own peer certificate, so it
-                    // is bound to the verified hostname and the actual handshake — no
-                    // shared cross-connection state to race or poison.
-                    Log.i(TAG, "TOFU first contact for host=$configuredHost (enrollment pending hostname verification)")
-                    return
-                }
-
-                if (!fingerprint.equals(trustedFingerprint, ignoreCase = true)) {
-                    Log.e(
-                        TAG,
-                        "TLS fingerprint mismatch for host=$configuredHost expected=$trustedFingerprint actual=$fingerprint"
-                    )
-                    throw CertificateFingerprintMismatchException(
-                        host = configuredHost,
-                        expectedFingerprint = trustedFingerprint,
-                        actualFingerprint = fingerprint,
-                    )
-                }
-            }
-
-            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        }
-
+        val platformTrustManager = platformTrustManager()
+        val trustManager = HostScopedTrustManager(
+            platformTrustManager = platformTrustManager,
+            configuredHost = { settingsManager.currentSettings.serverUrl.toNormalizedHost() },
+            trustedFingerprint = settingsManager::getTrustedCertificateFingerprint,
+            saveFingerprint = settingsManager::saveTrustedCertificateFingerprint,
+            onHostAwareTrustCheck = onHostAwareTrustCheck,
+        )
         val sslContext = SSLContext.getInstance("TLS")
         sslContext.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
 
         sslSocketFactory(sslContext.socketFactory, trustManager)
+        hostnameVerifier(hostnameVerifierFor(trustManager, settingsManager))
+        return this
+    }
 
-        hostnameVerifier { hostname, session ->
-            val currentSettings = settingsManager.currentSettings
-            val serverUrl = currentSettings.serverUrl
-            if (serverUrl.isEmpty()) return@hostnameVerifier false
-
+    internal fun hostnameVerifierFor(
+        trustManager: HostScopedTrustManager,
+        settingsManager: SettingsManager,
+    ) = javax.net.ssl.HostnameVerifier { hostname, session ->
+        val normalizedHost = hostname.normalizeHost()
+        if (normalizedHost == null || normalizedHost != settingsManager.currentSettings.serverUrl.toNormalizedHost()) {
+            HttpsURLConnection.getDefaultHostnameVerifier().verify(hostname, session)
+        } else {
             try {
-                val configuredHost = URI(serverUrl).host
-                val matches = hostname.equals(configuredHost, ignoreCase = true)
-                if (!matches) return@hostnameVerifier false
-
-                // Enroll TOFU here, from THIS session's own peer certificate, only
-                // if nothing is stored yet. Deriving the fingerprint from the
-                // verified session (rather than a shared field set during
-                // checkServerTrusted) ties it to this exact handshake and hostname,
-                // so concurrent first-time handshakes can't enroll each other's cert.
-                // Wrapped separately so an enrollment hiccup never blocks a valid connection.
-                try {
-                    val normalizedHost = configuredHost?.lowercase()
-                    if (!normalizedHost.isNullOrEmpty() &&
-                        settingsManager.getTrustedCertificateFingerprint(normalizedHost) == null
-                    ) {
-                        val leaf = session.peerCertificates.firstOrNull() as? X509Certificate
-                        if (leaf != null) {
-                            settingsManager.saveTrustedCertificateFingerprint(
-                                normalizedHost,
-                                leaf.sha256Fingerprint(),
-                            )
-                            Log.i(TAG, "TOFU enrolled fingerprint for host=$normalizedHost from verified session")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "TOFU enrollment skipped: ${e.message}")
+                val leaf = session.peerCertificates.firstOrNull() as? X509Certificate
+                if (leaf == null) false else {
+                    trustManager.enrollFingerprintIfNeeded(normalizedHost, leaf)
+                    true
                 }
-
+            } catch (e: Exception) {
+                Log.w(TAG, "TOFU enrollment skipped: ${e.message}")
                 true
-            } catch (_: Exception) {
-                false
+            }
+        }
+    }
+
+    internal class HostScopedTrustManager(
+        private val platformTrustManager: X509TrustManager,
+        private val configuredHost: () -> String?,
+        private val trustedFingerprint: (String) -> String?,
+        private val saveFingerprint: (String, String) -> Unit,
+        private val onHostAwareTrustCheck: ((HostAwareTrustCall, String?) -> Unit)? = null,
+    ) : X509ExtendedTrustManager() {
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String) {
+            platformTrustManager.checkClientTrusted(chain, authType)
+        }
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String, socket: Socket) {
+            if (platformTrustManager is X509ExtendedTrustManager) {
+                platformTrustManager.checkClientTrusted(chain, authType, socket)
+            } else {
+                platformTrustManager.checkClientTrusted(chain, authType)
             }
         }
 
-        return this
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String, engine: SSLEngine) {
+            if (platformTrustManager is X509ExtendedTrustManager) {
+                platformTrustManager.checkClientTrusted(chain, authType, engine)
+            } else {
+                platformTrustManager.checkClientTrusted(chain, authType)
+            }
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) {
+            // A hostless check must not receive TOFU trust. The platform manager
+            // rejects an untrusted chain here, including self-signed certificates.
+            platformTrustManager.checkServerTrusted(chain, authType)
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String, socket: Socket) {
+            checkServerTrustedForHost(
+                chain = chain,
+                authType = authType,
+                peerHost = socket.peerHost(),
+                call = HostAwareTrustCall.SOCKET,
+                platformCheck = {
+                    if (platformTrustManager is X509ExtendedTrustManager) {
+                        platformTrustManager.checkServerTrusted(chain, authType, socket)
+                    } else {
+                        platformTrustManager.checkServerTrusted(chain, authType)
+                    }
+                },
+            )
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String, engine: SSLEngine) {
+            checkServerTrustedForHost(
+                chain = chain,
+                authType = authType,
+                peerHost = engine.handshakeSession?.peerHost,
+                call = HostAwareTrustCall.ENGINE,
+                platformCheck = {
+                    if (platformTrustManager is X509ExtendedTrustManager) {
+                        platformTrustManager.checkServerTrusted(chain, authType, engine)
+                    } else {
+                        platformTrustManager.checkServerTrusted(chain, authType)
+                    }
+                },
+            )
+        }
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> = platformTrustManager.acceptedIssuers
+
+        internal fun enrollFingerprintIfNeeded(host: String, leaf: X509Certificate) {
+            if (trustedFingerprint(host) == null) {
+                saveFingerprint(host, leaf.sha256Fingerprint())
+                Log.i(TAG, "TOFU enrolled fingerprint for host=$host from verified session")
+            }
+        }
+
+        internal fun checkServerTrustedForHost(
+            chain: Array<out X509Certificate>,
+            authType: String,
+            peerHost: String?,
+            call: HostAwareTrustCall,
+            platformCheck: () -> Unit,
+        ) {
+            val normalizedPeerHost = peerHost.normalizeHost()
+            onHostAwareTrustCheck?.invoke(call, normalizedPeerHost)
+            if (normalizedPeerHost == null || normalizedPeerHost != configuredHost()) {
+                platformCheck()
+                return
+            }
+
+            if (chain.isEmpty()) throw CertificateException("Server certificate chain is empty")
+            chain.forEach { it.checkValidity() }
+
+            val fingerprint = chain.first().sha256Fingerprint()
+            val trusted = trustedFingerprint(normalizedPeerHost)
+            if (trusted == null) {
+                Log.i(TAG, "TOFU first contact for host=$normalizedPeerHost (enrollment pending hostname verification)")
+                return
+            }
+            if (!fingerprint.equals(trusted, ignoreCase = true)) {
+                Log.e(TAG, "TLS fingerprint mismatch for host=$normalizedPeerHost expected=$trusted actual=$fingerprint")
+                throw CertificateFingerprintMismatchException(normalizedPeerHost, trusted, fingerprint)
+            }
+        }
+
     }
+
+    private fun platformTrustManager(): X509TrustManager {
+        val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+        factory.init(null as KeyStore?)
+        return factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
+            ?: throw IllegalStateException("Platform X509 trust manager is unavailable")
+    }
+
+    private fun Socket.peerHost(): String? =
+        (this as? SSLSocket)?.handshakeSession?.peerHost ?: (this as? SSLSocket)?.session?.peerHost
+
+    private fun String?.toNormalizedHost(): String? = try {
+        this?.takeIf(String::isNotBlank)?.let { URI(it).host.normalizeHost() }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun String?.normalizeHost(): String? =
+        this?.trim()?.takeIf(String::isNotEmpty)?.lowercase(Locale.ROOT)
 
     private fun X509Certificate.sha256Fingerprint(): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(encoded)

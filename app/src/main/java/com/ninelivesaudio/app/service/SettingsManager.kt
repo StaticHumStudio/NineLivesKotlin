@@ -250,6 +250,35 @@ class SettingsManager @Inject constructor(
     val currentSettings: AppSettings
         get() = _settings.value
 
+    /**
+     * Reads only the durable self-signed certificate opt-in for process-time
+     * HTTP client construction. This deliberately does not load, publish,
+     * migrate, clean up, or create settings. The encrypted record remains
+     * authoritative when present, including when it is corrupt.
+     */
+    internal fun readPersistedAllowSelfSignedCertificates(): Boolean {
+        val encryptedSettings = try {
+            encryptedPrefs.getString(KEY_SETTINGS, null)
+        } catch (e: Exception) {
+            Log.w(TAG, "TLS policy read failed, standard certificate validation remains active", e)
+            return false
+        }
+
+        val serialized = try {
+            encryptedSettings ?: legacySettingsFile.takeIf(File::exists)?.readText()
+        } catch (e: Exception) {
+            Log.w(TAG, "Legacy TLS policy read failed, standard certificate validation remains active", e)
+            return false
+        } ?: return false
+
+        return try {
+            json.decodeFromString<AppSettings>(serialized).allowSelfSignedCertificates
+        } catch (e: Exception) {
+            Log.w(TAG, "TLS policy is unreadable, standard certificate validation remains active", e)
+            false
+        }
+    }
+
     // ─── Settings ────────────────────────────────────────────────────────
 
     suspend fun loadSettings(): AppSettings {

@@ -852,9 +852,28 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onAllowSelfSignedChanged(value: Boolean) {
-        _uiState.update { it.copy(allowSelfSignedCertificates = value) }
         viewModelScope.launch {
-            settingsManager.updateSettings { it.copy(allowSelfSignedCertificates = value) }
+            try {
+                settingsManager.updateSettings { it.copy(allowSelfSignedCertificates = value) }
+                _uiState.update {
+                    it.copy(
+                        allowSelfSignedCertificates = value,
+                        successMessage = if (value) {
+                            "Saved. Restart Nine Lives Audio to allow this server's self-signed certificate."
+                        } else {
+                            "Saved. Restart Nine Lives Audio to restore standard certificate validation. Current playback continues until restart."
+                        },
+                        errorMessage = null,
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        allowSelfSignedCertificates = settingsManager.currentSettings.allowSelfSignedCertificates,
+                        errorMessage = "Could not save certificate trust setting: ${e.message}",
+                    )
+                }
+            }
         }
     }
 

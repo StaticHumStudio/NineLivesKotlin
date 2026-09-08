@@ -1814,14 +1814,16 @@ class PlaybackManager @Inject constructor(
                             },
                         ) {
                             startPlaybackService()
-                            player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                            val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
+                            player.seekTo(resume.mediaItemIndex, resume.positionMs)
                             player.prepare()
                             player.playWhenReady = true
                         }
                     }
                     return
                 }
-                player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
+                player.seekTo(resume.mediaItemIndex, resume.positionMs)
                 player.prepare()
             }
             player.playWhenReady = true

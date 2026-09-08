@@ -173,6 +173,7 @@ class ApiService @Inject constructor(
     private val authMutationMutex = Mutex()
     private val authReadiness = AuthReadiness()
     @Volatile private var authGeneration: Long = 0L
+    @Volatile private var lastPersistedAuthRecord: StoredAuthRecord? = null
     @Volatile private var lastValidatedSession: AuthSessionIdentity? = null
     @Volatile private var lastValidationAtMs: Long = 0L
     @Volatile private var lastValidationResult: TokenValidationResult? = null
@@ -180,6 +181,42 @@ class ApiService @Inject constructor(
     val isAuthenticated: Boolean
         get() = authInterceptor.hasTokenFor(settingsManager.currentSettings.serverUrl) &&
             validatedServerBaseUrl(settingsManager.currentSettings.serverUrl) != null
+
+    internal suspend fun captureRemoteTarget(): RemoteTarget? {
+        awaitAuthReady()
+        return authMutationMutex.withLock { currentRemoteTargetLocked() }
+    }
+
+    internal suspend fun isCurrentRemoteTarget(expected: RemoteTarget): Boolean =
+        authMutationMutex.withLock { expected == currentRemoteTargetLocked() }
+
+    private suspend fun currentRemoteTargetLocked(): RemoteTarget? {
+        val record = lastPersistedAuthRecord
+        val stored = try {
+            settingsManager.getAuthRecord()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return null
+        }
+        if (record != stored) return null
+        return captureRemoteTarget(
+            record, settingsManager.currentSettings.serverUrl, authGeneration,
+            runtimeAuthMatches = record != null && authInterceptor.matches(record.token, record.serverUrl.orEmpty()),
+        )
+    }
+
+    private suspend fun persistAuthenticatedRecord(record: StoredAuthRecord) {
+        // A failed commit can change SharedPreferences' memory map. Publish an
+        // owner only after its complete credential record is durably accepted.
+        lastPersistedAuthRecord = null
+        applyAuthTokenMutation(
+            updateRuntimeAuth = { authInterceptor.setToken(record.token, record.serverUrl.orEmpty()) },
+            recordMutation = { recordAuthMutation() },
+            persistSecureStorage = { settingsManager.saveAuthToken(record.token, record.serverUrl.orEmpty(), record.accountId) },
+        )
+        lastPersistedAuthRecord = record
+    }
 
     // ─── Auth ────────────────────────────────────────────────────────────
 
@@ -194,16 +231,23 @@ class ApiService @Inject constructor(
                 val previousSettings = settingsManager.currentSettings
                 val restorePreviousAuth = authInterceptor.restorePoint()
                 var previousToken: String? = null
+                var previousRecord: StoredAuthRecord? = null
                 var previousTokenServerUrl = previousSettings.serverUrl
                 var attemptedToken: String? = null
                 suspend fun restorePreviousSettings() {
                     settingsManager.saveSettings(previousSettings)
-                    attemptedToken?.let { settingsManager.replaceAuthTokenIfCurrent(it, previousToken, previousTokenServerUrl) }
+                    attemptedToken?.let {
+                        check(settingsManager.replaceAuthTokenIfCurrent(it, previousToken, previousTokenServerUrl, previousRecord?.accountId)) {
+                            "Auth session changed during password rollback"
+                        }
+                    }
+                    lastPersistedAuthRecord = previousRecord
                 }
                 try {
-                    previousToken = settingsManager.getAuthToken()
+                    previousToken = settingsManager.getAuthRecord()?.token
                     previousToken?.let { settingsManager.persistAuthTokenServerBinding(it, previousSettings.serverUrl) }
-                    previousTokenServerUrl = settingsManager.getAuthTokenServerUrl() ?: previousSettings.serverUrl
+                    previousRecord = settingsManager.getAuthRecord()
+                    previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
                     val normalizedUrl = normalizeServerUrl(serverUrl)
                     val normalizedUsername = username.trim()
 
@@ -229,7 +273,7 @@ class ApiService @Inject constructor(
                     }
 
                     val loginResponse = response.body()
-                    val token = loginResponse?.user?.token
+                    val token = loginResponse?.user?.token?.trim()
 
                     if (token.isNullOrEmpty()) {
                         lastError = "Server response did not contain authentication token"
@@ -246,11 +290,7 @@ class ApiService @Inject constructor(
 
                     // Retain the prior full scope if secure persistence fails.
                     attemptedToken = token
-                    applyAuthTokenMutation(
-                        updateRuntimeAuth = { authInterceptor.setToken(token, normalizedUrl) },
-                        recordMutation = { recordAuthMutation() },
-                        persistSecureStorage = { settingsManager.saveAuthToken(token, normalizedUrl) },
-                    )
+                    persistAuthenticatedRecord(StoredAuthRecord(token, normalizedUrl, loginResponse?.user?.id))
 
                     lastError = null
                     CredentialLoginResult.SUCCESS
@@ -274,8 +314,9 @@ class ApiService @Inject constructor(
         return withContext(Dispatchers.IO) {
             authMutationMutex.withLock {
                 val previousSettings = settingsManager.currentSettings
-                val previousToken = settingsManager.getAuthToken()
-                val previousTokenServerUrl = settingsManager.getAuthTokenServerUrl() ?: previousSettings.serverUrl
+                val previousRecord = settingsManager.getAuthRecord()
+                val previousToken = previousRecord?.token
+                val previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
                 val normalizedToken = token.trim()
                 try {
                     previousToken?.let { settingsManager.persistAuthTokenServerBinding(it, previousSettings.serverUrl) }
@@ -287,14 +328,25 @@ class ApiService @Inject constructor(
                     }
 
                     // Set token and validate it
-                    applyAuthTokenMutation(
-                        updateRuntimeAuth = { authInterceptor.setToken(normalizedToken, normalizedUrl) },
-                        recordMutation = { recordAuthMutation() },
-                        persistSecureStorage = { settingsManager.saveAuthToken(normalizedToken, normalizedUrl) },
-                    )
+                    persistAuthenticatedRecord(StoredAuthRecord(normalizedToken, normalizedUrl))
 
                     when (validateTokenDetailed(forceRefresh = true, tokenOverride = normalizedToken)) {
                         TokenValidationResult.VALID -> {
+                            // Only explicit token login fetches a profile here.
+                            // Cold startup restores an existing owner without
+                            // allocating the full progress/bookmark response.
+                            val accountId = try {
+                                api.getMe().takeIf { it.isSuccessful }?.body()?.id?.takeIf { it.isNotBlank() }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (accountId != null) {
+                                lastPersistedAuthRecord = null
+                                settingsManager.saveAuthToken(normalizedToken, normalizedUrl, accountId)
+                                lastPersistedAuthRecord = StoredAuthRecord(normalizedToken, normalizedUrl, accountId)
+                            }
                             lastError = null
                             true
                         }
@@ -305,19 +357,20 @@ class ApiService @Inject constructor(
                             // real "Invalid API token" verdict with a confusing
                             // "Auth session changed during token rollback" message.
                             runCatching {
+                                lastPersistedAuthRecord = null
                                 rollbackFailedTokenLogin(
                                     previousToken = previousToken,
                                     attemptedToken = normalizedToken,
                                     readStoredToken = { settingsManager.getAuthToken() },
                                     replaceStoredToken = { expected, replacement ->
-                                        check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement, previousTokenServerUrl)) {
+                                        check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement, previousTokenServerUrl, previousRecord?.accountId)) {
                                             "Auth session changed during token rollback"
                                         }
                                     },
                                     restorePreviousSettings = { settingsManager.saveSettings(previousSettings) },
                                     restoreRuntimeAuth = { authInterceptor.setToken(it, previousTokenServerUrl) },
                                     recordMutation = { recordAuthMutation() },
-                                )
+                                ).also { if (it) lastPersistedAuthRecord = previousRecord }
                             }.onFailure { e ->
                                 Log.e(TAG, "loginWithToken: Rollback failed after an invalid token", e)
                             }
@@ -333,19 +386,20 @@ class ApiService @Inject constructor(
                     }
                 } catch (e: Exception) {
                     runCatching {
+                        lastPersistedAuthRecord = null
                         rollbackFailedTokenLogin(
                             previousToken = previousToken,
                             attemptedToken = normalizedToken,
                             readStoredToken = { settingsManager.getAuthToken() },
                             replaceStoredToken = { expected, replacement ->
-                                check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement, previousTokenServerUrl)) {
+                                check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement, previousTokenServerUrl, previousRecord?.accountId)) {
                                     "Auth session changed during token rollback"
                                 }
                             },
                             restorePreviousSettings = { settingsManager.saveSettings(previousSettings) },
                             restoreRuntimeAuth = { authInterceptor.setToken(it, previousTokenServerUrl) },
                             recordMutation = { recordAuthMutation() },
-                        )
+                        ).also { if (it) lastPersistedAuthRecord = previousRecord }
                     }.exceptionOrNull()?.let(e::addSuppressed)
                     lastError = formatConnectionError(e)
                     false
@@ -470,6 +524,7 @@ class ApiService @Inject constructor(
     /** Validation verdicts belong to one exact auth generation and server. */
     private fun recordAuthMutation() {
         authGeneration++
+        if (!authInterceptor.hasToken()) lastPersistedAuthRecord = null
         clearValidationCache()
     }
 
@@ -595,8 +650,9 @@ class ApiService @Inject constructor(
                 // with a null token and poison every later validation.
                 var tokenReadable = true
                 var tokenServerUrl = ""
+                var restoredRecord: StoredAuthRecord? = null
                 val token = try {
-                    settingsManager.getAuthToken()?.also { restored ->
+                    settingsManager.getAuthRecord()?.token?.also { restored ->
                         var boundUrl = settingsManager.getAuthTokenServerUrl()
                         if (boundUrl == null) {
                             // Existing installations trust their previously saved
@@ -605,6 +661,7 @@ class ApiService @Inject constructor(
                             boundUrl = settingsManager.getAuthTokenServerUrl()
                         }
                         tokenServerUrl = boundUrl ?: ""
+                        restoredRecord = settingsManager.getAuthRecord()
                     }
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -615,6 +672,9 @@ class ApiService @Inject constructor(
                 }
                 authInterceptor.setToken(token, tokenServerUrl)
                 recordAuthMutation()
+                lastPersistedAuthRecord = restoredRecord?.takeIf {
+                    tokenReadable && it.token == token && it.serverUrl == tokenServerUrl
+                }
                 // Latch readiness only when the restore ran against healthy
                 // storage. A degraded run must stay retryable so the token
                 // reaches the interceptor once storage recovers.

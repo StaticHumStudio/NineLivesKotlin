@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.ninelivesaudio.app.domain.model.AppSettings
+import com.ninelivesaudio.app.data.remote.StoredAuthRecord
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -407,6 +408,7 @@ class SettingsManager @Inject constructor(
     companion object {
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_AUTH_TOKEN_SERVER_URL = "auth_token_server_url"
+        private const val KEY_AUTH_ACCOUNT_ID = "auth_account_id"
         private const val KEY_SETTINGS = "app_settings"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_CURRENT_PLAYBACK_BOOK_ID = "current_playback_book_id"
@@ -444,6 +446,15 @@ class SettingsManager @Inject constructor(
         encryptedPrefs.getString(KEY_AUTH_TOKEN_SERVER_URL, null)
     }
 
+    internal suspend fun getAuthRecord(): StoredAuthRecord? = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock {
+            encryptedPrefs.getString(KEY_AUTH_TOKEN, null)?.let { token ->
+                StoredAuthRecord(token, encryptedPrefs.getString(KEY_AUTH_TOKEN_SERVER_URL, null),
+                    encryptedPrefs.getString(KEY_AUTH_ACCOUNT_ID, null))
+            }
+        }
+    }
+
     /** Flush the existing token binding before changing settings, including a legacy binding. */
     suspend fun persistAuthTokenServerBinding(expected: String, serverUrl: String) = withContext(Dispatchers.IO) {
         authTokenMutex.withLock {
@@ -456,16 +467,18 @@ class SettingsManager @Inject constructor(
         }
     }
 
-    suspend fun saveAuthToken(token: String, serverUrl: String) = withContext(Dispatchers.IO) {
+    /** A null account explicitly replaces the prior owner with an unowned record. */
+    suspend fun saveAuthToken(token: String, serverUrl: String, accountId: String? = null) = withContext(Dispatchers.IO) {
         authTokenMutex.withLock {
             persistAuthTokenChange(
                 token = token,
                 commit = { sanitized ->
                     val editor = encryptedPrefs.edit()
                     if (sanitized == null) {
-                        editor.remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL)
+                        editor.remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL).remove(KEY_AUTH_ACCOUNT_ID)
                     } else {
                         editor.putString(KEY_AUTH_TOKEN, sanitized).putString(KEY_AUTH_TOKEN_SERVER_URL, serverUrl)
+                            .putString(KEY_AUTH_ACCOUNT_ID, accountId?.takeIf { it.isNotBlank() })
                     }
                     editor.commit()
                 },
@@ -478,13 +491,13 @@ class SettingsManager @Inject constructor(
         authTokenMutex.withLock {
             persistAuthTokenChange(
                 token = null,
-                commit = { encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL).commit() },
+                commit = { encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL).remove(KEY_AUTH_ACCOUNT_ID).commit() },
                 publish = { _hasAuthToken.value = it },
             )
         }
     }
 
-    suspend fun replaceAuthTokenIfCurrent(expected: String, replacement: String?, replacementServerUrl: String): Boolean =
+    suspend fun replaceAuthTokenIfCurrent(expected: String, replacement: String?, replacementServerUrl: String, replacementAccountId: String? = null): Boolean =
         withContext(Dispatchers.IO) {
             authTokenMutex.withLock {
                 if (encryptedPrefs.getString(KEY_AUTH_TOKEN, null) != expected.trim()) {
@@ -495,9 +508,10 @@ class SettingsManager @Inject constructor(
                     commit = { sanitized ->
                         val editor = encryptedPrefs.edit()
                         if (sanitized == null) {
-                            editor.remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL)
+                            editor.remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL).remove(KEY_AUTH_ACCOUNT_ID)
                         } else {
                             editor.putString(KEY_AUTH_TOKEN, sanitized).putString(KEY_AUTH_TOKEN_SERVER_URL, replacementServerUrl)
+                                .putString(KEY_AUTH_ACCOUNT_ID, replacementAccountId?.takeIf { it.isNotBlank() })
                         }
                         editor.commit()
                     },

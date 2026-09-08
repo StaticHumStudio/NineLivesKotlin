@@ -197,6 +197,7 @@ data class ApiUserProgress(
 
 @Serializable
 data class ApiMeResponse(
+    val id: String? = null,
     val mediaProgress: List<ApiMeMediaProgress>? = null,
     val bookmarks: List<ApiBookmark>? = null,
 )

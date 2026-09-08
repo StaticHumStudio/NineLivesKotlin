@@ -8,7 +8,10 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
+import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
+import com.ninelivesaudio.app.data.remote.StaleRemoteRequestException
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
@@ -39,6 +42,7 @@ class DownloadEngine @Inject constructor(
     private val downloadItemDao: DownloadItemDao,
     private val audioBookDao: AudioBookDao,
     private val api: AudiobookshelfApi,
+    private val apiService: ApiService,
     private val settingsManager: SettingsManager,
 ) {
     companion object {
@@ -55,18 +59,21 @@ class DownloadEngine @Inject constructor(
     suspend fun download(
         item: DownloadItem,
         audioBook: AudioBook,
+        scope: ActiveRemoteScope,
         onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
     ): DownloadItem {
+        if (!canMutate(scope, item)) return item
         var download = item.copy(status = DownloadStatus.Downloading)
-        downloadItemDao.upsert(download.toEntity())
+        if (!guardedUpsert(scope, download)) return item
 
         // Create download directory
+        if (!apiService.isCurrentActiveRemoteScope(scope)) return item
         val downloadDir = getDownloadPath(audioBook)
         downloadDir.mkdirs()
 
         // Get full book details if audio files are missing
         val book = if (audioBook.audioFiles.isEmpty()) {
-            fetchFullBookDetails(audioBook.id) ?: audioBook
+            fetchFullBookDetails(scope, audioBook.id) ?: audioBook
         } else {
             audioBook
         }
@@ -76,7 +83,7 @@ class DownloadEngine @Inject constructor(
                 status = DownloadStatus.Failed,
                 errorMessage = "No audio files available for download",
             )
-            downloadItemDao.upsert(download.toEntity())
+            guardedUpsert(scope, download)
             return download
         }
 
@@ -121,7 +128,12 @@ class DownloadEngine @Inject constructor(
                         throw Exception("Missing audio file identifier for $fileName")
                     }
 
-                    val response = api.getAudioFileStream(book.id, audioFile.ino)
+                    val rawBookId = scope.decodeForEgress(book.id) ?: return item
+                    val response = apiService.dispatchActiveRemoteScope(
+                        scope,
+                        request = { tag -> api.getAudioFileStream(rawBookId, audioFile.ino, tag) },
+                        publish = { it },
+                    ) ?: return item
                     if (!response.isSuccessful || response.body() == null) {
                         // Close the (error) body so the streaming connection is
                         // returned to the pool instead of leaking a socket/fd on
@@ -139,6 +151,9 @@ class DownloadEngine @Inject constructor(
 
                                 while (input.read(buffer).also { bytesRead = it } > 0) {
                                     currentCoroutineContext().ensureActive()
+                                    if (!apiService.isCurrentActiveRemoteScope(scope)) {
+                                        throw StaleRemoteRequestException()
+                                    }
                                     output.write(buffer, 0, bytesRead)
                                     downloadedBytes += bytesRead
 
@@ -149,7 +164,7 @@ class DownloadEngine @Inject constructor(
 
                                     if (shouldPersistProgress(bytesDelta, timeDelta)) {
                                         download = download.copy(downloadedBytes = downloadedBytes)
-                                        downloadItemDao.upsert(download.toEntity())
+                                        if (!guardedUpsert(scope, download)) return item
                                         onProgress(download.id, downloadedBytes, totalBytes)
                                         lastPersistedBytes = downloadedBytes
                                         lastPersistedAt = now
@@ -169,7 +184,7 @@ class DownloadEngine @Inject constructor(
 
                     // Always flush progress after each completed file.
                     download = download.copy(downloadedBytes = downloadedBytes)
-                    downloadItemDao.upsert(download.toEntity())
+                    if (!guardedUpsert(scope, download)) return item
                     onProgress(download.id, downloadedBytes, totalBytes)
                     lastPersistedBytes = downloadedBytes
                     lastPersistedAt = System.currentTimeMillis()
@@ -184,6 +199,11 @@ class DownloadEngine @Inject constructor(
                         // Ignore cleanup errors - file may already be deleted
                     }
                     throw e
+                } catch (_: StaleRemoteRequestException) {
+                    // The captured owner changed. The old task must not make a
+                    // terminal write, delete its partial bytes, or retry under
+                    // the new account.
+                    return item
                 } catch (e: Exception) {
                     try { partPath.delete() } catch (cleanupError: Exception) {
                         // Ignore cleanup errors - file may already be deleted
@@ -202,7 +222,7 @@ class DownloadEngine @Inject constructor(
                             errorMessage = "$fileName: ${e.message}",
                             downloadedBytes = downloadedBytes,
                         )
-                        downloadItemDao.upsert(download.toEntity())
+                        guardedUpsert(scope, download)
                         return download
                     }
                 }
@@ -215,15 +235,17 @@ class DownloadEngine @Inject constructor(
             downloadedBytes = maxOf(downloadedBytes, totalBytes),
             completedAt = System.currentTimeMillis(),
         )
-        downloadItemDao.upsert(download.toEntity())
+        if (!guardedUpsert(scope, download)) return item
 
         // Persist the cover next to the audio so it renders offline. Best-effort:
         // a cover failure must never fail an otherwise-complete download.
-        val localCoverUri = persistCover(book, downloadDir)
+        val localCoverUri = persistCover(scope, book, downloadDir)
 
         // Update audiobook as downloaded with local path
         val bookEntity = audioBookDao.getById(audioBook.id)
-        if (bookEntity != null) {
+        if (bookEntity != null && apiService.isCurrentActiveRemoteScope(scope) &&
+            scope.decodeForEgress(bookEntity.id) != null
+        ) {
             audioBookDao.upsert(
                 bookEntity.copy(
                     isDownloaded = 1,
@@ -241,10 +263,15 @@ class DownloadEngine @Inject constructor(
      * network. Returns the file:// URI, or null on any failure — the cover is
      * optional and must not break a completed download.
      */
-    private suspend fun persistCover(book: AudioBook, downloadDir: File): String? {
+    private suspend fun persistCover(scope: ActiveRemoteScope, book: AudioBook, downloadDir: File): String? {
         if (book.coverPath.isNullOrEmpty()) return null
         return try {
-            val response = api.getCoverImage(book.id)
+            val rawBookId = scope.decodeForEgress(book.id) ?: return null
+            val response = apiService.dispatchActiveRemoteScope(
+                scope,
+                request = { tag -> api.getCoverImage(rawBookId, dispatch = tag) },
+                publish = { it },
+            ) ?: return null
             if (!response.isSuccessful) {
                 response.errorBody()?.close()
                 response.body()?.close()
@@ -261,9 +288,14 @@ class DownloadEngine @Inject constructor(
     }
 
     /** Fetch full book details (audio file metadata) from the server. */
-    suspend fun fetchFullBookDetails(audioBookId: String): AudioBook? {
+    suspend fun fetchFullBookDetails(scope: ActiveRemoteScope, audioBookId: String): AudioBook? {
+        val rawBookId = scope.decodeForEgress(audioBookId) ?: return null
         return try {
-            val response = api.getItem(audioBookId, expanded = 1)
+            val response = apiService.dispatchActiveRemoteScope(
+                scope,
+                request = { tag -> api.getItem(rawBookId, expanded = 1, dispatch = tag) },
+                publish = { it },
+            ) ?: return null
             if (response.isSuccessful) {
                 response.body()?.let { apiItem ->
                     val audioFiles = apiItem.media?.audioFiles?.mapIndexed { idx, af ->
@@ -277,12 +309,26 @@ class DownloadEngine @Inject constructor(
                         )
                     } ?: emptyList()
 
-                    audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) null else {
+                        audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
+                    }
                 }
             } else null
         } catch (_: Exception) {
             null
         }
+    }
+
+    private suspend fun canMutate(scope: ActiveRemoteScope, item: DownloadItem): Boolean {
+        if (scope.decodeForEgress(item.id) == null || scope.decodeForEgress(item.audioBookId) == null) return false
+        if (!apiService.isCurrentActiveRemoteScope(scope)) return false
+        return downloadItemDao.getRemoteByIdForOwner(item.id, scope.idPrefix)?.audioBookId == item.audioBookId
+    }
+
+    private suspend fun guardedUpsert(scope: ActiveRemoteScope, item: DownloadItem): Boolean {
+        if (!canMutate(scope, item)) return false
+        downloadItemDao.upsert(item.toEntity())
+        return true
     }
 
     // ─── File Paths ──────────────────────────────────────────────────────────

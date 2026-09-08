@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import com.ninelivesaudio.app.domain.model.AppMode
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -207,6 +208,14 @@ class PlaybackProgressOwnerTest {
         releaseTerminal.complete(Unit)
         terminal.join()
         bookB.join()
+    }
+}
+
+class SyncManagerRemoteFenceTest {
+    @Test
+    fun `C3 keeps remote progress mutation fail closed`() {
+        assertFalse(remoteProgressMutationAllowed(AppMode.AUDIOBOOKSHELF))
+        assertTrue(remoteProgressMutationAllowed(AppMode.LOCAL))
     }
 }
 

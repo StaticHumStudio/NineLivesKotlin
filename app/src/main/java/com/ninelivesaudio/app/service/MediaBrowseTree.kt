@@ -8,6 +8,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -132,7 +133,9 @@ class MediaBrowseTree @Inject constructor(
     suspend fun getChildren(parentId: String, page: Int = 0, pageSize: Int = 50): List<MediaItem> {
         apiService.awaitAuthReady()
         val settings = resolveActiveScope()
-        val canBrowse = canBrowseAuto(settings, apiService.isAuthenticated)
+        val remoteScope = activeRemoteScope(settings)
+        val canBrowse = canBrowseAuto(settings, apiService.isAuthenticated) &&
+            (settings.appMode == AppMode.LOCAL || remoteScope != null)
         if (parentId == ROOT_ID) return getRootItems(canBrowse)
         if (!canBrowse) return emptyList()
         return when {
@@ -147,13 +150,14 @@ class MediaBrowseTree @Inject constructor(
                             .map { (book, _) -> book }
                     },
                 )
+                    .let { visibleBooks(it, remoteScope) }
                     .map(::bookToMediaItem)
             }
 
             parentId == DOWNLOADED_ID -> {
                 val libraryId = settings.activeLibraryId ?: return emptyList()
                 downloadedBooksForAuto(
-                    audioBookRepository.getFilteredBooks(libraryId, downloadedOnly = true),
+                    visibleBooks(audioBookRepository.getFilteredBooks(libraryId, downloadedOnly = true), remoteScope),
                     settings,
                 )
                     .sortedBy { it.title.lowercase() }
@@ -165,7 +169,7 @@ class MediaBrowseTree @Inject constructor(
             parentId == LIBRARY_ID -> {
                 val libraryId = settings.activeLibraryId ?: return emptyList()
                 browseBooksForAuto(
-                    audioBookRepository.getFilteredBooks(libraryId),
+                    visibleBooks(audioBookRepository.getFilteredBooks(libraryId), remoteScope),
                     settings,
                 )
                     .sortedBy { it.title.lowercase() }
@@ -182,9 +186,11 @@ class MediaBrowseTree @Inject constructor(
     suspend fun getChildCount(parentId: String): Int {
         apiService.awaitAuthReady()
         val settings = resolveActiveScope()
+        val remoteScope = activeRemoteScope(settings)
         return autoBrowseChildCount(
             parentId = parentId,
-            canBrowse = canBrowseAuto(settings, apiService.isAuthenticated),
+            canBrowse = canBrowseAuto(settings, apiService.isAuthenticated) &&
+                (settings.appMode == AppMode.LOCAL || remoteScope != null),
             activeLibraryId = settings.activeLibraryId,
             activeIsLocal = settings.appMode == AppMode.LOCAL,
             countRecent = audioBookRepository::countRecentlyPlayedForAuto,
@@ -197,8 +203,10 @@ class MediaBrowseTree @Inject constructor(
     suspend fun getItem(mediaId: String): MediaItem? {
         apiService.awaitAuthReady()
         val settings = resolveActiveScope()
+        val remoteScope = activeRemoteScope(settings)
         if (mediaId != ROOT_ID && mediaId != SETUP_REQUIRED_ID &&
-            !canBrowseAuto(settings, apiService.isAuthenticated)
+            (!canBrowseAuto(settings, apiService.isAuthenticated) ||
+                (settings.appMode != AppMode.LOCAL && remoteScope == null))
         ) return null
         return when {
             mediaId == ROOT_ID -> buildBrowsableItem(ROOT_ID, "Nine Lives Audio", null)
@@ -216,6 +224,7 @@ class MediaBrowseTree @Inject constructor(
                 // An archived book has no source, so don't resolve it as a
                 // playable Auto item (e.g. from a stale queued media id).
                 audioBookRepository.getById(bookId)
+                    ?.takeIf { visibleBooks(listOf(it), remoteScope).isNotEmpty() }
                     ?.takeIf { browseBooksForAuto(listOf(it), settings).isNotEmpty() }
                     ?.let(::bookToMediaItem)
             }
@@ -228,8 +237,10 @@ class MediaBrowseTree @Inject constructor(
     suspend fun search(query: String): List<MediaItem> {
         apiService.awaitAuthReady()
         val settings = resolveActiveScope()
-        if (!canBrowseAuto(settings, apiService.isAuthenticated)) return emptyList()
-        return browseBooksForAuto(audioBookRepository.search(query), settings)
+        val remoteScope = activeRemoteScope(settings)
+        if (!canBrowseAuto(settings, apiService.isAuthenticated) ||
+            (settings.appMode != AppMode.LOCAL && remoteScope == null)) return emptyList()
+        return browseBooksForAuto(visibleBooks(audioBookRepository.search(query), remoteScope), settings)
             .map(::bookToMediaItem)
     }
 
@@ -259,6 +270,13 @@ class MediaBrowseTree @Inject constructor(
         }
         return settingsManager.currentSettings
     }
+
+    private suspend fun activeRemoteScope(settings: AppSettings): ActiveRemoteScope? =
+        if (settings.appMode == AppMode.LOCAL) null else apiService.captureActiveRemoteScope()
+
+    /** Android Auto must never turn a raw or other-owner row into a media ID. */
+    private fun visibleBooks(books: List<AudioBook>, remoteScope: ActiveRemoteScope?): List<AudioBook> =
+        books.filter { it.isLocal || remoteScope?.decodeForEgress(it.id) != null }
 
     // ─── Builders ──────────────────────────────────────────────────────
 
@@ -411,7 +429,11 @@ class MediaBrowseTree @Inject constructor(
             }
         }
 
+        // Remote art used to issue a raw OkHttp request from this tree. It has
+        // no frozen request tag, so C3 deliberately leaves that optional art
+        // absent rather than letting a stale Auto row escape its owner fence.
         val remoteUrl = book.coverPath?.takeIf { it.startsWith("http") } ?: return null
+        if (remoteUrl.isNotEmpty()) return null
         // A factory rather than a single execute(): ArtworkCodec may need to
         // re-issue the request on a rare bounds-mark overrun (see its kdoc).
         val remoteOpener = {

@@ -4,6 +4,8 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
+import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.entitlement.DownloadSlotResolver
 import com.ninelivesaudio.app.entitlement.EntitlementCachePrefs
@@ -35,6 +37,7 @@ class DownloadSlotStore @Inject constructor(
     private val playbackProgressDao: PlaybackProgressDao,
     private val entitlements: EntitlementRepository,
     private val cache: EntitlementCachePrefs,
+    private val apiService: ApiService,
 ) {
     /** Free installs have a slot at all. Unlocked ones do not. */
     val slotApplies: Boolean get() = !entitlements.current.isUnlocked
@@ -61,11 +64,13 @@ class DownloadSlotStore @Inject constructor(
      * while leaving files on disk.
      */
     suspend fun buildCandidates(): List<SlotCandidate> = withContext(Dispatchers.IO) {
-        val rows = downloadItemDao.getAll().map { it.toDomain() }
+        val remoteScope = apiService.captureActiveRemoteScope()
+        val rows = downloadItemDao.getVisible(remoteScope?.idPrefix).map { it.toDomain() }
         val rowsByBook = rows.groupBy { it.audioBookId }
 
         val offlineBooks = audioBookDao.getAll()
             .map { it.toDomain() }
+            .filter { it.isLocal || remoteScope?.decodeForEgress(it.id) != null }
             .filter { it.isDownloaded || rowsByBook.containsKey(it.id) }
 
         // Keyed off AudioBooks rather than download rows, so a claim whose book
@@ -89,7 +94,7 @@ class DownloadSlotStore @Inject constructor(
                 isDownloaded = book?.isDownloaded ?: false,
                 hasLocalPath = !book?.localPath.isNullOrBlank(),
                 filesExist = filesExist(book?.localPath),
-                progressUpdatedAt = progressMillis(bookId),
+                progressUpdatedAt = progressMillis(bookId, remoteScope),
                 completedAt = row?.completedAt,
                 startedAt = row?.startedAt,
             )
@@ -139,7 +144,8 @@ class DownloadSlotStore @Inject constructor(
      * reads as null, which the ladder treats as "never played" rather than as
      * epoch zero.
      */
-    private suspend fun progressMillis(audioBookId: String): Long? {
+    private suspend fun progressMillis(audioBookId: String, remoteScope: ActiveRemoteScope?): Long? {
+        if (remoteScope != null && remoteScope.decodeForEgress(audioBookId) == null) return null
         val raw = playbackProgressDao.getByAudioBookId(audioBookId)?.updatedAt ?: return null
         return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
     }

@@ -10,6 +10,67 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface DownloadItemDao {
 
+    /**
+     * Rows visible to the current remote owner plus durable local rows. A raw
+     * legacy row has no matching prefix, so it is deliberately quarantined.
+     */
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%')
+        ORDER BY d.StartedAt DESC
+    """)
+    suspend fun getVisible(remotePrefix: String?): List<DownloadItemEntity>
+
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE d.Id = :id AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+    """)
+    suspend fun getVisibleById(id: String, remotePrefix: String?): DownloadItemEntity?
+
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE d.AudioBookId = :audioBookId
+          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+    """)
+    suspend fun getVisibleByAudioBookId(audioBookId: String, remotePrefix: String?): DownloadItemEntity?
+
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE d.Status IN (0, 1, 2, 6)
+          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+        ORDER BY d.StartedAt DESC
+    """)
+    fun observeVisibleActive(remotePrefix: String?): Flow<List<DownloadItemEntity>>
+
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE d.Status = 3
+          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+        ORDER BY d.CompletedAt DESC
+    """)
+    fun observeVisibleCompleted(remotePrefix: String?): Flow<List<DownloadItemEntity>>
+
+    /** The worker must never drain a local, raw, or foreign remote row. */
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE d.Status IN (0, 1) AND b.IsLocal = 0 AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'
+        ORDER BY d.StartedAt ASC
+    """)
+    suspend fun getDownloadableForOwner(remotePrefix: String): List<DownloadItemEntity>
+
+    @Query("""
+        SELECT d.* FROM DownloadItems d
+        INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
+        WHERE d.Id = :id AND b.IsLocal = 0 AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'
+    """)
+    suspend fun getRemoteByIdForOwner(id: String, remotePrefix: String): DownloadItemEntity?
+
     @Query("SELECT * FROM DownloadItems ORDER BY StartedAt DESC")
     fun observeAll(): Flow<List<DownloadItemEntity>>
 

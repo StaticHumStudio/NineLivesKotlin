@@ -73,6 +73,11 @@ class DownloadQueueWorker(
         deps.settingsManager().loadSettings()
         deps.apiService().initializeFromSettings()
 
+        // Downloads are remote-only work. No confirmed owner means there is no
+        // safe namespace to select, so leave every existing row and its bytes
+        // exactly as found.
+        val remoteScope = deps.apiService().captureActiveRemoteScope() ?: return Result.success()
+
         val dao = deps.downloadItemDao()
         val books = deps.audioBookDao()
         val engine = deps.downloadEngine()
@@ -86,13 +91,20 @@ class DownloadQueueWorker(
             // While free, the drain sees only the slot winner. selectNextDownload
             // orders by age, so an unfiltered list would meet a PRESERVED loser
             // first and start downloading a book the free tier cannot keep.
-            val active = manager.filterToSlotWinner(dao.getDownloadable().map { it.toDomain() })
+            if (!deps.apiService().isCurrentActiveRemoteScope(remoteScope)) break
+            val active = manager.filterToSlotWinner(
+                dao.getDownloadableForOwner(remoteScope.idPrefix)
+                    .map { it.toDomain() }
+                    .filter { ownerScopedDownloadIdsMatch(remoteScope.idPrefix, it.id, it.audioBookId) },
+            )
             val item = selectNextDownload(active) ?: break
             android.util.Log.d(TAG, "next id=${item.id} status=${item.status} title=${item.title}")
 
             val bookEntity = books.getById(item.audioBookId)
             if (bookEntity == null) {
-                // No audiobook to download; mark Failed so we don't loop on it.
+                // This row was selected from this owner prefix. Recheck before a
+                // terminal write so a scope switch cannot mutate the old owner.
+                if (!deps.apiService().isCurrentActiveRemoteScope(remoteScope)) break
                 android.util.Log.d(TAG, "book missing for id=${item.id} -> Failed")
                 dao.upsert(
                     item.copy(
@@ -116,7 +128,7 @@ class DownloadQueueWorker(
             // get dropped and the bar appears frozen / far behind.
             var lastNotifiedPercent = -1
             val result = withContext(Dispatchers.IO) {
-                engine.download(item, book) { id, downloaded, total ->
+                engine.download(item, book, remoteScope) { id, downloaded, total ->
                     manager.publishProgress(id, downloaded, total)
                     val percent = if (total > 0) {
                         ((downloaded.toDouble() / total) * 100).toInt()
@@ -156,3 +168,7 @@ class DownloadQueueWorker(
         private const val TAG = "DownloadQueueWorker"
     }
 }
+
+/** Both durable IDs must belong to the captured owner before a worker touches them. */
+internal fun ownerScopedDownloadIdsMatch(remotePrefix: String, downloadId: String, audioBookId: String): Boolean =
+    downloadId.startsWith(remotePrefix) && audioBookId.startsWith(remotePrefix)

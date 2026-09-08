@@ -6,6 +6,7 @@ import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
@@ -26,6 +27,7 @@ class DownloadsViewModel @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
+    private val apiService: ApiService,
 ) : ViewModel() {
 
     // ─── UI State ────────────────────────────────────────────────────────────
@@ -65,7 +67,9 @@ class DownloadsViewModel @Inject constructor(
     init {
         // Observe active downloads
         viewModelScope.launch {
-            downloadItemDao.observeActive().collect { entities ->
+            visiblePrefixes().flatMapLatest { prefix ->
+                downloadItemDao.observeVisibleActive(prefix)
+            }.collect { entities ->
                 val items = entities.mapNotNull { entity ->
                     val item = entity.toDomain()
                     val book = audioBookDao.getById(item.audioBookId)
@@ -91,7 +95,9 @@ class DownloadsViewModel @Inject constructor(
 
         // Observe completed downloads
         viewModelScope.launch {
-            downloadItemDao.observeCompleted().collect { entities ->
+            visiblePrefixes().flatMapLatest { prefix ->
+                downloadItemDao.observeVisibleCompleted(prefix)
+            }.collect { entities ->
                 val items = entities.mapNotNull { entity ->
                     val item = entity.toDomain()
                     val book = audioBookDao.getById(item.audioBookId)
@@ -183,7 +189,7 @@ class DownloadsViewModel @Inject constructor(
                 try {
                     // Only remove the download tracking record — keep the actual files
                     // on disk so the user's downloaded audiobooks remain playable.
-                    downloadItemDao.deleteById(item.download.id)
+                    downloadManager.clearCompletedRecord(item.download.id)
                 } catch (_: Exception) {
                     // Continue clearing others even if one fails
                 }
@@ -197,4 +203,10 @@ class DownloadsViewModel @Inject constructor(
             downloadManager.queueDownload(audioBook)
         }
     }
+
+    private fun visiblePrefixes(): Flow<String?> = settingsManager.settings
+        .mapLatest { settings ->
+            if (settings.appMode == AppMode.LOCAL) null else apiService.captureActiveRemoteScope()?.idPrefix
+        }
+        .distinctUntilChanged()
 }

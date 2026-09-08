@@ -260,6 +260,10 @@ class SyncManager @Inject constructor(
      * Server is source of truth (except for actively playing items).
      */
     private suspend fun syncProgress() {
+        // C2 owns durable remote progress IDs and egress. Until then, importing
+        // or pushing a raw ABS item ID is unsafe, so remote progress sync is a
+        // deliberate no-op. LOCAL behavior still uses the local repository path.
+        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
         try {
             val importToken = progressRepository.progressImportToken()
             val serverProgressList = progressRepository.fetchAllProgressFromServer()
@@ -356,6 +360,7 @@ class SyncManager @Inject constructor(
         duration: Double,
         isFinished: Boolean,
     ) {
+        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
         // Only auto-mark as finished if position is within 1 second of the end.
@@ -429,6 +434,7 @@ class SyncManager @Inject constructor(
         duration: Double = 0.0,
         onPersisted: suspend () -> Unit = {},
     ) {
+        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
         val computedFinished = isFinished
@@ -466,6 +472,7 @@ class SyncManager @Inject constructor(
      * Called on reconnect.
      */
     private suspend fun flushOfflineQueue() {
+        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
         if (!hasAuthToken()) return
         // Never push to a server while in LOCAL mode. (The rising-edge caller
         // already gates on this; guard here too since the periodic loop also calls us.)
@@ -487,6 +494,9 @@ class SyncManager @Inject constructor(
         return apiService.isAuthenticated && settingsManager.getAuthToken()?.isNotBlank() == true
     }
 }
+
+/** C2 is the first package authorized to resume remote progress mutation. */
+internal fun remoteProgressMutationAllowed(mode: AppMode): Boolean = mode == AppMode.LOCAL
 
 internal class SyncLifecycleOwner(
     private val scope: CoroutineScope,

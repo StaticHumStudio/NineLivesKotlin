@@ -53,4 +53,13 @@ class DownloadQueueSelectionTest {
         )
         assertEquals("queued", selectNextDownload(items)?.id)
     }
+
+    @Test
+    fun `owner drain rejects raw and foreign download identities`() {
+        val prefix = "nlr1:owner:"
+
+        assertEquals(true, ownerScopedDownloadIdsMatch(prefix, "${prefix}download", "${prefix}book"))
+        assertEquals(false, ownerScopedDownloadIdsMatch(prefix, "raw-download", "${prefix}book"))
+        assertEquals(false, ownerScopedDownloadIdsMatch(prefix, "${prefix}download", "nlr1:other:book"))
+    }
 }

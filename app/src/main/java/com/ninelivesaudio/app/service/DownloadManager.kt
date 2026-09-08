@@ -10,7 +10,10 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
@@ -55,6 +58,7 @@ class DownloadManager @Inject constructor(
     private val slotStore: DownloadSlotStore,
     private val settingsManager: SettingsManager,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val apiService: ApiService,
 ) {
     /**
      * Guards check-and-claim on the free tier's single offline slot.
@@ -128,7 +132,7 @@ class DownloadManager @Inject constructor(
      */
     suspend fun restorePausedNotificationIfNeeded() {
         if (!downloadsPaused) return
-        val pending = downloadItemDao.getDownloadable().map { it.toDomain() }
+        val pending = downloadItemDao.getVisible(activeScope()?.idPrefix).map { it.toDomain() }
         if (pending.isEmpty()) return
 
         DownloadNotifications.showPaused(context, selectNextDownload(pending)?.title ?: "")
@@ -196,6 +200,8 @@ class DownloadManager @Inject constructor(
         if (audioBook.isLocal) {
             return QueueResult.NotApplicable
         }
+        val scope = activeScope() ?: return QueueResult.ServerUnavailable("Remote account is not ready")
+        if (scope.decodeForEgress(audioBook.id) == null) return QueueResult.NotApplicable
         val remoteAccess = remoteMediaAccessDecision(
             book = audioBook.copy(isDownloaded = false, localPath = null),
             serverUrl = settingsManager.currentSettings.serverUrl,
@@ -204,7 +210,7 @@ class DownloadManager @Inject constructor(
         if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
             return QueueResult.ServerUnavailable(remoteAccess.message)
         }
-        val downloadId = UUID.randomUUID().toString()
+        val downloadId = scope.encodeIncoming(UUID.randomUUID().toString())
 
         // Claim the slot BEFORE the network round trip. fetchFullBookDetails can
         // take seconds, and an unclaimed window that long is one a second queue
@@ -238,9 +244,15 @@ class DownloadManager @Inject constructor(
         try {
             // Ensure we have file metadata before queuing.
             val resolvedBook = if (audioBook.audioFiles.isEmpty()) {
-                engine.fetchFullBookDetails(audioBook.id) ?: audioBook
+                engine.fetchFullBookDetails(scope, audioBook.id) ?: audioBook
             } else {
                 audioBook
+            }
+            // A scope change quarantines this fresh claim. Do not turn an A
+            // row into a B-visible terminal state, and do not delete its bytes.
+            if (!apiService.isCurrentActiveRemoteScope(scope)) {
+                claimSettled = true
+                return QueueResult.ServerUnavailable("Remote account changed while preparing download")
             }
 
             val files = resolvedBook.audioFiles.mapNotNull { it.ino.takeIf { ino -> ino.isNotBlank() } }
@@ -282,7 +294,8 @@ class DownloadManager @Inject constructor(
             // sweep cleaned it up. A blind upsert would resurrect it and put the
             // free tier over its cap.
             val promoted = slotMutex.withLock {
-                val existing = downloadItemDao.getById(downloadId)
+                if (!apiService.isCurrentActiveRemoteScope(scope)) return@withLock false
+                val existing = downloadItemDao.getRemoteByIdForOwner(downloadId, scope.idPrefix)
                 val rowStillOurs = existing?.status == DownloadStatus.Preparing.ordinal
                 // Status alone is not sufficient. An entitlement drop during the
                 // fetch can resolve a DIFFERENT winner while this row sits untouched
@@ -328,7 +341,7 @@ class DownloadManager @Inject constructor(
      */
     private suspend fun releaseClaim(downloadId: String) {
         slotMutex.withLock {
-            val existing = downloadItemDao.getById(downloadId) ?: return@withLock
+            val existing = downloadItemDao.getVisibleById(downloadId, activeScope()?.idPrefix) ?: return@withLock
             if (existing.status != DownloadStatus.Preparing.ordinal) return@withLock
 
             downloadItemDao.deleteById(downloadId)
@@ -380,7 +393,7 @@ class DownloadManager @Inject constructor(
         // happened while the app was dead is still handled, which a
         // transitions-only collector would miss.
         val hasLosingDownload = slotMutex.withLock {
-            downloadItemDao.getAll().any {
+            downloadItemDao.getVisible(activeScope()?.idPrefix).any {
                 it.status == DownloadStatus.Downloading.ordinal && it.audioBookId != winner
             }
         }
@@ -390,7 +403,7 @@ class DownloadManager @Inject constructor(
         awaitDrainStopped()
 
         slotMutex.withLock {
-            downloadItemDao.getAll()
+            downloadItemDao.getVisible(activeScope()?.idPrefix)
                 .filter {
                     it.status == DownloadStatus.Downloading.ordinal && it.audioBookId != winner
                 }
@@ -439,7 +452,7 @@ class DownloadManager @Inject constructor(
      */
     suspend fun cleanupStrandedClaims() {
         slotMutex.withLock {
-            val stranded = downloadItemDao.getAll()
+            val stranded = downloadItemDao.getVisible(activeScope()?.idPrefix)
                 .filter { it.status == DownloadStatus.Preparing.ordinal }
 
             if (stranded.isEmpty()) return@withLock
@@ -451,7 +464,7 @@ class DownloadManager @Inject constructor(
 
     /** Pause a download: mark it Paused; restart the drain if it was the active one. */
     suspend fun pauseDownload(downloadId: String) {
-        val entity = downloadItemDao.getById(downloadId) ?: return
+        val entity = downloadItemDao.getVisibleById(downloadId, activeScope()?.idPrefix) ?: return
         val wasDownloading = entity.status == DownloadStatus.Downloading.ordinal
         downloadItemDao.upsert(entity.copy(status = DownloadStatus.Paused.ordinal))
         if (wasDownloading) {
@@ -462,7 +475,7 @@ class DownloadManager @Inject constructor(
 
     /** Resume a paused/failed download by re-queuing it and ensuring the drain runs. */
     suspend fun resumeDownload(downloadId: String) {
-        val entity = downloadItemDao.getById(downloadId) ?: return
+        val entity = downloadItemDao.getVisibleById(downloadId, activeScope()?.idPrefix) ?: return
         val item = entity.toDomain()
         if (item.status != DownloadStatus.Paused && item.status != DownloadStatus.Failed) return
 
@@ -477,7 +490,7 @@ class DownloadManager @Inject constructor(
         // Stop the drain worker; the active book stays Downloading in Room and is
         // resumed first when the queue restarts.
         workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
-        val current = selectNextDownload(downloadItemDao.getDownloadable().map { it.toDomain() })
+        val current = selectNextDownload(downloadItemDao.getVisible(activeScope()?.idPrefix).map { it.toDomain() })
         DownloadNotifications.showPaused(context, current?.title ?: "")
     }
 
@@ -490,11 +503,14 @@ class DownloadManager @Inject constructor(
 
     /** Cancel a download and clean up; restart the drain if it was the active one. */
     suspend fun cancelDownload(downloadId: String) {
-        val entity = downloadItemDao.getById(downloadId)
+        val entity = downloadItemDao.getVisibleById(downloadId, activeScope()?.idPrefix)
+            ?: return
         val wasDownloading = entity?.status == DownloadStatus.Downloading.ordinal
         downloadItemDao.deleteById(downloadId)
 
-        if (downloadItemDao.getDownloadable().isEmpty()) {
+        if (downloadItemDao.getVisible(activeScope()?.idPrefix).none {
+                it.status == DownloadStatus.Queued.ordinal || it.status == DownloadStatus.Downloading.ordinal
+            }) {
             // Nothing left to download: stop the drain and clear the notification
             // so it doesn't linger after cancelling the last item.
             workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
@@ -509,8 +525,9 @@ class DownloadManager @Inject constructor(
     suspend fun deleteDownload(audioBookId: String) {
         // Use the actual localPath stored on the audiobook — this matches the path
         // set by the engine (basePath/Author - Title), not basePath/audioBookId.
-        val bookEntity = audioBookDao.getById(audioBookId)
-        val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
+        val prefix = activeScope()?.idPrefix
+        val downloadEntity = downloadItemDao.getVisibleByAudioBookId(audioBookId, prefix) ?: return
+        val bookEntity = audioBookDao.getById(audioBookId) ?: return
         val wasDownloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal
 
         withContext(Dispatchers.IO) {
@@ -536,8 +553,14 @@ class DownloadManager @Inject constructor(
 
     /** Check if a book is downloaded. */
     suspend fun isBookDownloaded(audioBookId: String): Boolean {
-        val entity = downloadItemDao.getByAudioBookId(audioBookId)
+        val entity = downloadItemDao.getVisibleByAudioBookId(audioBookId, activeScope()?.idPrefix)
         return entity?.status == DownloadStatus.Completed.ordinal
+    }
+
+    /** Removes only a currently visible completed tracking row. Files stay on disk. */
+    suspend fun clearCompletedRecord(downloadId: String) {
+        val entity = downloadItemDao.getVisibleById(downloadId, activeScope()?.idPrefix) ?: return
+        if (entity.status == DownloadStatus.Completed.ordinal) downloadItemDao.deleteById(entity.id)
     }
 
     // ─── Worker callbacks ──────────────────────────────────────────────────
@@ -563,6 +586,11 @@ class DownloadManager @Inject constructor(
             else -> { /* Paused/cancelled: no terminal event */ }
         }
     }
+
+    /** Null is intentional. With no active owner, only local joined rows remain visible. */
+    private suspend fun activeScope(): ActiveRemoteScope? =
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) null
+        else apiService.captureActiveRemoteScope()
 
     // ─── Drain worker ────────────────────────────────────────────────────────
 

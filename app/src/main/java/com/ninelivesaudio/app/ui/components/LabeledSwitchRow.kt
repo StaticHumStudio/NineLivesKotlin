@@ -15,9 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
@@ -40,14 +38,10 @@ internal fun LabeledSwitchRow(
     titleTakesRemainingWidth: Boolean = true,
     switchColors: SwitchColors = SwitchDefaults.colors(),
 ) {
-    val state = if (checked) "On" else "Off"
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
-                contentDescription = title
-                stateDescription = state
-            }
+            .semantics(mergeDescendants = true) {}
             .toggleable(
                 value = checked,
                 enabled = enabled,

@@ -14,9 +14,10 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsToggleable
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -46,13 +47,15 @@ class LabeledSwitchRowTest {
             )
         }
 
-        val switch = composeTestRule.onNodeWithContentDescription("Use API Token")
+        val switch = composeTestRule.onNodeWithText("Use API Token")
         switch
             .assertIsToggleable()
             .assertIsOff()
             .assertHasClickAction()
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Switch))
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+
+        composeTestRule.onNodeWithText("Login with a pre-generated API token")
+            .assertIsToggleable()
 
         composeTestRule.onNodeWithText("Use API Token").performClick()
 
@@ -62,7 +65,6 @@ class LabeledSwitchRowTest {
         }
         switch
             .assertIsOn()
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
     }
 
     @Test
@@ -79,11 +81,14 @@ class LabeledSwitchRowTest {
             )
         }
 
-        composeTestRule.onNodeWithContentDescription("Use API Token")
+        composeTestRule.onNodeWithText("Use API Token")
             .assertIsToggleable()
             .assertIsOn()
             .assertIsNotEnabled()
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Switch))
+
+        composeTestRule.onNodeWithText("Use API Token")
+            .performTouchInput { click() }
 
         composeTestRule.runOnIdle {
             assertEquals(0, callbackCount)

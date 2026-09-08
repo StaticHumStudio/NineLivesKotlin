@@ -58,7 +58,13 @@ internal fun <T> paginationResult(allItems: List<T>, total: Int, currentPage: In
 
 /** One page of a paginated fetch: either items (and the server's reported running total), or a reason the fetch stopped (HTTP failure, missing body). */
 internal sealed class PageOutcome<T> {
-    data class Page<T>(val results: List<T>, val total: Int) : PageOutcome<T>()
+    data class Page<T>(
+        val results: List<T>,
+        val total: Int,
+        /** Optional server pagination metadata, validated when supplied. */
+        val reportedPage: Int? = null,
+        val reportedPageCount: Int? = null,
+    ) : PageOutcome<T>()
     data class Stopped<T>(val reason: String) : PageOutcome<T>()
 }
 
@@ -82,24 +88,55 @@ internal sealed class PageOutcome<T> {
 internal suspend fun <T> runPaginatedFetch(
     limit: Int,
     onPageFailure: (page: Int, e: Exception) -> Unit = { _, _ -> },
+    itemKey: ((T) -> String)? = null,
     fetchPage: suspend (page: Int) -> PageOutcome<T>,
 ): RemoteResult<List<T>> {
     val allItems = mutableListOf<T>()
+    val seenKeys = mutableSetOf<String>()
     var currentPage = 0
     var highestReportedTotal = 0
+    var expectedPageCount: Int? = null
     return try {
         while (true) {
             when (val outcome = fetchPage(currentPage)) {
                 is PageOutcome.Stopped -> return stoppedShort(allItems, outcome.reason)
                 is PageOutcome.Page -> {
+                    if (outcome.reportedPage != null && outcome.reportedPage != currentPage) {
+                        return stoppedShort(
+                            allItems,
+                            "page $currentPage: server reported page ${outcome.reportedPage}",
+                        )
+                    }
+                    if (outcome.reportedPageCount != null && outcome.reportedPageCount <= currentPage) {
+                        return stoppedShort(
+                            allItems,
+                            "page $currentPage: invalid page count ${outcome.reportedPageCount}",
+                        )
+                    }
+                    if (expectedPageCount != null && outcome.reportedPageCount != null &&
+                        expectedPageCount != outcome.reportedPageCount
+                    ) {
+                        return stoppedShort(
+                            allItems,
+                            "page $currentPage: server changed page count from $expectedPageCount to ${outcome.reportedPageCount}",
+                        )
+                    }
+                    if (outcome.reportedPageCount != null) expectedPageCount = outcome.reportedPageCount
                     highestReportedTotal = maxOf(highestReportedTotal, outcome.total)
                     if (outcome.results.isEmpty()) {
                         return paginationResult(allItems, highestReportedTotal, currentPage)
                     }
-                    allItems.addAll(outcome.results)
+                    val newResults = itemKey?.let { key ->
+                        outcome.results.filter { seenKeys.add(key(it)) }
+                    } ?: outcome.results
+                    if (newResults.isEmpty()) {
+                        return stoppedShort(allItems, "page $currentPage: repeated rows made no progress")
+                    }
+                    allItems.addAll(newResults)
                     if (
                         (highestReportedTotal > 0 && allItems.size >= highestReportedTotal) ||
-                        outcome.results.size < limit
+                        outcome.results.size < limit ||
+                        (outcome.reportedPageCount != null && currentPage == outcome.reportedPageCount - 1)
                     ) {
                         return paginationResult(allItems, highestReportedTotal, currentPage)
                     }

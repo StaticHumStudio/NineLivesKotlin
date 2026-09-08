@@ -155,4 +155,101 @@ class PaginatedFetchTest {
             assertSame(cancellation, e)
         }
     }
+
+    @Test
+    fun `151 rows across 50 row pages complete without a history cap`() = runBlocking {
+        val result = runPaginatedFetch<Int>(limit = 50) { page ->
+            val values = (page * 50 until minOf((page + 1) * 50, 151)).toList()
+            PageOutcome.Page(values, total = 151)
+        }
+
+        assertEquals(RemoteResult.Ok((0 until 151).toList()), result)
+    }
+
+    @Test
+    fun `1001 rows across 50 row pages complete without a history cap`() = runBlocking {
+        val result = runPaginatedFetch<Int>(limit = 50) { page ->
+            val values = (page * 50 until minOf((page + 1) * 50, 1_001)).toList()
+            PageOutcome.Page(values, total = 1_001)
+        }
+
+        assertEquals(RemoteResult.Ok((0 until 1_001).toList()), result)
+    }
+
+    @Test
+    fun `page two missing body preserves page one as Partial`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 2) { page ->
+            when (page) {
+                0 -> PageOutcome.Page(listOf("a", "b"), total = 3)
+                1 -> PageOutcome.Stopped("page 1: empty body")
+                else -> unreachablePage("must stop on missing body")
+            }
+        }
+
+        assertEquals(RemoteResult.Partial(listOf("a", "b"), "page 1: empty body"), result)
+    }
+
+    @Test
+    fun `page two auth change preserves page one as Partial`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 2) { page ->
+            when (page) {
+                0 -> PageOutcome.Page(listOf("a", "b"), total = 3)
+                1 -> PageOutcome.Stopped("page 1: auth session changed")
+                else -> unreachablePage("must stop on auth change")
+            }
+        }
+
+        assertEquals(RemoteResult.Partial(listOf("a", "b"), "page 1: auth session changed"), result)
+    }
+
+    @Test
+    fun `repeated pages become Partial instead of looping forever`() = runBlocking {
+        val result = runPaginatedFetch(
+            limit = 2,
+            itemKey = { it },
+        ) { page ->
+            PageOutcome.Page(listOf("a", "b"), total = 4, reportedPage = page, reportedPageCount = 2)
+        }
+
+        assertEquals(RemoteResult.Partial(listOf("a", "b"), "page 1: repeated rows made no progress"), result)
+    }
+
+    @Test
+    fun `impossible page count is an explicit failure`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 2) {
+            PageOutcome.Page(listOf("a", "b"), total = 4, reportedPage = 0, reportedPageCount = 0)
+        }
+
+        assertEquals(RemoteResult.Failed("page 0: invalid page count 0"), result)
+    }
+
+    @Test
+    fun `changed page declarations are Partial instead of a normal terminal page`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 2) { page ->
+            when (page) {
+                0 -> PageOutcome.Page(
+                    results = listOf("a", "b"),
+                    total = 0,
+                    reportedPage = 0,
+                    reportedPageCount = 3,
+                )
+                1 -> PageOutcome.Page(
+                    results = listOf("c", "d"),
+                    total = 0,
+                    reportedPage = 1,
+                    reportedPageCount = 2,
+                )
+                else -> unreachablePage("must stop when the server changes its page declaration")
+            }
+        }
+
+        assertEquals(
+            RemoteResult.Partial(
+                listOf("a", "b"),
+                "page 1: server changed page count from 3 to 2",
+            ),
+            result,
+        )
+    }
+
 }

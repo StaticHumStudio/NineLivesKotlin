@@ -166,6 +166,7 @@ class ApiService @Inject constructor(
     companion object {
         private const val TAG = "ApiService"
         private const val TOKEN_VALIDATION_DEBOUNCE_MS = 15_000L
+        private const val LISTENING_SESSIONS_PAGE_SIZE = 50
     }
 
     var lastError: String? = null
@@ -1166,94 +1167,72 @@ class ApiService @Inject constructor(
 
     suspend fun getListeningSessions(
         libraryItemId: String,
-        itemsPerPage: Int = 50,
-    ): List<ListeningSession> = withContext(Dispatchers.IO) {
-        try {
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
-            val allSessions = mutableListOf<ListeningSession>()
-            var currentPage = 0
-            val maxPages = 3
-
-            while (currentPage < maxPages) {
-                val pageResult = dispatchFrozen(frozen, { tag ->
-                    api.getListeningSessions(itemsPerPage = itemsPerPage, page = currentPage, dispatch = tag)
-                }) { response ->
-                    if (!response.isSuccessful) return@dispatchFrozen null
-                    response.body()
-                } ?: break
-                if (pageResult.sessions.isEmpty()) break
-
-                allSessions.addAll(pageResult.sessions
-                    .filter { it.libraryItemId == libraryItemId }
-                    .map { session ->
-                        val startedAtMillis = normalizeEpoch(session.startedAt)
-                        val updatedAtMillis = normalizeEpoch(session.updatedAt)
-                        ListeningSession(
-                            id = session.id,
-                            libraryItemId = session.libraryItemId,
-                            currentTime = session.currentTime.seconds,
-                            timeListening = session.timeListening.seconds,
-                            startedAt = startedAtMillis,
-                            updatedAt = updatedAtMillis,
-                            displayTitle = session.displayTitle,
-                        )
-                    })
-
-                if (currentPage >= pageResult.numPages - 1) break
-                currentPage++
-            }
-
-            if (isCurrentFrozenRemoteRequest(frozen)) allSessions.sortedByDescending { it.startedAt } else emptyList()
-        } catch (e: Exception) {
-            lastError = "Failed to load listening sessions: ${e.message}"
-            emptyList()
+        itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
+    ): RemoteResult<List<ListeningSession>> =
+        getAllListeningSessions(itemsPerPage).map { sessions ->
+            // The supported endpoint has no verified item filter. Retain the
+            // complete server result first so its global total remains valid,
+            // then scope this caller's rows locally.
+            sessions.filter { it.libraryItemId == libraryItemId }
         }
-    }
 
-    /** Fetch ALL listening sessions across all books (for stats/dossier). */
+    /** Fetch every listening-session page across all books for the Dossier. */
     suspend fun getAllListeningSessions(
-        itemsPerPage: Int = 50,
-    ): List<ListeningSession> = withContext(Dispatchers.IO) {
-        try {
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
-            val allSessions = mutableListOf<ListeningSession>()
-            var currentPage = 0
-            val maxPages = 20
-
-            while (currentPage < maxPages) {
-                val pageResult = dispatchFrozen(frozen, { tag ->
-                    api.getListeningSessions(itemsPerPage = itemsPerPage, page = currentPage, dispatch = tag)
-                }) { response ->
-                    if (!response.isSuccessful) return@dispatchFrozen null
-                    response.body()
-                } ?: break
-                if (pageResult.sessions.isEmpty()) break
-
-                allSessions.addAll(pageResult.sessions.map { session ->
-                    val startedAtMillis = normalizeEpoch(session.startedAt)
-                    val updatedAtMillis = normalizeEpoch(session.updatedAt)
-
-                    ListeningSession(
-                        id = session.id,
-                        libraryItemId = session.libraryItemId,
-                        currentTime = session.currentTime.seconds,
-                        timeListening = session.timeListening.seconds,
-                        startedAt = startedAtMillis,
-                        updatedAt = updatedAtMillis,
-                        displayTitle = session.displayTitle,
-                    )
-                })
-
-                if (currentPage >= pageResult.numPages - 1) break
-                currentPage++
+        itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
+    ): RemoteResult<List<ListeningSession>> = withContext(Dispatchers.IO) {
+        remoteResultCatching(onFailure = { error ->
+            Log.w(TAG, "getListeningSessions failed", error)
+            lastError = "Failed to load listening sessions: ${error.message}"
+        }) {
+            val frozen = captureFrozenRemoteRequest()
+                ?: return@remoteResultCatching RemoteResult.Failed("auth session changed")
+            val result = runPaginatedFetch(
+                limit = itemsPerPage,
+                itemKey = { it.id },
+                onPageFailure = { page, error ->
+                    Log.w(TAG, "getListeningSessions failed at page $page", error)
+                },
+            ) { page ->
+                dispatchFrozen(
+                    frozen,
+                    { tag -> api.getListeningSessions(itemsPerPage = itemsPerPage, page = page, dispatch = tag) },
+                ) { response ->
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "getListeningSessions: HTTP ${response.code()} at page $page")
+                        PageOutcome.Stopped("page $page: HTTP ${response.code()}")
+                    } else {
+                        val body = response.body()
+                        if (body == null) {
+                            Log.w(TAG, "getListeningSessions: empty body at page $page")
+                            PageOutcome.Stopped("page $page: empty body")
+                        } else {
+                            PageOutcome.Page(
+                                results = body.sessions.map(::mapListeningSession),
+                                total = body.total,
+                                reportedPage = body.page.takeIf { body.numPages > 0 },
+                                reportedPageCount = body.numPages.takeIf { it > 0 },
+                            )
+                        }
+                    }
+                } ?: PageOutcome.Stopped("page $page: auth session changed")
             }
-
-            if (isCurrentFrozenRemoteRequest(frozen)) allSessions.sortedByDescending { it.startedAt } else emptyList()
-        } catch (e: Exception) {
-            lastError = "Failed to load listening sessions: ${e.message}"
-            emptyList()
+            if (isCurrentFrozenRemoteRequest(frozen)) {
+                result.map { sessions -> sessions.sortedByDescending { it.startedAt } }
+            } else {
+                RemoteResult.Failed("auth session changed")
+            }
         }
     }
+
+    private fun mapListeningSession(session: ApiListeningSession): ListeningSession = ListeningSession(
+        id = session.id,
+        libraryItemId = session.libraryItemId,
+        currentTime = session.currentTime.seconds,
+        timeListening = session.timeListening.seconds,
+        startedAt = normalizeEpoch(session.startedAt),
+        updatedAt = normalizeEpoch(session.updatedAt),
+        displayTitle = session.displayTitle,
+    )
 
     /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
     private fun normalizeEpoch(value: Long): Long {

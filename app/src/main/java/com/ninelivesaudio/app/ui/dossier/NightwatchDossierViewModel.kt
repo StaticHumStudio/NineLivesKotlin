@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.ui.dossier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -37,6 +38,14 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 // ─── Dossier Time Period ────────────────────────────────────────────────────
+
+internal fun dossierHistoryUnavailableMessage(
+    result: RemoteResult<List<ListeningSession>>,
+): String? = when (result) {
+    is RemoteResult.Ok -> null
+    is RemoteResult.Partial -> "Statistics are unavailable because history stopped before it was complete: ${result.reason}"
+    is RemoteResult.Failed -> "Statistics are unavailable because history did not complete: ${result.reason}"
+}
 
 enum class DossierPeriod(
     val label: String,
@@ -298,7 +307,15 @@ class NightwatchDossierViewModel @Inject constructor(
             }
 
             try {
-                val allSessions = sessionRepository.getAllSessions()
+                val allSessions = when (val sessionResult = sessionRepository.getAllSessions()) {
+                    is RemoteResult.Ok -> sessionResult.value
+                    is RemoteResult.Partial, is RemoteResult.Failed -> {
+                        publishHistoryUnavailable(
+                            requireNotNull(dossierHistoryUnavailableMessage(sessionResult)),
+                        )
+                        return@launch
+                    }
+                }
                 val scopedBooks = settings.activeLibraryId?.let { libraryId ->
                     audioBookRepository.getByLibraryAndSource(libraryId, isLocalMode)
                 }.orEmpty()
@@ -445,6 +462,36 @@ class NightwatchDossierViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    private fun publishHistoryUnavailable(message: String) {
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                isConnected = true,
+                error = message,
+                totalListeningTime = Duration.ZERO,
+                totalSessions = 0,
+                filteredNoiseSessions = 0,
+                uniqueBooks = 0,
+                bookStats = emptyList(),
+                narratorStats = emptyList(),
+                genreStats = emptyList(),
+                authorStats = emptyList(),
+                booksFinished = 0,
+                dailyAverage = Duration.ZERO,
+                bestDay = null,
+                bestDayTime = Duration.ZERO,
+                hourlyDistribution = emptyMap(),
+                peakHour = null,
+                peakDayOfWeek = null,
+                overviewWhisper = null,
+                narratorWhisper = null,
+                authorWhisper = null,
+                genreWhisper = null,
+                temporalWhisper = null,
+            )
         }
     }
 

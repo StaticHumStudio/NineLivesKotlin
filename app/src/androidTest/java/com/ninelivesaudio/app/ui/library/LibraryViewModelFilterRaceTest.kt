@@ -173,7 +173,7 @@ private class DelayedLibraryFilterDao {
     fun releaseDelayedQuery() {
         val continuation = requireNotNull(delayedContinuation) { "No delayed query to release" }
         delayedContinuation = null
-        continuation.resumeWith(Result.success(alphaResult()))
+        continuation.resumeWith(Result.success(listOf(alphaResult())))
     }
 
     private fun filteredBooks(args: Array<Any?>?): Any {

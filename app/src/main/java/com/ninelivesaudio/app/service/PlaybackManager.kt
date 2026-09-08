@@ -45,7 +45,6 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
-import com.google.common.util.concurrent.MoreExecutors
 import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
@@ -1196,7 +1195,9 @@ class PlaybackManager @Inject constructor(
         var effectiveBook = book
         try {
             playbackProgressOwner.invalidateSnapshots(book.id)
-            if (_currentBook.value != null) finishPlayback(PlaybackTermination.STOP)
+            if (_currentBook.value != null) {
+                finishPlayback(PlaybackTermination.STOP, keepServiceConnection = true)
+            }
             pendingTerminalOwner.await(book.id)
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             val requestedGeneration = nextPlaybackGeneration(book.id)
@@ -1871,7 +1872,7 @@ class PlaybackManager @Inject constructor(
         finishPlayback(PlaybackTermination.STOP)
     }
 
-    private fun finishPlayback(reason: PlaybackTermination) {
+    private fun finishPlayback(reason: PlaybackTermination, keepServiceConnection: Boolean = false) {
         pausedAtTimestamp = null
         pendingPauseSnapshot = null
         invalidatePlaybackGeneration()
@@ -1905,7 +1906,10 @@ class PlaybackManager @Inject constructor(
         if (reason != PlaybackTermination.ERROR) settingsManager.clearCurrentPlaybackBookId()
         if (reason == PlaybackTermination.STOP) releasePlayer()
         _playbackState.value = PlaybackState.STOPPED
-        stopPlaybackService()
+        // Replacing media still finalizes the old book, but must retain the
+        // controller while the next book loads. Releasing it lets the service
+        // destroy our shared player during the new book's network request.
+        if (!keepServiceConnection) stopPlaybackService()
 
         if (terminal != null && terminalToken != null) {
             pendingTerminalOwner.launch(scope, terminal.bookId) {
@@ -3207,7 +3211,14 @@ class PlaybackManager @Inject constructor(
      */
     private fun startPlaybackService() {
         try {
-            // Replace any existing controller/future before starting a new connection.
+            if (retainPlaybackConnection(
+                    mediaController,
+                    mediaControllerFuture,
+                    isConnected = { it.isConnected },
+                    adopt = { mediaController = it },
+                )) return
+            // A completed failed connection can be retried. An existing live
+            // connection must survive book replacement and repeated play calls.
             mediaController?.release()
             mediaController = null
             mediaControllerFuture?.cancel(true)
@@ -3227,9 +3238,10 @@ class PlaybackManager @Inject constructor(
                     mediaController = controllerFuture.get()
                     Log.d(TAG, "MediaController connected to PlaybackService")
                 } catch (e: Exception) {
+                    if (mediaControllerFuture === controllerFuture) mediaControllerFuture = null
                     Log.e(TAG, "Failed to connect MediaController: ${e.message}", e)
                 }
-            }, MoreExecutors.directExecutor())
+            }, context.mainExecutor)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start PlaybackService: ${e.message}", e)
         }

@@ -173,7 +173,7 @@ private class DelayedLibraryFilterDao {
     fun releaseDelayedQuery() {
         val continuation = requireNotNull(delayedContinuation) { "No delayed query to release" }
         delayedContinuation = null
-        continuation.resumeWith(Result.success(betaResult()))
+        continuation.resumeWith(Result.success(alphaResult()))
     }
 
     private fun filteredBooks(args: Array<Any?>?): Any {
@@ -194,6 +194,17 @@ private class DelayedLibraryFilterDao {
             libraryId = FixtureLibraries.beta.id,
             isLocal = 0,
             title = "Beta Book",
+            author = "Author",
+        ),
+        lastPlayedAt = null,
+    )
+
+    private fun alphaResult() = RecentlyPlayedResult(
+        audioBook = AudioBookEntity(
+            id = "alpha-book",
+            libraryId = FixtureLibraries.alpha.id,
+            isLocal = 0,
+            title = "Alpha Book",
             author = "Author",
         ),
         lastPlayedAt = null,

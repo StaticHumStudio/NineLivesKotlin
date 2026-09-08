@@ -29,6 +29,9 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId ORDER BY Title")
     suspend fun getByLibrary(libraryId: String): List<AudioBookEntity>
 
+    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal ORDER BY Title")
+    suspend fun getByLibraryAndSource(libraryId: String, isLocal: Int): List<AudioBookEntity>
+
     @Query("SELECT * FROM AudioBooks WHERE IsLocal = :isLocal ORDER BY Title")
     suspend fun getBySource(isLocal: Int): List<AudioBookEntity>
 

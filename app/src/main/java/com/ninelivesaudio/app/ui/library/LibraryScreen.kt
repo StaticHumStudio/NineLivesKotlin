@@ -13,7 +13,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.fillParentMaxSize
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -311,14 +310,14 @@ internal fun RefreshableEmptyLibraryContent(
     content: @Composable () -> Unit,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize()) {
-        warning?.let { warningContent ->
-            item(key = "sync-warning") {
-                warningContent()
-            }
-        }
         item(key = "empty-library-content") {
-            Box(modifier = Modifier.fillParentMaxSize()) {
-                content()
+            Column(modifier = Modifier.fillParentMaxSize()) {
+                warning?.let { warningContent ->
+                    warningContent()
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                    content()
+                }
             }
         }
     }

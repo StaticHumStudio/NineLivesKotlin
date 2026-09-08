@@ -2,15 +2,18 @@ package com.ninelivesaudio.app.ui.library
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
@@ -35,12 +38,15 @@ class LibraryRefreshGestureTest {
                 onRefresh = { refreshCount.incrementAndGet() },
                 modifier = Modifier.fillMaxSize(),
             ) {
-                RefreshableEmptyLibraryContent {
+                RefreshableEmptyLibraryContent(
+                    warning = { WarningTestContent() },
+                ) {
                     EmptyHostTestContent()
                 }
             }
         }
 
+        composeTestRule.onNodeWithTag("sync-warning").assertIsDisplayed()
         composeTestRule.onNodeWithTag("empty-library-content")
             .performTouchInput { swipeDown() }
 
@@ -49,6 +55,11 @@ class LibraryRefreshGestureTest {
         }
         assertEquals(1, refreshCount.get())
     }
+}
+
+@Composable
+private fun WarningTestContent() {
+    Box(modifier = Modifier.height(48.dp).testTag("sync-warning"))
 }
 
 @Composable

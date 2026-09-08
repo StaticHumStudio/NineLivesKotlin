@@ -651,6 +651,7 @@ internal fun shouldRepublishArtwork(
  * natively via ConcatenatingMediaSource — greatly simplifying track management.
  */
 @Singleton
+@OptIn(UnstableApi::class)
 class PlaybackManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val apiService: ApiService,

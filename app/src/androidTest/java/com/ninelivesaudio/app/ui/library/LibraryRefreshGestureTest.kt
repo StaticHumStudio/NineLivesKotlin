@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.ui.library
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -59,7 +60,12 @@ class LibraryRefreshGestureTest {
 
 @Composable
 private fun WarningTestContent() {
-    Box(modifier = Modifier.height(48.dp).testTag("sync-warning"))
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .testTag("sync-warning"),
+    )
 }
 
 @Composable

@@ -54,6 +54,7 @@ import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.GatedControl
+import com.ninelivesaudio.app.ui.components.LabeledSwitchRow
 import com.ninelivesaudio.app.ui.components.StatusPill
 import com.ninelivesaudio.app.ui.components.connectionStatusPresentation
 import com.ninelivesaudio.app.ui.changelog.ChangelogData
@@ -85,6 +86,14 @@ internal fun disconnectDialogDecision(action: DisconnectDialogAction): Disconnec
         DisconnectDialogAction.CANCEL -> DisconnectDialogDecision(showDialog = false, disconnect = false)
         DisconnectDialogAction.CONFIRM -> DisconnectDialogDecision(showDialog = false, disconnect = true)
     }
+
+@Composable
+private fun archiveSwitchColors() = SwitchDefaults.colors(
+    checkedThumbColor = NineLivesTheme.colors.goldFilament,
+    checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
+    uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
+    uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
+)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -309,34 +318,14 @@ fun SettingsScreen(
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Auth mode toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Use API Token",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NineLivesTheme.colors.archiveTextPrimary,
-                        )
-                        Text(
-                            text = "Login with a pre-generated API token",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = NineLivesTheme.colors.archiveTextMuted,
-                        )
-                    }
-                    Switch(
-                        checked = uiState.useApiToken,
-                        onCheckedChange = viewModel::onUseApiTokenChanged,
-                        enabled = !uiState.isConnected,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = NineLivesTheme.colors.goldFilament,
-                            checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
-                            uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
-                            uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
-                        ),
-                    )
-                }
+                LabeledSwitchRow(
+                    title = "Use API Token",
+                    subtitle = "Login with a pre-generated API token",
+                    checked = uiState.useApiToken,
+                    onCheckedChange = viewModel::onUseApiTokenChanged,
+                    enabled = !uiState.isConnected,
+                    switchColors = archiveSwitchColors(),
+                )
 
                 if (uiState.useApiToken) {
                     CosmicTextField(
@@ -371,33 +360,13 @@ fun SettingsScreen(
                 HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
                 // Self-signed certificates
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Allow Self-Signed Certificates",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NineLivesTheme.colors.archiveTextPrimary,
-                        )
-                        Text(
-                            text = "Required for TOFU on self-hosted servers",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = NineLivesTheme.colors.archiveTextMuted,
-                        )
-                    }
-                    Switch(
-                        checked = uiState.allowSelfSignedCertificates,
-                        onCheckedChange = viewModel::onAllowSelfSignedChanged,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = NineLivesTheme.colors.goldFilament,
-                            checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
-                            uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
-                            uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
-                        ),
-                    )
-                }
+                LabeledSwitchRow(
+                    title = "Allow Self-Signed Certificates",
+                    subtitle = "Required for TOFU on self-hosted servers",
+                    checked = uiState.allowSelfSignedCertificates,
+                    onCheckedChange = viewModel::onAllowSelfSignedChanged,
+                    switchColors = archiveSwitchColors(),
+                )
 
                 Text(
                     text = if (uiState.hasTrustedFingerprint) {
@@ -1010,29 +979,13 @@ private fun SkipSilenceRow(
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+    LabeledSwitchRow(
+        title = "Skip silence",
+        subtitle = "Trims long gaps between words. Shortens a book without speeding up the narrator.",
+        checked = enabled,
+        onCheckedChange = onEnabledChange,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Skip silence",
-                style = MaterialTheme.typography.bodyMedium,
-                color = NineLivesTheme.colors.archiveTextPrimary,
-            )
-            Text(
-                text = "Trims long gaps between words. Shortens a book without " +
-                    "speeding up the narrator.",
-                style = MaterialTheme.typography.bodySmall,
-                color = NineLivesTheme.colors.archiveTextMuted,
-            )
-        }
-        Switch(
-            checked = enabled,
-            onCheckedChange = onEnabledChange,
-        )
-    }
+    )
 }
 
 @Composable
@@ -2039,33 +1992,13 @@ private fun FeedbackSection(
         HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
 
         // Include logs toggle
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Attach Optional Logs",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = NineLivesTheme.colors.archiveTextPrimary,
-                )
-                Text(
-                    text = "Adds recent app logs to the email report",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = NineLivesTheme.colors.archiveTextMuted,
-                )
-            }
-            Switch(
-                checked = includeLogs,
-                onCheckedChange = onIncludeLogsChanged,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = NineLivesTheme.colors.goldFilament,
-                    checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
-                    uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
-                    uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
-                ),
-            )
-        }
+        LabeledSwitchRow(
+            title = "Attach Optional Logs",
+            subtitle = "Adds recent app logs to the email report",
+            checked = includeLogs,
+            onCheckedChange = onIncludeLogsChanged,
+            switchColors = archiveSwitchColors(),
+        )
     }
 
     // Submit button
@@ -2207,35 +2140,14 @@ private fun ArchivePreferenceRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = NineLivesTheme.colors.archiveTextPrimary,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = NineLivesTheme.colors.archiveTextMuted,
-            )
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = NineLivesTheme.colors.goldFilament,
-                checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
-                uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
-                uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
-            ),
-        )
-    }
+    LabeledSwitchRow(
+        title = title,
+        subtitle = subtitle,
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        verticalPadding = 8.dp,
+        switchColors = archiveSwitchColors(),
+    )
 }
 
 // ─── Playback Behavior Section ──────────────────────────────────────────
@@ -2417,34 +2329,15 @@ private fun EqualizerSection(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         // Enable toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column {
-                    Text(
-                        text = "5-Band Equalizer",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = NineLivesTheme.colors.archiveTextPrimary,
-                    )
-                    Text(
-                        text = "Shape the frequency response",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = NineLivesTheme.colors.archiveTextMuted,
-                    )
-                }
-                Switch(
-                    checked = eqEnabled,
-                    onCheckedChange = { onToggleEq() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = NineLivesTheme.colors.goldFilament,
-                        checkedTrackColor = NineLivesTheme.colors.goldFilamentFaint,
-                        uncheckedThumbColor = NineLivesTheme.colors.archiveTextSecondary,
-                        uncheckedTrackColor = NineLivesTheme.colors.archiveVoidElevated,
-                    ),
-                )
-            }
+        LabeledSwitchRow(
+            title = "5-Band Equalizer",
+            subtitle = "Shape the frequency response",
+            checked = eqEnabled,
+            onCheckedChange = { onToggleEq() },
+            horizontalArrangement = Arrangement.SpaceBetween,
+            titleTakesRemainingWidth = false,
+            switchColors = archiveSwitchColors(),
+        )
 
             // dB labels
             Row(

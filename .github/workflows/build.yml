@@ -29,6 +29,9 @@ jobs:
       - name: Run debug unit tests
         run: ./gradlew :app:testDebugUnitTest
 
+      - name: Run full Android lint
+        run: ./gradlew :app:lintDebug :app:lintRelease
+
       # Debug builds do not minify, so nothing above this line can see an R8
       # shrinking regression. Running the release R8 pass here (no signing needed)
       # triggers verifyWorkManagerKeepRules against a real usage.txt. See issue #64.

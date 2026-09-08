@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -106,6 +107,7 @@ internal data class AudiobookButtonSpec(
     val customAction: String? = null,
 )
 
+@OptIn(UnstableApi::class)
 internal fun audiobookButtonSpecs(): List<AudiobookButtonSpec> = listOf(
     AudiobookButtonSpec(
         icon = CommandButton.ICON_SKIP_BACK_10,
@@ -133,9 +135,12 @@ internal fun audiobookButtonSpecs(): List<AudiobookButtonSpec> = listOf(
     ),
 )
 
+@SuppressLint("WrongConstant")
 @OptIn(UnstableApi::class)
 internal fun audiobookMediaButtonPreferences(): List<CommandButton> =
     audiobookButtonSpecs().map { spec ->
+        // Lint loses CommandButton's IntDef through List-to-IntArray spreading.
+        // The private specs above are closed over the six valid slot constants.
         val builder = CommandButton.Builder(spec.icon)
             .setDisplayName(spec.displayName)
             .setSlots(*spec.slots.toIntArray())
@@ -680,6 +685,7 @@ class PlaybackManager @Inject constructor(
     private var chapterPlayer: ChapterAwareForwardingPlayer? = null
     private var sessionInitialized = false
     private val playbackDataSourceFactory = createPlaybackDataSourceFactory(context, okHttpClient)
+    @OptIn(UnstableApi::class)
     private val playbackMediaSourceFactory = DefaultMediaSourceFactory(playbackDataSourceFactory)
 
     /** Expose the current ExoPlayer instance. */
@@ -2041,6 +2047,7 @@ class PlaybackManager @Inject constructor(
      * without touching the stored preference. Never moves position: skipping
      * silence changes what is rendered, not where the playhead is.
      */
+    @OptIn(UnstableApi::class)
     fun applySkipSilence() {
         exoPlayer?.skipSilenceEnabled = effectiveSettings.current.skipSilenceEnabled
     }
@@ -2106,6 +2113,7 @@ class PlaybackManager @Inject constructor(
      * this satisfies the invariant that no entitlement transition may move
      * playback position. Do not add a seek here.
      */
+    @OptIn(UnstableApi::class)
     fun applyEntitlementToActivePlayback() {
         val effective = effectiveSettings.current
 

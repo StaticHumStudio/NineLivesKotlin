@@ -962,7 +962,7 @@ class ApiService @Inject constructor(
      * thrown exception, genuinely no libraries) and a user reporting "my shelf
      * is empty" could not be told which one they hit.
      */
-    suspend fun getLibraries(scope: ActiveRemoteScope): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
+    internal suspend fun getLibraries(scope: ActiveRemoteScope): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
         // remoteResultCatching lets CancellationException escape uncaught
         // (see its kdoc). A plain `catch (e: Exception)` here would turn a
         // stopped sync into a persisted failure instead of a silently
@@ -1009,7 +1009,7 @@ class ApiService @Inject constructor(
      * [runPaginatedFetch] is what decides that (issue #14, PR #30 review,
      * finding B); only actually reaching the reported total is a genuine Ok.
      */
-    suspend fun getLibraryItems(
+    internal suspend fun getLibraryItems(
         scope: ActiveRemoteScope,
         libraryId: String,
         limit: Int = 100,
@@ -1056,7 +1056,7 @@ class ApiService @Inject constructor(
         return getAudioBook(scope, itemId)
     }
 
-    suspend fun getAudioBook(scope: ActiveRemoteScope, itemId: String): AudioBook? = withContext(Dispatchers.IO) {
+    internal suspend fun getAudioBook(scope: ActiveRemoteScope, itemId: String): AudioBook? = withContext(Dispatchers.IO) {
         try {
             val rawItemId = catalogEgressId(scope, itemId) ?: return@withContext null
             dispatchActiveRemoteScope(scope, { api.getItem(rawItemId, dispatch = it) }) { response ->

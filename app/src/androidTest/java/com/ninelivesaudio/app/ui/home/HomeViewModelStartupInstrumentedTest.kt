@@ -8,8 +8,12 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ninelivesaudio.app.NineLivesApp
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
+import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
+import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.service.SettingsManager
@@ -27,7 +31,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Keeps Home construction on the main thread while the selected remote source
+ * Keeps Home construction on the main thread while the selected local source
  * and a nonempty recent-books flow are both immediately available.
  */
 @RunWith(AndroidJUnit4::class)
@@ -46,20 +50,21 @@ class HomeViewModelStartupInstrumentedTest {
         try {
             fixtureSettings.saveSettings(
                 AppSettings(
-                    appMode = AppMode.AUDIOBOOKSHELF,
-                    serverUrl = FIXTURE_SERVER_URL,
-                    selectedLibraryId = FIXTURE_LIBRARY_ID,
+                    appMode = AppMode.LOCAL,
+                    selectedLocalLibraryId = FIXTURE_LIBRARY_ID,
                 ),
-            )
-            fixtureSettings.saveAuthToken(
-                token = "startup-fixture-token",
-                serverUrl = FIXTURE_SERVER_URL,
-                accountId = "startup-fixture-account",
             )
 
             instrumentation.runOnMainSync {
                 viewModel = HomeViewModel(
-                    audioBookDao = eagerRecentlyPlayedDao(),
+                    audioBookRepository = AudioBookRepository(
+                        context = fixtureContext,
+                        audioBookDao = eagerRecentlyPlayedDao(),
+                        apiService = app.apiService,
+                        localListeningSessionDao = unusedDao(LocalListeningSessionDao::class.java),
+                        localBookmarkDao = unusedDao(LocalBookmarkDao::class.java),
+                        playbackProgressDao = unusedDao(PlaybackProgressDao::class.java),
+                    ),
                     connectivityMonitor = app.connectivityMonitor,
                     syncManager = app.syncManager,
                     settingsManager = fixtureSettings,
@@ -93,6 +98,19 @@ class HomeViewModelStartupInstrumentedTest {
         },
     ) as AudioBookDao
 
+    private fun <T> unusedDao(type: Class<T>): T = Proxy.newProxyInstance(
+        type.classLoader,
+        arrayOf(type),
+        InvocationHandler { proxy, method, args ->
+            when (method.name) {
+                "toString" -> "Unused${type.simpleName}"
+                "hashCode" -> System.identityHashCode(proxy)
+                "equals" -> proxy === args?.singleOrNull()
+                else -> error("Unexpected ${type.simpleName} call: ${method.name}")
+            }
+        },
+    ) as T
+
     private fun recentlyPlayedResult() = RecentlyPlayedResult(
         audioBook = AudioBookEntity(
             id = "startup-book",
@@ -100,13 +118,13 @@ class HomeViewModelStartupInstrumentedTest {
             title = "Startup Fixture",
             author = "Fixture Author",
             currentTimeSeconds = 3_600.0,
+            isLocal = 1,
         ),
         lastPlayedAt = null,
     )
 
     private companion object {
         const val FIXTURE_LIBRARY_ID = "startup-library"
-        const val FIXTURE_SERVER_URL = "https://startup-fixture.invalid"
         const val VIEW_MODEL_STORE_KEY = "startup-home-view-model"
     }
 }

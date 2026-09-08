@@ -56,7 +56,7 @@ class DownloadEngine @Inject constructor(
      * Returns the terminal [DownloadItem] (Completed / Failed / Paused); the
      * caller owns any completion/failure event emission.
      */
-    suspend fun download(
+    internal suspend fun download(
         item: DownloadItem,
         audioBook: AudioBook,
         scope: ActiveRemoteScope,
@@ -288,7 +288,7 @@ class DownloadEngine @Inject constructor(
     }
 
     /** Fetch full book details (audio file metadata) from the server. */
-    suspend fun fetchFullBookDetails(scope: ActiveRemoteScope, audioBookId: String): AudioBook? {
+    internal suspend fun fetchFullBookDetails(scope: ActiveRemoteScope, audioBookId: String): AudioBook? {
         val rawBookId = scope.decodeForEgress(audioBookId) ?: return null
         return try {
             val response = apiService.dispatchActiveRemoteScope(

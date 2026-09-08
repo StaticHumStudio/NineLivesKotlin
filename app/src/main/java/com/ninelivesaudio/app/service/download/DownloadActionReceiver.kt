@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
+import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.service.DownloadManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -29,6 +31,7 @@ class DownloadActionReceiver : BroadcastReceiver() {
     interface Deps {
         fun downloadManager(): DownloadManager
         fun downloadItemDao(): DownloadItemDao
+        fun apiService(): ApiService
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -43,8 +46,13 @@ class DownloadActionReceiver : BroadcastReceiver() {
                     DownloadNotifications.ACTION_CANCEL -> {
                         // Cancel the book the notification is showing: the current
                         // active item (same selection the drain worker uses).
-                        val current = selectNextDownload(
-                            deps.downloadItemDao().getDownloadable().map { it.toDomain() }
+                        val scope = deps.apiService().captureActiveRemoteScope()
+                            ?: return@launch
+                        val current = selectNotificationCancelDownload(
+                            deps.downloadItemDao()
+                                .getDownloadableForOwner(scope.idPrefix)
+                                .map { it.toDomain() },
+                            scope.idPrefix,
                         )
                         if (current != null) deps.downloadManager().cancelDownload(current.id)
                     }
@@ -55,3 +63,12 @@ class DownloadActionReceiver : BroadcastReceiver() {
         }
     }
 }
+
+internal fun selectNotificationCancelDownload(
+    candidates: List<DownloadItem>,
+    remotePrefix: String,
+): DownloadItem? = selectNextDownload(
+    candidates.filter { item ->
+        ownerScopedDownloadIdsMatch(remotePrefix, item.id, item.audioBookId)
+    },
+)

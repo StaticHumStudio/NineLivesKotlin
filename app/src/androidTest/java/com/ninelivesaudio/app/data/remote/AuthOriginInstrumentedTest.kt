@@ -371,7 +371,8 @@ class AuthOriginInstrumentedTest {
                     entered.countDown()
                     check(release.await(15, TimeUnit.SECONDS))
                 }
-                val loading = async(Dispatchers.IO) { app.apiService.getLibraries() }
+                val scope = requireNotNull(app.apiService.captureActiveRemoteScope())
+                val loading = async(Dispatchers.IO) { app.apiService.getLibraries(scope) }
                 assertTrue(entered.await(10, TimeUnit.SECONDS))
                 app.settingsManager.updateSettings { it.copy(serverUrl = b.url) }
                 app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }

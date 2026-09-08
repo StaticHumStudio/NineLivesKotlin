@@ -23,10 +23,16 @@
         <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
         <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
         <exclude domain="file" path="NineLivesAudio/settings.json" />
+        <!-- Default downloads live in external/Music/Audiobookshelf and can exceed cloud quota. -->
+        <exclude domain="external" path="Music/Audiobookshelf" />
     </cloud-backup>
     <device-transfer>
         <include domain="sharedpref" path="." />
+        <!-- Includes preserve Room-backed bookmarks, progress, and listening history. -->
+        <include domain="database" path="." />
         <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
         <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
+        <!-- Download bytes are deliberately not transferred. -->
+        <exclude domain="external" path="Music/Audiobookshelf" />
     </device-transfer>
 </data-extraction-rules>

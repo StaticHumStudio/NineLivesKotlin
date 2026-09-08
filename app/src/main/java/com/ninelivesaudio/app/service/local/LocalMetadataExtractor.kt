@@ -6,6 +6,8 @@ import android.net.Uri
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -100,11 +102,10 @@ class LocalMetadataExtractor @Inject constructor(
         val parsed = Uri.parse(coverUri)
         if (parsed.scheme == "file") return coverUri // already durable (embedded)
         return try {
-            val bytes = context.contentResolver.openInputStream(parsed)?.use { it.readBytes() }
-                ?: return null
-            if (bytes.isEmpty()) return null
+            val input = context.contentResolver.openInputStream(parsed) ?: return null
             val coverDir = File(context.filesDir, "local_covers")
-            Uri.fromFile(writeLocalCoverFile(bytes, coverDir, bookId)).toString()
+            val coverFile = streamToLocalCoverFile(input, coverDir, bookId) ?: return null
+            Uri.fromFile(coverFile).toString()
         } catch (e: Exception) {
             Log.w(TAG, "persistFolderCover failed for $bookId: ${e.message}")
             null
@@ -121,4 +122,42 @@ internal fun writeLocalCoverFile(bytes: ByteArray, coverDir: File, bookId: Strin
     val file = File(coverDir, "$bookId.jpg")
     file.writeBytes(bytes)
     return file
+}
+
+/**
+ * Copy folder-cover bytes to a sibling temporary file, then replace the durable
+ * target only after a nonempty copy completes. This helper closes [input].
+ */
+internal fun streamToLocalCoverFile(
+    input: InputStream,
+    coverDir: File,
+    bookId: String,
+    openOutputStream: (File) -> OutputStream = { it.outputStream() },
+): File? {
+    return input.use { source ->
+        if (!coverDir.exists() && !coverDir.mkdirs()) return@use null
+
+        val target = File(coverDir, "$bookId.jpg")
+        var tempFile: File? = null
+        var committed = false
+        try {
+            val temp = File.createTempFile("cover-", ".tmp", coverDir)
+            tempFile = temp
+            openOutputStream(temp).use { output ->
+                source.copyTo(output)
+            }
+            when {
+                temp.length() == 0L -> null
+                !temp.renameTo(target) -> null
+                else -> {
+                    committed = true
+                    target
+                }
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            if (!committed) tempFile?.delete()
+        }
+    }
 }

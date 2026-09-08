@@ -18,9 +18,10 @@ import javax.inject.Singleton
  * base URL with the real server URL.
  */
 @Singleton
-class DynamicBaseUrlInterceptor @Inject constructor(
-    private val settingsManager: SettingsManager,
+class DynamicBaseUrlInterceptor internal constructor(
+    private val serverUrl: () -> String,
 ) : Interceptor {
+    @Inject constructor(settingsManager: SettingsManager) : this({ settingsManager.currentSettings.serverUrl })
 
     companion object {
         /** Placeholder base URL used when building Retrofit. */
@@ -31,12 +32,12 @@ class DynamicBaseUrlInterceptor @Inject constructor(
         val originalRequest = chain.request()
         val originalUrl = originalRequest.url
 
-        // Only rewrite requests created from the Retrofit placeholder host.
-        if (originalUrl.host != PLACEHOLDER_BASE_URL.toHttpUrlOrNull()?.host) {
+        // Only the exact Retrofit placeholder origin is eligible for routing.
+        if (ServerOrigin.from(originalUrl) != ServerOrigin.parse(PLACEHOLDER_BASE_URL)) {
             return chain.proceed(originalRequest)
         }
 
-        val newBaseUrl = validatedServerBaseUrl(settingsManager.currentSettings.serverUrl)
+        val newBaseUrl = validatedServerBaseUrl(serverUrl())
             ?: throw IOException("Audiobookshelf server is not configured")
 
         // Rebuild URL with server scheme/host/port and optional base path segments.

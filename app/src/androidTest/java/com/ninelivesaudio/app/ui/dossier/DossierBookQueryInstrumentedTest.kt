@@ -95,6 +95,46 @@ class DossierBookQueryInstrumentedTest {
         )
     }
 
+    @Test
+    fun selectedServerLibraryAndSourceQueryMatchesFormerScope() = runBlocking {
+        val activeServer = richBook(
+            id = "active-server",
+            title = "A Server",
+            libraryId = ACTIVE_SERVER_LIBRARY_ID,
+            isLocal = 0,
+        )
+        val wrongSource = richBook(
+            id = "wrong-local-source",
+            title = "B Local",
+            libraryId = ACTIVE_SERVER_LIBRARY_ID,
+        )
+        val wrongLibrary = richBook(
+            id = "wrong-server-library",
+            title = "C Other Server",
+            libraryId = "other-server-library",
+            isLocal = 0,
+        )
+        database.audioBookDao().upsertAll(listOf(activeServer, wrongSource, wrongLibrary))
+
+        val settings = AppSettings(
+            appMode = AppMode.AUDIOBOOKSHELF,
+            selectedLibraryId = ACTIVE_SERVER_LIBRARY_ID,
+            selectedLocalLibraryId = ACTIVE_LIBRARY_ID,
+        )
+        val formerScope = dossierBooksInActiveScope(
+            database.audioBookDao().getAll().map { it.toDomain() },
+            settings,
+        )
+        val queryScope = database.audioBookDao()
+            .getByLibraryAndSource(ACTIVE_SERVER_LIBRARY_ID, isLocal = 0)
+            .map { it.toDomain() }
+
+        assertEquals(formerScope, queryScope)
+        assertEquals(listOf("active-server"), queryScope.map { it.id })
+        assertEquals("rich-file.mp3", queryScope.single().audioFiles.single().filename)
+        assertEquals("Rich Chapter", queryScope.single().chapters.single().title)
+    }
+
     private fun richBook(
         id: String,
         title: String,
@@ -139,5 +179,6 @@ class DossierBookQueryInstrumentedTest {
 
     private companion object {
         const val ACTIVE_LIBRARY_ID = "active-local-library"
+        const val ACTIVE_SERVER_LIBRARY_ID = "active-server-library"
     }
 }

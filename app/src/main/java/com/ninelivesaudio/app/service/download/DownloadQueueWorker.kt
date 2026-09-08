@@ -95,7 +95,12 @@ class DownloadQueueWorker(
             val active = manager.filterToSlotWinner(
                 dao.getDownloadableForOwner(remoteScope.idPrefix)
                     .map { it.toDomain() }
-                    .filter { ownerScopedDownloadIdsMatch(remoteScope.idPrefix, it.id, it.audioBookId) },
+                    .filter {
+                        ownerScopedDownloadIdsMatch(remoteScope.idPrefix, it.id, it.audioBookId) &&
+                            remoteScope.decodeForEgress(it.id) != null &&
+                            remoteScope.decodeForEgress(it.audioBookId) != null
+                    },
+                remoteScope,
             )
             val item = selectNextDownload(active) ?: break
             android.util.Log.d(TAG, "next id=${item.id} status=${item.status} title=${item.title}")

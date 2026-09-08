@@ -193,9 +193,15 @@ class MediaBrowseTree @Inject constructor(
                 (settings.appMode == AppMode.LOCAL || remoteScope != null),
             activeLibraryId = settings.activeLibraryId,
             activeIsLocal = settings.appMode == AppMode.LOCAL,
-            countRecent = audioBookRepository::countRecentlyPlayedForAuto,
-            countLibrary = audioBookRepository::countForAuto,
-            countDownloaded = audioBookRepository::countDownloadedForAuto,
+            countRecent = { libraryId, isLocal ->
+                audioBookRepository.countRecentlyPlayedForAuto(remoteScope, libraryId, isLocal)
+            },
+            countLibrary = { libraryId, isLocal ->
+                audioBookRepository.countForAuto(remoteScope, libraryId, isLocal)
+            },
+            countDownloaded = { libraryId, isLocal ->
+                audioBookRepository.countDownloadedForAuto(remoteScope, libraryId, isLocal)
+            },
         )
     }
 

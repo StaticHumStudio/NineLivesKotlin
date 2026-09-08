@@ -7,6 +7,7 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
@@ -67,14 +68,15 @@ class DownloadsViewModel @Inject constructor(
     init {
         // Observe active downloads
         viewModelScope.launch {
-            visiblePrefixes().flatMapLatest { prefix ->
-                downloadItemDao.observeVisibleActive(prefix)
-            }.collect { entities ->
+            visibleScopes().flatMapLatest { scope ->
+                downloadItemDao.observeVisibleActive(scope?.idPrefix).map { scope to it }
+            }.collect { (scope, entities) ->
                 val items = entities.mapNotNull { entity ->
                     val item = entity.toDomain()
                     val book = audioBookDao.getById(item.audioBookId)
                     // Skip items where book was deleted from DB
                     if (book == null) return@mapNotNull null
+                    if (!visibleDownload(scope, item, book.isLocal != 0)) return@mapNotNull null
                     DownloadUiItem(
                         download = item,
                         coverPath = book.effectiveCoverPath,
@@ -95,14 +97,15 @@ class DownloadsViewModel @Inject constructor(
 
         // Observe completed downloads
         viewModelScope.launch {
-            visiblePrefixes().flatMapLatest { prefix ->
-                downloadItemDao.observeVisibleCompleted(prefix)
-            }.collect { entities ->
+            visibleScopes().flatMapLatest { scope ->
+                downloadItemDao.observeVisibleCompleted(scope?.idPrefix).map { scope to it }
+            }.collect { (scope, entities) ->
                 val items = entities.mapNotNull { entity ->
                     val item = entity.toDomain()
                     val book = audioBookDao.getById(item.audioBookId)
                     // Skip items where book was deleted from DB
                     if (book == null) return@mapNotNull null
+                    if (!visibleDownload(scope, item, book.isLocal != 0)) return@mapNotNull null
                     DownloadUiItem(
                         download = item,
                         coverPath = book.effectiveCoverPath,
@@ -204,9 +207,13 @@ class DownloadsViewModel @Inject constructor(
         }
     }
 
-    private fun visiblePrefixes(): Flow<String?> = settingsManager.settings
-        .mapLatest { settings ->
-            if (settings.appMode == AppMode.LOCAL) null else apiService.captureActiveRemoteScope()?.idPrefix
+    private fun visibleScopes(): Flow<ActiveRemoteScope?> = settingsManager.settings
+        .combine(apiService.activeRemoteScope) { settings, scope ->
+            if (settings.appMode == AppMode.LOCAL) null else scope
         }
         .distinctUntilChanged()
+
+    private fun visibleDownload(scope: ActiveRemoteScope?, item: DownloadItem, isLocal: Boolean): Boolean =
+        isLocal || (scope?.decodeForEgress(item.id) != null &&
+            scope.decodeForEgress(item.audioBookId) != null)
 }

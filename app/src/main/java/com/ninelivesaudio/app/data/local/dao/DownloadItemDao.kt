@@ -17,7 +17,9 @@ interface DownloadItemDao {
     @Query("""
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
-        WHERE b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%')
+        WHERE b.IsLocal = 1 OR (:remotePrefix IS NOT NULL
+            AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+            AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix)
         ORDER BY d.StartedAt DESC
     """)
     suspend fun getVisible(remotePrefix: String?): List<DownloadItemEntity>
@@ -25,7 +27,9 @@ interface DownloadItemDao {
     @Query("""
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
-        WHERE d.Id = :id AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+        WHERE d.Id = :id AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL
+            AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+            AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix))
     """)
     suspend fun getVisibleById(id: String, remotePrefix: String?): DownloadItemEntity?
 
@@ -33,7 +37,9 @@ interface DownloadItemDao {
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
         WHERE d.AudioBookId = :audioBookId
-          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL
+            AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+            AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix))
     """)
     suspend fun getVisibleByAudioBookId(audioBookId: String, remotePrefix: String?): DownloadItemEntity?
 
@@ -41,7 +47,9 @@ interface DownloadItemDao {
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
         WHERE d.Status IN (0, 1, 2, 6)
-          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL
+            AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+            AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix))
         ORDER BY d.StartedAt DESC
     """)
     fun observeVisibleActive(remotePrefix: String?): Flow<List<DownloadItemEntity>>
@@ -50,7 +58,9 @@ interface DownloadItemDao {
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
         WHERE d.Status = 3
-          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'))
+          AND (b.IsLocal = 1 OR (:remotePrefix IS NOT NULL
+            AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+            AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix))
         ORDER BY d.CompletedAt DESC
     """)
     fun observeVisibleCompleted(remotePrefix: String?): Flow<List<DownloadItemEntity>>
@@ -59,7 +69,9 @@ interface DownloadItemDao {
     @Query("""
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
-        WHERE d.Status IN (0, 1) AND b.IsLocal = 0 AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'
+        WHERE d.Status IN (0, 1) AND b.IsLocal = 0
+          AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+          AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix
         ORDER BY d.StartedAt ASC
     """)
     suspend fun getDownloadableForOwner(remotePrefix: String): List<DownloadItemEntity>
@@ -67,7 +79,9 @@ interface DownloadItemDao {
     @Query("""
         SELECT d.* FROM DownloadItems d
         INNER JOIN AudioBooks b ON b.Id = d.AudioBookId
-        WHERE d.Id = :id AND b.IsLocal = 0 AND b.Id LIKE :remotePrefix || '%' AND d.Id LIKE :remotePrefix || '%'
+        WHERE d.Id = :id AND b.IsLocal = 0
+          AND substr(b.Id, 1, length(:remotePrefix)) = :remotePrefix
+          AND substr(d.Id, 1, length(:remotePrefix)) = :remotePrefix
     """)
     suspend fun getRemoteByIdForOwner(id: String, remotePrefix: String): DownloadItemEntity?
 

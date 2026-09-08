@@ -30,6 +30,9 @@ class AuthOriginInstrumentedTest {
         val url = "http://127.0.0.1:${server.localPort}"
         val requests = CopyOnWriteArrayList<Pair<String, String?>>()
         @Volatile var authorize: (() -> Int)? = null
+        @Volatile var profile: (() -> Unit)? = null
+        @Volatile var libraries: (() -> Unit)? = null
+        @Volatile var profileRedirectTo: String? = null
         @Volatile var accountId: String = "account-$token"
         private val acceptor = thread(isDaemon = true) {
             while (!server.isClosed) {
@@ -49,17 +52,25 @@ class AuthOriginInstrumentedTest {
                         }
                         repeat(length) { reader.read() }
                         requests += path to auth
-                        val status = when (path) {
-                            "/login" -> loginStatus ?: return@thread
-                            "/api/authorize" -> authorize?.invoke() ?: 200
+                        val isProfile = path == "/api/me" || path.endsWith("/api/me")
+                        val isLibraries = path == "/api/libraries" || path.endsWith("/api/libraries")
+                        val isLogin = path == "/login" || path.endsWith("/login")
+                        val isAuthorize = path == "/api/authorize" || path.endsWith("/api/authorize")
+                        if (isProfile) profile?.invoke()
+                        if (isLibraries) libraries?.invoke()
+                        val redirect = if (isProfile) profileRedirectTo.also { profileRedirectTo = null } else null
+                        val status = redirect?.let { 302 } ?: when {
+                            isLogin -> loginStatus ?: return@thread
+                            isAuthorize -> authorize?.invoke() ?: 200
                             else -> 200
                         }
-                        val body = when (path) {
-                            "/login" -> """{"user":{"id":"$accountId","username":"fixture","token":"$token"}}"""
-                            "/api/libraries" -> """{"libraries":[]}"""
+                        val body = when {
+                            isLogin -> """{"user":{"id":"$accountId","username":"fixture","token":"$token"}}"""
+                            isLibraries -> """{"libraries":[]}"""
                             else -> """{"id":"$accountId","mediaProgress":[],"bookmarks":[]}"""
                         }
-                        it.getOutputStream().write(("HTTP/1.1 $status Fixture\r\nContent-Type: application/json\r\nContent-Length: ${body.toByteArray().size}\r\nConnection: close\r\n\r\n$body").toByteArray())
+                        val location = redirect?.let { "Location: $it\r\n" }.orEmpty()
+                        it.getOutputStream().write(("HTTP/1.1 $status Fixture\r\n${location}Content-Type: application/json\r\nContent-Length: ${body.toByteArray().size}\r\nConnection: close\r\n\r\n$body").toByteArray())
                     }
                 }
             }
@@ -239,7 +250,7 @@ class AuthOriginInstrumentedTest {
         }
     }
 
-    @Test fun legacyStoredCredentialStaysUnownedWithoutAnAutomaticProfileRequest() = runBlocking {
+    @Test fun legacyStoredCredentialStaysUnownedUntilAnExplicitResolverBindsItsAccount() = runBlocking {
         app.apiService.awaitAuthReady()
         val previous = app.settingsManager.currentSettings
         val previousToken = app.settingsManager.getAuthToken()
@@ -256,8 +267,112 @@ class AuthOriginInstrumentedTest {
                 assertNull(api.captureRemoteTarget())
                 assertFalse("Startup fetched a full profile: ${a.requests.map { it.first }}", a.requests.any { it.first == "/api/me" })
                 assertNull(settings.getAuthRecord()?.accountId)
+                val resolved = requireNotNull(api.resolveRemoteTarget())
+                assertEquals(a.accountId, resolved.owner.accountId)
+                assertEquals(a.accountId, settings.getAuthRecord()?.accountId)
+                assertEquals(1, a.requests.count { it.first == "/api/me" })
             }
         } finally {
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
+    @Test fun redirectedLegacyProfileOutsideFrozenRouteCannotPublishAnOwner() = runBlocking {
+        app.apiService.awaitAuthReady()
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        try {
+            Origin("fixture-redirect").use { origin ->
+                val routeA = origin.url + "/abs-a"
+                val routeB = origin.url + "/abs-b"
+                app.settingsManager.updateSettings { it.copy(serverUrl = routeA) }
+                app.settingsManager.saveAuthToken(origin.token, routeA)
+                val settings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                val auth = AuthInterceptor()
+                val client = NetworkModule.provideOkHttpClient(auth, DynamicBaseUrlInterceptor(settings), settings)
+                val api = ApiService(
+                    NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(client, NetworkModule.provideJson())),
+                    auth,
+                    settings,
+                )
+                api.initializeFromSettings()
+                origin.profileRedirectTo = routeB + "/api/me"
+
+                assertNull(api.resolveRemoteTarget())
+                assertTrue(origin.requests.any { it.first == "/abs-a/api/me" && it.second == "Bearer ${origin.token}" })
+                assertTrue(origin.requests.any { it.first == "/abs-b/api/me" && it.second == null })
+                assertNull(settings.getAuthRecord()?.accountId)
+                assertNull(api.captureRemoteTarget())
+            }
+        } finally {
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
+    @Test fun staleLegacyProfileAfterAtoBtoARouteCycleCannotPublishAnOwner() = runBlocking {
+        app.apiService.awaitAuthReady()
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        try {
+            Origin("fixture-legacy-a").use { a -> Origin("fixture-legacy-b").use { b ->
+                app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+                app.settingsManager.saveAuthToken(a.token, a.url)
+                val settings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                val auth = AuthInterceptor()
+                val client = NetworkModule.provideOkHttpClient(auth, DynamicBaseUrlInterceptor(settings), settings)
+                val api = ApiService(NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(client, NetworkModule.provideJson())), auth, settings)
+                api.initializeFromSettings()
+                a.profile = {
+                    entered.countDown()
+                    check(release.await(15, TimeUnit.SECONDS))
+                }
+                val resolving = async(Dispatchers.IO) { api.resolveRemoteTarget() }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                settings.updateSettings { it.copy(serverUrl = b.url) }
+                settings.updateSettings { it.copy(serverUrl = a.url) }
+                release.countDown()
+                assertNull(resolving.await())
+                assertNull(settings.getAuthRecord()?.accountId)
+            } }
+        } finally {
+            release.countDown()
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
+    @Test fun delayedLibraryResponseAfterAtoBtoACannotPublishTheOldScope() = runBlocking {
+        app.apiService.awaitAuthReady()
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        try {
+            Origin("fixture-route-a").use { a -> Origin("fixture-route-b").use { b ->
+                assertEquals(CredentialLoginResult.SUCCESS, app.apiService.login(a.url, "fixture", "fixture-password"))
+                a.libraries = {
+                    entered.countDown()
+                    check(release.await(15, TimeUnit.SECONDS))
+                }
+                val loading = async(Dispatchers.IO) { app.apiService.getLibraries() }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                app.settingsManager.updateSettings { it.copy(serverUrl = b.url) }
+                app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+                release.countDown()
+                assertTrue(loading.await() is RemoteResult.Failed)
+            } }
+        } finally {
+            release.countDown()
             app.apiService.logout()
             app.settingsManager.saveSettings(previous)
             if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
@@ -320,6 +435,49 @@ class AuthOriginInstrumentedTest {
                     }
                 }
             }
+        }
+    }
+
+    @Test fun legacyResolverAccountWriteFailureNeverPublishesAnOwner() = runBlocking {
+        app.apiService.awaitAuthReady()
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        val field = SettingsManager::class.java.getDeclaredField("encryptedPrefs" + "$" + "delegate").apply { isAccessible = true }
+        try {
+            for (failRollback in listOf(false, true)) {
+                Origin("fixture-resolver").use { a ->
+                    app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+                    app.settingsManager.saveAuthToken(a.token, a.url)
+                    val settings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                    val auth = AuthInterceptor()
+                    val client = NetworkModule.provideOkHttpClient(auth, DynamicBaseUrlInterceptor(settings), settings)
+                    val api = ApiService(NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(client, NetworkModule.provideJson())), auth, settings)
+                    api.initializeFromSettings()
+                    val originalRecord = settings.getAuthRecord()
+                    @Suppress("UNCHECKED_CAST")
+                    val original = field.get(settings) as Lazy<SharedPreferences>
+                    val backing = original.value
+                    val entered = CountDownLatch(0)
+                    val release = CountDownLatch(0)
+                    val failing = FailingOwnerPreferences(backing, a.accountId, failRollback, entered, release)
+                    field.set(settings, lazyOf(failing))
+                    try {
+                        assertNull(api.resolveRemoteTarget())
+                        assertTrue(a.requests.any { it.first == "/api/me" && it.second == "Bearer " + a.token })
+                        assertTrue(if (failRollback) failing.failedWrites >= 2 else failing.failedWrites == 1)
+                        assertNull(api.captureRemoteTarget())
+                        assertNull("Failed resolver owner reached durable preferences", backing.getString("auth_account_id", null))
+                        if (!failRollback) assertEquals(originalRecord, settings.getAuthRecord())
+                    } finally {
+                        field.set(settings, original)
+                    }
+                }
+            }
+        } finally {
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
         }
     }
 

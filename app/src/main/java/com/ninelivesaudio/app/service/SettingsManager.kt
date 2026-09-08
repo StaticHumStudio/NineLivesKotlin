@@ -186,9 +186,20 @@ class SettingsManager @Inject constructor(
         )
     }
 
+    @Volatile private var routeRevision = 0L
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
-    private val serializedState = SerializedSettingsState(AppSettings()) { _settings.value = it }
+    private val serializedState = SerializedSettingsState(AppSettings()) { publishSettings(it) }
+
+    /** Monotonic route epoch. It changes synchronously with every server URL publication. */
+    internal val currentRouteRevision: Long
+        get() = routeRevision
+
+    private fun publishSettings(next: AppSettings) {
+        val previous = _settings.value
+        _settings.value = next
+        if (previous.serverUrl != next.serverUrl) routeRevision++
+    }
 
     private val _isLoaded = MutableStateFlow(false)
     /** Becomes true after [loadSettings] completes, successfully or not. UI must
@@ -316,7 +327,7 @@ class SettingsManager @Inject constructor(
                 } else {
                     loaded
                 }
-                _settings.value = withDefaults
+                publishSettings(withDefaults)
                 Log.d(TAG, "loadSettings: Settings applied to StateFlow")
                 withDefaults
             } else {

@@ -14,27 +14,28 @@ interface AudiobookshelfApi {
     // ─── Auth ────────────────────────────────────────────────────────────
 
     @POST("login")
-    suspend fun login(@Body request: LoginRequest): Response<LoginResponse>
+    suspend fun login(@Body request: LoginRequest, @Tag dispatch: RemoteDispatchTag? = null): Response<LoginResponse>
 
     /** Lightweight authenticated check for token validity (no profile payload). */
     @GET("api/authorize")
-    suspend fun authorize(): Response<Unit>
+    suspend fun authorize(@Tag dispatch: RemoteDispatchTag? = null): Response<Unit>
 
     // ─── User / Me ───────────────────────────────────────────────────────
 
     /** Validate token + get user info, all progress, and bookmarks. */
     @GET("api/me")
-    suspend fun getMe(): Response<ApiMeResponse>
+    suspend fun getMe(@Tag dispatch: RemoteDispatchTag? = null): Response<ApiMeResponse>
 
     /** Get progress for a specific item. */
     @GET("api/me/progress/{itemId}")
-    suspend fun getUserProgress(@Path("itemId") itemId: String): Response<ApiUserProgress>
+    suspend fun getUserProgress(@Path("itemId") itemId: String, @Tag dispatch: RemoteDispatchTag? = null): Response<ApiUserProgress>
 
     /** Get paginated listening sessions for the authenticated user. */
     @GET("api/me/listening-sessions")
     suspend fun getListeningSessions(
         @Query("itemsPerPage") itemsPerPage: Int = 50,
         @Query("page") page: Int = 0,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<ListeningSessionsResponse>
 
     /** Update progress for a specific item. */
@@ -42,12 +43,13 @@ interface AudiobookshelfApi {
     suspend fun updateProgress(
         @Path("itemId") itemId: String,
         @Body request: UpdateProgressRequest,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<Unit>
 
     // ─── Libraries ───────────────────────────────────────────────────────
 
     @GET("api/libraries")
-    suspend fun getLibraries(): Response<LibrariesResponse>
+    suspend fun getLibraries(@Tag dispatch: RemoteDispatchTag? = null): Response<LibrariesResponse>
 
     /** Get paginated library items. */
     @GET("api/libraries/{libraryId}/items")
@@ -56,6 +58,7 @@ interface AudiobookshelfApi {
         @Query("limit") limit: Int = 100,
         @Query("page") page: Int = 0,
         @Query("minified") minified: Int = 0,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<LibraryItemsResponse>
 
     // ─── Items ───────────────────────────────────────────────────────────
@@ -65,6 +68,7 @@ interface AudiobookshelfApi {
     suspend fun getItem(
         @Path("itemId") itemId: String,
         @Query("expanded") expanded: Int = 1,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<ApiLibraryItem>
 
     /** Get cover image. */
@@ -73,6 +77,7 @@ interface AudiobookshelfApi {
         @Path("itemId") itemId: String,
         @Query("width") width: Int? = null,
         @Query("height") height: Int? = null,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<ResponseBody>
 
     /** Stream audio file for download. */
@@ -81,6 +86,7 @@ interface AudiobookshelfApi {
     suspend fun getAudioFileStream(
         @Path("itemId") itemId: String,
         @Path("fileIno") fileIno: String,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<ResponseBody>
 
     // ─── Playback Session ────────────────────────────────────────────────
@@ -90,6 +96,7 @@ interface AudiobookshelfApi {
     suspend fun startPlaybackSession(
         @Path("itemId") itemId: String,
         @Body request: StartPlaybackRequest,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<ApiPlaybackSession>
 
     /** Sync session progress (every 12s during playback). */
@@ -97,6 +104,7 @@ interface AudiobookshelfApi {
     suspend fun syncSessionProgress(
         @Path("sessionId") sessionId: String,
         @Body request: SyncSessionRequest,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<Unit>
 
     /** Close a playback session. */
@@ -104,6 +112,7 @@ interface AudiobookshelfApi {
     suspend fun closeSession(
         @Path("sessionId") sessionId: String,
         @Body body: Map<String, String> = emptyMap(),
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<Unit>
 
     // ─── Bookmarks ───────────────────────────────────────────────────────
@@ -112,11 +121,13 @@ interface AudiobookshelfApi {
     suspend fun createBookmark(
         @Path("itemId") itemId: String,
         @Body request: CreateBookmarkRequest,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<Unit>
 
     @DELETE("api/me/item/{itemId}/bookmark/{time}")
     suspend fun deleteBookmark(
         @Path("itemId") itemId: String,
         @Path("time") time: Double,
+        @Tag dispatch: RemoteDispatchTag? = null,
     ): Response<Unit>
 }

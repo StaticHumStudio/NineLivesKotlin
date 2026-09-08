@@ -34,6 +34,137 @@ class AuthOriginTest {
         assertEquals(listOf(true, true, true, true, true), observed)
     }
 
+    @Test fun `cached bearer is not sent to a different reverse proxy path on its origin`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.start()
+            val auth = AuthInterceptor().apply { setToken("fixture-a", server.url("/abs-a")) }
+            val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()
+            var received: String? = "not-called"
+            server.capture("/abs-b/api/libraries") { received = it }
+
+            client.newCall(Request.Builder().url(server.url("/abs-b/api/libraries")).build()).execute().close()
+
+            assertNull("A bearer reached a same-origin B proxy path", received)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test fun `settings-only route switch suppresses an untagged retained bearer`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.start()
+            val routeA = requireNotNull(ServerRoute.parse(server.url("/abs-a")))
+            val routeB = requireNotNull(ServerRoute.parse(server.url("/abs-b")))
+            val auth = AuthInterceptor { routeB }.apply { setToken("fixture-a", routeA.url) }
+            val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()
+            var received: String? = "not-called"
+            server.capture("/abs-a/api/me") { received = it }
+
+            client.newCall(Request.Builder().url(server.url("/abs-a/api/me")).build()).execute().close()
+
+            assertNull("A bearer survived an unowned settings route switch", received)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test fun `no bearer dispatch suppresses a retained bearer on the matching route`() = withOrigins { a, _ ->
+        val auth = AuthInterceptor().apply { setToken("fixture-a", a.url()) }
+        val route = requireNotNull(ServerRoute.parse(a.url()))
+        val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()
+        var received: String? = "not-called"
+        a.capture { received = it }
+
+        client.newCall(
+            Request.Builder().url(a.url("/login"))
+                .tag(RemoteDispatchTag::class.java, RemoteDispatchTag.noBearer(route))
+                .build()
+        ).execute().close()
+
+        assertNull("Login dispatch retained an old bearer", received)
+    }
+
+    @Test fun `frozen dispatch fails before sending after its scope changes`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.start()
+            val aRoute = requireNotNull(ServerRoute.parse(server.url("/abs-a")))
+            val bRoute = requireNotNull(ServerRoute.parse(server.url("/abs-b")))
+            val auth = AuthInterceptor().apply { setToken("fixture-a", aRoute.url) }
+            val frozen = FrozenRemoteRequest(aRoute, null, FrozenBearer("fixture-a", aRoute, 0), routeRevision = 0)
+            auth.setToken("fixture-b", bRoute.url)
+            val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()
+            var calls = 0
+            server.capture("/abs-a/api/me") { calls++ }
+
+            assertThrows(StaleRemoteRequestException::class.java) {
+                client.newCall(
+                    Request.Builder().url(server.url("/abs-a/api/me"))
+                        .tag(RemoteDispatchTag::class.java, RemoteDispatchTag.frozen(frozen))
+                        .build()
+                ).execute().close()
+            }
+            assertEquals(0, calls)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test fun `A to B to A route revision still rejects the original frozen request`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.start()
+            val route = requireNotNull(ServerRoute.parse(server.url("/abs-a")))
+            var revision = 7L
+            val auth = AuthInterceptor({ route }, { revision }).apply { setToken("fixture-a", route.url) }
+            val frozen = FrozenRemoteRequest(route, null, FrozenBearer("fixture-a", route, 0), routeRevision = revision)
+            revision += 2 // The settings path changed A to B and back to A.
+            val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()
+            var calls = 0
+            server.capture("/abs-a/api/me") { calls++ }
+
+            assertThrows(StaleRemoteRequestException::class.java) {
+                client.newCall(
+                    Request.Builder().url(server.url("/abs-a/api/me"))
+                        .tag(RemoteDispatchTag::class.java, RemoteDispatchTag.frozen(frozen))
+                        .build()
+                ).execute().close()
+            }
+            assertEquals(0, calls)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test fun `frozen dispatch strips its bearer on a same origin redirect outside its route`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.start()
+            val route = requireNotNull(ServerRoute.parse(server.url("/abs-a")))
+            val frozen = FrozenRemoteRequest(route, null, FrozenBearer("fixture-a", route, 0), routeRevision = 0)
+            val auth = AuthInterceptor().apply { setToken("fixture-a", route.url) }
+            val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()
+            var redirectedBearer: String? = "not-called"
+            server.createContext("/abs-a/api/me") { exchange ->
+                exchange.responseHeaders.add("Location", server.url("/abs-b/api/me"))
+                exchange.sendResponseHeaders(302, -1)
+                exchange.close()
+            }
+            server.capture("/abs-b/api/me") { redirectedBearer = it }
+
+            client.newCall(
+                Request.Builder().url(server.url("/abs-a/api/me"))
+                    .tag(RemoteDispatchTag::class.java, RemoteDispatchTag.frozen(frozen))
+                    .build()
+            ).execute().close()
+            assertNull("A bearer reached the redirected route", redirectedBearer)
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test fun `redirects check every actual origin and preserve same origin auth`() = withOrigins { a, b ->
         val auth = AuthInterceptor().apply { setToken("fixture-a", a.url()) }
         val client = OkHttpClient.Builder().addNetworkInterceptor(auth).build()

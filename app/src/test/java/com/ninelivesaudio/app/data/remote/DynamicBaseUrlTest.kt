@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class DynamicBaseUrlTest {
@@ -26,5 +27,26 @@ class DynamicBaseUrlTest {
     @Test fun `absolute localhost media with different origin is not rewritten`() {
         listOf("http://localhost:8080/audio/file.mp3", "https://localhost/audio/file.mp3")
             .forEach { assertEquals(it, routed(it)) }
+    }
+
+    @Test fun `frozen dispatch rejects a settings-only route switch before sending`() {
+        val routeA = requireNotNull(ServerRoute.parse("https://abs.example/abs-a"))
+        var calls = 0
+        val client = OkHttpClient.Builder()
+            .addInterceptor(DynamicBaseUrlInterceptor { "https://abs.example/abs-b" })
+            .addInterceptor { chain ->
+                calls++
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                    .code(200).message("fixture").body("".toResponseBody()).build()
+            }.build()
+
+        assertThrows(StaleRemoteRequestException::class.java) {
+            client.newCall(
+                Request.Builder().url("http://localhost/api/me")
+                    .tag(RemoteDispatchTag::class.java, RemoteDispatchTag.noBearer(routeA))
+                    .build()
+            ).execute().close()
+        }
+        assertEquals(0, calls)
     }
 }

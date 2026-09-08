@@ -31,14 +31,19 @@ class DynamicBaseUrlInterceptor internal constructor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
         val originalUrl = originalRequest.url
+        val dispatch = originalRequest.tag(RemoteDispatchTag::class.java)
 
         // Only the exact Retrofit placeholder origin is eligible for routing.
         if (ServerOrigin.from(originalUrl) != ServerOrigin.parse(PLACEHOLDER_BASE_URL)) {
             return chain.proceed(originalRequest)
         }
 
-        val newBaseUrl = validatedServerBaseUrl(serverUrl())
+        val configuredRoute = ServerRoute.parse(serverUrl())
             ?: throw IOException("Audiobookshelf server is not configured")
+        if (dispatch != null && dispatch.route != configuredRoute) {
+            throw StaleRemoteRequestException()
+        }
+        val newBaseUrl = dispatch?.route?.asHttpUrl() ?: configuredRoute.asHttpUrl()
 
         // Rebuild URL with server scheme/host/port and optional base path segments.
         val combinedPathSegments = buildList {

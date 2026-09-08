@@ -10,6 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.ResponseBody
+import retrofit2.Response
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -187,6 +189,78 @@ class ApiService @Inject constructor(
         return authMutationMutex.withLock { currentRemoteTargetLocked() }
     }
 
+    /**
+     * Captures one immutable route, bearer, and generation for an HTTP operation.
+     * Callers that already own [authMutationMutex] must use the locked helper.
+     */
+    internal suspend fun captureFrozenRemoteRequest(): FrozenRemoteRequest? {
+        awaitAuthReady()
+        return authMutationMutex.withLock { frozenRemoteRequestLocked() }
+    }
+
+    internal suspend fun isCurrentFrozenRemoteRequest(expected: FrozenRemoteRequest): Boolean =
+        authMutationMutex.withLock { isCurrentFrozenRemoteRequestLocked(expected) }
+
+    /**
+     * Binds a legacy, ownerless session only after its route and bearer are
+     * frozen. The network round trip deliberately happens outside the auth
+     * mutation mutex, then the same captured record is rechecked before any
+     * durable owner is published.
+     */
+    internal suspend fun resolveRemoteTarget(): RemoteTarget? {
+        awaitAuthReady()
+        val frozen = authMutationMutex.withLock { frozenRemoteRequestLocked() } ?: return null
+        frozen.owner?.let { return it }
+
+        val response = try {
+            api.getMe(RemoteDispatchTag.frozen(frozen))
+        } catch (stale: StaleRemoteRequestException) {
+            return null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return null
+        }
+        return authMutationMutex.withLock {
+            val accepted = acceptDirectResponse(
+                response = response,
+                dispatch = RemoteDispatchTag.frozen(frozen),
+                isCurrent = { isCurrentFrozenRemoteRequestLocked(frozen) },
+            ) ?: return@withLock null
+            val accountId = accepted.takeIf { it.isSuccessful }
+                ?.body()?.id?.takeIf { it.isNotBlank() }
+                ?: run {
+                    closeUnpublishedResponse(accepted)
+                    return@withLock null
+                }
+            val original = lastPersistedAuthRecord ?: return@withLock null
+            val updated = original.copy(accountId = accountId)
+            lastPersistedAuthRecord = null
+            try {
+                settingsManager.saveAuthToken(updated.token, updated.serverUrl.orEmpty(), updated.accountId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // A failed commit may have changed the process-memory map. Do
+                // not publish an authority until the prior complete record is
+                // durably restored too.
+                val restored = try {
+                    settingsManager.saveAuthToken(original.token, original.serverUrl.orEmpty(), original.accountId)
+                    true
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
+                }
+                if (restored) lastPersistedAuthRecord = original
+                return@withLock null
+            }
+            lastPersistedAuthRecord = updated
+            recordAuthMutation()
+            currentRemoteTargetLocked()
+        }
+    }
+
     internal suspend fun isCurrentRemoteTarget(expected: RemoteTarget): Boolean =
         authMutationMutex.withLock { expected == currentRemoteTargetLocked() }
 
@@ -204,6 +278,113 @@ class ApiService @Inject constructor(
             record, settingsManager.currentSettings.serverUrl, authGeneration,
             runtimeAuthMatches = record != null && authInterceptor.matches(record.token, record.serverUrl.orEmpty()),
         )
+    }
+
+    private suspend fun frozenRemoteRequestLocked(): FrozenRemoteRequest? {
+        val record = lastPersistedAuthRecord ?: return null
+        val stored = try {
+            settingsManager.getAuthRecord()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return null
+        }
+        if (record != stored) return null
+        val route = ServerRoute.parse(record.serverUrl) ?: return null
+        if (route != ServerRoute.parse(settingsManager.currentSettings.serverUrl)) return null
+        val bearer = authInterceptor.captureFrozenBearer(record.token, route, authGeneration) ?: return null
+        return FrozenRemoteRequest(
+            route = route,
+            owner = captureRemoteTarget(record, settingsManager.currentSettings.serverUrl, authGeneration, true),
+            bearer = bearer,
+            routeRevision = settingsManager.currentRouteRevision,
+        )
+    }
+
+    private suspend fun isCurrentFrozenRemoteRequestLocked(expected: FrozenRemoteRequest): Boolean {
+        val current = frozenRemoteRequestLocked() ?: return false
+        return current.route == expected.route && current.owner == expected.owner &&
+            current.routeRevision == expected.routeRevision &&
+            current.bearer == expected.bearer
+    }
+
+    /**
+     * Lock-free verification for code that already owns tokenValidationMutex.
+     * A concurrent auth mutation can only make this return false or be caught
+     * again by the tagged interceptors. It never authorizes a changed record.
+     */
+    private suspend fun isCurrentFrozenRemoteRequestSnapshot(expected: FrozenRemoteRequest): Boolean {
+        val record = lastPersistedAuthRecord ?: return false
+        val stored = try {
+            settingsManager.getAuthRecord()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return false
+        }
+        if (record != stored) return false
+        val route = ServerRoute.parse(record.serverUrl) ?: return false
+        if (route != expected.route || route != ServerRoute.parse(settingsManager.currentSettings.serverUrl)) return false
+        val bearer = authInterceptor.captureFrozenBearer(record.token, route, authGeneration) ?: return false
+        val owner = captureRemoteTarget(record, settingsManager.currentSettings.serverUrl, authGeneration, true)
+        return bearer == expected.bearer && owner == expected.owner &&
+            settingsManager.currentRouteRevision == expected.routeRevision
+    }
+
+    /**
+     * Applies a frozen request tag and rejects a response once its original
+     * route, bearer, or generation is no longer active. Retrofit has already
+     * consumed JSON bodies here, so only still-owned error or stream bodies
+     * are closed. Closing raw() would hit Retrofit's NoContent placeholder.
+     */
+    private suspend fun <T, R> dispatchFrozen(
+        frozen: FrozenRemoteRequest,
+        request: suspend (RemoteDispatchTag) -> Response<T>,
+        publish: (Response<T>) -> R,
+    ): R? {
+        if (!authMutationMutex.withLock { isCurrentFrozenRemoteRequestLocked(frozen) }) return null
+        val response = try {
+            request(RemoteDispatchTag.frozen(frozen))
+        } catch (stale: StaleRemoteRequestException) {
+            return null
+        }
+        return authMutationMutex.withLock {
+            if (!isCurrentFrozenRemoteRequestLocked(frozen) ||
+                !frozen.route.contains(response.raw().request.url)) {
+                closeUnpublishedResponse(response)
+                null
+            } else {
+                publish(response)
+            }
+        }
+    }
+
+    /**
+     * Direct auth/profile calls cannot use [dispatchFrozen] because login and
+     * owner resolution have distinct publication and rollback work. They still
+     * need the exact same final-route and captured-scope fence before status or
+     * body data is observed.
+     */
+    private suspend fun <T> acceptDirectResponse(
+        response: Response<T>,
+        dispatch: RemoteDispatchTag,
+        isCurrent: suspend () -> Boolean,
+    ): Response<T>? {
+        if (!isCurrent() || !dispatch.route.contains(response.raw().request.url)) {
+            closeUnpublishedResponse(response)
+            return null
+        }
+        return response
+    }
+
+    private fun isCurrentNoBearerDispatch(dispatch: RemoteDispatchTag): Boolean =
+        dispatch.bearer == null && dispatch.routeRevision != null &&
+            dispatch.routeRevision == settingsManager.currentRouteRevision &&
+            dispatch.route == ServerRoute.parse(settingsManager.currentSettings.serverUrl)
+
+    private fun closeUnpublishedResponse(response: Response<*>) {
+        runCatching { response.errorBody()?.close() }
+        runCatching { (response.body() as? ResponseBody)?.close() }
     }
 
     private suspend fun persistAuthenticatedRecord(record: StoredAuthRecord) {
@@ -250,6 +431,8 @@ class ApiService @Inject constructor(
                     previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
                     val normalizedUrl = normalizeServerUrl(serverUrl)
                     val normalizedUsername = username.trim()
+                    val loginRoute = ServerRoute.parse(normalizedUrl)
+                        ?: throw IllegalArgumentException("Invalid server URL")
 
                     // Update settings with server URL first (so Retrofit uses it)
                     settingsManager.updateSettings {
@@ -257,10 +440,17 @@ class ApiService @Inject constructor(
                     }
                     recordAuthMutation()
 
-                    val response = api.login(LoginRequest(normalizedUsername, password))
+                    val dispatch = RemoteDispatchTag.noBearer(
+                        loginRoute,
+                        settingsManager.currentRouteRevision,
+                    )
+                    val response = api.login(LoginRequest(normalizedUsername, password), dispatch)
+                    val accepted = acceptDirectResponse(response, dispatch) {
+                        isCurrentNoBearerDispatch(dispatch)
+                    } ?: throw StaleRemoteRequestException()
 
-                    if (!response.isSuccessful) {
-                        lastError = "Login failed: ${response.code()} - ${response.errorBody()?.string()}"
+                    if (!accepted.isSuccessful) {
+                        lastError = "Login failed: ${accepted.code()} - ${accepted.errorBody()?.string()}"
                         rollbackFailedPasswordLogin(
                             restoreSettings = { restorePreviousSettings() },
                             restoreRuntimeAuth = restorePreviousAuth,
@@ -269,10 +459,10 @@ class ApiService @Inject constructor(
                                 Log.e(TAG, "login: Failed to roll back settings after a rejected login", e)
                             },
                         )
-                        return@withLock classifyLoginHttpFailure(response.code())
+                        return@withLock classifyLoginHttpFailure(accepted.code())
                     }
 
-                    val loginResponse = response.body()
+                    val loginResponse = accepted.body()
                     val token = loginResponse?.user?.token?.trim()
 
                     if (token.isNullOrEmpty()) {
@@ -330,13 +520,24 @@ class ApiService @Inject constructor(
                     // Set token and validate it
                     persistAuthenticatedRecord(StoredAuthRecord(normalizedToken, normalizedUrl))
 
-                    when (validateTokenDetailed(forceRefresh = true, tokenOverride = normalizedToken)) {
+                    val frozen = frozenRemoteRequestLocked() ?: return@withLock false
+                    when (validateTokenDetailed(
+                        forceRefresh = true,
+                        tokenOverride = normalizedToken,
+                        frozenRequest = frozen,
+                        authLockHeld = true,
+                    )) {
                         TokenValidationResult.VALID -> {
                             // Only explicit token login fetches a profile here.
                             // Cold startup restores an existing owner without
                             // allocating the full progress/bookmark response.
                             val accountId = try {
-                                api.getMe().takeIf { it.isSuccessful }?.body()?.id?.takeIf { it.isNotBlank() }
+                                val dispatch = RemoteDispatchTag.frozen(frozen)
+                                val response = api.getMe(dispatch)
+                                acceptDirectResponse(response, dispatch) {
+                                    isCurrentFrozenRemoteRequestLocked(frozen)
+                                }?.takeIf { it.isSuccessful }
+                                    ?.body()?.id?.takeIf { it.isNotBlank() }
                             } catch (cancelled: CancellationException) {
                                 throw cancelled
                             } catch (_: Exception) {
@@ -524,6 +725,7 @@ class ApiService @Inject constructor(
     /** Validation verdicts belong to one exact auth generation and server. */
     private fun recordAuthMutation() {
         authGeneration++
+        authInterceptor.updateGeneration(authGeneration)
         if (!authInterceptor.hasToken()) lastPersistedAuthRecord = null
         clearValidationCache()
     }
@@ -543,9 +745,11 @@ class ApiService @Inject constructor(
      * log out), or UNREACHABLE (no token, no server URL, or a network/server
      * error — must NOT trigger a logout, the token may still be good).
      */
-    suspend fun validateTokenDetailed(
+    internal suspend fun validateTokenDetailed(
         forceRefresh: Boolean = false,
         tokenOverride: String? = null,
+        frozenRequest: FrozenRemoteRequest? = null,
+        authLockHeld: Boolean = false,
     ): TokenValidationResult {
         // Explicit-token login already owns authMutationMutex and has installed
         // its token. Stored-token validation must first let serialized startup
@@ -568,16 +772,22 @@ class ApiService @Inject constructor(
                     return@withContext TokenValidationResult.UNREACHABLE
                 }
 
-                val session = AuthSessionIdentity(authGeneration, token, settingsManager.currentSettings.serverUrl)
-                fun isCurrent(): Boolean =
-                    session.generation == authGeneration &&
-                        session.serverUrl == settingsManager.currentSettings.serverUrl &&
-                        authInterceptor.matches(session.token, session.serverUrl)
+                val frozen = when {
+                    frozenRequest != null -> frozenRequest
+                    authLockHeld -> frozenRemoteRequestLocked()
+                    else -> captureFrozenRemoteRequest()
+                } ?: return@withContext TokenValidationResult.UNREACHABLE
+                if (frozen.bearer.token != token) return@withContext TokenValidationResult.UNREACHABLE
+                val session = AuthSessionIdentity(frozen.bearer.authGeneration, token, frozen.route.url)
+                suspend fun isCurrent(): Boolean = when {
+                    authLockHeld -> isCurrentFrozenRemoteRequestLocked(frozen)
+                    else -> isCurrentFrozenRemoteRequestSnapshot(frozen)
+                }
                 tokenValidationMutex.withLock {
                     if (!isCurrent()) return@withContext TokenValidationResult.UNREACHABLE
                     getCachedValidation(session, forceRefresh)?.let { return@withContext it }
 
-                    val result = validateTokenWithLightweightEndpoint()
+                    val result = validateTokenWithLightweightEndpoint(frozen, ::isCurrent)
                     if (!isCurrent()) return@withContext TokenValidationResult.UNREACHABLE
                     cacheValidation(session, result)
                     result
@@ -589,29 +799,46 @@ class ApiService @Inject constructor(
         }
     }
 
-    private suspend fun validateTokenWithLightweightEndpoint(): TokenValidationResult {
+    private suspend fun validateTokenWithLightweightEndpoint(
+        frozen: FrozenRemoteRequest,
+        isCurrent: suspend () -> Boolean,
+    ): TokenValidationResult {
+        val dispatch = RemoteDispatchTag.frozen(frozen)
         val response = try {
-            api.authorize()
+            api.authorize(dispatch)
         } catch (e: Exception) {
             return TokenValidationResult.UNREACHABLE
         }
+        val accepted = acceptDirectResponse(response, dispatch, isCurrent)
+            ?: return TokenValidationResult.UNREACHABLE
 
         // Some Audiobookshelf servers may not expose /api/authorize.
         // Fall back to /api/me (heavier payload), but cached/debounced above.
-        if (response.code() == 404 || response.code() == 405) {
-            return fallbackValidateTokenViaProfileSync()
+        if (accepted.code() == 404 || accepted.code() == 405) {
+            runCatching { accepted.errorBody()?.close() }
+            return fallbackValidateTokenViaProfileSync(frozen, isCurrent)
         }
 
-        return classifyValidationStatus(response.code())
+        return classifyValidationStatus(accepted.code()).also {
+            runCatching { accepted.errorBody()?.close() }
+        }
     }
 
-    private suspend fun fallbackValidateTokenViaProfileSync(): TokenValidationResult {
+    private suspend fun fallbackValidateTokenViaProfileSync(
+        frozen: FrozenRemoteRequest,
+        isCurrent: suspend () -> Boolean,
+    ): TokenValidationResult {
+        val dispatch = RemoteDispatchTag.frozen(frozen)
         val response = try {
-            api.getMe()
+            api.getMe(dispatch)
         } catch (e: Exception) {
             return TokenValidationResult.UNREACHABLE
         }
-        return classifyValidationStatus(response.code())
+        val accepted = acceptDirectResponse(response, dispatch, isCurrent)
+            ?: return TokenValidationResult.UNREACHABLE
+        return classifyValidationStatus(accepted.code()).also {
+            runCatching { accepted.errorBody()?.close() }
+        }
     }
 
     private fun getCachedValidation(session: AuthSessionIdentity, forceRefresh: Boolean): TokenValidationResult? {
@@ -692,37 +919,40 @@ class ApiService @Inject constructor(
      * is empty" could not be told which one they hit.
      */
     suspend fun getLibraries(): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
+        val frozen = captureFrozenRemoteRequest()
+            ?: return@withContext RemoteResult.Failed("Auth session changed")
         // remoteResultCatching lets CancellationException escape uncaught
         // (see its kdoc). A plain `catch (e: Exception)` here would turn a
         // stopped sync into a persisted failure instead of a silently
         // cancelled request.
         remoteResultCatching(onFailure = { Log.w(TAG, "getLibraries failed", it) }) {
-            val response = api.getLibraries()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "getLibraries: HTTP ${response.code()}")
-                return@remoteResultCatching RemoteResult.Failed("HTTP ${response.code()}")
-            }
-
-            val body = response.body()
-            if (body == null) {
-                Log.w(TAG, "getLibraries: successful response with no body")
-                return@remoteResultCatching RemoteResult.Failed("empty body")
-            }
-
-            RemoteResult.Ok(
-                body.libraries.map { apiLib ->
-                    Library(
-                        id = apiLib.id,
-                        name = apiLib.name,
-                        displayOrder = apiLib.displayOrder,
-                        icon = apiLib.icon ?: "audiobook",
-                        mediaType = apiLib.mediaType ?: "book",
-                        folders = apiLib.folders?.map { f ->
-                            Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
-                        } ?: emptyList()
-                    )
+            dispatchFrozen(frozen, { api.getLibraries(it) }) { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "getLibraries: HTTP ${response.code()}")
+                    RemoteResult.Failed("HTTP ${response.code()}")
+                } else {
+                    val body = response.body()
+                    if (body == null) {
+                        Log.w(TAG, "getLibraries: successful response with no body")
+                        RemoteResult.Failed("empty body")
+                    } else {
+                        RemoteResult.Ok(
+                            body.libraries.map { apiLib ->
+                                Library(
+                                    id = apiLib.id,
+                                    name = apiLib.name,
+                                    displayOrder = apiLib.displayOrder,
+                                    icon = apiLib.icon ?: "audiobook",
+                                    mediaType = apiLib.mediaType ?: "book",
+                                    folders = apiLib.folders?.map { f ->
+                                        Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
+                                    } ?: emptyList()
+                                )
+                            }
+                        )
+                    }
                 }
-            )
+            } ?: RemoteResult.Failed("Auth session changed")
         }
     }
 
@@ -739,33 +969,40 @@ class ApiService @Inject constructor(
      */
     suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
         withContext(Dispatchers.IO) {
-            runPaginatedFetch(
+            val frozen = captureFrozenRemoteRequest()
+                ?: return@withContext RemoteResult.Failed("Auth session changed")
+            val result = runPaginatedFetch(
                 limit = limit,
                 onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
             ) { page ->
-                val response = api.getLibraryItems(libraryId, limit, page)
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
-                    return@runPaginatedFetch PageOutcome.Stopped("page $page: HTTP ${response.code()}")
-                }
-
-                val body = response.body()
-                if (body == null) {
-                    Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
-                    return@runPaginatedFetch PageOutcome.Stopped("page $page: empty body")
-                }
-
-                PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
+                dispatchFrozen(frozen, { tag -> api.getLibraryItems(libraryId, limit, page, dispatch = tag) }) { response ->
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
+                        PageOutcome.Stopped("page $page: HTTP ${response.code()}")
+                    } else {
+                        val body = response.body()
+                        if (body == null) {
+                            Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
+                            PageOutcome.Stopped("page $page: empty body")
+                        } else {
+                            PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId, frozen.route.url) }, body.total)
+                        }
+                    }
+                } ?: PageOutcome.Stopped("auth session changed")
             }
+            if (isCurrentFrozenRemoteRequest(frozen)) result else RemoteResult.Failed("Auth session changed")
         }
 
     // ─── Single Item ─────────────────────────────────────────────────────
 
     suspend fun getAudioBook(itemId: String): AudioBook? = withContext(Dispatchers.IO) {
         try {
-            val response = api.getItem(itemId)
-            if (!response.isSuccessful) return@withContext null
-            response.body()?.let { mapToAudioBook(it) }
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext null
+            dispatchFrozen(frozen, { api.getItem(itemId, dispatch = it) }) { response ->
+                if (!response.isSuccessful) null else response.body()?.let { item ->
+                    mapToAudioBook(item, serverUrl = frozen.route.url)
+                }
+            }
         } catch (e: Exception) {
             null
         }
@@ -782,13 +1019,13 @@ class ApiService @Inject constructor(
                         deviceId = settingsManager.getDeviceId(),
                     )
                 )
-                val response = api.startPlaybackSession(itemId, request)
-                if (!response.isSuccessful) return@withContext null
+                val frozen = captureFrozenRemoteRequest() ?: return@withContext null
+                dispatchFrozen(frozen, { api.startPlaybackSession(itemId, request, it) }) { response ->
+                    if (!response.isSuccessful) return@dispatchFrozen null
+                    val session = response.body() ?: return@dispatchFrozen null
+                    val serverUrl = frozen.route.url
 
-                val session = response.body() ?: return@withContext null
-                val serverUrl = settingsManager.currentSettings.serverUrl
-
-                PlaybackSessionInfo(
+                    PlaybackSessionInfo(
                     id = session.id,
                     itemId = session.libraryItemId,
                     episodeId = session.episodeId,
@@ -817,7 +1054,8 @@ class ApiService @Inject constructor(
                     chapters = session.chapters?.map { c ->
                         Chapter(id = c.id, start = c.start, end = c.end, title = c.title)
                     } ?: emptyList(),
-                )
+                    )
+                }
             } catch (e: Exception) {
                 null
             }
@@ -830,11 +1068,10 @@ class ApiService @Inject constructor(
         timeListened: Double = 0.0,
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val response = api.syncSessionProgress(
-                sessionId,
-                SyncSessionRequest(currentTime, duration, timeListened)
-            )
-            response.isSuccessful
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext false
+            dispatchFrozen(frozen, {
+                api.syncSessionProgress(sessionId, SyncSessionRequest(currentTime, duration, timeListened), it)
+            }) { it.isSuccessful } ?: false
         } catch (e: Exception) {
             false
         }
@@ -843,7 +1080,8 @@ class ApiService @Inject constructor(
     suspend fun closeSession(sessionId: String) {
         withContext(Dispatchers.IO) {
             try {
-                api.closeSession(sessionId)
+                val frozen = captureFrozenRemoteRequest() ?: return@withContext
+                dispatchFrozen(frozen, { api.closeSession(sessionId, dispatch = it) }) { Unit }
             } catch (_: Exception) {}
         }
     }
@@ -863,15 +1101,18 @@ class ApiService @Inject constructor(
                 duration > 0.0 -> (safeTime / duration).coerceIn(0.0, 1.0)
                 else -> 0.0
             }
-            val response = api.updateProgress(
-                itemId,
-                UpdateProgressRequest(
-                    currentTime = safeTime,
-                    isFinished = isFinished,
-                    progress = progress,
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext false
+            dispatchFrozen(frozen, {
+                api.updateProgress(
+                    itemId,
+                    UpdateProgressRequest(
+                        currentTime = safeTime,
+                        isFinished = isFinished,
+                        progress = progress,
+                    ),
+                    it,
                 )
-            )
-            response.isSuccessful
+            }) { it.isSuccessful } ?: false
         } catch (e: Exception) {
             false
         }
@@ -879,8 +1120,9 @@ class ApiService @Inject constructor(
 
     suspend fun getUserProgress(itemId: String): UserProgress? = withContext(Dispatchers.IO) {
         try {
-            val response = api.getUserProgress(itemId)
-            if (!response.isSuccessful) return@withContext null
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext null
+            dispatchFrozen(frozen, { api.getUserProgress(itemId, it) }) { response ->
+            if (!response.isSuccessful) return@dispatchFrozen null
             response.body()?.let { p ->
                     UserProgress(
                         libraryItemId = p.libraryItemId,
@@ -890,6 +1132,7 @@ class ApiService @Inject constructor(
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
             }
+            }
         } catch (e: Exception) {
             null
         }
@@ -897,9 +1140,9 @@ class ApiService @Inject constructor(
 
     suspend fun getAllUserProgress(): List<UserProgress> = withContext(Dispatchers.IO) {
         try {
-            val response = api.getMe()
-            if (!response.isSuccessful) return@withContext emptyList()
-
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
+            dispatchFrozen(frozen, { api.getMe(it) }) { response ->
+            if (!response.isSuccessful) return@dispatchFrozen emptyList()
             response.body()?.mediaProgress
                 ?.filter { it.libraryItemId.isNotEmpty() }
                 ?.map { p ->
@@ -911,6 +1154,7 @@ class ApiService @Inject constructor(
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
                 } ?: emptyList()
+            } ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
@@ -923,26 +1167,25 @@ class ApiService @Inject constructor(
         itemsPerPage: Int = 50,
     ): List<ListeningSession> = withContext(Dispatchers.IO) {
         try {
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
             val allSessions = mutableListOf<ListeningSession>()
             var currentPage = 0
             val maxPages = 3
 
             while (currentPage < maxPages) {
-                val response = api.getListeningSessions(
-                    itemsPerPage = itemsPerPage,
-                    page = currentPage,
-                )
-                if (!response.isSuccessful) break
+                val pageResult = dispatchFrozen(frozen, { tag ->
+                    api.getListeningSessions(itemsPerPage = itemsPerPage, page = currentPage, dispatch = tag)
+                }) { response ->
+                    if (!response.isSuccessful) return@dispatchFrozen null
+                    response.body()
+                } ?: break
+                if (pageResult.sessions.isEmpty()) break
 
-                val body = response.body() ?: break
-                if (body.sessions.isEmpty()) break
-
-                val filtered = body.sessions
+                allSessions.addAll(pageResult.sessions
                     .filter { it.libraryItemId == libraryItemId }
                     .map { session ->
                         val startedAtMillis = normalizeEpoch(session.startedAt)
                         val updatedAtMillis = normalizeEpoch(session.updatedAt)
-
                         ListeningSession(
                             id = session.id,
                             libraryItemId = session.libraryItemId,
@@ -952,14 +1195,13 @@ class ApiService @Inject constructor(
                             updatedAt = updatedAtMillis,
                             displayTitle = session.displayTitle,
                         )
-                    }
-                allSessions.addAll(filtered)
+                    })
 
-                if (currentPage >= body.numPages - 1) break
+                if (currentPage >= pageResult.numPages - 1) break
                 currentPage++
             }
 
-            allSessions.sortedByDescending { it.startedAt }
+            if (isCurrentFrozenRemoteRequest(frozen)) allSessions.sortedByDescending { it.startedAt } else emptyList()
         } catch (e: Exception) {
             lastError = "Failed to load listening sessions: ${e.message}"
             emptyList()
@@ -971,21 +1213,21 @@ class ApiService @Inject constructor(
         itemsPerPage: Int = 50,
     ): List<ListeningSession> = withContext(Dispatchers.IO) {
         try {
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
             val allSessions = mutableListOf<ListeningSession>()
             var currentPage = 0
             val maxPages = 20
 
             while (currentPage < maxPages) {
-                val response = api.getListeningSessions(
-                    itemsPerPage = itemsPerPage,
-                    page = currentPage,
-                )
-                if (!response.isSuccessful) break
+                val pageResult = dispatchFrozen(frozen, { tag ->
+                    api.getListeningSessions(itemsPerPage = itemsPerPage, page = currentPage, dispatch = tag)
+                }) { response ->
+                    if (!response.isSuccessful) return@dispatchFrozen null
+                    response.body()
+                } ?: break
+                if (pageResult.sessions.isEmpty()) break
 
-                val body = response.body() ?: break
-                if (body.sessions.isEmpty()) break
-
-                allSessions.addAll(body.sessions.map { session ->
+                allSessions.addAll(pageResult.sessions.map { session ->
                     val startedAtMillis = normalizeEpoch(session.startedAt)
                     val updatedAtMillis = normalizeEpoch(session.updatedAt)
 
@@ -1000,11 +1242,11 @@ class ApiService @Inject constructor(
                     )
                 })
 
-                if (currentPage >= body.numPages - 1) break
+                if (currentPage >= pageResult.numPages - 1) break
                 currentPage++
             }
 
-            allSessions.sortedByDescending { it.startedAt }
+            if (isCurrentFrozenRemoteRequest(frozen)) allSessions.sortedByDescending { it.startedAt } else emptyList()
         } catch (e: Exception) {
             lastError = "Failed to load listening sessions: ${e.message}"
             emptyList()
@@ -1020,9 +1262,9 @@ class ApiService @Inject constructor(
 
     suspend fun getBookmarks(itemId: String): List<Bookmark> = withContext(Dispatchers.IO) {
         try {
-            val response = api.getMe()
-            if (!response.isSuccessful) return@withContext emptyList()
-
+            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
+            dispatchFrozen(frozen, { api.getMe(it) }) { response ->
+            if (!response.isSuccessful) return@dispatchFrozen emptyList()
             response.body()?.bookmarks
                 ?.filter { it.libraryItemId == itemId }
                 ?.sortedBy { it.time }
@@ -1035,6 +1277,7 @@ class ApiService @Inject constructor(
                         createdAt = b.createdAt,
                     )
                 } ?: emptyList()
+            } ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
@@ -1043,8 +1286,10 @@ class ApiService @Inject constructor(
     suspend fun createBookmark(itemId: String, title: String, time: Double): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                val response = api.createBookmark(itemId, CreateBookmarkRequest(title, time))
-                response.isSuccessful
+                val frozen = captureFrozenRemoteRequest() ?: return@withContext false
+                dispatchFrozen(frozen, { api.createBookmark(itemId, CreateBookmarkRequest(title, time), it) }) {
+                    it.isSuccessful
+                } ?: false
             } catch (e: Exception) {
                 false
             }
@@ -1053,8 +1298,8 @@ class ApiService @Inject constructor(
     suspend fun deleteBookmark(itemId: String, time: Double): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                val response = api.deleteBookmark(itemId, time)
-                response.isSuccessful
+                val frozen = captureFrozenRemoteRequest() ?: return@withContext false
+                dispatchFrozen(frozen, { api.deleteBookmark(itemId, time, it) }) { it.isSuccessful } ?: false
             } catch (e: Exception) {
                 false
             }
@@ -1070,12 +1315,14 @@ class ApiService @Inject constructor(
 
     // ─── Mapping Helpers ─────────────────────────────────────────────────
 
-    private fun mapToAudioBook(item: ApiLibraryItem, libraryId: String? = null): AudioBook {
+    private fun mapToAudioBook(
+        item: ApiLibraryItem,
+        libraryId: String? = null,
+        serverUrl: String = settingsManager.currentSettings.serverUrl,
+    ): AudioBook {
         val metadata = item.media?.metadata
         val audioFiles = item.media?.audioFiles ?: emptyList()
         val firstSeries = metadata?.series?.firstOrNull()
-        val serverUrl = settingsManager.currentSettings.serverUrl
-
         // Resolve series name and sequence. The non-expanded library items endpoint does not
         // populate the series array — it only returns metadata.seriesName as a combined string
         // like "Dungeon Crawler Carl #7". If the array is present, use it directly. Otherwise

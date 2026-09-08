@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.data.remote
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -30,6 +31,25 @@ class RemoteTargetTest {
         for (url in listOf("", "ftp://abs.example", "https://user:pass@abs.example/a", "https://abs.example/a?q=1", "https://abs.example/a#x")) {
             assertNull(url, ServerRoute.parse(url))
         }
+    }
+
+    @Test fun `route containment preserves proxy path boundaries`() {
+        val a = requireNotNull(ServerRoute.parse("https://abs.example/abs-a"))
+        assertTrue(a.contains("https://abs.example/abs-a/api/me".toHttpUrl()))
+        assertTrue(a.contains("https://abs.example/abs-a".toHttpUrl()))
+        assertFalse(a.contains("https://abs.example/abs-b/api/me".toHttpUrl()))
+        assertFalse(a.contains("https://abs.example/abs-ab/api/me".toHttpUrl()))
+        assertFalse(a.contains("https://other.example/abs-a/api/me".toHttpUrl()))
+    }
+
+    @Test fun `frozen dispatch diagnostics do not disclose its bearer`() {
+        val route = requireNotNull(ServerRoute.parse("https://abs.example/abs-a"))
+        val bearer = FrozenBearer("fixture-token", route, 4)
+        val request = FrozenRemoteRequest(route, null, bearer, routeRevision = 0)
+        val tag = RemoteDispatchTag.frozen(request)
+        assertFalse(request.toString().contains("fixture-token"))
+        assertFalse(tag.toString().contains("fixture-token"))
+        assertFalse(bearer.toString().contains("fixture-token"))
     }
 
     @Test fun `unknown owner mismatched route and inactive runtime cannot activate a target`() {

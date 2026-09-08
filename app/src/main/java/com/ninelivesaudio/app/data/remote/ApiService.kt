@@ -153,6 +153,29 @@ internal suspend fun rollbackFailedTokenLogin(
     return true
 }
 
+/** Catalog rows receive their durable owner envelope at the remote boundary. */
+internal fun namespaceIncomingLibrary(scope: ActiveRemoteScope, library: Library): Library =
+    library.copy(
+        id = scope.encodeIncoming(library.id),
+        folders = library.folders.map { folder ->
+            folder.copy(libraryId = scope.encodeIncoming(folder.libraryId))
+        },
+    )
+
+/** Book and library identities share one owner envelope, never a guessed prefix. */
+internal fun namespaceIncomingBook(
+    scope: ActiveRemoteScope,
+    book: AudioBook,
+    rawLibraryId: String?,
+): AudioBook = book.copy(
+    id = scope.encodeIncoming(book.id),
+    libraryId = rawLibraryId?.takeIf { it.isNotBlank() }?.let(scope::encodeIncoming),
+)
+
+/** A raw or foreign durable ID is not an authorization to make a catalog request. */
+internal fun catalogEgressId(scope: ActiveRemoteScope, encodedId: String): String? =
+    scope.decodeForEgress(encodedId)
+
 /**
  * High-level API service that wraps Retrofit calls with error handling and
  * maps API DTOs to domain models. Ports the C# AudioBookshelfApiService logic.
@@ -939,15 +962,13 @@ class ApiService @Inject constructor(
      * thrown exception, genuinely no libraries) and a user reporting "my shelf
      * is empty" could not be told which one they hit.
      */
-    suspend fun getLibraries(): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
-        val frozen = captureFrozenRemoteRequest()
-            ?: return@withContext RemoteResult.Failed("Auth session changed")
+    suspend fun getLibraries(scope: ActiveRemoteScope): RemoteResult<List<Library>> = withContext(Dispatchers.IO) {
         // remoteResultCatching lets CancellationException escape uncaught
         // (see its kdoc). A plain `catch (e: Exception)` here would turn a
         // stopped sync into a persisted failure instead of a silently
         // cancelled request.
         remoteResultCatching(onFailure = { Log.w(TAG, "getLibraries failed", it) }) {
-            dispatchFrozen(frozen, { api.getLibraries(it) }) { response ->
+            dispatchActiveRemoteScope(scope, { api.getLibraries(it) }) { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "getLibraries: HTTP ${response.code()}")
                     RemoteResult.Failed("HTTP ${response.code()}")
@@ -959,7 +980,7 @@ class ApiService @Inject constructor(
                     } else {
                         RemoteResult.Ok(
                             body.libraries.map { apiLib ->
-                                Library(
+                                namespaceIncomingLibrary(scope, Library(
                                     id = apiLib.id,
                                     name = apiLib.name,
                                     displayOrder = apiLib.displayOrder,
@@ -968,7 +989,7 @@ class ApiService @Inject constructor(
                                     folders = apiLib.folders?.map { f ->
                                         Folder(id = f.id, fullPath = f.fullPath, libraryId = apiLib.id)
                                     } ?: emptyList()
-                                )
+                                ))
                             }
                         )
                     }
@@ -988,15 +1009,19 @@ class ApiService @Inject constructor(
      * [runPaginatedFetch] is what decides that (issue #14, PR #30 review,
      * finding B); only actually reaching the reported total is a genuine Ok.
      */
-    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
+    suspend fun getLibraryItems(
+        scope: ActiveRemoteScope,
+        libraryId: String,
+        limit: Int = 100,
+    ): RemoteResult<List<AudioBook>> =
         withContext(Dispatchers.IO) {
-            val frozen = captureFrozenRemoteRequest()
-                ?: return@withContext RemoteResult.Failed("Auth session changed")
+            val rawLibraryId = catalogEgressId(scope, libraryId)
+                ?: return@withContext RemoteResult.Failed("Catalog ID is not active")
             val result = runPaginatedFetch(
                 limit = limit,
                 onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
             ) { page ->
-                dispatchFrozen(frozen, { tag -> api.getLibraryItems(libraryId, limit, page, dispatch = tag) }) { response ->
+                dispatchActiveRemoteScope(scope, { tag -> api.getLibraryItems(rawLibraryId, limit, page, dispatch = tag) }) { response ->
                     if (!response.isSuccessful) {
                         Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
                         PageOutcome.Stopped("page $page: HTTP ${response.code()}")
@@ -1006,22 +1031,41 @@ class ApiService @Inject constructor(
                             Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
                             PageOutcome.Stopped("page $page: empty body")
                         } else {
-                            PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId, frozen.route.url) }, body.total)
+                            PageOutcome.Page(
+                                body.results.map { item ->
+                                    namespaceIncomingBook(
+                                        scope,
+                                        mapToAudioBook(item, rawLibraryId, scope.frozenRequest.route.url),
+                                        rawLibraryId,
+                                    )
+                                },
+                                body.total,
+                            )
                         }
                     }
                 } ?: PageOutcome.Stopped("auth session changed")
             }
-            if (isCurrentFrozenRemoteRequest(frozen)) result else RemoteResult.Failed("Auth session changed")
+            if (isCurrentActiveRemoteScope(scope)) result else RemoteResult.Failed("Auth session changed")
         }
 
     // ─── Single Item ─────────────────────────────────────────────────────
 
-    suspend fun getAudioBook(itemId: String): AudioBook? = withContext(Dispatchers.IO) {
+    /** Legacy callers cannot egress raw or foreign IDs because this captures a scope first. */
+    suspend fun getAudioBook(itemId: String): AudioBook? {
+        val scope = captureActiveRemoteScope() ?: return null
+        return getAudioBook(scope, itemId)
+    }
+
+    suspend fun getAudioBook(scope: ActiveRemoteScope, itemId: String): AudioBook? = withContext(Dispatchers.IO) {
         try {
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext null
-            dispatchFrozen(frozen, { api.getItem(itemId, dispatch = it) }) { response ->
+            val rawItemId = catalogEgressId(scope, itemId) ?: return@withContext null
+            dispatchActiveRemoteScope(scope, { api.getItem(rawItemId, dispatch = it) }) { response ->
                 if (!response.isSuccessful) null else response.body()?.let { item ->
-                    mapToAudioBook(item, serverUrl = frozen.route.url)
+                    namespaceIncomingBook(
+                        scope,
+                        mapToAudioBook(item, serverUrl = scope.frozenRequest.route.url),
+                        item.libraryId,
+                    )
                 }
             }
         } catch (e: Exception) {

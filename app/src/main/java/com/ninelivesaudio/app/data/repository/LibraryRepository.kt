@@ -5,10 +5,13 @@ import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.Library
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -40,8 +43,11 @@ class LibraryRepository @Inject constructor(
         libraryDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
     /** Observe Audiobookshelf libraries from local DB (reactive). */
-    fun observeAudiobookshelf(): Flow<List<Library>> =
-        libraryDao.observeAudiobookshelf().map { entities -> entities.map { it.toDomain() } }
+    fun observeAudiobookshelf(): Flow<List<Library>> = flow {
+        val scope = apiService.captureActiveRemoteScope() ?: return@flow
+        libraryDao.observeActiveAudiobookshelf(scope.idPrefix)
+            .collect { entities -> emit(entities.map { it.toDomain() }) }
+    }
 
     /** Observe Local Library roots from local DB (reactive). */
     fun observeLocalLibraries(): Flow<List<Library>> =
@@ -52,16 +58,22 @@ class LibraryRepository @Inject constructor(
         libraryDao.getAll().map { it.toDomain() }
 
     /** Get Audiobookshelf libraries from local DB (one-shot). */
-    suspend fun getAudiobookshelf(): List<Library> =
-        libraryDao.getAudiobookshelf().map { it.toDomain() }
+    suspend fun getAudiobookshelf(): List<Library> {
+        val scope = apiService.captureActiveRemoteScope() ?: return emptyList()
+        return libraryDao.getActiveAudiobookshelf(scope.idPrefix).map { it.toDomain() }
+    }
 
     /** Get Local Library roots from local DB (one-shot). */
     suspend fun getLocalLibraries(): List<Library> =
         libraryDao.getLocal().map { it.toDomain() }
 
     /** Get a single library by ID. */
-    suspend fun getById(id: String): Library? =
-        libraryDao.getById(id)?.toDomain()
+    suspend fun getById(id: String): Library? {
+        libraryDao.getById(id)?.takeIf { it.isLocal == 1 }?.let { return it.toDomain() }
+        val scope = apiService.captureActiveRemoteScope() ?: return null
+        if (scope.decodeForEgress(id) == null) return null
+        return libraryDao.getActiveRemoteById(id, scope.idPrefix)?.toDomain()
+    }
 
     /** Create or return a stable Local Library row for a persisted SAF folder URI. */
     suspend fun createLocalLibrary(name: String, folderUri: String): Library {
@@ -102,8 +114,10 @@ class LibraryRepository @Inject constructor(
      */
     internal suspend fun syncFromServerForLibraryLoad(): ReconciledServerLibraryList {
         var reconciledLibraries: List<Library>? = null
-        val result = syncServerLibraries {
-            reconciledLibraries = libraryDao.getAudiobookshelf().map { it.toDomain() }
+        val scope = apiService.captureActiveRemoteScope()
+            ?: return ReconciledServerLibraryList(RemoteResult.Failed("Auth session changed"), null)
+        val result = syncServerLibraries(scope) {
+            reconciledLibraries = libraryDao.getActiveAudiobookshelf(scope.idPrefix).map { it.toDomain() }
         }
         return ReconciledServerLibraryList(result, reconciledLibraries)
     }
@@ -139,14 +153,23 @@ class LibraryRepository @Inject constructor(
 
     private suspend fun syncServerLibraries(
         captureReconciledLibraries: suspend () -> Unit = {},
+    ): RemoteResult<List<Library>> {
+        val scope = apiService.captureActiveRemoteScope()
+            ?: return RemoteResult.Failed("Auth session changed")
+        return syncServerLibraries(scope, captureReconciledLibraries)
+    }
+
+    private suspend fun syncServerLibraries(
+        scope: ActiveRemoteScope,
+        captureReconciledLibraries: suspend () -> Unit,
     ): RemoteResult<List<Library>> = runSerializedLibrarySync(
         mutex = syncFromServerMutex,
-        fetchLibraries = apiService::getLibraries,
-        cachedServerLibraryIds = { libraryDao.getAudiobookshelf().map { it.id } },
+        fetchLibraries = { apiService.getLibraries(scope) },
+        cachedServerLibraryIds = { libraryDao.getActiveAudiobookshelf(scope.idPrefix).map { it.id } },
         upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
-        deleteMissing = { keptIds -> libraryDao.deleteMissingAudiobookshelf(keptIds) },
-        deleteAllServerLibraries = { libraryDao.deleteAudiobookshelf() },
-        pruneLibraryBooks = audioBookRepository::pruneServerBooksForRemovedLibrary,
+        deleteMissing = { keptIds -> libraryDao.deleteMissingActiveAudiobookshelf(scope.idPrefix, keptIds) },
+        deleteAllServerLibraries = { libraryDao.deleteActiveAudiobookshelf(scope.idPrefix) },
+        pruneLibraryBooks = { libraryId -> audioBookRepository.pruneServerBooksForRemovedLibrary(scope, libraryId) },
         captureReconciledLibraries = captureReconciledLibraries,
     )
 }

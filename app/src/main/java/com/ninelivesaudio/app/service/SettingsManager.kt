@@ -99,6 +99,15 @@ internal fun persistAuthTokenChange(
     publish(sanitized != null)
 }
 
+/** Clears only an invalid ABS selection. Local selection and legacy state remain untouched. */
+internal fun clearInvalidRemoteLibrarySelection(
+    settings: AppSettings,
+    isActiveRemoteLibraryId: (String) -> Boolean,
+): AppSettings = settings.selectedLibraryId
+    ?.takeUnless(isActiveRemoteLibraryId)
+    ?.let { settings.copy(selectedLibraryId = null) }
+    ?: settings
+
 /** Serializes the first disk load with every later settings mutation. */
 internal class SerializedSettingsState<T>(
     initial: T,
@@ -384,6 +393,14 @@ class SettingsManager @Inject constructor(
         )
         _isLoaded.value = true
         Log.d(TAG, "updateSettings: Transformed - unhingedThemeEnabled=${updated.unhingedThemeEnabled}")
+    }
+
+    internal suspend fun clearInvalidRemoteLibrarySelection(
+        isActiveRemoteLibraryId: (String) -> Boolean,
+    ) {
+        updateSettings { settings ->
+            clearInvalidRemoteLibrarySelection(settings, isActiveRemoteLibraryId)
+        }
     }
 
     /**

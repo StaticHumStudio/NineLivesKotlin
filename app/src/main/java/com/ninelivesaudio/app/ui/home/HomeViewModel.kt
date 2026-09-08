@@ -4,8 +4,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
-import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
@@ -27,7 +27,7 @@ import kotlin.math.roundToInt
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val audioBookDao: AudioBookDao,
+    private val audioBookRepository: AudioBookRepository,
     private val connectivityMonitor: ConnectivityMonitor,
     private val syncManager: SyncManager,
     private val settingsManager: SettingsManager,
@@ -124,7 +124,11 @@ class HomeViewModel @Inject constructor(
                 .collectLatest { (settings, hasAuthToken) ->
                     val libraryId = settings.activeLibraryId
                     if (libraryId != null && canShowHomeBooks(settings, hasAuthToken)) {
-                        audioBookDao.observeRecentlyPlayedByLibrary(libraryId, 9)
+                        audioBookRepository.observeRecentlyPlayedRows(
+                            libraryId = libraryId,
+                            isLocal = settings.appMode == AppMode.LOCAL,
+                            limit = 9,
+                        )
                             .collect { results -> processRecentlyPlayed(results) }
                     } else {
                         processRecentlyPlayed(emptyList())
@@ -145,7 +149,11 @@ class HomeViewModel @Inject constructor(
                         settingsManager.hasAuthToken.value,
                     )
                 ) {
-                    audioBookDao.getRecentlyPlayedByLibrary(libraryId, 9)
+                    audioBookRepository.getRecentlyPlayedRows(
+                        libraryId = libraryId,
+                        isLocal = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+                        limit = 9,
+                    )
                 } else {
                     emptyList()
                 }

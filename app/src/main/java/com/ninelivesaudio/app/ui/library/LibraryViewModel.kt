@@ -298,12 +298,24 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            val selection = persistActiveLibrarySelection(
-                libraries = libs,
-                settings = settingsManager.currentSettings,
-                updateSettings = settingsManager::updateSettings,
-            )
-            val selected = selection.library
+            val currentSelection = settingsManager.currentSettings.selectedLibraryId
+            val activeScope = if (isLocalMode) null else apiService.captureActiveRemoteScope()
+            val invalidRemoteSelection = !isLocalMode && currentSelection != null &&
+                activeScope?.decodeForEgress(currentSelection) == null
+            if (invalidRemoteSelection) {
+                settingsManager.clearInvalidRemoteLibrarySelection { id ->
+                    activeScope?.decodeForEgress(id) != null
+                }
+            }
+            val selected = if (invalidRemoteSelection) {
+                null
+            } else {
+                persistActiveLibrarySelection(
+                    libraries = libs,
+                    settings = settingsManager.currentSettings,
+                    updateSettings = settingsManager::updateSettings,
+                ).library
+            }
 
             _uiState.update {
                 it.withLibrarySelection(

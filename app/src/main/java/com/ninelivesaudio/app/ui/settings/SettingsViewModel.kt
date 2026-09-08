@@ -1383,8 +1383,10 @@ class SettingsViewModel @Inject constructor(
                 // pending syncs, or Local Library configuration. clearAllTables() would wipe
                 // playback positions, download records, the offline queue, and any folders
                 // the user added in Local mode, causing silent data loss.
-                audioBookDao.deleteAudiobookshelf()
-                libraryDao.deleteAudiobookshelf()
+                val scope = apiService.captureActiveRemoteScope()
+                    ?: return@launch
+                audioBookDao.deleteActiveAudiobookshelf(scope.idPrefix)
+                libraryDao.deleteActiveAudiobookshelf(scope.idPrefix)
                 _uiState.update { it.copy(successMessage = "Cache cleared successfully") }
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = "Failed to clear cache: ${e.message}") }

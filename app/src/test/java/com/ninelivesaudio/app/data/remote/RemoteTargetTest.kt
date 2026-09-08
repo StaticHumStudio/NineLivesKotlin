@@ -90,4 +90,24 @@ class RemoteTargetTest {
         assertFalse(pending.matchesRestoredRecord(StoredAuthRecord("fixture-token-b", route.url)))
         assertFalse(pending.matchesRestoredRecord(StoredAuthRecord("fixture-token-a", "https://abs.example/abs-b")))
     }
+
+    @Test fun `active scope encodes its owner and rejects foreign envelopes without disclosing identity`() {
+        val route = requireNotNull(ServerRoute.parse("https://abs.example/abs-a"))
+        val target = RemoteTarget(RemoteOwner(route, "account-a"), authGeneration = 7)
+        val scope = ActiveRemoteScope(
+            FrozenRemoteRequest(route, target, FrozenBearer("fixture-token", route, 7), routeRevision = 11),
+        )
+        val encoded = scope.encodeIncoming("same-remote-id")
+        val foreign = RemoteIdCodec.encode("other-owner", "same-remote-id")
+
+        assertTrue(encoded.startsWith(scope.idPrefix))
+        assertEquals("same-remote-id", scope.decodeForEgress(encoded))
+        assertNull(scope.decodeForEgress(foreign))
+        assertNull(scope.decodeForEgress("same-remote-id"))
+        assertFalse(scope.toString().contains("fixture-token"))
+        assertFalse(scope.toString().contains(route.url))
+        assertFalse(scope.toString().contains("account-a"))
+        assertFalse(target.toString().contains(route.url))
+        assertFalse(target.owner.toString().contains("account-a"))
+    }
 }

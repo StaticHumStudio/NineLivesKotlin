@@ -48,9 +48,13 @@ internal data class RemoteOwner(val route: ServerRoute, val accountId: String) {
         }
         digest().joinToString("") { "%02x".format(it) }
     } }
+
+    override fun toString(): String = "RemoteOwner(redacted)"
 }
 
-internal data class RemoteTarget(val owner: RemoteOwner, val authGeneration: Long)
+internal data class RemoteTarget(val owner: RemoteOwner, val authGeneration: Long) {
+    override fun toString(): String = "RemoteTarget(redacted)"
+}
 
 /** Runtime-only bearer snapshot. It must never appear in a URL, log, or durable row. */
 internal data class FrozenBearer internal constructor(
@@ -69,6 +73,30 @@ internal class FrozenRemoteRequest internal constructor(
     val routeRevision: Long,
 ) {
     override fun toString(): String = "FrozenRemoteRequest(redacted)"
+}
+
+/**
+ * Owner-scoped remote identity captured for one catalog or download operation.
+ *
+ * Its request is intentionally retained so C3 callers can delegate dispatch and
+ * currentness to C1b's exact route, bearer, generation, and route-revision fence.
+ * It is runtime-only and must never reach a durable row or diagnostic string.
+ */
+internal class ActiveRemoteScope internal constructor(
+    internal val frozenRequest: FrozenRemoteRequest,
+) {
+    val target: RemoteTarget = requireNotNull(frozenRequest.owner) {
+        "An active remote scope requires a confirmed owner"
+    }
+    val ownerKey: String get() = target.owner.key
+    val idPrefix: String get() = RemoteIdCodec.ownerPrefix(ownerKey)
+
+    fun encodeIncoming(rawAbsId: String): String = RemoteIdCodec.encode(ownerKey, rawAbsId)
+
+    fun decodeForEgress(encodedId: String): String? =
+        RemoteIdCodec.decodeForOwner(encodedId, ownerKey)
+
+    override fun toString(): String = "ActiveRemoteScope(redacted)"
 }
 
 /** Retrofit request tag carrying a frozen route and optional frozen bearer. */

@@ -387,6 +387,31 @@ class AuthOriginInstrumentedTest {
         }
     }
 
+    @Test fun activeScopeCannotReviveAfterActualSettingsRouteCyclesBackToA() = runBlocking {
+        app.apiService.awaitAuthReady()
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        try {
+            Origin("fixture-scope-a").use { a -> Origin("fixture-scope-b").use { b ->
+                assertEquals(CredentialLoginResult.SUCCESS, app.apiService.login(a.url, "fixture", "fixture-password"))
+                val scope = requireNotNull(app.apiService.captureActiveRemoteScope())
+                val capturedRevision = app.settingsManager.currentRouteRevision
+
+                app.settingsManager.updateSettings { it.copy(serverUrl = b.url) }
+                app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+
+                assertTrue(app.settingsManager.currentRouteRevision > capturedRevision)
+                assertEquals(scope.target.owner, requireNotNull(app.apiService.captureRemoteTarget()).owner)
+                assertFalse("An A to B to A settings cycle revived a captured scope", app.apiService.isCurrentActiveRemoteScope(scope))
+            } }
+        } finally {
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
     /** Emulates commit(false) changing the memory map without reaching durable storage. */
     private class FailingOwnerPreferences(
         private val backing: SharedPreferences,

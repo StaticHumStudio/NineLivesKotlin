@@ -202,6 +202,14 @@ class ApiService @Inject constructor(
     internal suspend fun isCurrentFrozenRemoteRequest(expected: FrozenRemoteRequest): Boolean =
         authMutationMutex.withLock { isCurrentFrozenRemoteRequestLocked(expected) }
 
+    /** Captures a confirmed owner plus C1b's exact immutable request identity. */
+    internal suspend fun captureActiveRemoteScope(): ActiveRemoteScope? =
+        captureFrozenRemoteRequest()?.takeIf { it.owner != null }?.let(::ActiveRemoteScope)
+
+    /** Delegates to C1b instead of comparing only owner or target identity. */
+    internal suspend fun isCurrentActiveRemoteScope(scope: ActiveRemoteScope): Boolean =
+        isCurrentFrozenRemoteRequest(scope.frozenRequest)
+
     /**
      * Binds a legacy, ownerless session only after its route and bearer are
      * frozen. The network round trip deliberately happens outside the auth
@@ -350,6 +358,16 @@ class ApiService @Inject constructor(
             }
         }
     }
+
+    /**
+     * Reusable frozen dispatch for later owner-scoped API methods. The caller
+     * supplies a scope, never a bearer or mutable selected-server route.
+     */
+    internal suspend fun <T, R> dispatchActiveRemoteScope(
+        scope: ActiveRemoteScope,
+        request: suspend (RemoteDispatchTag) -> Response<T>,
+        publish: (Response<T>) -> R,
+    ): R? = dispatchFrozen(scope.frozenRequest, request, publish)
 
     /**
      * Direct auth/profile calls cannot use [dispatchFrozen] because login and

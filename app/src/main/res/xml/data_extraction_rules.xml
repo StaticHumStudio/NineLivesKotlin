@@ -2,7 +2,8 @@
 <!--
     Data extraction rules (API 31+): Exclude encrypted prefs from cloud backup.
     Auth tokens and server credentials must not leave the device via backup.
-    Device-to-device transfer allows non-sensitive prefs but excludes secrets.
+    Device-to-device transfer allows only non-sensitive prefs and Room data.
+    Its explicit allowlist deliberately omits external download bytes.
 
     Entitlement prefs go in OPPOSITE directions, on purpose:
     - nine_lives_entitlement.xml (grandfather flag `legacy_paid`) MUST ride
@@ -30,9 +31,8 @@
         <include domain="sharedpref" path="." />
         <!-- Includes preserve Room-backed bookmarks, progress, and listening history. -->
         <include domain="database" path="." />
+        <!-- The allowlist intentionally has no external include. -->
         <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
         <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
-        <!-- Download bytes are deliberately not transferred. -->
-        <exclude domain="external" path="Music/Audiobookshelf" />
     </device-transfer>
 </data-extraction-rules>

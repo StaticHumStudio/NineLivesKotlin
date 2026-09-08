@@ -20,6 +20,7 @@ import com.ninelivesaudio.app.ui.home.HomeScreen
 import com.ninelivesaudio.app.ui.library.LibraryScreen
 import com.ninelivesaudio.app.ui.onboarding.WelcomeScreen
 import com.ninelivesaudio.app.ui.onboarding.WelcomeViewModel
+import com.ninelivesaudio.app.ui.onboarding.OnboardingDestination
 import com.ninelivesaudio.app.ui.player.PlayerScreen
 import com.ninelivesaudio.app.ui.settings.LicensesScreen
 import com.ninelivesaudio.app.ui.settings.SettingsScreen
@@ -56,18 +57,21 @@ fun NineLivesNavHost(
     ) {
         composable(Routes.WELCOME) {
             val welcomeViewModel: WelcomeViewModel = hiltViewModel()
-            fun goToSettings() {
-                navController.navigate(Routes.SETTINGS) {
+            fun goTo(destination: OnboardingDestination) {
+                val route = when (destination) {
+                    OnboardingDestination.SETTINGS -> Routes.SETTINGS
+                }
+                navController.navigate(route) {
                     popUpTo(Routes.WELCOME) { inclusive = true }
                     launchSingleTop = true
                 }
             }
             WelcomeScreen(
                 onChooseLocal = {
-                    welcomeViewModel.choose(AppMode.LOCAL) { goToSettings() }
+                    welcomeViewModel.choose(AppMode.LOCAL, ::goTo)
                 },
                 onChooseServer = {
-                    welcomeViewModel.choose(AppMode.AUDIOBOOKSHELF) { goToSettings() }
+                    welcomeViewModel.choose(AppMode.AUDIOBOOKSHELF, ::goTo)
                 },
             )
         }

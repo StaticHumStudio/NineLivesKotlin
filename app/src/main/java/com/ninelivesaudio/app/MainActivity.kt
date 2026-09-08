@@ -25,6 +25,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalConfiguration
@@ -198,7 +199,11 @@ class MainActivity : ComponentActivity() {
                 val currentRoute = navBackStackEntry?.destination?.route
                 val screenWidthDp = LocalConfiguration.current.screenWidthDp
                 val useRailNavigation = screenWidthDp >= 720
-                val startDestination = startDestinationFor(appSettings.onboardingComplete)
+                // Persisting the Welcome selection must not rebuild this graph
+                // with Home before the explicit post-choice navigation runs.
+                val startDestination = remember {
+                    startDestinationFor(appSettings.onboardingComplete)
+                }
 
                 // WhisperHost wraps all content to show atmospheric whisper overlays
                 WhisperHost(modifier = Modifier.fillMaxSize()) {

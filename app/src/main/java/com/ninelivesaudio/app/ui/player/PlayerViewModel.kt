@@ -88,6 +88,7 @@ class PlayerViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    private val bookmarkPublication = BookmarkPublication()
 
     val speedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
     val sleepTimerOptions = listOf<Int?>(null, 5, 10, 15, 30, 45, 60)
@@ -268,6 +269,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun updateBookProperties(book: AudioBook?) {
+        val bookmarkRequest = bookmarkPublication.replace(book?.id)
         _uiState.update {
             it.copy(
                 hasBook = book != null,
@@ -276,13 +278,11 @@ class PlayerViewModel @Inject constructor(
                 coverUrl = book?.effectiveCoverPath,
                 seriesName = book?.seriesName,
                 bookmarkItemId = book?.id,
+                bookmarks = emptyList(),
             )
         }
-        // Load bookmarks when a new book is loaded
         if (book != null) {
-            loadBookmarks(book.id)
-        } else {
-            _uiState.update { it.copy(bookmarks = emptyList()) }
+            loadBookmarks(bookmarkRequest)
         }
     }
 
@@ -383,14 +383,13 @@ class PlayerViewModel @Inject constructor(
         _uiState.update { it.copy(showBookmarks = false) }
     }
 
-    private fun loadBookmarks(itemId: String) {
-        viewModelScope.launch {
-            try {
-                val bookmarks = bookmarkRepository.getBookmarks(itemId)
-                _uiState.update { it.copy(bookmarks = bookmarks) }
-            } catch (_: Exception) {
-                _uiState.update { it.copy(bookmarks = emptyList()) }
-            }
+    private fun loadBookmarks(request: BookmarkLoadRequest) {
+        bookmarkPublication.launch(
+            scope = viewModelScope,
+            request = request,
+            load = bookmarkRepository::getBookmarks,
+        ) { bookmarks ->
+            _uiState.update { it.copy(bookmarks = bookmarks) }
         }
     }
 
@@ -401,7 +400,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             val success = bookmarkRepository.createBookmark(itemId, title, currentTimeSeconds)
             if (success) {
-                loadBookmarks(itemId)
+                bookmarkPublication.refreshCurrent(itemId)?.let(::loadBookmarks)
             }
         }
     }
@@ -412,7 +411,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             val success = bookmarkRepository.deleteBookmark(itemId, bookmark.time)
             if (success) {
-                loadBookmarks(itemId)
+                bookmarkPublication.refreshCurrent(itemId)?.let(::loadBookmarks)
             }
         }
     }

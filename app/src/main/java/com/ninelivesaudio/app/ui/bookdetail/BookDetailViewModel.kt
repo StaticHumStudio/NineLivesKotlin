@@ -30,7 +30,7 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 
-internal enum class HistoryLoadStatus { NOT_LOADED, COMPLETE, PARTIAL, FAILED }
+enum class HistoryLoadStatus { NOT_LOADED, COMPLETE, PARTIAL, FAILED }
 
 internal data class HistoryPresentation(
     val sessions: List<ListeningSession>,

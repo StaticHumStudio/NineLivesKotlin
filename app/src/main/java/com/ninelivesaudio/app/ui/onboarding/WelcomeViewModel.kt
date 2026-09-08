@@ -18,10 +18,10 @@ class WelcomeViewModel @Inject constructor(
      * [onPersisted]. Navigation must wait for persistence so the destination screen
      * (Settings) initializes from the chosen mode rather than the previous default.
      */
-    fun choose(mode: AppMode, onPersisted: () -> Unit) {
+    fun choose(mode: AppMode, onPersisted: (OnboardingDestination) -> Unit) {
         viewModelScope.launch {
             settingsManager.updateSettings { applyOnboardingChoice(it, mode) }
-            onPersisted()
+            onPersisted(onboardingDestinationFor(mode))
         }
     }
 }

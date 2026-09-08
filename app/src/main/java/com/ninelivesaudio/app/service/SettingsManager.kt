@@ -409,20 +409,22 @@ class SettingsManager @Inject constructor(
     internal suspend fun updateSettingsIfCurrent(
         isCurrent: suspend () -> Boolean,
         transform: (AppSettings) -> AppSettings,
-    ): Boolean = try {
-        if (!isCurrent()) return false
-        serializedState.update(
-            read = { readSettingsFromDisk() },
-            persist = { candidate ->
-                if (!isCurrent()) throw StaleSettingsMutation()
-                persistSettingsToDisk(candidate)
-            },
-            transform = transform,
-        )
-        _isLoaded.value = true
-        true
-    } catch (_: StaleSettingsMutation) {
-        false
+    ): Boolean {
+        return try {
+            if (!isCurrent()) return false
+            serializedState.update(
+                read = { readSettingsFromDisk() },
+                persist = { candidate ->
+                    if (!isCurrent()) throw StaleSettingsMutation()
+                    persistSettingsToDisk(candidate)
+                },
+                transform = transform,
+            )
+            _isLoaded.value = true
+            true
+        } catch (_: StaleSettingsMutation) {
+            false
+        }
     }
 
     /**

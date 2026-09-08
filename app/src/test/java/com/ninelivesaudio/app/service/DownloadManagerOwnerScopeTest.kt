@@ -1,5 +1,8 @@
 package com.ninelivesaudio.app.service
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -39,6 +42,3 @@ class DownloadManagerOwnerScopeTest {
         assertTrue(downloadMutationGate(scopeCurrent = true, rowMatches = true))
     }
 }
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking

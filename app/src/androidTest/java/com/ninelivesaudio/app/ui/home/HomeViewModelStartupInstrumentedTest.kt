@@ -68,6 +68,7 @@ class HomeViewModelStartupInstrumentedTest {
                     connectivityMonitor = app.connectivityMonitor,
                     syncManager = app.syncManager,
                     settingsManager = fixtureSettings,
+                    apiService = app.apiService,
                     libraryRepository = app.libraryRepository,
                     localFolderAccess = LocalFolderAccess(app),
                 )

@@ -263,7 +263,7 @@ class AudioBookRepository @Inject constructor(
     suspend fun countForAuto(libraryId: String, isLocal: Boolean): Int =
         countForAuto(apiService.captureActiveRemoteScope(), libraryId, isLocal)
 
-    suspend fun countForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
+    internal suspend fun countForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
         if (isLocal) audioBookDao.countByLibraryAndSource(libraryId, 1)
         else scope?.takeIf { it.decodeForEgress(libraryId) != null }
             ?.let { active -> audioBookDao.getActiveRemoteByLibrary(libraryId, active.idPrefix).count { active.decodeForEgress(it.id) != null } } ?: 0
@@ -271,7 +271,7 @@ class AudioBookRepository @Inject constructor(
     suspend fun countDownloadedForAuto(libraryId: String, isLocal: Boolean): Int =
         countDownloadedForAuto(apiService.captureActiveRemoteScope(), libraryId, isLocal)
 
-    suspend fun countDownloadedForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
+    internal suspend fun countDownloadedForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
         if (isLocal) audioBookDao.countDownloadedByLibrary(libraryId, 1)
         else scope?.takeIf { it.decodeForEgress(libraryId) != null }
             ?.let { active -> audioBookDao.getActiveRemoteByLibrary(libraryId, active.idPrefix).count { it.isDownloaded == 1 && active.decodeForEgress(it.id) != null } } ?: 0
@@ -279,7 +279,7 @@ class AudioBookRepository @Inject constructor(
     suspend fun countRecentlyPlayedForAuto(libraryId: String, isLocal: Boolean): Int =
         countRecentlyPlayedForAuto(apiService.captureActiveRemoteScope(), libraryId, isLocal)
 
-    suspend fun countRecentlyPlayedForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
+    internal suspend fun countRecentlyPlayedForAuto(scope: ActiveRemoteScope?, libraryId: String, isLocal: Boolean): Int =
         if (isLocal) audioBookDao.countRecentlyPlayedByLibrary(libraryId, 1)
         else scope?.takeIf { it.decodeForEgress(libraryId) != null }
             ?.let { active -> audioBookDao.getActiveRemoteRecentlyPlayedByLibrary(libraryId, active.idPrefix, Int.MAX_VALUE)

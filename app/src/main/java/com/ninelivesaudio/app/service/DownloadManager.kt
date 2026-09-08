@@ -370,7 +370,7 @@ class DownloadManager @Inject constructor(
      * meet a PRESERVED loser first and start downloading a book the free tier is
      * not entitled to keep.
      */
-    suspend fun filterToSlotWinner(items: List<DownloadItem>, scope: ActiveRemoteScope): List<DownloadItem> {
+    internal suspend fun filterToSlotWinner(items: List<DownloadItem>, scope: ActiveRemoteScope): List<DownloadItem> {
         if (!apiService.isCurrentActiveRemoteScope(scope)) return emptyList()
         if (!slotStore.slotApplies) return items
 

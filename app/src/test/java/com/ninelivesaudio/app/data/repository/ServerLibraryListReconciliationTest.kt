@@ -110,6 +110,7 @@ class ServerLibraryListReconciliationTest {
             deleteAllServerLibraries = { fail("a partial fetch never prunes") },
             pruneLibraryBooks = { fail("a partial fetch never prunes"); false },
         )
+        Unit
     }
 
     @Test

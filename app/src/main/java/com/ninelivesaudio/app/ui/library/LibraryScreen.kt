@@ -13,6 +13,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.fillParentMaxSize
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -215,19 +216,20 @@ fun LibraryScreen(
                         )
                     }
                     uiState.filteredBooks.isEmpty() -> {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            (shelfDecision as? LibraryShelfDecision.ShowShelf)
+                        RefreshableEmptyLibraryContent(
+                            warning = (shelfDecision as? LibraryShelfDecision.ShowShelf)
                                 ?.warning
                                 ?.let { warning ->
-                                    SyncWarningBanner(
-                                        result = warning,
-                                        onRetry = viewModel::refresh,
-                                        modifier = Modifier.padding(horizontal = 18.dp),
-                                    )
-                                }
-                            Box(modifier = Modifier.weight(1f)) {
-                                EmptyState(uiState)
-                            }
+                                    @Composable {
+                                        SyncWarningBanner(
+                                            result = warning,
+                                            onRetry = viewModel::refresh,
+                                            modifier = Modifier.padding(horizontal = 18.dp),
+                                        )
+                                    }
+                                },
+                        ) {
+                            EmptyState(uiState)
                         }
                     }
                     else -> {
@@ -294,6 +296,29 @@ fun LibraryScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Keeps an empty library shelf in the same nested-scroll path as populated rows,
+ * so [PullToRefreshBox] can receive a downward pull before any books exist.
+ */
+@Composable
+internal fun RefreshableEmptyLibraryContent(
+    warning: (@Composable () -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        warning?.let { warningContent ->
+            item(key = "sync-warning") {
+                warningContent()
+            }
+        }
+        item(key = "empty-library-content") {
+            Box(modifier = Modifier.fillParentMaxSize()) {
+                content()
             }
         }
     }

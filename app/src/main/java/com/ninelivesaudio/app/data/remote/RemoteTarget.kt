@@ -103,3 +103,42 @@ internal fun captureRemoteTarget(
     val account = record.accountId?.takeIf { it.isNotBlank() } ?: return null
     return RemoteTarget(RemoteOwner(route, account), authGeneration)
 }
+
+/** Durable disposition for raw remote rows that predate owner-scoped IDs. */
+internal sealed interface LegacyRemoteCacheState {
+    data class PendingRestoredSession(
+        val canonicalRoute: String,
+        internal val credentialFingerprint: String,
+    ) : LegacyRemoteCacheState {
+        override fun toString(): String = "PendingRestoredSession(redacted)"
+    }
+
+    data class PendingRestoredOwner(
+        val canonicalRoute: String,
+        val accountId: String,
+    ) : LegacyRemoteCacheState {
+        override fun toString(): String = "PendingRestoredOwner(redacted)"
+    }
+
+    data object Quarantined : LegacyRemoteCacheState
+    data object Claimed : LegacyRemoteCacheState
+}
+
+internal fun restoredCredentialFingerprint(token: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(token.toByteArray(Charsets.UTF_8))
+    .joinToString("") { "%02x".format(it) }
+
+internal fun LegacyRemoteCacheState.PendingRestoredSession.matchesRestoredRecord(
+    record: StoredAuthRecord,
+): Boolean {
+    val route = ServerRoute.parse(record.serverUrl) ?: return false
+    return record.accountId.isNullOrBlank() && route.url == canonicalRoute &&
+        MessageDigest.isEqual(
+            credentialFingerprint.toByteArray(Charsets.US_ASCII),
+            restoredCredentialFingerprint(record.token).toByteArray(Charsets.US_ASCII),
+        )
+}
+
+internal fun LegacyRemoteCacheState.canBeClaimedBy(owner: RemoteOwner): Boolean =
+    this is LegacyRemoteCacheState.PendingRestoredOwner &&
+        canonicalRoute == owner.route.url && accountId == owner.accountId

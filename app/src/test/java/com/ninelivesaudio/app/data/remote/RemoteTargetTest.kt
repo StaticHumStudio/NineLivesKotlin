@@ -67,4 +67,27 @@ class RemoteTargetTest {
         assertFalse(text.contains(record.serverUrl!!))
         assertFalse(text.contains(record.accountId!!))
     }
+
+    @Test fun `legacy marker requires exact restored route and account provenance`() {
+        val route = requireNotNull(ServerRoute.parse("https://abs.example/abs-a"))
+        val marker = LegacyRemoteCacheState.PendingRestoredOwner(route.url, "account-a")
+        val owner = RemoteOwner(route, "account-a")
+
+        assertTrue(marker.canBeClaimedBy(owner))
+        assertFalse(marker.canBeClaimedBy(RemoteOwner(route, "account-b")))
+        assertFalse(marker.canBeClaimedBy(RemoteOwner(requireNotNull(ServerRoute.parse("https://abs.example/abs-b")), "account-a")))
+        assertFalse(LegacyRemoteCacheState.Quarantined.canBeClaimedBy(owner))
+    }
+
+    @Test fun `accountless restored session needs its exact credential before owner binding`() {
+        val route = requireNotNull(ServerRoute.parse("https://abs.example/abs-a"))
+        val pending = LegacyRemoteCacheState.PendingRestoredSession(
+            route.url,
+            restoredCredentialFingerprint("fixture-token-a"),
+        )
+
+        assertTrue(pending.matchesRestoredRecord(StoredAuthRecord("fixture-token-a", route.url)))
+        assertFalse(pending.matchesRestoredRecord(StoredAuthRecord("fixture-token-b", route.url)))
+        assertFalse(pending.matchesRestoredRecord(StoredAuthRecord("fixture-token-a", "https://abs.example/abs-b")))
+    }
 }

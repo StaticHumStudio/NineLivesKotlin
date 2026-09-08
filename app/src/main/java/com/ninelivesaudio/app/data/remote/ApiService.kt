@@ -234,27 +234,18 @@ class ApiService @Inject constructor(
                     return@withLock null
                 }
             val original = lastPersistedAuthRecord ?: return@withLock null
-            val updated = original.copy(accountId = accountId)
             lastPersistedAuthRecord = null
-            try {
-                settingsManager.saveAuthToken(updated.token, updated.serverUrl.orEmpty(), updated.accountId)
+            val updated = try {
+                settingsManager.persistResolvedAuthOwnerIfCurrent(original, accountId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                // A failed commit may have changed the process-memory map. Do
-                // not publish an authority until the prior complete record is
-                // durably restored too.
-                val restored = try {
-                    settingsManager.saveAuthToken(original.token, original.serverUrl.orEmpty(), original.accountId)
-                    true
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    false
-                }
-                if (restored) lastPersistedAuthRecord = original
+                // The settings method restores its captured record and marker
+                // after a failed checked commit. Do not publish a target until
+                // the complete owner binding has reached durable storage.
+                lastPersistedAuthRecord = original.takeIf { settingsManager.getAuthRecord() == it }
                 return@withLock null
-            }
+            } ?: return@withLock null
             lastPersistedAuthRecord = updated
             recordAuthMutation()
             currentRemoteTargetLocked()
@@ -425,7 +416,9 @@ class ApiService @Inject constructor(
                     lastPersistedAuthRecord = previousRecord
                 }
                 try {
-                    previousToken = settingsManager.getAuthRecord()?.token
+                    previousRecord = settingsManager.getAuthRecord()
+                    previousToken = previousRecord?.token
+                    settingsManager.quarantineLegacyRemoteCacheBeforeExplicitLogin(previousRecord, previousSettings.serverUrl)
                     previousToken?.let { settingsManager.persistAuthTokenServerBinding(it, previousSettings.serverUrl) }
                     previousRecord = settingsManager.getAuthRecord()
                     previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
@@ -504,12 +497,15 @@ class ApiService @Inject constructor(
         return withContext(Dispatchers.IO) {
             authMutationMutex.withLock {
                 val previousSettings = settingsManager.currentSettings
-                val previousRecord = settingsManager.getAuthRecord()
+                var previousRecord = settingsManager.getAuthRecord()
                 val previousToken = previousRecord?.token
-                val previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
+                var previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
                 val normalizedToken = token.trim()
                 try {
+                    settingsManager.quarantineLegacyRemoteCacheBeforeExplicitLogin(previousRecord, previousSettings.serverUrl)
                     previousToken?.let { settingsManager.persistAuthTokenServerBinding(it, previousSettings.serverUrl) }
+                    previousRecord = settingsManager.getAuthRecord()
+                    previousTokenServerUrl = previousRecord?.serverUrl ?: previousSettings.serverUrl
                     val normalizedUrl = normalizeServerUrl(serverUrl)
 
                     // Set server URL so Retrofit uses it
@@ -889,6 +885,12 @@ class ApiService @Inject constructor(
                         }
                         tokenServerUrl = boundUrl ?: ""
                         restoredRecord = settingsManager.getAuthRecord()
+                        restoredRecord?.let {
+                            settingsManager.seedLegacyRemoteCacheForRestoredRecord(
+                                it,
+                                settingsManager.currentSettings.serverUrl,
+                            )
+                        }
                     }
                 } catch (cancellation: CancellationException) {
                     throw cancellation

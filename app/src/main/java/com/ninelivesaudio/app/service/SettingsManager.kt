@@ -5,7 +5,11 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.ninelivesaudio.app.domain.model.AppSettings
+import com.ninelivesaudio.app.data.remote.LegacyRemoteCacheState
+import com.ninelivesaudio.app.data.remote.ServerRoute
 import com.ninelivesaudio.app.data.remote.StoredAuthRecord
+import com.ninelivesaudio.app.data.remote.matchesRestoredRecord
+import com.ninelivesaudio.app.data.remote.restoredCredentialFingerprint
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +23,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.Base64
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -420,6 +425,7 @@ class SettingsManager @Inject constructor(
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_AUTH_TOKEN_SERVER_URL = "auth_token_server_url"
         private const val KEY_AUTH_ACCOUNT_ID = "auth_account_id"
+        private const val KEY_LEGACY_REMOTE_CACHE_STATE = "legacy_remote_cache_state"
         private const val KEY_SETTINGS = "app_settings"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_CURRENT_PLAYBACK_BOOK_ID = "current_playback_book_id"
@@ -531,6 +537,165 @@ class SettingsManager @Inject constructor(
                 true
             }
         }
+
+    internal suspend fun getLegacyRemoteCacheState(): LegacyRemoteCacheState? = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock { readLegacyRemoteCacheState() }
+    }
+
+    /** Seeds only a cold-restored durable session. Fresh credentials never create provenance. */
+    internal suspend fun seedLegacyRemoteCacheForRestoredRecord(
+        record: StoredAuthRecord,
+        selectedServerUrl: String,
+    ) = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock {
+            if (encryptedPrefs.getString(KEY_LEGACY_REMOTE_CACHE_STATE, null) != null) return@withLock
+            val state = legacyStateForRestoredRecord(record, selectedServerUrl) ?: return@withLock
+            persistLegacyRemoteCacheState(state)
+        }
+    }
+
+    /** Runs before every explicit login changes settings, bearer, or stored credentials. */
+    internal suspend fun quarantineLegacyRemoteCacheBeforeExplicitLogin(
+        previousRecord: StoredAuthRecord?,
+        selectedServerUrl: String,
+    ) = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock {
+            val existing = readLegacyRemoteCacheState()
+            val needsQuarantine = existing is LegacyRemoteCacheState.PendingRestoredSession ||
+                existing is LegacyRemoteCacheState.PendingRestoredOwner ||
+                existing == null && previousRecord?.let {
+                    legacyStateForRestoredRecord(it, selectedServerUrl)
+                } != null
+            if (needsQuarantine) persistLegacyRemoteCacheState(LegacyRemoteCacheState.Quarantined)
+        }
+    }
+
+    /** Persists a profile-resolved owner with its matching legacy marker in one commit. */
+    internal suspend fun persistResolvedAuthOwnerIfCurrent(
+        expected: StoredAuthRecord,
+        accountId: String,
+    ): StoredAuthRecord? = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock {
+            val actual = readAuthRecordLocked() ?: return@withLock null
+            if (actual != expected || accountId.isBlank()) return@withLock null
+            val updated = expected.copy(accountId = accountId)
+            val previousMarker = encryptedPrefs.getString(KEY_LEGACY_REMOTE_CACHE_STATE, null)
+            val previousState = readLegacyRemoteCacheState()
+            val updatedState = (previousState as? LegacyRemoteCacheState.PendingRestoredSession)
+                ?.takeIf { it.matchesRestoredRecord(expected) }
+                ?.let { LegacyRemoteCacheState.PendingRestoredOwner(it.canonicalRoute, accountId) }
+            try {
+                val editor = encryptedPrefs.edit()
+                    .putString(KEY_AUTH_TOKEN, updated.token)
+                    .putString(KEY_AUTH_TOKEN_SERVER_URL, updated.serverUrl)
+                    .putString(KEY_AUTH_ACCOUNT_ID, updated.accountId)
+                if (updatedState != null) editor.putString(KEY_LEGACY_REMOTE_CACHE_STATE, encodeLegacyRemoteCacheState(updatedState))
+                requireSuccessfulSettingsCommit(editor.commit())
+                _hasAuthToken.value = true
+                updated
+            } catch (failure: Exception) {
+                runCatching { restoreAuthRecordAndMarker(expected, previousMarker) }
+                throw failure
+            }
+        }
+    }
+
+    private fun readAuthRecordLocked(): StoredAuthRecord? =
+        encryptedPrefs.getString(KEY_AUTH_TOKEN, null)?.let { token ->
+            StoredAuthRecord(
+                token,
+                encryptedPrefs.getString(KEY_AUTH_TOKEN_SERVER_URL, null),
+                encryptedPrefs.getString(KEY_AUTH_ACCOUNT_ID, null),
+            )
+        }
+
+    private fun legacyStateForRestoredRecord(
+        record: StoredAuthRecord,
+        selectedServerUrl: String,
+    ): LegacyRemoteCacheState? {
+        val selectedRoute = ServerRoute.parse(selectedServerUrl) ?: return null
+        // B1 trusts a legacy token with no stored binding as paired with the
+        // already-saved route. A malformed non-null binding remains untrusted.
+        val route = ServerRoute.parse(record.serverUrl ?: selectedRoute.url) ?: return null
+        if (route != selectedRoute || record.token.isBlank()) return null
+        val accountId = record.accountId?.takeIf { it.isNotBlank() }
+        return if (accountId == null) {
+            LegacyRemoteCacheState.PendingRestoredSession(route.url, restoredCredentialFingerprint(record.token))
+        } else {
+            LegacyRemoteCacheState.PendingRestoredOwner(route.url, accountId)
+        }
+    }
+
+    private fun readLegacyRemoteCacheState(): LegacyRemoteCacheState? {
+        val encoded = encryptedPrefs.getString(KEY_LEGACY_REMOTE_CACHE_STATE, null) ?: return null
+        return decodeLegacyRemoteCacheState(encoded) ?: LegacyRemoteCacheState.Quarantined
+    }
+
+    private fun persistLegacyRemoteCacheState(state: LegacyRemoteCacheState) {
+        val previous = encryptedPrefs.getString(KEY_LEGACY_REMOTE_CACHE_STATE, null)
+        try {
+            requireSuccessfulSettingsCommit(
+                encryptedPrefs.edit().putString(KEY_LEGACY_REMOTE_CACHE_STATE, encodeLegacyRemoteCacheState(state)).commit(),
+            )
+        } catch (failure: Exception) {
+            runCatching { restoreLegacyMarker(previous) }
+            throw failure
+        }
+    }
+
+    private fun restoreAuthRecordAndMarker(record: StoredAuthRecord, marker: String?) {
+        val editor = encryptedPrefs.edit()
+            .putString(KEY_AUTH_TOKEN, record.token)
+            .putString(KEY_AUTH_TOKEN_SERVER_URL, record.serverUrl)
+            .putString(KEY_AUTH_ACCOUNT_ID, record.accountId)
+        if (marker == null) editor.remove(KEY_LEGACY_REMOTE_CACHE_STATE) else editor.putString(KEY_LEGACY_REMOTE_CACHE_STATE, marker)
+        requireSuccessfulSettingsCommit(editor.commit())
+        _hasAuthToken.value = true
+    }
+
+    private fun restoreLegacyMarker(marker: String?) {
+        val editor = encryptedPrefs.edit()
+        if (marker == null) editor.remove(KEY_LEGACY_REMOTE_CACHE_STATE) else editor.putString(KEY_LEGACY_REMOTE_CACHE_STATE, marker)
+        requireSuccessfulSettingsCommit(editor.commit())
+    }
+
+    private fun encodeLegacyRemoteCacheState(state: LegacyRemoteCacheState): String = when (state) {
+        is LegacyRemoteCacheState.PendingRestoredSession ->
+            "session:${encodeLegacyPart(state.canonicalRoute)}:${encodeLegacyPart(state.credentialFingerprint)}"
+        is LegacyRemoteCacheState.PendingRestoredOwner ->
+            "owner:${encodeLegacyPart(state.canonicalRoute)}:${encodeLegacyPart(state.accountId)}"
+        LegacyRemoteCacheState.Quarantined -> "quarantined"
+        LegacyRemoteCacheState.Claimed -> "claimed"
+    }
+
+    private fun decodeLegacyRemoteCacheState(encoded: String): LegacyRemoteCacheState? {
+        if (encoded == "quarantined") return LegacyRemoteCacheState.Quarantined
+        if (encoded == "claimed") return LegacyRemoteCacheState.Claimed
+        val parts = encoded.split(':', limit = 3)
+        if (parts.size != 3) return null
+        val route = decodeLegacyPart(parts[1]) ?: return null
+        val canonicalRoute = ServerRoute.parse(route)?.takeIf { it.url == route }?.url ?: return null
+        return when (parts[0]) {
+            "session" -> decodeLegacyPart(parts[2])
+                ?.takeIf { fingerprint ->
+                    fingerprint.length == 64 && fingerprint.all { it in '0'..'9' || it in 'a'..'f' }
+                }
+                ?.let { LegacyRemoteCacheState.PendingRestoredSession(canonicalRoute, it) }
+            "owner" -> decodeLegacyPart(parts[2])
+                ?.takeIf { it.isNotBlank() }
+                ?.let { LegacyRemoteCacheState.PendingRestoredOwner(canonicalRoute, it) }
+            else -> null
+        }
+    }
+
+    private fun encodeLegacyPart(value: String): String =
+        Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(Charsets.UTF_8))
+
+    private fun decodeLegacyPart(value: String): String? = runCatching {
+        val decoded = Base64.getUrlDecoder().decode(value)
+        if (encodeLegacyPart(String(decoded, Charsets.UTF_8)) != value) return@runCatching null
+        String(decoded, Charsets.UTF_8)
+    }.getOrNull()
 
     fun getCurrentPlaybackBookId(): String? =
         encryptedPrefs.getString(KEY_CURRENT_PLAYBACK_BOOK_ID, null)

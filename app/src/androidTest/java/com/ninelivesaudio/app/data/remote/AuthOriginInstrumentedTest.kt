@@ -80,6 +80,13 @@ class AuthOriginInstrumentedTest {
 
     private val app get() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as NineLivesApp
 
+    private fun clearLegacyRemoteCacheMarker(settings: SettingsManager) {
+        val field = SettingsManager::class.java.getDeclaredField("encryptedPrefs" + "$" + "delegate").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val prefs = (field.get(settings) as Lazy<SharedPreferences>).value
+        assertTrue(prefs.edit().remove("legacy_remote_cache_state").commit())
+    }
+
     @Test fun passwordLoginAndEveryFailureKeepBearersOnTheirOwnOrigins() = runBlocking {
         app.apiService.awaitAuthReady()
         val settings = app.settingsManager.currentSettings
@@ -527,6 +534,155 @@ class AuthOriginInstrumentedTest {
             }
         } finally {
             field.set(app.settingsManager, original)
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
+
+    /** Forces only the C0 quarantine write to fail without touching route persistence. */
+    private class FailingLegacyQuarantinePreferences(
+        private val backing: SharedPreferences,
+    ) : SharedPreferences by backing {
+        override fun edit(): SharedPreferences.Editor {
+            val delegate = backing.edit()
+            var writesLegacyMarker = false
+            return object : SharedPreferences.Editor by delegate {
+                override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+                    if (key == "legacy_remote_cache_state") writesLegacyMarker = true
+                    delegate.putString(key, value)
+                    return this
+                }
+
+                override fun commit(): Boolean = if (writesLegacyMarker) false else delegate.commit()
+            }
+        }
+    }
+
+    @Test fun restoredLegacyMarkerSurvivesRecreationAndFailedQuarantineKeepsRoute() = runBlocking {
+        app.apiService.awaitAuthReady()
+        clearLegacyRemoteCacheMarker(app.settingsManager)
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        val field = SettingsManager::class.java.getDeclaredField("encryptedPrefs" + "$" + "delegate").apply { isAccessible = true }
+        try {
+            Origin("fixture-c0-a").use { a -> Origin("fixture-c0-b").use { b ->
+                app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+                app.settingsManager.saveAuthToken(a.token, a.url)
+
+                val firstSettings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                val firstAuth = AuthInterceptor()
+                val firstClient = NetworkModule.provideOkHttpClient(firstAuth, DynamicBaseUrlInterceptor(firstSettings), firstSettings)
+                val firstApi = ApiService(
+                    NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(firstClient, NetworkModule.provideJson())),
+                    firstAuth,
+                    firstSettings,
+                )
+                firstApi.initializeFromSettings()
+                assertTrue(firstSettings.getLegacyRemoteCacheState() is LegacyRemoteCacheState.PendingRestoredSession)
+                assertEquals(a.accountId, requireNotNull(firstApi.resolveRemoteTarget()).owner.accountId)
+                val expected = LegacyRemoteCacheState.PendingRestoredOwner(a.url, a.accountId)
+                assertEquals(expected, firstSettings.getLegacyRemoteCacheState())
+
+                val recreatedSettings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                val recreatedAuth = AuthInterceptor()
+                val recreatedClient = NetworkModule.provideOkHttpClient(recreatedAuth, DynamicBaseUrlInterceptor(recreatedSettings), recreatedSettings)
+                val recreatedApi = ApiService(
+                    NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(recreatedClient, NetworkModule.provideJson())),
+                    recreatedAuth,
+                    recreatedSettings,
+                )
+                recreatedApi.initializeFromSettings()
+                assertEquals(expected, recreatedSettings.getLegacyRemoteCacheState())
+
+                @Suppress("UNCHECKED_CAST")
+                val original = field.get(recreatedSettings) as Lazy<SharedPreferences>
+                field.set(recreatedSettings, lazyOf(FailingLegacyQuarantinePreferences(original.value)))
+                try {
+                    assertEquals(CredentialLoginResult.UNREACHABLE, recreatedApi.login(b.url, "fixture", "fixture-password"))
+                    assertEquals(a.url, recreatedSettings.currentSettings.serverUrl)
+                    assertEquals(expected, recreatedSettings.getLegacyRemoteCacheState())
+                    assertFalse(b.requests.any { it.first == "/login" })
+                } finally {
+                    field.set(recreatedSettings, original)
+                }
+            } }
+        } finally {
+            clearLegacyRemoteCacheMarker(app.settingsManager)
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
+    @Test fun failedColdLegacySeedKeepsRouteButDoesNotPublishAuth() = runBlocking {
+        app.apiService.awaitAuthReady()
+        clearLegacyRemoteCacheMarker(app.settingsManager)
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        val field = SettingsManager::class.java.getDeclaredField("encryptedPrefs" + "$" + "delegate").apply { isAccessible = true }
+        try {
+            Origin("fixture-c0-seed-failure").use { a ->
+                app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+                app.settingsManager.saveAuthToken(a.token, a.url)
+                val settings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                @Suppress("UNCHECKED_CAST")
+                val original = field.get(settings) as Lazy<SharedPreferences>
+                field.set(settings, lazyOf(FailingLegacyQuarantinePreferences(original.value)))
+                try {
+                    val auth = AuthInterceptor()
+                    val client = NetworkModule.provideOkHttpClient(auth, DynamicBaseUrlInterceptor(settings), settings)
+                    val api = ApiService(
+                        NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(client, NetworkModule.provideJson())),
+                        auth,
+                        settings,
+                    )
+                    api.initializeFromSettings()
+                    assertEquals(a.url, settings.currentSettings.serverUrl)
+                    assertFalse(api.isAuthenticated)
+                    assertNull(settings.getLegacyRemoteCacheState())
+                } finally {
+                    field.set(settings, original)
+                }
+            }
+        } finally {
+            clearLegacyRemoteCacheMarker(app.settingsManager)
+            app.apiService.logout()
+            app.settingsManager.saveSettings(previous)
+            if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)
+            app.settingsManager.saveSettings(previous)
+        }
+    }
+
+    @Test fun sameRouteFreshTokenLoginQuarantinesAnUnclaimedRestoredMarker() = runBlocking {
+        app.apiService.awaitAuthReady()
+        clearLegacyRemoteCacheMarker(app.settingsManager)
+        val previous = app.settingsManager.currentSettings
+        val previousToken = app.settingsManager.getAuthToken()
+        try {
+            Origin("fixture-c0-same-route").use { a ->
+                app.settingsManager.updateSettings { it.copy(serverUrl = a.url) }
+                app.settingsManager.saveAuthToken(a.token, a.url, a.accountId)
+                val restoredSettings = SettingsManager(InstrumentationRegistry.getInstrumentation().targetContext)
+                val restoredAuth = AuthInterceptor()
+                val restoredClient = NetworkModule.provideOkHttpClient(restoredAuth, DynamicBaseUrlInterceptor(restoredSettings), restoredSettings)
+                val restoredApi = ApiService(
+                    NetworkModule.provideAudiobookshelfApi(NetworkModule.provideRetrofit(restoredClient, NetworkModule.provideJson())),
+                    restoredAuth,
+                    restoredSettings,
+                )
+                restoredApi.initializeFromSettings()
+                assertTrue(restoredSettings.getLegacyRemoteCacheState() is LegacyRemoteCacheState.PendingRestoredOwner)
+
+                assertTrue(restoredApi.loginWithToken(a.url, a.token))
+                assertEquals(LegacyRemoteCacheState.Quarantined, restoredSettings.getLegacyRemoteCacheState())
+                assertTrue(a.requests.any { it.first == "/api/authorize" })
+            }
+        } finally {
+            clearLegacyRemoteCacheMarker(app.settingsManager)
             app.apiService.logout()
             app.settingsManager.saveSettings(previous)
             if (!previousToken.isNullOrEmpty()) app.apiService.loginWithToken(previous.serverUrl, previousToken)

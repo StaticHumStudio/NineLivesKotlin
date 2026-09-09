@@ -1,10 +1,16 @@
 package com.ninelivesaudio.app.data.remote
 
 import java.io.ByteArrayInputStream
+import java.lang.reflect.Proxy
+import java.security.cert.Certificate
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.SSLSession
 import javax.net.ssl.X509TrustManager
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -61,6 +67,56 @@ class SelfSignedCertTrustManagerTest {
     }
 
     @Test
+    fun currentHostRejectedByPlatformHostnameVerifierIsNeverEnrolled() {
+        val trusted = mutableMapOf<String, String>()
+        val verifier = SelfSignedCertTrustManager.hostnameVerifierFor(
+            trustManager(currentHost = { "127.0.0.1" }, platform = RecordingTrustManager(), trusted = trusted),
+            configuredHost = { "127.0.0.1" },
+            platformHostnameVerifier = HostnameVerifier { _, _ -> false },
+        )
+
+        assertFalse(verifier.verify("127.0.0.1", sessionWith(certificate)))
+        assertTrue(trusted.isEmpty())
+    }
+
+    @Test
+    fun currentHostWithNoPeerLeafFailsClosed() {
+        val trusted = mutableMapOf<String, String>()
+        val verifier = SelfSignedCertTrustManager.hostnameVerifierFor(
+            trustManager(currentHost = { "127.0.0.1" }, platform = RecordingTrustManager(), trusted = trusted),
+            configuredHost = { "127.0.0.1" },
+            platformHostnameVerifier = HostnameVerifier { _, _ -> true },
+        )
+
+        assertFalse(verifier.verify("127.0.0.1", sessionWith()))
+        assertTrue(trusted.isEmpty())
+    }
+
+    @Test
+    fun currentHostEnrollmentFailureFailsClosed() {
+        var saveAttempts = 0
+        val manager = SelfSignedCertTrustManager.HostScopedTrustManager(
+            platformTrustManager = RecordingTrustManager(),
+            configuredHost = { "127.0.0.1" },
+            trustedFingerprint = { null },
+            saveFingerprint = { _, _ ->
+                saveAttempts++
+                error("secure storage unavailable")
+            },
+            logInfo = {},
+            logError = {},
+        )
+        val verifier = SelfSignedCertTrustManager.hostnameVerifierFor(
+            manager,
+            configuredHost = { "127.0.0.1" },
+            platformHostnameVerifier = HostnameVerifier { _, _ -> true },
+        )
+
+        assertFalse(verifier.verify("127.0.0.1", sessionWith(certificate)))
+        assertEquals(1, saveAttempts)
+    }
+
+    @Test
     fun changedPinnedFingerprintStillFailsForCurrentCommittedHost() {
         val platform = RecordingTrustManager()
         val manager = trustManager(
@@ -93,6 +149,17 @@ class SelfSignedCertTrustManagerTest {
         logInfo = {},
         logError = {},
     )
+
+    private fun sessionWith(vararg peerCertificates: Certificate): SSLSession =
+        Proxy.newProxyInstance(
+            javaClass.classLoader,
+            arrayOf(SSLSession::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "getPeerCertificates" -> peerCertificates
+                else -> error("Unexpected SSLSession call: ${method.name}")
+            }
+        } as SSLSession
 
     private class RecordingTrustManager : X509TrustManager {
         var socketChecks = 0

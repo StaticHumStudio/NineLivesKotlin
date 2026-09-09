@@ -63,17 +63,25 @@ object SelfSignedCertTrustManager {
         sslContext.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
 
         sslSocketFactory(sslContext.socketFactory, trustManager)
-        hostnameVerifier(hostnameVerifierFor(trustManager, settingsManager))
+        hostnameVerifier(
+            hostnameVerifierFor(
+                trustManager = trustManager,
+                configuredHost = { settingsManager.currentSettings.serverUrl.toNormalizedHost() },
+            ),
+        )
         return this
     }
 
     internal fun hostnameVerifierFor(
         trustManager: HostScopedTrustManager,
-        settingsManager: SettingsManager,
+        configuredHost: () -> String?,
+        platformHostnameVerifier: javax.net.ssl.HostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier(),
     ) = javax.net.ssl.HostnameVerifier { hostname, session ->
         val normalizedHost = hostname.normalizeHost()
-        if (normalizedHost == null || normalizedHost != settingsManager.currentSettings.serverUrl.toNormalizedHost()) {
-            HttpsURLConnection.getDefaultHostnameVerifier().verify(hostname, session)
+        if (normalizedHost == null || normalizedHost != configuredHost().normalizeHost()) {
+            platformHostnameVerifier.verify(hostname, session)
+        } else if (!platformHostnameVerifier.verify(hostname, session)) {
+            false
         } else {
             try {
                 val leaf = session.peerCertificates.firstOrNull() as? X509Certificate
@@ -81,9 +89,8 @@ object SelfSignedCertTrustManager {
                     trustManager.enrollFingerprintIfNeeded(normalizedHost, leaf)
                     true
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "TOFU enrollment skipped: ${e.message}")
-                true
+            } catch (_: Exception) {
+                false
             }
         }
     }

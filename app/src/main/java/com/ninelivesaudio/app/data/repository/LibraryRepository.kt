@@ -181,14 +181,24 @@ class LibraryRepository @Inject constructor(
         },
         upsertAll = { libraries -> libraryDao.upsertAll(libraries.map { it.toEntity() }) },
         deleteMissing = { keptIds ->
-            val ids = libraryDao.getActiveAudiobookshelf(scope.idPrefix)
-                .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null && id !in keptIds } }
-            if (ids.isNotEmpty()) libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, ids)
+            deleteCatalogIdsIfCurrent(
+                readIds = {
+                    libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                        .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null && id !in keptIds } }
+                },
+                isCurrentScope = { apiService.isCurrentActiveRemoteScope(scope) },
+                deleteIds = { ids -> libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, ids) },
+            )
         },
         deleteAllServerLibraries = {
-            val ids = libraryDao.getActiveAudiobookshelf(scope.idPrefix)
-                .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null } }
-            if (ids.isNotEmpty()) libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, ids)
+            deleteCatalogIdsIfCurrent(
+                readIds = {
+                    libraryDao.getActiveAudiobookshelf(scope.idPrefix)
+                        .mapNotNull { it.id.takeIf { id -> scope.decodeForEgress(id) != null } }
+                },
+                isCurrentScope = { apiService.isCurrentActiveRemoteScope(scope) },
+                deleteIds = { ids -> libraryDao.deleteActiveAudiobookshelfByIds(scope.idPrefix, ids) },
+            )
         },
         pruneLibraryBooks = { libraryId -> audioBookRepository.pruneServerBooksForRemovedLibrary(scope, libraryId) },
         captureReconciledLibraries = captureReconciledLibraries,

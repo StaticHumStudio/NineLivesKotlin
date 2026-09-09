@@ -343,6 +343,7 @@ class DownloadMetadataRuntimeCanaryTest {
         try {
             val scope = fixture.login("owner-a")
             val catalog = fixture.sparseBook(scope.encodeIncoming("resume-book"), "Resume")
+                .copy(libraryId = scope.encodeIncoming("remote-library"))
             val item = fixture.item(scope.encodeIncoming("resume-download"), catalog.id)
             fixture.seed(catalog, item)
             fixture.api.holdAfterFirstStream = true
@@ -370,6 +371,7 @@ class DownloadMetadataRuntimeCanaryTest {
             val playbackManager = fixture.newPlaybackManager()
             try {
                 val loaded = withContext(Dispatchers.Main) { playbackManager.loadAudioBook(reopened, autoPlay = false) }
+                assertTrue(loaded)
                 val uris = withContext(Dispatchers.Main) {
                     requireNotNull(playbackManager.getPlayer()).let { player ->
                         (0 until player.mediaItemCount).map { index ->
@@ -378,7 +380,6 @@ class DownloadMetadataRuntimeCanaryTest {
                     }
                 }
 
-                assertTrue(loaded)
                 assertEquals(reopened.audioFiles.sortedBy { it.index }.map { "file://${it.localPath}" }, uris)
                 assertEquals(callsBeforeOffline, fixture.api.remoteCallCount)
             } finally {

@@ -36,7 +36,27 @@ internal fun sanitizeDownloadFileName(name: String): String =
 internal fun downloadFolderName(author: String, title: String, fallbackId: String): String {
     val realAuthor = author.takeIf { it.isNotBlank() && it != "Unknown Author" }
     val raw = if (realAuthor != null) "$realAuthor - $title" else title
-    return sanitizeDownloadFileName(raw).ifBlank { fallbackId }
+    // Scoped IDs are already an opaque, filesystem-safe application identity.
+    // Keep it verbatim so its complete owner fence survives as the suffix.
+    val identity = fallbackId.ifBlank { "download" }
+    val separator = " - "
+    val labelLimit = (MAX_FILE_NAME_LENGTH - identity.length - separator.length).coerceAtLeast(0)
+    val label = sanitizeDownloadFileName(raw).take(labelLimit)
+    return if (label.isBlank()) identity else "$label$separator$identity"
+}
+
+/** Stable on-disk leaf names, disambiguating only sanitization collisions. */
+internal fun resolveDownloadFileNames(files: List<AudioFile>): List<String> {
+    val baseNames = files.mapIndexed { index, file ->
+        sanitizeDownloadFileName(file.filename.ifBlank { "track_${index + 1}" })
+    }
+    return baseNames.mapIndexed { index, base ->
+        if (baseNames.count { it == base } == 1) base else {
+            val dot = base.lastIndexOf('.')
+            val suffix = "_${files[index].index.takeIf { it > 0 } ?: index + 1}"
+            if (dot <= 0) "$base$suffix" else "${base.substring(0, dot)}$suffix${base.substring(dot)}"
+        }
+    }
 }
 
 /**

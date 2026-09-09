@@ -108,6 +108,10 @@ interface AudioBookDao {
     @Query("SELECT EXISTS(SELECT 1 FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND IsDownloaded = 1 AND substr(Id, 1, length(:idPrefix)) = :idPrefix AND substr(LibraryId, 1, length(:idPrefix)) = :idPrefix)")
     suspend fun hasDownloadedActiveServerBooks(libraryId: String, idPrefix: String): Boolean
 
+    /** Legacy downloads can share a path across owners, so this query is global. */
+    @Query("SELECT EXISTS(SELECT 1 FROM AudioBooks WHERE IsDownloaded = 1 AND LocalPath = :localPath AND Id != :excludedId)")
+    suspend fun hasOtherDownloadedLocalPath(localPath: String, excludedId: String): Boolean
+
     /** Ids of all LOCAL books in a library (live or archived). */
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
     suspend fun getLocalIdsByLibrary(libraryId: String): List<String>

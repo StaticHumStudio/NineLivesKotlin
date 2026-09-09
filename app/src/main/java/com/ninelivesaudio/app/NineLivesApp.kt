@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
@@ -164,6 +165,12 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             // serverUrl + token are now loaded, so it is safe to probe the
             // server and start syncing.
             connectivityMonitor.startMonitoring()
+            appScope.launch {
+                connectivityMonitor.connectionStatus
+                    .filter { it == ConnectivityMonitor.ConnectionStatus.CONNECTED }
+                    .first()
+                downloadManager.backfillDownloadedMetadata()
+            }
             playbackManager.restoreCurrentItem()
             syncManager.start()
         }

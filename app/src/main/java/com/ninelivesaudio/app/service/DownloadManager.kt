@@ -13,6 +13,7 @@ import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.AudioFile
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
@@ -20,8 +21,11 @@ import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
 import com.ninelivesaudio.app.service.download.DownloadEngine
 import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
+import com.ninelivesaudio.app.service.download.MetadataBoundaryOperation
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
+import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
+import com.ninelivesaudio.app.service.download.sanitizeDownloadFileName
 import com.ninelivesaudio.app.service.download.selectNextDownload
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +39,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URI
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -554,10 +559,51 @@ class DownloadManager @Inject constructor(
         }
     }
 
+    /** Refresh incomplete downloaded metadata once for the captured owner. */
+    internal suspend fun backfillDownloadedMetadata() {
+        val scope = activeScope() ?: return
+        val candidates = audioBookDao.getActiveCatalog(scope.idPrefix)
+            .filter { entity ->
+                entity.isLocal == 0 && entity.isDownloaded == 1 &&
+                    entity.toDomain().let { book ->
+                        book.audioFiles.isEmpty() || book.audioFiles.any { it.localPath.isNullOrBlank() }
+                    }
+            }
+
+        for (entity in candidates) {
+            if (!apiService.isCurrentActiveRemoteScope(scope)) return
+            val book = entity.toDomain()
+            val originalPath = book.localPath ?: continue
+            val itemEntity = downloadItemDao.getVisibleByAudioBookId(book.id, scope.idPrefix)
+                ?: continue
+            if (itemEntity.status != DownloadStatus.Completed.ordinal) continue
+
+            val detailed = engine.fetchFullBookDetails(scope, book.id) ?: continue
+            val reboundFiles = bindExistingAudioFiles(detailed.audioFiles, originalPath) ?: continue
+            val item = itemEntity.toDomain()
+
+            engine.withMetadataPathBoundary(scope, item, MetadataBoundaryOperation.BACKFILL) {
+                val currentBookEntity = audioBookDao.getById(book.id) ?: return@withMetadataPathBoundary
+                val currentItemEntity = downloadItemDao.getRemoteByIdForOwner(item.id, scope.idPrefix)
+                    ?: return@withMetadataPathBoundary
+                if (currentItemEntity.audioBookId != book.id ||
+                    currentItemEntity.status != DownloadStatus.Completed.ordinal ||
+                    currentBookEntity.isDownloaded != 1 ||
+                    currentBookEntity.localPath != originalPath
+                ) return@withMetadataPathBoundary
+                if (!canMutate(scope, currentItemEntity)) return@withMetadataPathBoundary
+                audioBookDao.upsert(
+                    currentBookEntity.toDomain().copy(
+                        audioFiles = reboundFiles,
+                        chapters = detailed.chapters,
+                    ).toEntity()
+                )
+            }
+        }
+    }
+
     /** Delete a download's files and DB record. */
     suspend fun deleteDownload(audioBookId: String) {
-        // Use the actual localPath stored on the audiobook — this matches the path
-        // set by the engine (basePath/Author - Title), not basePath/audioBookId.
         val scope = activeScope()
         val prefix = scope?.idPrefix
         val downloadEntity = downloadItemDao.getVisibleByAudioBookId(audioBookId, prefix) ?: return
@@ -565,21 +611,31 @@ class DownloadManager @Inject constructor(
         val wasDownloading = downloadEntity.status == DownloadStatus.Downloading.ordinal
         if (!canMutate(scope, downloadEntity)) return
 
-        withContext(Dispatchers.IO) {
-            if (!canMutate(scope, downloadEntity)) return@withContext
-            val localPath = bookEntity?.localPath
-            if (!localPath.isNullOrEmpty()) {
-                File(localPath).deleteRecursively()
+        if (scope == null) {
+            withContext(Dispatchers.IO) {
+                if (canMutate(scope, downloadEntity)) bookEntity.localPath?.let { File(it).deleteRecursively() }
             }
-        }
-
-        if (canMutate(scope, downloadEntity) && bookEntity != null) {
-            // The cover.jpg lived inside localPath and was removed by deleteRecursively
-            // above, so drop its reference too.
-            audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
-        }
-        if (canMutate(scope, downloadEntity)) {
-            downloadItemDao.deleteById(downloadEntity.id)
+            if (canMutate(scope, downloadEntity)) {
+                audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
+            }
+            if (canMutate(scope, downloadEntity)) downloadItemDao.deleteById(downloadEntity.id)
+        } else {
+            engine.withMetadataPathBoundary(scope, downloadEntity.toDomain(), MetadataBoundaryOperation.DELETE) {
+                val currentItemEntity = downloadItemDao.getRemoteByIdForOwner(downloadEntity.id, scope.idPrefix)
+                    ?: return@withMetadataPathBoundary
+                val currentBookEntity = audioBookDao.getById(audioBookId)
+                    ?: return@withMetadataPathBoundary
+                if (currentItemEntity.audioBookId != audioBookId || !canMutate(scope, currentItemEntity)) {
+                    return@withMetadataPathBoundary
+                }
+                val localPath = currentBookEntity.localPath
+                val shared = localPath?.let { audioBookDao.hasOtherDownloadedLocalPath(it, audioBookId) } == true
+                if (!localPath.isNullOrEmpty() && !shared) {
+                    withContext(Dispatchers.IO) { File(localPath).deleteRecursively() }
+                }
+                audioBookDao.upsert(currentBookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
+                downloadItemDao.deleteById(currentItemEntity.id)
+            }
         }
         if (wasDownloading) {
             // Stop the engine if it was mid-download on this book.
@@ -624,6 +680,50 @@ class DownloadManager @Inject constructor(
             DownloadStatus.Failed -> _downloadFailed.tryEmit(item)
             else -> { /* Paused/cancelled: no terminal event */ }
         }
+    }
+
+    private fun bindExistingAudioFiles(files: List<AudioFile>, localPath: String): List<AudioFile>? {
+        if (files.isEmpty()) return null
+        val directory = localDirectory(localPath) ?: return null
+        val resolvedNames = resolveDownloadFileNames(files)
+        val legacyNames = files.mapIndexed { index, file ->
+            sanitizeDownloadFileName(file.filename.substringAfterLast('/').ifEmpty { "track_${index + 1}" })
+        }
+        val legacyNameCounts = legacyNames.groupingBy { it }.eachCount()
+        val baseNameGroups = files.mapIndexed { index, file ->
+            index to sanitizeDownloadFileName(file.filename.ifEmpty { "track_${index + 1}" })
+        }.groupBy({ it.second }, { it.first })
+        val selected = arrayOfNulls<File>(files.size)
+
+        baseNameGroups.values.forEach { indices ->
+            val options = indices.map { index ->
+                listOf(resolvedNames[index], legacyNames[index])
+                    .distinct()
+                    .filter { name -> legacyNameCounts[name] == 1 || name == resolvedNames[index] }
+                    .map { File(directory, it) }
+                    .filter { file ->
+                        file.canonicalFile.toPath().startsWith(directory.toPath()) &&
+                            file.isFile && file.length() > 0L
+                    }
+                    .distinctBy { it.canonicalPath }
+            }
+            val paths = options.map { it.singleOrNull() }
+            if (paths.all { it != null } && paths.map { it!!.canonicalPath }.toSet().size == indices.size) {
+                indices.forEachIndexed { position, index -> selected[index] = paths[position] }
+            }
+        }
+
+        return files.mapIndexed { index, file ->
+            file.copy(localPath = selected[index]?.absolutePath)
+        }
+    }
+
+    private fun localDirectory(path: String): File? = try {
+        val uri = URI(path)
+        val file = if (uri.scheme?.equals("file", ignoreCase = true) == true) File(uri) else File(path)
+        file.canonicalFile.takeIf { it.isDirectory }
+    } catch (_: Exception) {
+        null
     }
 
     /** Null is intentional. With no active owner, only local joined rows remain visible. */

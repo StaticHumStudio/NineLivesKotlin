@@ -433,7 +433,11 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
 
     suspend fun login(owner: String): ActiveRemoteScope {
         assertEquals(CredentialLoginResult.SUCCESS, apiService.login(SERVER_URL, owner, "fixture-password"))
-        return requireNotNull(apiService.captureActiveRemoteScope())
+        return requireNotNull(apiService.captureActiveRemoteScope()).also { scope ->
+            settings.saveSettings(
+                settings.currentSettings.copy(selectedLibraryId = scope.encodeIncoming("remote-library")),
+            )
+        }
     }
 
     val expandedChapters = listOf(Chapter(1, 0.0, 1.0, "One"), Chapter(2, 1.0, 2.0, "Two"))
@@ -471,9 +475,9 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
 
     fun downloadDirectory(book: AudioBook): File = File(root, downloadFolderName(book.author, book.title, book.id))
 
-    fun directorySnapshot(book: AudioBook): Map<String, ByteArray> {
+    fun directorySnapshot(book: AudioBook): Map<String, List<Byte>> {
         val directory = downloadDirectory(book)
-        return directory.listFiles().orEmpty().associate { it.name to it.readBytes() }
+        return directory.listFiles().orEmpty().associate { it.name to it.readBytes().toList() }
     }
 
     fun armBoundaryPause(expectedOperation: MetadataBoundaryOperation) {

@@ -31,7 +31,20 @@ import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.entitlement.PlayEntitlementCache
 import com.ninelivesaudio.app.entitlement.TrialReminderScheduler
 import com.ninelivesaudio.app.service.DownloadManager
+import com.ninelivesaudio.app.service.PlaybackManager
+import com.ninelivesaudio.app.service.RemotePlaybackSessionCoordinatorFactory
+import com.ninelivesaudio.app.service.StaleSessionProbe
+import com.ninelivesaudio.app.service.SyncManager
+import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
+import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
+import dagger.Lazy
 import java.io.File
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
@@ -46,6 +59,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.OkHttpClient
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
@@ -288,16 +302,20 @@ class DownloadMetadataRuntimeCanaryTest {
             fixture.api.unreachable = true
             val callsBeforeOffline = fixture.api.remoteCallCount
 
-            val loaded = withContext(Dispatchers.Main) {
-                app.playbackManager.loadAudioBook(reopened, autoPlay = false)
-            }
+            val playbackManager = fixture.newPlaybackManager()
+            val loaded = withContext(Dispatchers.Main) { playbackManager.loadAudioBook(reopened, autoPlay = false) }
             val uris = withContext(Dispatchers.Main) {
-                requireNotNull(app.playbackManager.getPlayer()).mediaItems.map { requireNotNull(it.localConfiguration).uri.toString() }
+                requireNotNull(playbackManager.getPlayer()).let { player ->
+                    (0 until player.mediaItemCount).map { index ->
+                        requireNotNull(player.getMediaItemAt(index).localConfiguration).uri.toString()
+                    }
+                }
             }
 
             assertTrue(loaded)
             assertEquals(reopened.audioFiles.sortedBy { it.index }.map { "file://${it.localPath}" }, uris)
             assertEquals(callsBeforeOffline, fixture.api.remoteCallCount)
+            withContext(Dispatchers.Main) { playbackManager.release() }
         } finally {
             fixture.close()
         }
@@ -415,6 +433,33 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
         apiService,
         settings,
     )
+
+    fun newPlaybackManager(): PlaybackManager {
+        val progress = ProgressRepository(database, database.playbackProgressDao(), database.pendingProgressDao(), apiService)
+        val books = AudioBookRepository(context, database.audioBookDao(), apiService, database.localListeningSessionDao(), database.localBookmarkDao(), database.playbackProgressDao())
+        val libraries = LibraryRepository(database.libraryDao(), database.audioBookDao(), books, apiService)
+        val sessions = ListeningSessionRepository(database.localListeningSessionDao(), apiService, settings)
+        val connectivity = ConnectivityMonitor(context, OkHttpClient(), settings)
+        val effective = EffectiveSettingsRepository(settings, entitlements)
+        val sync = object : Lazy<SyncManager> {
+            private val value by lazy { SyncManager(apiService, libraries, books, progress, database.audioBookDao(), connectivity, settings) }
+            override fun get(): SyncManager = value
+        }
+        val factory = object : RemotePlaybackSessionCoordinatorFactory {
+            override suspend fun openServerListeningSession(book: AudioBook, requestedGeneration: Long, loadRequest: Long?, remoteScope: ActiveRemoteScope) = false
+            override suspend fun recoverStaleSession(probe: StaleSessionProbe) = false
+        }
+        val constructor = requireNotNull(PlaybackManager::class.java.declaredConstructors.firstOrNull { it.parameterTypes.any { type -> type == RemotePlaybackSessionCoordinatorFactory::class.java } })
+        constructor.isAccessible = true
+        return constructor.newInstance(*constructor.parameterTypes.map { type -> when (type) {
+            Context::class.java -> context; ApiService::class.java -> apiService; SettingsManager::class.java -> settings
+            EffectiveSettingsRepository::class.java -> effective; ProgressRepository::class.java -> progress; AudioBookDao::class.java -> database.audioBookDao()
+            AudioBookRepository::class.java -> books; LibraryRepository::class.java -> libraries; ListeningSessionRepository::class.java -> sessions
+            Lazy::class.java -> sync; ConnectivityMonitor::class.java -> connectivity; OkHttpClient::class.java -> OkHttpClient()
+            LocalFolderAccess::class.java -> LocalFolderAccess(context); RemotePlaybackSessionCoordinatorFactory::class.java -> factory
+            else -> error("Unmapped PlaybackManager parameter: ${type.name}")
+        } }.toTypedArray()) as PlaybackManager
+    }
 }
 
 private class MetadataApi {

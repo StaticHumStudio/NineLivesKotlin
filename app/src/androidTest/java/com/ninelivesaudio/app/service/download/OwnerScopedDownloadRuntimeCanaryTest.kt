@@ -298,7 +298,7 @@ private class Fixture(
     }
 
     fun close() {
-        releaseAStream()
+        api.releaseAStream()
         api.close()
         database.close()
         context.clearFixtureStorage()
@@ -338,7 +338,7 @@ private class GatedDownloadApi {
         scope.cancel()
     }
 
-    private fun handle(proxy: Any, name: String, args: Array<Any?>): Any? = when (name) {
+    private fun handle(proxy: Any, name: String, args: Array<out Any?>): Any? = when (name) {
         "login" -> {
             val request = args[0] as LoginRequest
             loginSequence += 1

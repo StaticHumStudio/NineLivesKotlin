@@ -117,14 +117,19 @@ class SyncMergeTest {
     }
 
     @Test
-    fun `sparse sync leaves a non downloaded rows remote detail unchanged`() {
-        val remote = AudioBook(id = "1", title = "Server title")
+    fun `expanded sync replaces detail for a non downloaded row`() {
+        val remote = AudioBook(
+            id = "1",
+            title = "Server title",
+            audioFiles = listOf(AudioFile(id = "remote", index = 4, filename = "remote.m4b")),
+            chapters = listOf(Chapter(id = 4, start = 0.0, end = 30.0, title = "Remote chapter")),
+        )
         val local = downloadedDetailedBook().toEntity().copy(isDownloaded = 0)
 
         val merged = mergeSyncedBook(remote, local)
 
-        assertEquals(emptyList<AudioFile>(), merged.audioFiles)
-        assertEquals(emptyList<Chapter>(), merged.chapters)
+        assertEquals(remote.audioFiles, merged.audioFiles)
+        assertEquals(remote.chapters, merged.chapters)
     }
 
     private fun downloadedDetailedBook() = AudioBook(

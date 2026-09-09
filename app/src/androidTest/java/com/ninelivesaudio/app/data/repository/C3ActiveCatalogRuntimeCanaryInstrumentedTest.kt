@@ -33,6 +33,8 @@ import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import okhttp3.Protocol
+import okhttp3.Request
 import retrofit2.Response
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -259,9 +261,9 @@ class C3ActiveCatalogRuntimeCanaryInstrumentedTest {
         arrayOf(AudiobookshelfApi::class.java),
         InvocationHandler { proxy, method, args ->
             when (method.name) {
-                "authorize" -> Response.success(Unit)
-                "getMe" -> Response.success(ApiMeResponse(id = ownerId))
-                "getLibraries" -> Response.success(LibrariesResponse())
+                "authorize" -> retrofitSuccess(Unit)
+                "getMe" -> retrofitSuccess(ApiMeResponse(id = ownerId))
+                "getLibraries" -> retrofitSuccess(LibrariesResponse())
                 "toString" -> "C3ActiveCatalogFixtureApi"
                 "hashCode" -> System.identityHashCode(proxy)
                 "equals" -> proxy === args?.singleOrNull()
@@ -269,6 +271,16 @@ class C3ActiveCatalogRuntimeCanaryInstrumentedTest {
             }
         },
     ) as AudiobookshelfApi
+
+    private fun <T> retrofitSuccess(body: T): Response<T> = Response.success(
+        body,
+        okhttp3.Response.Builder()
+            .request(Request.Builder().url(BASE_URL).build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK")
+            .build(),
+    )
 
     private data class CatalogRows(
         val rawLibrary: String,

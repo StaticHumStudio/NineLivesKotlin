@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.data.repository
 
+import com.ninelivesaudio.app.data.remote.RemoteIdCodec
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -12,16 +13,19 @@ import org.junit.Test
 
 class PendingProgressQueueOwnerTest {
 
+    private val bookA = ProgressIdentity(LOCAL_OWNER_KEY, "book-a")
+    private val bookB = ProgressIdentity(LOCAL_OWNER_KEY, "book-b")
+
     @Test
     fun `activating next book does not wait for previous book ownership`() = runBlocking {
         val owner = PendingProgressQueueOwner()
-        owner.setActiveItem("book-a")
+        owner.setActiveItem(bookA)
         val previousEntered = CompletableDeferred<Unit>()
         val releasePrevious = CompletableDeferred<Unit>()
         val activationCompleted = CompletableDeferred<Unit>()
 
         val previousWork = launch {
-            owner.withItemLock("book-a") {
+            owner.withItemLock(bookA) {
                 previousEntered.complete(Unit)
                 releasePrevious.await()
             }
@@ -29,7 +33,7 @@ class PendingProgressQueueOwnerTest {
         previousEntered.await()
 
         val activation = launch {
-            owner.setActiveItem("book-b")
+            owner.setActiveItem(bookB)
             activationCompleted.complete(Unit)
         }
 
@@ -51,7 +55,7 @@ class PendingProgressQueueOwnerTest {
         var activated: Boolean? = null
 
         val nextWork = launch {
-            owner.withItemLock("book-b") {
+            owner.withItemLock(bookB) {
                 nextEntered.complete(Unit)
                 releaseNext.await()
             }
@@ -59,7 +63,7 @@ class PendingProgressQueueOwnerTest {
         nextEntered.await()
 
         val activation = launch {
-            activated = owner.setActiveItem("book-b") { current }
+            activated = owner.setActiveItem(bookB) { current }
         }
         yield()
         current = false
@@ -73,12 +77,12 @@ class PendingProgressQueueOwnerTest {
     @Test
     fun `committed row becomes stale when its playback lifetime invalidates`() {
         val owner = PendingProgressQueueOwner()
-        val token = owner.token("book-a")
+        val token = owner.token(bookA)
 
         owner.trackRow(42L, token)
         assertTrue(owner.rowIsCurrent(42L))
 
-        owner.invalidate("book-a")
+        owner.invalidate(bookA)
 
         assertFalse(owner.rowIsCurrent(42L))
     }
@@ -86,14 +90,14 @@ class PendingProgressQueueOwnerTest {
     @Test
     fun `new terminal write waits behind an in-flight older queue push`() = runBlocking {
         val owner = PendingProgressQueueOwner()
-        val token = owner.token("book-a")
+        val token = owner.token(bookA)
         val pushEntered = CompletableDeferred<Unit>()
         val releasePush = CompletableDeferred<Unit>()
         val terminalEntered = CompletableDeferred<Unit>()
 
         owner.trackRow(42L, token)
         val push = launch {
-            owner.withItemLock("book-a") {
+            owner.withItemLock(bookA) {
                 assertTrue(owner.rowIsCurrent(42L))
                 pushEntered.complete(Unit)
                 releasePush.await()
@@ -101,9 +105,9 @@ class PendingProgressQueueOwnerTest {
         }
 
         pushEntered.await()
-        owner.invalidate("book-a")
+        owner.invalidate(bookA)
         val terminal = launch {
-            owner.withItemLock("book-a") { terminalEntered.complete(Unit) }
+            owner.withItemLock(bookA) { terminalEntered.complete(Unit) }
         }
         yield()
         assertFalse(terminalEntered.isCompleted)
@@ -123,7 +127,7 @@ class PendingProgressQueueOwnerTest {
         var pushed = false
 
         val blocker = launch {
-            owner.withItemLock("book-a") {
+            owner.withItemLock(bookA) {
                 ownerEntered.complete(Unit)
                 releaseOwner.await()
             }
@@ -131,7 +135,7 @@ class PendingProgressQueueOwnerTest {
         ownerEntered.await()
 
         val heartbeat = launch {
-            owner.withItemLockIfCurrent("book-a", isCurrent = { current }) {
+            owner.withItemLockIfCurrent(bookA, isCurrent = { current }) {
                 pushed = true
             }
         }
@@ -151,17 +155,17 @@ class PendingProgressQueueOwnerTest {
         var imported = false
 
         val blocker = launch {
-            owner.withItemLock("book-a") {
+            owner.withItemLock(bookA) {
                 blockerEntered.complete(Unit)
                 releaseBlocker.await()
             }
         }
         blockerEntered.await()
 
-        val activation = launch { owner.setActiveItem("book-a") }
+        val activation = launch { owner.setActiveItem(bookA) }
         yield()
         val import = launch {
-            owner.withItemLockIfInactive("book-a") { imported = true }
+            owner.withItemLockIfInactive(bookA) { imported = true }
         }
         releaseBlocker.complete(Unit)
         blocker.join()
@@ -179,15 +183,15 @@ class PendingProgressQueueOwnerTest {
         var imported = false
 
         val terminal = launch {
-            owner.withTerminalImportLease("book-a") {
+            owner.withTerminalImportLease(bookA) {
                 terminalEntered.complete(Unit)
                 releaseTerminal.await()
             }
         }
         terminalEntered.await()
-        owner.setActiveItem("book-b")
+        owner.setActiveItem(bookB)
 
-        owner.withItemLockIfInactive("book-a") { imported = true }
+        owner.withItemLockIfInactive(bookA) { imported = true }
 
         assertFalse(imported)
         releaseTerminal.complete(Unit)
@@ -198,11 +202,11 @@ class PendingProgressQueueOwnerTest {
     fun `conditional clear cannot remove a newer active book`() = runBlocking {
         val owner = PendingProgressQueueOwner()
         var newerBookImported = false
-        owner.setActiveItem("book-a")
-        owner.setActiveItem("book-b")
+        owner.setActiveItem(bookA)
+        owner.setActiveItem(bookB)
 
-        assertFalse(owner.clearActiveItemIf("book-a"))
-        owner.withItemLockIfInactive("book-b") { newerBookImported = true }
+        assertFalse(owner.clearActiveItemIf(bookA))
+        owner.withItemLockIfInactive(bookB) { newerBookImported = true }
 
         assertFalse(newerBookImported)
     }
@@ -238,9 +242,9 @@ class PendingProgressQueueOwnerTest {
         val owner = PendingProgressQueueOwner()
         val importToken = owner.importToken()
 
-        owner.localWriteOccurred("book-a")
+        owner.localWriteOccurred(bookA)
 
-        assertFalse(owner.importTokenIsCurrent("book-a", importToken))
+        assertFalse(owner.importTokenIsCurrent(bookA, importToken))
     }
 
     @Test
@@ -248,9 +252,9 @@ class PendingProgressQueueOwnerTest {
         val owner = PendingProgressQueueOwner()
         val importToken = owner.importToken()
 
-        owner.localWriteOccurred("book-a")
+        owner.localWriteOccurred(bookA)
 
-        assertTrue(owner.importTokenIsCurrent("book-b", importToken))
+        assertTrue(owner.importTokenIsCurrent(bookB, importToken))
     }
 
     @Test
@@ -321,5 +325,56 @@ class PendingProgressQueueOwnerTest {
         insertion.join()
         consumer.join()
         assertTrue(consumerEntered.isCompleted)
+    }
+
+    @Test
+    fun `same raw ABS item remains isolated across owner locks tokens active state and terminal leases`() = runBlocking {
+        val owner = PendingProgressQueueOwner()
+        val rawItemId = "shared-abs-item"
+        val a = ProgressIdentity("owner-a", RemoteIdCodec.encode("owner-a", rawItemId))
+        val b = ProgressIdentity("owner-b", RemoteIdCodec.encode("owner-b", rawItemId))
+        val aLockEntered = CompletableDeferred<Unit>()
+        val releaseALock = CompletableDeferred<Unit>()
+        val bLockEntered = CompletableDeferred<Unit>()
+
+        val aLock = launch {
+            owner.withItemLock(a) {
+                aLockEntered.complete(Unit)
+                releaseALock.await()
+            }
+        }
+        try {
+            aLockEntered.await()
+            withTimeout(1_000) {
+                owner.withItemLock(b) { bLockEntered.complete(Unit) }
+            }
+            assertTrue(bLockEntered.isCompleted)
+
+            val aToken = owner.token(a)
+            val bToken = owner.token(b)
+            owner.trackRow(1L, aToken)
+            owner.trackRow(2L, bToken)
+            val importToken = owner.importToken()
+            owner.invalidate(a)
+            owner.localWriteOccurred(a)
+
+            assertFalse(owner.rowIsCurrent(1L))
+            assertTrue(owner.rowIsCurrent(2L))
+            assertFalse(owner.importTokenIsCurrent(a, importToken))
+            assertTrue(owner.importTokenIsCurrent(b, importToken))
+
+            owner.setActiveItem(a)
+            assertTrue(owner.withItemLockIfInactive(b) { true } ?: false)
+            owner.withTerminalImportLease(a) {
+                assertTrue(owner.withItemLockIfInactive(b) { true } ?: false)
+            }
+        } finally {
+            releaseALock.complete(Unit)
+            aLock.join()
+        }
+    }
+
+    private companion object {
+        const val LOCAL_OWNER_KEY = "local-progress-v1"
     }
 }

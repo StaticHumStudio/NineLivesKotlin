@@ -243,7 +243,7 @@ class DownloadMetadataRuntimeCanaryTest {
         val fixture = MetadataFixture(InstrumentationRegistry.getInstrumentation().targetContext, app)
         try {
             val scope = fixture.login("owner-a")
-            val legacy = fixture.book(scope.encodeIncoming("legacy-backfill"), "Legacy").copy(isDownloaded = true, localPath = fixture.legacyDirectory("legacy-backfill").absolutePath, audioFiles = emptyList(), chapters = emptyList())
+            val legacy = fixture.book(scope.encodeIncoming("legacy-backfill"), "Legacy").copy(libraryId = scope.encodeIncoming("remote-library"), isDownloaded = true, localPath = fixture.legacyDirectory("legacy-backfill").absolutePath, audioFiles = emptyList(), chapters = emptyList())
             val tracked = fixture.item(scope.encodeIncoming("legacy-backfill-download"), legacy.id).copy(status = DownloadStatus.Completed)
             val raw = fixture.book("raw-legacy", "Raw").copy(isDownloaded = true, localPath = fixture.legacyDirectory("raw").absolutePath, audioFiles = emptyList())
             fixture.seed(legacy, tracked, raw)
@@ -256,6 +256,7 @@ class DownloadMetadataRuntimeCanaryTest {
             assertEquals(1, fixture.api.detailRequests)
 
             val stale = fixture.book(scope.encodeIncoming("legacy-backfill-stale"), "Legacy stale").copy(
+                libraryId = scope.encodeIncoming("remote-library"),
                 isDownloaded = true,
                 localPath = fixture.legacyDirectory("legacy-backfill-stale").absolutePath,
                 audioFiles = emptyList(),
@@ -349,7 +350,7 @@ class DownloadMetadataRuntimeCanaryTest {
             val interrupted = async(Dispatchers.Default) { fixture.engine.download(item, catalog, scope) { _, _, _ -> } }
             fixture.api.awaitSecondStream()
             try {
-                assertTrue(File(fixture.downloadDirectory(catalog), "z-last.m4b").isFile)
+                assertTrue(File(fixture.downloadDirectory(catalog), "a_first_1.m4b").isFile)
                 interrupted.cancel()
             } finally {
                 fixture.api.releaseStream()

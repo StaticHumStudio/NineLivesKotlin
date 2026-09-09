@@ -85,7 +85,8 @@ class DownloadEngine @Inject constructor(
         // authoritative replacement for durable offline metadata.
         val book = fetchFullBookDetails(scope, audioBook.id)?.let { detailedBook ->
             if (detailedBook.coverPath == null) detailedBook.copy(coverPath = audioBook.coverPath) else detailedBook
-        } ?: audioBook
+        }?.let { detailedBook -> detailedBook.copy(audioFiles = detailedBook.audioFiles.sortedBy { it.index }) }
+            ?: audioBook.copy(audioFiles = audioBook.audioFiles.sortedBy { it.index })
 
         // Create download directory
         if (!canMutate(scope, item)) return item

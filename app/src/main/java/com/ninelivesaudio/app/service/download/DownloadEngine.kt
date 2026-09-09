@@ -169,7 +169,9 @@ class DownloadEngine @Inject constructor(
 
                                     if (shouldPersistProgress(bytesDelta, timeDelta)) {
                                         download = download.copy(downloadedBytes = downloadedBytes)
-                                        if (!guardedUpsert(scope, download)) return item
+                                        if (!guardedUpsert(scope, download)) {
+                                            return@withScopedPartOutput false
+                                        }
                                         onProgress(download.id, downloadedBytes, totalBytes)
                                         lastPersistedBytes = downloadedBytes
                                         lastPersistedAt = now

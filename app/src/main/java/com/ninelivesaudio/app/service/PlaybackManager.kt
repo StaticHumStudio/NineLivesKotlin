@@ -25,10 +25,13 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.PendingProgressQueueOwner
+import com.ninelivesaudio.app.data.repository.PendingLifetimeClaim
+import com.ninelivesaudio.app.data.repository.ProgressActiveClaim
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
@@ -234,10 +237,22 @@ internal class PlaybackLoadOwner {
 }
 
 internal data class PolledProgressReport(
-    val bookId: String,
+    val source: PlaybackProgressSource,
     val currentTime: Double,
     val duration: Double,
-)
+) {
+    val bookId: String get() = source.bookId
+    val isLocal: Boolean get() = source.isLocal
+    val remoteScope: ActiveRemoteScope? get() = source.remoteScope
+
+    constructor(
+        bookId: String,
+        currentTime: Double,
+        duration: Double,
+        isLocal: Boolean,
+        remoteScope: ActiveRemoteScope?,
+    ) : this(playbackProgressSource(bookId, isLocal, remoteScope), currentTime, duration)
+}
 
 private class StaleProgressWriteException : Exception()
 
@@ -356,36 +371,39 @@ internal class PendingTerminalOwner {
 }
 
 internal data class TerminalPlaybackSnapshot(
-    val bookId: String,
+    val source: PlaybackProgressSource,
     val position: Duration,
     val duration: Duration,
     val isFinished: Boolean,
     val serverSessionId: String?,
     val timeListened: Double,
     val serverListening: ServerSessionListening? = null,
-)
+) {
+    val bookId: String get() = source.bookId
+    val isLocal: Boolean get() = source.isLocal
+    val remoteScope: ActiveRemoteScope? get() = source.remoteScope
+    val activeClaim: ProgressActiveClaim? get() = source.activeClaim
+    val pendingLifetimeClaim: PendingLifetimeClaim? get() = source.pendingLifetimeClaim
+}
 
 internal fun terminalPlaybackSnapshot(
     bookId: String,
+    isLocal: Boolean,
     position: Duration,
     duration: Duration,
     isFinished: Boolean,
     serverSessionId: String?,
     timeListened: Double,
     serverListening: ServerSessionListening? = null,
-): TerminalPlaybackSnapshot = TerminalPlaybackSnapshot(
-    bookId = bookId,
-    position = position,
-    duration = duration,
-    isFinished = isFinished,
-    serverSessionId = serverSessionId,
-    timeListened = timeListened,
-    serverListening = serverListening,
-)
+    remoteScope: ActiveRemoteScope?,
+    source: PlaybackProgressSource = playbackProgressSource(bookId, isLocal, remoteScope),
+): TerminalPlaybackSnapshot {
+    require(source.bookId == bookId && source.isLocal == isLocal && source.remoteScope == remoteScope)
+    return TerminalPlaybackSnapshot(source, position, duration, isFinished, serverSessionId, timeListened, serverListening)
+}
 
 internal data class PlaybackProgressSnapshot(
-    val bookId: String,
-    val isLocal: Boolean,
+    val source: PlaybackProgressSource,
     val position: Duration,
     val duration: Duration,
     val serverSessionId: String?,
@@ -393,7 +411,11 @@ internal data class PlaybackProgressSnapshot(
     val localSessionId: Long?,
     val localTimeListened: Double,
     val serverListening: ServerSessionListening? = null,
-)
+ ) {
+    val bookId: String get() = source.bookId
+    val isLocal: Boolean get() = source.isLocal
+    val remoteScope: ActiveRemoteScope? get() = source.remoteScope
+}
 
 internal fun playbackProgressSnapshot(
     bookId: String,
@@ -405,17 +427,12 @@ internal fun playbackProgressSnapshot(
     localSessionId: Long?,
     localTimeListened: Double,
     serverListening: ServerSessionListening? = null,
-): PlaybackProgressSnapshot = PlaybackProgressSnapshot(
-    bookId = bookId,
-    isLocal = isLocal,
-    position = position,
-    duration = duration,
-    serverSessionId = serverSessionId,
-    serverTimeListened = serverTimeListened,
-    localSessionId = localSessionId,
-    localTimeListened = localTimeListened,
-    serverListening = serverListening,
-)
+    remoteScope: ActiveRemoteScope? = null,
+    source: PlaybackProgressSource = playbackProgressSource(bookId, isLocal, remoteScope),
+): PlaybackProgressSnapshot {
+    require(source.bookId == bookId && source.isLocal == isLocal && source.remoteScope == remoteScope)
+    return PlaybackProgressSnapshot(source, position, duration, serverSessionId, serverTimeListened, localSessionId, localTimeListened, serverListening)
+}
 
 internal fun foldListeningTime(
     accumulatedSeconds: Double,
@@ -472,13 +489,80 @@ internal fun playbackSyncLifetimeIsCurrent(
         requestedServerSessionId == currentServerSessionId &&
         requestedLocalSessionId == currentLocalSessionId
 
+internal fun playbackSyncLifetimeIsCurrent(
+    requestedGeneration: Long,
+    currentGeneration: Long,
+    requestedBookId: String,
+    currentBookId: String?,
+    requestedServerSessionId: String?,
+    currentServerSessionId: String?,
+    requestedLocalSessionId: Long?,
+    currentLocalSessionId: Long?,
+    requestedSource: PlaybackProgressSource,
+    currentSource: PlaybackProgressSource?,
+): Boolean = playbackSyncLifetimeIsCurrent(
+    requestedGeneration,
+    currentGeneration,
+    requestedBookId,
+    currentBookId,
+    requestedServerSessionId,
+    currentServerSessionId,
+    requestedLocalSessionId,
+    currentLocalSessionId,
+) && requestedSource == currentSource
+
 private data class PlaybackSyncLifetime(
     val bookId: String,
     val generation: Long,
+    val source: PlaybackProgressSource,
     val serverSessionId: String?,
     val localSessionId: Long?,
-    val pendingProgressToken: PendingProgressQueueOwner.Token,
+    val pendingProgressToken: PendingProgressQueueOwner.Token?,
 )
+
+/** Immutable source identity selected before remote loading can suspend. */
+internal data class PlaybackProgressSource(
+    val bookId: String,
+    val isLocal: Boolean,
+    val remoteScope: ActiveRemoteScope?,
+    val activeClaim: ProgressActiveClaim? = null,
+    val pendingLifetimeClaim: PendingLifetimeClaim? = null,
+)
+
+internal fun playbackProgressSource(
+    bookId: String,
+    isLocal: Boolean,
+    remoteScope: ActiveRemoteScope?,
+    activeClaim: ProgressActiveClaim? = null,
+    pendingLifetimeClaim: PendingLifetimeClaim? = null,
+): PlaybackProgressSource {
+    require(!isLocal || remoteScope == null)
+    return PlaybackProgressSource(bookId, isLocal, remoteScope, activeClaim, pendingLifetimeClaim)
+}
+
+internal data class PlaybackSourceSnapshot(
+    val bookId: String,
+    val source: PlaybackProgressSource,
+)
+
+internal fun playbackSourceSnapshot(
+    bookId: String,
+    source: PlaybackProgressSource,
+): PlaybackSourceSnapshot {
+    require(bookId == source.bookId)
+    return PlaybackSourceSnapshot(bookId, source)
+}
+
+internal fun productionPlaybackReport(
+    source: PlaybackProgressSource,
+    currentTime: Double,
+    duration: Double,
+): PolledProgressReport = PolledProgressReport(source, currentTime, duration)
+
+internal data class RestorePlaybackLoad(val remoteScope: ActiveRemoteScope?)
+
+internal fun restorePlaybackLoad(capturedScope: ActiveRemoteScope?): RestorePlaybackLoad =
+    RestorePlaybackLoad(capturedScope)
 
 internal data class StaleSessionProbe(
     val requestedGeneration: Long,
@@ -486,6 +570,8 @@ internal data class StaleSessionProbe(
     val sessionId: String,
     val position: Duration,
     val duration: Duration,
+    val remoteScope: ActiveRemoteScope?,
+    val pendingLifetimeClaim: PendingLifetimeClaim? = null,
 )
 
 private data class DetachedLocalSession(
@@ -500,13 +586,218 @@ internal fun staleSessionProbe(
     sessionId: String,
     position: Duration,
     duration: Duration,
+    remoteScope: ActiveRemoteScope?,
+    pendingLifetimeClaim: PendingLifetimeClaim? = null,
 ): StaleSessionProbe = StaleSessionProbe(
     requestedGeneration = requestedGeneration,
     bookId = bookId,
     sessionId = sessionId,
     position = position,
     duration = duration,
+    remoteScope = remoteScope,
+    pendingLifetimeClaim = pendingLifetimeClaim,
 )
+
+internal fun staleSessionRecoveryStateIsCurrent(
+    probe: StaleSessionProbe,
+    currentGeneration: Long,
+    currentBookId: String?,
+    currentSessionId: String?,
+    currentScope: ActiveRemoteScope?,
+    remoteScopeIsCurrent: Boolean,
+): Boolean =
+    remoteScopeIsCurrent &&
+        sessionResultIsCurrent(probe.requestedGeneration, currentGeneration, probe.bookId, currentBookId) &&
+        currentSessionId == probe.sessionId &&
+        currentScope == probe.remoteScope
+
+/** Serializes a small state publication with exact auth-scope validation. */
+internal class RemoteScopePublicationFence(
+    private val publishBlock: suspend (ActiveRemoteScope, () -> Any?) -> Any?,
+) {
+    suspend fun publishIfCurrent(scope: ActiveRemoteScope, publish: () -> Any?): Any? =
+        publishBlock(scope, publish)
+}
+
+internal class ApiServiceRemoteScopePublicationFence(
+    private val apiService: ApiService,
+) {
+    /** Concrete production adapter used by callers that publish a decision. */
+    suspend fun publishIfCurrent(scope: ActiveRemoteScope, publish: () -> Boolean): Boolean =
+        apiService.publishIfCurrentActiveRemoteScope(scope, publish) ?: false
+
+    internal fun asCoordinatorFence(): RemoteScopePublicationFence =
+        RemoteScopePublicationFence { scope, publish ->
+            apiService.publishIfCurrentActiveRemoteScope(scope, publish)
+        }
+}
+
+internal class RemoteSessionTransport(
+    val start: suspend (ActiveRemoteScope, String) -> PlaybackSessionInfo?,
+    val close: suspend (ActiveRemoteScope, String) -> Unit,
+)
+
+internal data class PlaybackSessionStateSnapshot(
+    val requestedGeneration: Long,
+    val bookId: String?,
+    val sessionId: String?,
+    val scope: ActiveRemoteScope?,
+    val isPlaying: Boolean,
+)
+
+internal interface PlaybackSessionStatePort {
+    fun currentState(): PlaybackSessionStateSnapshot
+    fun publish(session: PlaybackSessionInfo)
+    fun clear()
+    fun loadRequestIsCurrent(@Suppress("UNUSED_PARAMETER") loadRequest: Long?): Boolean = true
+    fun publishIfCurrent(
+        matches: (PlaybackSessionStateSnapshot) -> Boolean,
+        session: PlaybackSessionInfo,
+    ): Boolean {
+        if (!matches(currentState())) return false
+        publish(session)
+        return true
+    }
+    fun clearIfCurrent(matches: (PlaybackSessionStateSnapshot) -> Boolean): Boolean {
+        if (!matches(currentState())) return false
+        clear()
+        return true
+    }
+}
+
+internal fun interface PendingLifetimePort {
+    fun invalidate(claim: PendingLifetimeClaim): Boolean
+}
+
+/**
+ * Owns every remote session result publication. Network operations happen
+ * outside locks, then ApiService's fence takes auth -> sessionLock for the
+ * synchronous state mutation. Cleanup uses the same exact fence.
+ */
+internal class RemotePlaybackSessionCoordinator(
+    private val scopeFence: RemoteScopePublicationFence,
+    private val sessionTransport: RemoteSessionTransport,
+    private val state: PlaybackSessionStatePort,
+    private val pendingLifetime: PendingLifetimePort,
+) {
+    suspend fun open(
+        scope: ActiveRemoteScope,
+        bookId: String,
+        requestedGeneration: Long,
+        loadRequest: Long? = null,
+    ): Boolean {
+        val session = try {
+            sessionTransport.start(scope, bookId) ?: return false
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return false
+        }
+        val accepted = (scopeFence.publishIfCurrent(scope) {
+            state.publishIfCurrent({ current ->
+                state.loadRequestIsCurrent(loadRequest) &&
+                current.requestedGeneration == requestedGeneration &&
+                current.bookId == bookId &&
+                current.scope == scope &&
+                current.sessionId == null
+            }, session)
+        } as? Boolean) == true
+        if (!accepted) closeRejected(scope, session.id)
+        return accepted
+    }
+
+    suspend fun recover(probe: StaleSessionProbe): Boolean {
+        val scope = probe.remoteScope ?: return false
+        val replacement = try {
+            sessionTransport.start(scope, probe.bookId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            clearFailedRecovery(scope, probe)
+            return false
+        }
+        if (replacement == null) {
+            clearFailedRecovery(scope, probe)
+            return false
+        }
+        val accepted = (scopeFence.publishIfCurrent(scope) {
+            state.publishIfCurrent({ current -> matchesRecovery(current, probe) }, replacement)
+        } as? Boolean) == true
+        if (!accepted) closeRejected(scope, replacement.id)
+        return accepted
+    }
+
+    private suspend fun clearFailedRecovery(scope: ActiveRemoteScope, probe: StaleSessionProbe) {
+        val cleared = (scopeFence.publishIfCurrent(scope) {
+            state.clearIfCurrent { current -> matchesRecovery(current, probe) }
+        } as? Boolean) == true
+        if (cleared) probe.pendingLifetimeClaim?.let(pendingLifetime::invalidate)
+    }
+
+    private fun matchesRecovery(current: PlaybackSessionStateSnapshot, probe: StaleSessionProbe): Boolean =
+        current.isPlaying &&
+            current.requestedGeneration == probe.requestedGeneration &&
+            current.bookId == probe.bookId &&
+            current.sessionId == probe.sessionId &&
+            current.scope == probe.remoteScope
+
+    private suspend fun closeRejected(scope: ActiveRemoteScope, sessionId: String) {
+        try {
+            sessionTransport.close(scope, sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {}
+    }
+}
+
+internal interface RemotePlaybackSessionCoordinatorFactory {
+    fun bind(state: PlaybackSessionStatePort) {}
+    suspend fun openServerListeningSession(
+        book: AudioBook,
+        requestedGeneration: Long,
+        loadRequest: Long?,
+        remoteScope: ActiveRemoteScope,
+    ): Boolean
+    suspend fun recoverStaleSession(probe: StaleSessionProbe): Boolean
+}
+
+@Singleton
+internal class DefaultRemotePlaybackSessionCoordinatorFactory @Inject constructor(
+    private val apiService: ApiService,
+    private val progressRepository: ProgressRepository,
+) : RemotePlaybackSessionCoordinatorFactory {
+    @Volatile private var state: PlaybackSessionStatePort? = null
+
+    override fun bind(state: PlaybackSessionStatePort) {
+        this.state = state
+    }
+
+    private fun coordinator(): RemotePlaybackSessionCoordinator? = state?.let { sessionState ->
+        RemotePlaybackSessionCoordinator(
+            scopeFence = ApiServiceRemoteScopePublicationFence(apiService).asCoordinatorFence(),
+            sessionTransport = RemoteSessionTransport(
+                start = { scope, bookId -> apiService.startPlaybackSession(scope, bookId) },
+                close = { scope, sessionId -> apiService.closeSession(scope, sessionId) },
+            ),
+            state = sessionState,
+            pendingLifetime = PendingLifetimePort { claim ->
+                progressRepository.invalidatePendingProgressLifetime(claim)
+            },
+        )
+    }
+
+    override suspend fun openServerListeningSession(
+        book: AudioBook,
+        requestedGeneration: Long,
+        loadRequest: Long?,
+        remoteScope: ActiveRemoteScope,
+    ): Boolean = coordinator()?.open(remoteScope, book.id, requestedGeneration, loadRequest) ?: false
+
+    override suspend fun recoverStaleSession(probe: StaleSessionProbe): Boolean =
+        coordinator()?.recover(probe) ?: false
+}
+
+internal fun terminalCloseBookId(terminalBookId: String, liveBookId: String?): String = terminalBookId
 
 internal class PlaybackIntentOwner(
     private val currentState: () -> PlaybackState,

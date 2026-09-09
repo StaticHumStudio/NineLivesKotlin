@@ -238,6 +238,21 @@ class ApiService @Inject constructor(
         isCurrentFrozenRemoteRequest(scope.frozenRequest)
 
     /**
+     * Publishes a short in-memory state change only while the exact captured
+     * scope is still installed. The callback cannot suspend, which keeps the
+     * auth mutation lock free of IO, coroutine locks, and database work.
+     */
+    internal suspend fun <T> publishIfCurrentActiveRemoteScope(
+        scope: ActiveRemoteScope,
+        publish: () -> T,
+    ): T? {
+        awaitAuthReady()
+        return authMutationMutex.withLock {
+            if (isCurrentCommittedFrozenRequestLocked(scope.frozenRequest)) publish() else null
+        }
+    }
+
+    /**
      * Every active-owner collector must restart from this full C1b identity,
      * not merely selected settings or an owner prefix. Settings publication
      * covers route revisions while [scopeGeneration] covers bearer, owner, and
@@ -344,6 +359,31 @@ class ApiService @Inject constructor(
         return current.route == expected.route && current.owner == expected.owner &&
             current.routeRevision == expected.routeRevision &&
             current.bearer == expected.bearer
+    }
+
+    /**
+     * Publication holds authMutationMutex, so this must stay entirely in
+     * memory. lastPersistedAuthRecord is assigned only after its matching
+     * secure-storage commit succeeds.
+     */
+    private fun isCurrentCommittedFrozenRequestLocked(expected: FrozenRemoteRequest): Boolean {
+        val record = lastPersistedAuthRecord ?: return false
+        val selectedServerUrl = settingsManager.currentSettings.serverUrl
+        val route = ServerRoute.parse(record.serverUrl) ?: return false
+        if (
+            route != expected.route ||
+            route != ServerRoute.parse(selectedServerUrl) ||
+            settingsManager.currentRouteRevision != expected.routeRevision
+        ) return false
+        val generation = authGeneration
+        val bearer = authInterceptor.captureFrozenBearer(record.token, route, generation) ?: return false
+        val target = captureRemoteTarget(
+            record = record,
+            selectedServerUrl = selectedServerUrl,
+            authGeneration = generation,
+            runtimeAuthMatches = authInterceptor.matches(record.token, record.serverUrl.orEmpty()),
+        )
+        return bearer == expected.bearer && target == expected.owner
     }
 
     /**
@@ -1066,11 +1106,8 @@ class ApiService @Inject constructor(
 
     // ─── Single Item ─────────────────────────────────────────────────────
 
-    /** Legacy callers cannot egress raw or foreign IDs because this captures a scope first. */
-    suspend fun getAudioBook(itemId: String): AudioBook? {
-        val scope = captureActiveRemoteScope() ?: return null
-        return getAudioBook(scope, itemId)
-    }
+    /** Remote reads require the lifetime scope selected by the caller. */
+    suspend fun getAudioBook(itemId: String): AudioBook? = null
 
     internal suspend fun getAudioBook(scope: ActiveRemoteScope, itemId: String): AudioBook? = withContext(Dispatchers.IO) {
         try {
@@ -1091,55 +1128,40 @@ class ApiService @Inject constructor(
 
     // ─── Playback Session ────────────────────────────────────────────────
 
-    suspend fun startPlaybackSession(itemId: String): PlaybackSessionInfo? =
+    suspend fun startPlaybackSession(itemId: String): PlaybackSessionInfo? = null
+
+    internal suspend fun startPlaybackSession(scope: ActiveRemoteScope, itemId: String): PlaybackSessionInfo? =
         withContext(Dispatchers.IO) {
+            val rawItemId = scope.decodeForEgress(itemId) ?: return@withContext null
             try {
                 val request = StartPlaybackRequest(
-                    deviceInfo = DeviceInfo(
-                        clientName = "NineLivesAudio",
-                        deviceId = settingsManager.getDeviceId(),
-                    )
+                    deviceInfo = DeviceInfo(clientName = "NineLivesAudio", deviceId = settingsManager.getDeviceId()),
                 )
-                val frozen = captureFrozenRemoteRequest() ?: return@withContext null
-                dispatchFrozen(frozen, { api.startPlaybackSession(itemId, request, it) }) { response ->
-                    if (!response.isSuccessful) return@dispatchFrozen null
-                    val session = response.body() ?: return@dispatchFrozen null
-                    val serverUrl = frozen.route.url
-
-                    PlaybackSessionInfo(
-                    id = session.id,
-                    itemId = session.libraryItemId,
-                    episodeId = session.episodeId,
-                    currentTime = session.currentTime,
-                    duration = session.duration,
-                    mediaType = session.mediaType ?: "book",
-                    audioTracks = session.audioTracks?.map { t ->
-                        // Build the content URL without embedding the auth token.
-                        // Auth is handled via Authorization header in PlaybackManager's
-                        // DefaultHttpDataSource.Factory — tokens in URLs leak into
-                        // server logs, proxy logs, and Referer headers.
-                        val contentUrl = if (t.contentUrl.startsWith("http", ignoreCase = true)) {
-                            t.contentUrl
-                        } else {
-                            val normalizedPath = if (t.contentUrl.startsWith("/")) t.contentUrl else "/${t.contentUrl}"
-                            "$serverUrl$normalizedPath"
-                        }
-                        AudioStreamInfo(
-                            index = t.index,
-                            codec = t.codec ?: "mp3",
-                            title = t.title,
-                            duration = t.duration,
-                            contentUrl = contentUrl,
+                dispatchActiveRemoteScope(scope, { api.startPlaybackSession(rawItemId, request, it) }) { response ->
+                    if (!response.isSuccessful) null else response.body()?.let { session ->
+                        PlaybackSessionInfo(
+                            id = session.id, itemId = scope.encodeIncoming(session.libraryItemId), episodeId = session.episodeId,
+                            currentTime = session.currentTime, duration = session.duration, mediaType = session.mediaType ?: "book",
+                            audioTracks = session.audioTracks?.map { track ->
+                                val contentUrl = if (track.contentUrl.startsWith("http", ignoreCase = true)) track.contentUrl else {
+                                    val path = if (track.contentUrl.startsWith("/")) track.contentUrl else "/${track.contentUrl}"
+                                    "${scope.frozenRequest.route.url}$path"
+                                }
+                                AudioStreamInfo(
+                                    index = track.index,
+                                    codec = track.codec ?: "mp3",
+                                    title = track.title,
+                                    duration = track.duration,
+                                    contentUrl = contentUrl,
+                                )
+                            } ?: emptyList(),
+                            chapters = session.chapters?.map { chapter ->
+                                Chapter(id = chapter.id, start = chapter.start, end = chapter.end, title = chapter.title)
+                            } ?: emptyList(),
                         )
-                    } ?: emptyList(),
-                    chapters = session.chapters?.map { c ->
-                        Chapter(id = c.id, start = c.start, end = c.end, title = c.title)
-                    } ?: emptyList(),
-                    )
+                    }
                 }
-            } catch (e: Exception) {
-                null
-            }
+            } catch (_: Exception) { null }
         }
 
     suspend fun syncSessionProgress(
@@ -1147,24 +1169,24 @@ class ApiService @Inject constructor(
         currentTime: Double,
         duration: Double,
         timeListened: Double = 0.0,
+    ): Boolean = false
+
+    internal suspend fun syncSessionProgress(
+        scope: ActiveRemoteScope, sessionId: String, currentTime: Double, duration: Double, timeListened: Double = 0.0,
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext false
-            dispatchFrozen(frozen, {
+            dispatchActiveRemoteScope(scope, {
                 api.syncSessionProgress(sessionId, SyncSessionRequest(currentTime, duration, timeListened), it)
             }) { it.isSuccessful } ?: false
-        } catch (e: Exception) {
-            false
-        }
+        } catch (_: Exception) { false }
     }
 
-    suspend fun closeSession(sessionId: String) {
-        withContext(Dispatchers.IO) {
-            try {
-                val frozen = captureFrozenRemoteRequest() ?: return@withContext
-                dispatchFrozen(frozen, { api.closeSession(sessionId, dispatch = it) }) { Unit }
-            } catch (_: Exception) {}
-        }
+    suspend fun closeSession(sessionId: String) = Unit
+
+    internal suspend fun closeSession(scope: ActiveRemoteScope, sessionId: String) {
+        try {
+            dispatchActiveRemoteScope(scope, { api.closeSession(sessionId, dispatch = it) }) { Unit }
+        } catch (_: Exception) {}
     }
 
     // ─── Progress ────────────────────────────────────────────────────────
@@ -1174,71 +1196,56 @@ class ApiService @Inject constructor(
         currentTime: Double,
         isFinished: Boolean = false,
         duration: Double = 0.0,
+    ): Boolean = false
+
+    internal suspend fun updateProgress(
+        scope: ActiveRemoteScope, itemId: String, currentTime: Double, isFinished: Boolean = false, duration: Double = 0.0,
     ): Boolean = withContext(Dispatchers.IO) {
+        val rawItemId = scope.decodeForEgress(itemId) ?: return@withContext false
+        val safeTime = currentTime.coerceAtLeast(0.0)
+        val progress = if (isFinished) 1.0 else if (duration > 0) (safeTime / duration).coerceIn(0.0, 1.0) else 0.0
         try {
-            val safeTime = currentTime.coerceAtLeast(0.0)
-            val progress = when {
-                isFinished -> 1.0
-                duration > 0.0 -> (safeTime / duration).coerceIn(0.0, 1.0)
-                else -> 0.0
-            }
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext false
-            dispatchFrozen(frozen, {
-                api.updateProgress(
-                    itemId,
-                    UpdateProgressRequest(
-                        currentTime = safeTime,
-                        isFinished = isFinished,
-                        progress = progress,
-                    ),
-                    it,
-                )
+            dispatchActiveRemoteScope(scope, {
+                api.updateProgress(rawItemId, UpdateProgressRequest(safeTime, isFinished, progress), it)
             }) { it.isSuccessful } ?: false
-        } catch (e: Exception) {
-            false
-        }
+        } catch (_: Exception) { false }
     }
 
-    suspend fun getUserProgress(itemId: String): UserProgress? = withContext(Dispatchers.IO) {
+    suspend fun getUserProgress(itemId: String): UserProgress? = null
+
+    internal suspend fun getUserProgress(scope: ActiveRemoteScope, itemId: String): UserProgress? = withContext(Dispatchers.IO) {
+        val rawItemId = scope.decodeForEgress(itemId) ?: return@withContext null
         try {
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext null
-            dispatchFrozen(frozen, { api.getUserProgress(itemId, it) }) { response ->
-            if (!response.isSuccessful) return@dispatchFrozen null
-            response.body()?.let { p ->
+            dispatchActiveRemoteScope(scope, { api.getUserProgress(rawItemId, it) }) { response ->
+                response.body()?.takeIf { response.isSuccessful }?.let { p ->
                     UserProgress(
-                        libraryItemId = p.libraryItemId,
+                        libraryItemId = scope.encodeIncoming(p.libraryItemId),
                         currentTime = p.currentTime.seconds,
                         progress = normalizeProgress(p.progress),
                         isFinished = p.isFinished,
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
+                }
             }
-            }
-        } catch (e: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 
-    suspend fun getAllUserProgress(): List<UserProgress> = withContext(Dispatchers.IO) {
+    suspend fun getAllUserProgress(): List<UserProgress> = emptyList()
+
+    internal suspend fun getAllUserProgress(scope: ActiveRemoteScope): List<UserProgress> = withContext(Dispatchers.IO) {
         try {
-            val frozen = captureFrozenRemoteRequest() ?: return@withContext emptyList()
-            dispatchFrozen(frozen, { api.getMe(it) }) { response ->
-            if (!response.isSuccessful) return@dispatchFrozen emptyList()
-            response.body()?.mediaProgress
-                ?.filter { it.libraryItemId.isNotEmpty() }
-                ?.map { p ->
+            dispatchActiveRemoteScope(scope, { api.getMe(it) }) { response ->
+                response.body()?.mediaProgress.orEmpty().filter { it.libraryItemId.isNotBlank() }.map { p ->
                     UserProgress(
-                        libraryItemId = p.libraryItemId,
+                        libraryItemId = scope.encodeIncoming(p.libraryItemId),
                         currentTime = p.currentTime.seconds,
                         progress = normalizeProgress(p.progress),
                         isFinished = p.isFinished,
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
-                } ?: emptyList()
+                }
             } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
+        } catch (_: Exception) { emptyList() }
     }
 
     // ─── Listening Sessions ──────────────────────────────────────────────

@@ -28,6 +28,29 @@ internal data class ProgressIdentity(
     val itemId: String,
 )
 
+/** Opaque generation claim for one pending-progress lifetime. */
+internal data class PendingLifetimeClaim(
+    val identity: ProgressIdentity,
+    val generation: Long,
+)
+
+internal fun scopedProgressIdentity(scope: ActiveRemoteScope, itemId: String): ProgressIdentity =
+    ProgressIdentity(scope.ownerKey, itemId)
+
+internal data class ProgressDeliveryOutcome(
+    val persisted: Boolean,
+    val remoteDelivered: Boolean,
+    val sentRowIds: List<Long> = emptyList(),
+    val noWork: Boolean = false,
+)
+
+internal data class ProgressActiveClaim(
+    internal val claim: PendingProgressQueueOwner.ActiveClaim,
+)
+
+/** The selected queue snapshot is immutable for one identity-serialized PATCH. */
+internal fun capturedPendingRowIds(rows: List<PendingProgressEntity>): List<Long> = rows.map { it.id }
+
 /** Only confirmed local work or an exact active remote scope may become executable. */
 internal sealed interface ProgressScope {
     data object Local : ProgressScope
@@ -64,11 +87,16 @@ internal class PendingProgressQueueOwner {
     private val rowTokens = mutableMapOf<Long, Token>()
     private val activeTransitionMutex = Mutex()
     private var activeIdentity: ProgressIdentity? = null
+    private var activeClaimGeneration: Long = 0L
+    private var activeClaim: ActiveClaim? = null
+    private var pendingLifetimeGeneration: Long = 0L
+    private val pendingLifetimeClaims = mutableMapOf<ProgressIdentity, PendingLifetimeClaim>()
     private val terminalImportLeases = mutableMapOf<ProgressIdentity, Int>()
     private val importGenerations = mutableMapOf<ProgressIdentity, Long>()
 
     data class Token(val identity: ProgressIdentity, val generation: Long)
     data class ImportToken(val generations: Map<ProgressIdentity, Long>)
+    data class ActiveClaim(val identity: ProgressIdentity, val generation: Long)
 
     private fun itemMutex(identity: ProgressIdentity): Mutex = synchronized(ownerLock) {
         itemMutexes.getOrPut(identity, ::Mutex)
@@ -114,21 +142,42 @@ internal class PendingProgressQueueOwner {
 
     suspend fun setActiveItem(
         identity: ProgressIdentity?,
-        isCurrent: () -> Boolean = { true },
-    ): Boolean = activeTransitionMutex.withLock {
-        if (!isCurrent()) return@withLock false
-        if (identity == null) {
+        isCurrent: suspend () -> Boolean = { true },
+    ): Boolean {
+        if (identity != null) return claimActiveItem(identity, isCurrent) != null
+        return activeTransitionMutex.withLock {
+            if (!isCurrent()) return@withLock false
             publishActiveIdentity(null)
             true
-        } else {
-            itemMutex(identity).withLock {
-                if (!isCurrent()) {
-                    false
-                } else {
-                    publishActiveIdentity(identity)
-                    true
+        }
+    }
+
+    suspend fun claimActiveItem(
+        identity: ProgressIdentity,
+        isCurrent: suspend () -> Boolean = { true },
+    ): ActiveClaim? = activeTransitionMutex.withLock {
+        if (!isCurrent()) return@withLock null
+        itemMutex(identity).withLock {
+            if (!isCurrent()) {
+                null
+            } else {
+                val claim = synchronized(ownerLock) {
+                    ActiveClaim(identity, ++activeClaimGeneration).also { activeClaim = it }
                 }
+                publishActiveIdentity(identity)
+                claim
             }
+        }
+    }
+
+    /**
+     * This is called while ApiService owns its auth mutex. It is deliberately
+     * synchronous and takes only ownerLock, preserving auth -> ownerLock.
+     */
+    fun claimActiveItemIfCurrent(identity: ProgressIdentity): ActiveClaim? = synchronized(ownerLock) {
+        ActiveClaim(identity, ++activeClaimGeneration).also { claim ->
+            activeClaim = claim
+            publishActiveIdentityLocked(identity)
         }
     }
 
@@ -137,6 +186,19 @@ internal class PendingProgressQueueOwner {
             if (synchronized(ownerLock) { activeIdentity != identity }) {
                 false
             } else {
+                synchronized(ownerLock) { activeClaim = null }
+                publishActiveIdentity(null)
+                true
+            }
+        }
+    }
+
+    suspend fun clearActiveClaim(claim: ActiveClaim): Boolean = activeTransitionMutex.withLock {
+        itemMutex(claim.identity).withLock {
+            if (synchronized(ownerLock) { activeClaim != claim }) {
+                false
+            } else {
+                synchronized(ownerLock) { activeClaim = null }
                 publishActiveIdentity(null)
                 true
             }
@@ -144,8 +206,13 @@ internal class PendingProgressQueueOwner {
     }
 
     private fun publishActiveIdentity(identity: ProgressIdentity?) = synchronized(ownerLock) {
+        publishActiveIdentityLocked(identity)
+    }
+
+    private fun publishActiveIdentityLocked(identity: ProgressIdentity?) {
         val previous = activeIdentity
         activeIdentity = identity
+        if (identity == null) activeClaim = null
         listOfNotNull(previous, identity).distinct().forEach(::incrementImportGeneration)
     }
 
@@ -174,6 +241,19 @@ internal class PendingProgressQueueOwner {
         synchronized(ownerLock) {
             itemGenerations[identity] = (itemGenerations[identity] ?: 0L) + 1L
         }
+    }
+
+    fun claimPendingLifetime(identity: ProgressIdentity): PendingLifetimeClaim = synchronized(ownerLock) {
+        PendingLifetimeClaim(identity, ++pendingLifetimeGeneration).also { claim ->
+            pendingLifetimeClaims[identity] = claim
+        }
+    }
+
+    fun invalidatePendingLifetime(claim: PendingLifetimeClaim): Boolean = synchronized(ownerLock) {
+        if (pendingLifetimeClaims[claim.identity] != claim) return@synchronized false
+        pendingLifetimeClaims.remove(claim.identity)
+        itemGenerations[claim.identity] = (itemGenerations[claim.identity] ?: 0L) + 1L
+        true
     }
 
     fun trackRow(rowId: Long, token: Token) {
@@ -232,6 +312,7 @@ class ProgressRepository @Inject constructor(
     // C2b replaces string-only caller bridges with captured remote scopes.
     // C2a's string-only remote entry points below are fail closed.
     private fun localIdentity(itemId: String) = ProgressIdentity(LOCAL_PROGRESS_OWNER_KEY, itemId)
+    private fun isRemoteEnvelope(itemId: String) = itemId.startsWith("nlr1:")
 
     // ─── Local Playback Progress ─────────────────────────────────────────
 
@@ -240,11 +321,14 @@ class ProgressRepository @Inject constructor(
         position: Duration,
         isFinished: Boolean,
         onPersisted: suspend () -> Unit = {},
-    ) = pendingProgressQueueOwner.withItemLock(localIdentity(audioBookId)) {
-        withContext(NonCancellable) {
-            database.withTransaction {
-                savePlaybackProgressLocked(audioBookId, position, isFinished)
-                onPersisted()
+    ) {
+        if (isRemoteEnvelope(audioBookId)) return
+        pendingProgressQueueOwner.withItemLock(localIdentity(audioBookId)) {
+            withContext(NonCancellable) {
+                database.withTransaction {
+                    savePlaybackProgressLocked(audioBookId, position, isFinished)
+                    onPersisted()
+                }
             }
         }
     }
@@ -269,11 +353,20 @@ class ProgressRepository @Inject constructor(
     }
 
     suspend fun getPlaybackProgress(audioBookId: String): Pair<Duration, Boolean>? {
+        if (isRemoteEnvelope(audioBookId)) return null
         val result = playbackProgressDao.getPositionAndFinished(audioBookId) ?: return null
         return result.PositionSeconds.seconds to (result.IsFinished == 1)
     }
 
+    internal suspend fun getPlaybackProgress(scope: ActiveRemoteScope, audioBookId: String): Pair<Duration, Boolean>? {
+        if (!apiService.isCurrentActiveRemoteScope(scope) || scope.decodeForEgress(audioBookId) == null) return null
+        val result = playbackProgressDao.getPositionAndFinished(audioBookId) ?: return null
+        if (!apiService.isCurrentActiveRemoteScope(scope)) return null
+        return result.PositionSeconds.seconds to (result.IsFinished == 1)
+    }
+
     suspend fun getPlaybackProgressWithTimestamp(audioBookId: String): Triple<Duration, Boolean, Long>? {
+        if (isRemoteEnvelope(audioBookId)) return null
         val entity = playbackProgressDao.getByAudioBookId(audioBookId) ?: return null
         val updatedAt = entity.updatedAt?.toEpochMillis() ?: 0L
         return Triple(
@@ -285,12 +378,42 @@ class ProgressRepository @Inject constructor(
 
     // ─── Offline Queue ───────────────────────────────────────────────────
 
-    internal fun pendingProgressToken(itemId: String): PendingProgressQueueOwner.Token =
-        pendingProgressQueueOwner.token(localIdentity(itemId))
+    internal fun pendingProgressToken(itemId: String): PendingProgressQueueOwner.Token? =
+        if (isRemoteEnvelope(itemId)) null else pendingProgressQueueOwner.token(localIdentity(itemId))
+
+    internal fun pendingProgressToken(scope: ActiveRemoteScope, itemId: String): PendingProgressQueueOwner.Token? =
+        scope.decodeForEgress(itemId)?.let { pendingProgressQueueOwner.token(ProgressIdentity(scope.ownerKey, itemId)) }
 
     internal fun invalidatePendingProgressLifetime(itemId: String) {
+        if (isRemoteEnvelope(itemId)) return
         pendingProgressQueueOwner.invalidate(localIdentity(itemId))
     }
+
+    /**
+     * Cancellation is local bookkeeping, so it must invalidate the exact
+     * captured identity even after authentication has changed. It never sends
+     * or persists remote data.
+     */
+    internal fun invalidatePendingProgressLifetime(scope: ActiveRemoteScope, itemId: String): Boolean {
+        if (scope.decodeForEgress(itemId) == null) return false
+        pendingProgressQueueOwner.invalidate(ProgressIdentity(scope.ownerKey, itemId))
+        return true
+    }
+
+    internal suspend fun claimPendingLifetime(
+        scope: ActiveRemoteScope,
+        itemId: String,
+    ): PendingLifetimeClaim? {
+        if (scope.decodeForEgress(itemId) == null) return null
+        val identity = ProgressIdentity(scope.ownerKey, itemId)
+        return apiService.publishIfCurrentActiveRemoteScope(scope) {
+            pendingProgressQueueOwner.claimPendingLifetime(identity)
+        }
+    }
+
+    /** Exact lifetime cleanup remains valid after its original scope expires. */
+    internal fun invalidatePendingProgressLifetime(claim: PendingLifetimeClaim): Boolean =
+        pendingProgressQueueOwner.invalidatePendingLifetime(claim)
 
     suspend fun getPendingProgressEntries(): List<PendingProgressEntry> =
         pendingProgressQueueOwner.withLock {
@@ -311,6 +434,10 @@ class ProgressRepository @Inject constructor(
             pendingProgressDao.countDeliverableForOwner(LOCAL_PROGRESS_OWNER_KEY)
         }
 
+    internal suspend fun pendingProgressCount(scope: ActiveRemoteScope): Int =
+        if (!apiService.isCurrentActiveRemoteScope(scope)) 0
+        else pendingProgressDao.countDeliverableForOwner(scope.ownerKey)
+
     suspend fun clearPendingProgress() {
         pendingProgressQueueOwner.withLock {
             val rowIds = pendingProgressDao.getAll().map { it.id }
@@ -325,21 +452,107 @@ class ProgressRepository @Inject constructor(
         onImported: suspend () -> Unit,
     ): Boolean = false
 
+    internal suspend fun importServerProgressIfNoPending(
+        scope: ActiveRemoteScope,
+        progress: PlaybackProgressEntity,
+        importToken: PendingProgressQueueOwner.ImportToken,
+        onImported: suspend () -> Unit,
+    ): Boolean {
+        val identity = ProgressIdentity(scope.ownerKey, progress.audioBookId)
+        if (scope.decodeForEgress(progress.audioBookId) == null || !apiService.isCurrentActiveRemoteScope(scope)) return false
+        return pendingProgressQueueOwner.withItemLockIfInactive(identity) {
+            if (!apiService.isCurrentActiveRemoteScope(scope) || !pendingProgressQueueOwner.importTokenIsCurrent(identity, importToken)) return@withItemLockIfInactive false
+            try {
+                database.withTransaction {
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) throw StaleScopedProgress()
+                    val pendingRows = pendingProgressDao.getForOwnerAndItem(identity.ownerKey, identity.itemId)
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) throw StaleScopedProgress()
+                    if (pendingRows.isNotEmpty()) return@withTransaction false
+                    playbackProgressDao.upsert(progress)
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) throw StaleScopedProgress()
+                    onImported()
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) throw StaleScopedProgress()
+                    true
+                }
+            } catch (_: StaleScopedProgress) { false }
+        } ?: false
+    }
+
     internal fun progressImportToken(): PendingProgressQueueOwner.ImportToken =
+        pendingProgressQueueOwner.importToken()
+
+    internal fun progressImportToken(scope: ActiveRemoteScope): PendingProgressQueueOwner.ImportToken =
         pendingProgressQueueOwner.importToken()
 
     internal suspend fun <T> withTerminalProgressOwnership(
         itemId: String,
         block: suspend () -> T,
-    ): T = pendingProgressQueueOwner.withTerminalImportLease(localIdentity(itemId), block)
+    ): T? = if (isRemoteEnvelope(itemId)) null
+    else pendingProgressQueueOwner.withTerminalImportLease(localIdentity(itemId), block)
+
+    internal suspend fun <T> withTerminalProgressOwnership(
+        scope: ActiveRemoteScope,
+        itemId: String,
+        block: suspend () -> T,
+    ): T? {
+        if (!apiService.isCurrentActiveRemoteScope(scope) || scope.decodeForEgress(itemId) == null) return null
+        return pendingProgressQueueOwner.withTerminalImportLease(ProgressIdentity(scope.ownerKey, itemId)) {
+            if (apiService.isCurrentActiveRemoteScope(scope)) block() else null
+        }
+    }
 
     suspend fun setActiveProgressItem(
         itemId: String?,
-        isCurrent: () -> Boolean = { true },
-    ): Boolean = pendingProgressQueueOwner.setActiveItem(itemId?.let(::localIdentity), isCurrent)
+        isCurrent: suspend () -> Boolean = { true },
+    ): Boolean {
+        if (itemId?.let(::isRemoteEnvelope) == true) return false
+        return pendingProgressQueueOwner.setActiveItem(itemId?.let(::localIdentity), isCurrent)
+    }
+
+    internal suspend fun setActiveProgressItem(
+        scope: ActiveRemoteScope,
+        itemId: String,
+        isCurrent: suspend () -> Boolean = { true },
+    ): Boolean {
+        if (!apiService.isCurrentActiveRemoteScope(scope) || scope.decodeForEgress(itemId) == null) return false
+        return pendingProgressQueueOwner.setActiveItem(ProgressIdentity(scope.ownerKey, itemId)) {
+            apiService.isCurrentActiveRemoteScope(scope) && isCurrent()
+        }
+    }
+
+    internal suspend fun claimActiveProgressItem(
+        scope: ActiveRemoteScope,
+        itemId: String,
+        isCurrent: suspend () -> Boolean = { true },
+    ): ProgressActiveClaim? {
+        if (scope.decodeForEgress(itemId) == null || !isCurrent()) return null
+        val identity = ProgressIdentity(scope.ownerKey, itemId)
+        return apiService.publishIfCurrentActiveRemoteScope(scope) {
+            pendingProgressQueueOwner.claimActiveItemIfCurrent(identity)
+                ?.let(::ProgressActiveClaim)
+        }
+    }
+
+    internal suspend fun claimActiveProgressItem(
+        itemId: String,
+        isCurrent: suspend () -> Boolean = { true },
+    ): ProgressActiveClaim? {
+        if (isRemoteEnvelope(itemId)) return null
+        return pendingProgressQueueOwner.claimActiveItem(localIdentity(itemId), isCurrent)
+            ?.let(::ProgressActiveClaim)
+    }
+
+    /** Claim cleanup is bookkeeping, so an expired scope may clear only its exact claim. */
+    internal suspend fun clearActiveProgressClaim(claim: ProgressActiveClaim): Boolean =
+        pendingProgressQueueOwner.clearActiveClaim(claim.claim)
 
     suspend fun clearActiveProgressItemIf(itemId: String): Boolean =
-        pendingProgressQueueOwner.clearActiveItemIf(localIdentity(itemId))
+        if (isRemoteEnvelope(itemId)) false else pendingProgressQueueOwner.clearActiveItemIf(localIdentity(itemId))
+
+    internal suspend fun clearActiveProgressItemIf(scope: ActiveRemoteScope, itemId: String): Boolean {
+        if (!apiService.isCurrentActiveRemoteScope(scope) || scope.decodeForEgress(itemId) == null) return false
+        return pendingProgressQueueOwner.clearActiveItemIf(ProgressIdentity(scope.ownerKey, itemId))
+    }
 
     suspend fun savePushOrEnqueueProgress(
         itemId: String,
@@ -349,6 +562,34 @@ class ProgressRepository @Inject constructor(
         pushToServer: Boolean,
         onPersisted: suspend () -> Unit = {},
     ): Boolean = false
+
+    internal suspend fun savePushOrEnqueueProgress(
+        scope: ActiveRemoteScope,
+        itemId: String,
+        currentTime: Double,
+        isFinished: Boolean,
+        duration: Double,
+        pushToServer: Boolean,
+        onPersisted: suspend () -> Unit = {},
+    ): ProgressDeliveryOutcome {
+        if (scope.decodeForEgress(itemId) == null || !apiService.isCurrentActiveRemoteScope(scope)) {
+            return ProgressDeliveryOutcome(false, false)
+        }
+        val identity = scopedProgressIdentity(scope, itemId)
+        return pendingProgressQueueOwner.withItemLock(identity) {
+            if (!apiService.isCurrentActiveRemoteScope(scope)) return@withItemLock ProgressDeliveryOutcome(false, false)
+            try {
+                val rowId = persistProgressAndEnqueueLocked(identity, currentTime, isFinished, duration, onPersisted) {
+                    apiService.isCurrentActiveRemoteScope(scope)
+                }
+                if (!pushToServer) return@withItemLock ProgressDeliveryOutcome(true, false, listOf(rowId))
+                if (!apiService.isCurrentActiveRemoteScope(scope)) return@withItemLock ProgressDeliveryOutcome(true, false, listOf(rowId))
+                val pushed = apiService.updateProgress(scope, itemId, currentTime, isFinished, duration)
+                val acknowledged = pushed && acknowledgePendingProgress(scope, itemId, listOf(rowId))
+                ProgressDeliveryOutcome(true, acknowledged, listOf(rowId))
+            } catch (_: StaleScopedProgress) { ProgressDeliveryOutcome(false, false) }
+        }
+    }
 
     suspend fun saveSessionProgressOrEnqueue(
         itemId: String,
@@ -388,14 +629,19 @@ class ProgressRepository @Inject constructor(
                 localItemIsConfirmed,
                 isRemoteScopeCurrent,
             ) ?: return@withItemLock false
-            persistProgressAndEnqueueLocked(
-                identity = currentIdentity,
-                currentTime = currentTime,
-                isFinished = isFinished,
-                duration = duration,
-                onPersisted = onPersisted,
-            )
-            true
+            try {
+                persistProgressAndEnqueueLocked(
+                    identity = currentIdentity,
+                    currentTime = currentTime,
+                    isFinished = isFinished,
+                    duration = duration,
+                    onPersisted = onPersisted,
+                    isCurrent = {
+                        resolveProgressIdentity(progressScope, itemId, localItemIsConfirmed, isRemoteScopeCurrent) != null
+                    },
+                )
+                true
+            } catch (_: StaleScopedProgress) { false }
         }
     }
 
@@ -405,12 +651,14 @@ class ProgressRepository @Inject constructor(
         isFinished: Boolean,
         duration: Double,
         onPersisted: suspend () -> Unit,
-    ) {
+        isCurrent: suspend () -> Boolean = { true },
+    ): Long {
         val timestamp = System.currentTimeMillis().toIso8601()
-        withContext(NonCancellable) {
+        val rowId = withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
                 database.withTransaction {
-                    pendingProgressDao.saveProgressAndEnqueue(
+                    if (!isCurrent()) throw StaleScopedProgress()
+                    val rowId = pendingProgressDao.saveProgressAndEnqueue(
                         ownerKey = identity.ownerKey,
                         progress = PlaybackProgressEntity(
                             audioBookId = identity.itemId,
@@ -428,10 +676,37 @@ class ProgressRepository @Inject constructor(
                             timestamp = timestamp,
                         ),
                     )
+                    if (!isCurrent()) throw StaleScopedProgress()
                     onPersisted()
+                    if (!isCurrent()) throw StaleScopedProgress()
+                    rowId
                 }
             }
-            pendingProgressQueueOwner.localWriteOccurred(identity)
+        }
+        pendingProgressQueueOwner.localWriteOccurred(identity)
+        return rowId
+    }
+
+    internal suspend fun acknowledgePendingProgress(
+        scope: ActiveRemoteScope,
+        itemId: String,
+        rowIds: List<Long>,
+        afterDaoDelete: suspend () -> Unit = {},
+    ): Boolean {
+        if (scope.decodeForEgress(itemId) == null || !apiService.isCurrentActiveRemoteScope(scope)) return false
+        return try {
+            pendingProgressQueueOwner.withLock {
+                database.withTransaction {
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) throw StaleScopedProgress()
+                    pendingProgressDao.deleteIdsForOwnerAndItem(scope.ownerKey, itemId, rowIds)
+                    afterDaoDelete()
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) throw StaleScopedProgress()
+                }
+                pendingProgressQueueOwner.forgetRows(rowIds)
+            }
+            true
+        } catch (_: StaleScopedProgress) {
+            false
         }
     }
 
@@ -449,6 +724,9 @@ class ProgressRepository @Inject constructor(
 
     suspend fun fetchAllProgressFromServer(): List<UserProgress> = emptyList()
 
+    internal suspend fun fetchAllProgressFromServer(scope: ActiveRemoteScope): List<UserProgress> =
+        apiService.getAllUserProgress(scope)
+
     suspend fun fetchProgressFromServer(itemId: String): UserProgress? = null
 
     suspend fun syncSessionProgress(
@@ -458,6 +736,10 @@ class ProgressRepository @Inject constructor(
         duration: Double,
         timeListened: Double = 0.0,
     ): Boolean = false
+
+    internal suspend fun syncSessionProgress(
+        scope: ActiveRemoteScope, itemId: String, sessionId: String, currentTime: Double, duration: Double, timeListened: Double = 0.0,
+    ): Boolean = scope.decodeForEgress(itemId) != null && apiService.syncSessionProgress(scope, sessionId, currentTime, duration, timeListened)
 
     internal suspend fun syncSessionProgressIfCurrent(
         itemId: String,
@@ -471,6 +753,41 @@ class ProgressRepository @Inject constructor(
     /** Remote delivery remains disabled until C2b carries a captured scope end to end. */
     suspend fun flushPendingProgress(): Boolean = true
 
+    internal suspend fun flushPendingProgress(
+        scope: ActiveRemoteScope,
+        beforeItemLock: suspend (String) -> Unit = {},
+    ): Boolean {
+        if (!apiService.isCurrentActiveRemoteScope(scope)) return false
+        val rows = pendingProgressDao.getDeliverableForOwner(scope.ownerKey)
+        var allDeliveriesSucceeded = true
+        rows.groupBy { it.itemId }.forEach { (itemId, _) ->
+            beforeItemLock(itemId)
+            if (!apiService.isCurrentActiveRemoteScope(scope)) return false
+            val outcome = deliverPendingProgress(scope, itemId)
+            if (!outcome.remoteDelivered && !outcome.noWork) {
+                allDeliveriesSucceeded = false
+            }
+        }
+        return allDeliveriesSucceeded
+    }
+
+    internal suspend fun deliverPendingProgress(scope: ActiveRemoteScope, itemId: String): ProgressDeliveryOutcome {
+        if (!apiService.isCurrentActiveRemoteScope(scope)) return ProgressDeliveryOutcome(false, false)
+        if (scope.decodeForEgress(itemId) == null) return ProgressDeliveryOutcome(false, false, noWork = true)
+        val identity = scopedProgressIdentity(scope, itemId)
+        return pendingProgressQueueOwner.withItemLock(identity) {
+            if (!apiService.isCurrentActiveRemoteScope(scope)) return@withItemLock ProgressDeliveryOutcome(false, false)
+            val rows = pendingProgressDao.getForOwnerAndItem(scope.ownerKey, itemId)
+            val latest = latestPushArgs(rows) ?: return@withItemLock ProgressDeliveryOutcome(false, false, noWork = true)
+            val sentRows = capturedPendingRowIds(rows)
+            if (!apiService.updateProgress(scope, itemId, latest.currentTime, latest.isFinished, latest.duration)) {
+                return@withItemLock ProgressDeliveryOutcome(false, false, sentRows)
+            }
+            val acknowledged = acknowledgePendingProgress(scope, itemId, sentRows)
+            ProgressDeliveryOutcome(false, acknowledged, sentRows)
+        }
+    }
+
     // ─── Clear ───────────────────────────────────────────────────────────
 
     suspend fun deleteAll() {
@@ -478,6 +795,8 @@ class ProgressRepository @Inject constructor(
         clearPendingProgress()
     }
 }
+
+private class StaleScopedProgress : Exception()
 
 data class PendingProgressEntry(
     val ownerKey: String?,

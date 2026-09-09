@@ -29,6 +29,23 @@ interface PlaybackProgressDao {
     @Query("SELECT COUNT(*) FROM PlaybackProgress WHERE PositionSeconds > 60")
     suspend fun countStarted(): Int
 
+    /** Review prompts may credit confirmed LOCAL rows plus this exact active remote owner. */
+    @Query("""
+        SELECT COUNT(*) FROM PlaybackProgress pp
+        INNER JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
+        WHERE pp.IsFinished = 1 AND (ab.IsLocal = 1 OR
+            (:remoteIdPrefix IS NOT NULL AND ab.IsLocal = 0 AND substr(ab.Id, 1, length(:remoteIdPrefix)) = :remoteIdPrefix))
+    """)
+    suspend fun countFinishedForReview(remoteIdPrefix: String?): Int
+
+    @Query("""
+        SELECT COUNT(*) FROM PlaybackProgress pp
+        INNER JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
+        WHERE pp.PositionSeconds > 60 AND (ab.IsLocal = 1 OR
+            (:remoteIdPrefix IS NOT NULL AND ab.IsLocal = 0 AND substr(ab.Id, 1, length(:remoteIdPrefix)) = :remoteIdPrefix))
+    """)
+    suspend fun countStartedForReview(remoteIdPrefix: String?): Int
+
     @Query("DELETE FROM PlaybackProgress WHERE AudioBookId = :audioBookId")
     suspend fun deleteByAudioBookId(audioBookId: String)
 

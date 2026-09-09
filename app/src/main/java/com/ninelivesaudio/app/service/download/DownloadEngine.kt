@@ -67,9 +67,9 @@ class DownloadEngine @Inject constructor(
         if (!guardedUpsert(scope, download)) return item
 
         // Create download directory
-        if (!apiService.isCurrentActiveRemoteScope(scope)) return item
+        if (!canMutate(scope, item)) return item
         val downloadDir = getDownloadPath(audioBook)
-        downloadDir.mkdirs()
+        if (!runScopedFilesystemMutation({ canMutate(scope, item) }) { downloadDir.mkdirs() }) return item
 
         // Get full book details if audio files are missing
         val book = if (audioBook.audioFiles.isEmpty()) {
@@ -175,8 +175,15 @@ class DownloadEngine @Inject constructor(
                     }
 
                     // Atomic rename .part → final
-                    if (finalPath.exists()) finalPath.delete()
-                    val renamed = partPath.renameTo(finalPath)
+                    if (finalPath.exists() && !runScopedFilesystemMutation(
+                            { canMutate(scope, download) },
+                        ) { finalPath.delete() }
+                    ) return item
+                    var renamed = false
+                    if (!runScopedFilesystemMutation({ canMutate(scope, download) }) {
+                            renamed = partPath.renameTo(finalPath)
+                        }
+                    ) return item
                     if (!renamed) {
                         throw Exception("Failed to finalize $fileName")
                     }
@@ -239,11 +246,11 @@ class DownloadEngine @Inject constructor(
 
         // Persist the cover next to the audio so it renders offline. Best-effort:
         // a cover failure must never fail an otherwise-complete download.
-        val localCoverUri = persistCover(scope, book, downloadDir)
+        val localCoverUri = persistCover(scope, download, book, downloadDir)
 
         // Update audiobook as downloaded with local path
         val bookEntity = audioBookDao.getById(audioBook.id)
-        if (bookEntity != null && apiService.isCurrentActiveRemoteScope(scope) &&
+        if (bookEntity != null && canMutate(scope, download) &&
             scope.decodeForEgress(bookEntity.id) != null
         ) {
             audioBookDao.upsert(
@@ -263,7 +270,12 @@ class DownloadEngine @Inject constructor(
      * network. Returns the file:// URI, or null on any failure — the cover is
      * optional and must not break a completed download.
      */
-    private suspend fun persistCover(scope: ActiveRemoteScope, book: AudioBook, downloadDir: File): String? {
+    private suspend fun persistCover(
+        scope: ActiveRemoteScope,
+        item: DownloadItem,
+        book: AudioBook,
+        downloadDir: File,
+    ): String? {
         if (book.coverPath.isNullOrEmpty()) return null
         return try {
             val rawBookId = scope.decodeForEgress(book.id) ?: return null
@@ -280,7 +292,12 @@ class DownloadEngine @Inject constructor(
             val body = response.body() ?: return null
             val bytes = body.use { it.bytes() }
             if (bytes.isEmpty()) return null
-            Uri.fromFile(writeCoverFile(bytes, downloadDir)).toString()
+            var coverFile: File? = null
+            if (!runScopedFilesystemMutation({ canMutate(scope, item) }) {
+                    coverFile = writeCoverFile(bytes, downloadDir)
+                }
+            ) return null
+            Uri.fromFile(requireNotNull(coverFile)).toString()
         } catch (e: Exception) {
             Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
             null
@@ -351,7 +368,7 @@ class DownloadEngine @Inject constructor(
                 val forbidden = listOf("/system", "/data/data", "/data/user", "/proc", "/dev")
                 val isSafe = forbidden.none { candidate.absolutePath.startsWith(it) }
                 if (isSafe) {
-                    return candidate.also { it.mkdirs() }
+                    return candidate
                 }
                 Log.w(TAG, "getBasePath: Configured path rejected (targets system dir): $configuredPath")
             } catch (e: Exception) {
@@ -361,7 +378,7 @@ class DownloadEngine @Inject constructor(
 
         // Fallback to app-specific external storage.
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
-        return File(musicDir, "Audiobookshelf").also { it.mkdirs() }
+        return File(musicDir, "Audiobookshelf")
     }
 }
 
@@ -374,4 +391,14 @@ internal fun writeCoverFile(bytes: ByteArray, dir: File): File {
     val file = File(dir, "cover.jpg")
     file.writeBytes(bytes)
     return file
+}
+
+/** Injectable boundary for every stale-sensitive filesystem mutation. */
+internal suspend fun runScopedFilesystemMutation(
+    isCurrent: suspend () -> Boolean,
+    mutation: () -> Unit,
+): Boolean {
+    if (!isCurrent()) return false
+    mutation()
+    return true
 }

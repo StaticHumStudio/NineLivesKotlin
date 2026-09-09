@@ -65,7 +65,15 @@ class DownloadSlotStore @Inject constructor(
      */
     suspend fun buildCandidates(): List<SlotCandidate> = withContext(Dispatchers.IO) {
         val remoteScope = apiService.captureActiveRemoteScope()
-        val rows = downloadItemDao.getVisible(remoteScope?.idPrefix).map { it.toDomain() }
+        val rows = downloadItemDao.getVisible(remoteScope?.idPrefix)
+            .mapNotNull { entity ->
+                val book = audioBookDao.getById(entity.audioBookId)
+                val local = book?.isLocal == 1
+                if (slotDownloadRowAllowed(local, entity.id, entity.audioBookId) {
+                        remoteScope?.decodeForEgress(it)
+                    }
+                ) entity.toDomain() else null
+            }
         val rowsByBook = rows.groupBy { it.audioBookId }
 
         val offlineBooks = audioBookDao.getAll()
@@ -159,3 +167,11 @@ internal val SLOT_OCCUPYING_STATUSES = setOf(
     DownloadStatus.Paused,
     DownloadStatus.Completed,
 )
+
+/** A prefix is only a SQL candidate. Slot accounting requires both full envelopes. */
+internal fun slotDownloadRowAllowed(
+    isLocal: Boolean,
+    downloadId: String,
+    audioBookId: String,
+    decode: (String) -> String? = { null },
+): Boolean = isLocal || (decode(downloadId) != null && decode(audioBookId) != null)

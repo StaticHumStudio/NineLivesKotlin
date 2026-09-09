@@ -110,6 +110,12 @@ class DownloadQueueWorker(
                 // This row was selected from this owner prefix. Recheck before a
                 // terminal write so a scope switch cannot mutate the old owner.
                 if (!deps.apiService().isCurrentActiveRemoteScope(remoteScope)) break
+                val currentRow = dao.getRemoteByIdForOwner(item.id, remoteScope.idPrefix)
+                if (currentRow?.audioBookId != item.audioBookId ||
+                    remoteScope.decodeForEgress(currentRow.id) == null ||
+                    remoteScope.decodeForEgress(currentRow.audioBookId) == null
+                ) break
+                if (!deps.apiService().isCurrentActiveRemoteScope(remoteScope)) break
                 android.util.Log.d(TAG, "book missing for id=${item.id} -> Failed")
                 dao.upsert(
                     item.copy(

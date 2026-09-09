@@ -267,11 +267,27 @@ class MediaBrowseTree @Inject constructor(
     }
 
     private suspend fun resolveActiveScope(): AppSettings {
-        val libraries = libraryRepository.getAll()
-        val resolution = resolveActiveLibrarySelection(libraries, settingsManager.currentSettings)
-        if (resolution.requiresPersistence) {
-            settingsManager.updateSettings { latest ->
-                resolveActiveLibrarySelection(libraries, latest).settings
+        val initialSettings = settingsManager.currentSettings
+        val scope = activeRemoteScope(initialSettings)
+        val libraries = libraryRepository.getAll().let { all ->
+            if (initialSettings.appMode == AppMode.LOCAL) all
+            else autoEligibleLibraries(all) { id -> scope?.decodeForEgress(id) }
+        }
+        val resolution = resolveActiveLibrarySelection(libraries, initialSettings)
+        val repairedRemoteSettings = if (initialSettings.appMode == AppMode.AUDIOBOOKSHELF &&
+            libraries.none { !it.isLocal } && initialSettings.selectedLibraryId != null
+        ) initialSettings.copy(selectedLibraryId = null) else resolution.settings
+        if (repairedRemoteSettings != initialSettings) {
+            if (initialSettings.appMode == AppMode.LOCAL) {
+                settingsManager.updateSettings { latest ->
+                    resolveActiveLibrarySelection(libraries, latest).settings
+                }
+            } else if (scope != null) {
+                settingsManager.updateSettingsIfCurrent(
+                    isCurrent = { apiService.isCurrentActiveRemoteScope(scope) },
+                ) { latest ->
+                    if (latest.appMode != AppMode.AUDIOBOOKSHELF) latest else repairedRemoteSettings
+                }
             }
         }
         return settingsManager.currentSettings
@@ -497,6 +513,13 @@ class MediaBrowseTree @Inject constructor(
             .build()
     }
 }
+
+/** Remote selection repair accepts only libraries whose full envelope decodes. */
+internal fun autoEligibleLibraries(
+    libraries: List<com.ninelivesaudio.app.domain.model.Library>,
+    decode: (String) -> String?,
+): List<com.ninelivesaudio.app.domain.model.Library> =
+    libraries.filter { it.isLocal || decode(it.id) != null }
 
 /**
  * Bounded in-memory LRU of downscaled browse-row cover thumbnails, keyed by

@@ -22,6 +22,20 @@ class MediaBrowseScopeTest {
     }
 
     @Test
+    fun `Auto selection repair excludes a foreign cached remote library`() {
+        val libraries = listOf(
+            com.ninelivesaudio.app.domain.model.Library(id = "A", isLocal = false),
+            com.ninelivesaudio.app.domain.model.Library(id = "B", isLocal = false),
+            com.ninelivesaudio.app.domain.model.Library(id = "local", isLocal = true),
+        )
+
+        assertEquals(
+            listOf("B", "local"),
+            autoEligibleLibraries(libraries) { id -> if (id == "B") "book" else null }.map { it.id },
+        )
+    }
+
+    @Test
     fun `unconfigured server shows phone setup row instead of blank Auto screen`() {
         assertEquals(
             listOf(MediaBrowseTree.SETUP_REQUIRED_ID),

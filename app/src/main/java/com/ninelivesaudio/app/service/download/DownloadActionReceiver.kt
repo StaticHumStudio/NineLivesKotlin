@@ -46,15 +46,18 @@ class DownloadActionReceiver : BroadcastReceiver() {
                     DownloadNotifications.ACTION_CANCEL -> {
                         // Cancel the book the notification is showing: the current
                         // active item (same selection the drain worker uses).
-                        val scope = deps.apiService().captureActiveRemoteScope()
-                            ?: return@launch
+                        val scope = deps.apiService().captureActiveRemoteScope() ?: return@launch
                         val current = selectNotificationCancelDownload(
                             deps.downloadItemDao()
                                 .getDownloadableForOwner(scope.idPrefix)
-                                .map { it.toDomain() },
+                                .map { it.toDomain() }
+                                .filter {
+                                    scope.decodeForEgress(it.id) != null &&
+                                        scope.decodeForEgress(it.audioBookId) != null
+                                },
                             scope.idPrefix,
                         )
-                        if (current != null) deps.downloadManager().cancelDownload(current.id)
+                        if (current != null) deps.downloadManager().cancelDownload(current.id, scope)
                     }
                 }
             } finally {

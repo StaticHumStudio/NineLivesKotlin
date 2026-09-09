@@ -134,9 +134,9 @@ class PlaybackGenerationTest {
     fun `polled progress buffer keeps only newest unsent sample`() {
         runBlocking {
             val reports = newPolledProgressReportChannel()
-            val first = PolledProgressReport("book-a", 10.0, 90.0)
-            val second = PolledProgressReport("book-a", 11.0, 90.0)
-            val newest = PolledProgressReport("book-a", 12.0, 90.0)
+            val first = PolledProgressReport("book-a", 10.0, 90.0, isLocal = true, remoteScope = null)
+            val second = PolledProgressReport("book-a", 11.0, 90.0, isLocal = true, remoteScope = null)
+            val newest = PolledProgressReport("book-a", 12.0, 90.0, isLocal = true, remoteScope = null)
 
             reports.send(first)
             reports.send(second)
@@ -190,6 +190,7 @@ class PlaybackGenerationTest {
             sessionId = "session-a",
             position = 12.seconds,
             duration = 90.seconds,
+            remoteScope = null,
         )
 
         assertEquals(4L, probe.requestedGeneration)

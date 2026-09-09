@@ -15,11 +15,13 @@ class TerminalPlaybackSnapshotTest {
 
         val snapshot = terminalPlaybackSnapshot(
             bookId = liveBookId,
+            isLocal = true,
             position = livePosition,
             duration = 100.seconds,
             isFinished = false,
             serverSessionId = liveSessionId,
             timeListened = 18.0,
+            remoteScope = null,
         )
 
         liveBookId = "new-book"

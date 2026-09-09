@@ -213,8 +213,8 @@ class PlaybackProgressOwnerTest {
 
 class SyncManagerRemoteFenceTest {
     @Test
-    fun `C3 keeps remote progress mutation fail closed`() {
-        assertFalse(remoteProgressMutationAllowed(AppMode.AUDIOBOOKSHELF))
+    fun `C2 enables only scoped remote and confirmed local progress modes`() {
+        assertTrue(remoteProgressMutationAllowed(AppMode.AUDIOBOOKSHELF))
         assertTrue(remoteProgressMutationAllowed(AppMode.LOCAL))
     }
 }

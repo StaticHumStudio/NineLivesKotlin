@@ -13,8 +13,8 @@ import org.junit.Test
 
 class PendingProgressQueueOwnerTest {
 
-    private val bookA = ProgressIdentity(LOCAL_OWNER_KEY, "book-a")
-    private val bookB = ProgressIdentity(LOCAL_OWNER_KEY, "book-b")
+    private val bookA = ProgressIdentity(LOCAL_PROGRESS_OWNER_KEY, "book-a")
+    private val bookB = ProgressIdentity(LOCAL_PROGRESS_OWNER_KEY, "book-b")
 
     @Test
     fun `activating next book does not wait for previous book ownership`() = runBlocking {
@@ -363,6 +363,8 @@ class PendingProgressQueueOwnerTest {
             assertFalse(owner.importTokenIsCurrent(a, importToken))
             assertTrue(owner.importTokenIsCurrent(b, importToken))
 
+            releaseALock.complete(Unit)
+            aLock.join()
             owner.setActiveItem(a)
             assertTrue(owner.withItemLockIfInactive(b) { true } ?: false)
             owner.withTerminalImportLease(a) {
@@ -374,7 +376,4 @@ class PendingProgressQueueOwnerTest {
         }
     }
 
-    private companion object {
-        const val LOCAL_OWNER_KEY = "local-progress-v1"
-    }
 }

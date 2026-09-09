@@ -62,6 +62,21 @@ internal fun legacyCleanupFailureMessage(deleted: Boolean): String? =
 internal fun shouldImportLegacySettings(encryptedSettingsJson: String?): Boolean =
     encryptedSettingsJson == null
 
+/** Encrypted policy is authoritative when present, including when malformed. */
+internal fun persistedAllowSelfSignedCertificates(
+    encryptedSettingsJson: String?,
+    legacySettingsJson: String?,
+): Boolean {
+    val serialized = encryptedSettingsJson ?: legacySettingsJson ?: return false
+    return try {
+        Json { ignoreUnknownKeys = true }
+            .decodeFromString<AppSettings>(serialized)
+            .allowSelfSignedCertificates
+    } catch (_: Exception) {
+        false
+    }
+}
+
 /** Result of one [SettingsManager.loadSettings] attempt. */
 internal data class SettingsLoadOutcome(
     val settings: AppSettings,
@@ -264,19 +279,13 @@ class SettingsManager @Inject constructor(
             return false
         }
 
-        val serialized = try {
-            encryptedSettings ?: legacySettingsFile.takeIf(File::exists)?.readText()
+        val legacySettings = try {
+            if (encryptedSettings == null) legacySettingsFile.takeIf(File::exists)?.readText() else null
         } catch (e: Exception) {
             Log.w(TAG, "Legacy TLS policy read failed, standard certificate validation remains active", e)
             return false
-        } ?: return false
-
-        return try {
-            json.decodeFromString<AppSettings>(serialized).allowSelfSignedCertificates
-        } catch (e: Exception) {
-            Log.w(TAG, "TLS policy is unreadable, standard certificate validation remains active", e)
-            false
         }
+        return persistedAllowSelfSignedCertificates(encryptedSettings, legacySettings)
     }
 
     // ─── Settings ────────────────────────────────────────────────────────

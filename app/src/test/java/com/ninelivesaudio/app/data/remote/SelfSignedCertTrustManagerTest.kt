@@ -23,24 +23,41 @@ class SelfSignedCertTrustManagerTest {
             arrayOf(certificate), "RSA", "127.0.0.1",
             SelfSignedCertTrustManager.HostAwareTrustCall.SOCKET,
         ) { platform.socketChecks++ }
-        assertEquals(1, platform.socketChecks, "blank startup route must not trust a self-signed host")
+        assertEquals("blank startup route must not trust a self-signed host", 1, platform.socketChecks)
 
         currentHost = "127.0.0.1"
         manager.checkServerTrustedForHost(
             arrayOf(certificate), "RSA", "127.0.0.1",
             SelfSignedCertTrustManager.HostAwareTrustCall.SOCKET,
         ) { platform.socketChecks++ }
-        assertEquals(1, platform.socketChecks, "the current committed login route receives TOFU")
+        assertEquals("the current committed login route receives TOFU", 1, platform.socketChecks)
 
         currentHost = "cdn.example.test"
         manager.checkServerTrustedForHost(
             arrayOf(certificate), "RSA", "127.0.0.1",
             SelfSignedCertTrustManager.HostAwareTrustCall.ENGINE,
         ) { platform.engineChecks++ }
-        assertEquals(1, platform.engineChecks, "a stale A-to-B route must return to platform trust")
+        assertEquals("a stale A-to-B route must return to platform trust", 1, platform.engineChecks)
 
         manager.checkServerTrusted(arrayOf(certificate), "RSA")
-        assertEquals(1, platform.hostlessChecks, "hostless checks fail closed through platform trust")
+        assertEquals("hostless checks fail closed through platform trust", 1, platform.hostlessChecks)
+    }
+
+    @Test
+    fun bracketedIpv6ConfiguredHostMatchesUnbracketedTlsPeer() {
+        val platform = RecordingTrustManager()
+        val manager = trustManager(
+            currentHost = { "[::1]" },
+            platform = platform,
+            trusted = mutableMapOf(),
+        )
+
+        manager.checkServerTrustedForHost(
+            arrayOf(certificate), "RSA", "::1",
+            SelfSignedCertTrustManager.HostAwareTrustCall.SOCKET,
+        ) { platform.socketChecks++ }
+
+        assertEquals("configured IPv6 must receive TOFU using the TLS peer form", 0, platform.socketChecks)
     }
 
     @Test
@@ -73,6 +90,8 @@ class SelfSignedCertTrustManagerTest {
         configuredHost = currentHost,
         trustedFingerprint = trusted::get,
         saveFingerprint = { host, fingerprint -> trusted[host] = fingerprint },
+        logInfo = {},
+        logError = {},
     )
 
     private class RecordingTrustManager : X509TrustManager {

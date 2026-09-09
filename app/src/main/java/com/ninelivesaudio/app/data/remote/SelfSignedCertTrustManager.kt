@@ -94,6 +94,8 @@ object SelfSignedCertTrustManager {
         private val trustedFingerprint: (String) -> String?,
         private val saveFingerprint: (String, String) -> Unit,
         private val onHostAwareTrustCheck: ((HostAwareTrustCall, String?) -> Unit)? = null,
+        private val logInfo: (String) -> Unit = { message -> Log.i(TAG, message); Unit },
+        private val logError: (String) -> Unit = { message -> Log.e(TAG, message); Unit },
     ) : X509ExtendedTrustManager() {
         override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String) {
             platformTrustManager.checkClientTrusted(chain, authType)
@@ -158,7 +160,7 @@ object SelfSignedCertTrustManager {
         internal fun enrollFingerprintIfNeeded(host: String, leaf: X509Certificate) {
             if (trustedFingerprint(host) == null) {
                 saveFingerprint(host, leaf.sha256Fingerprint())
-                Log.i(TAG, "TOFU enrolled fingerprint for host=$host from verified session")
+                logInfo("TOFU enrolled fingerprint for host=$host from verified session")
             }
         }
 
@@ -171,7 +173,7 @@ object SelfSignedCertTrustManager {
         ) {
             val normalizedPeerHost = peerHost.normalizeHost()
             onHostAwareTrustCheck?.invoke(call, normalizedPeerHost)
-            if (normalizedPeerHost == null || normalizedPeerHost != configuredHost()) {
+            if (normalizedPeerHost == null || normalizedPeerHost != configuredHost().normalizeHost()) {
                 platformCheck()
                 return
             }
@@ -182,11 +184,11 @@ object SelfSignedCertTrustManager {
             val fingerprint = chain.first().sha256Fingerprint()
             val trusted = trustedFingerprint(normalizedPeerHost)
             if (trusted == null) {
-                Log.i(TAG, "TOFU first contact for host=$normalizedPeerHost (enrollment pending hostname verification)")
+                logInfo("TOFU first contact for host=$normalizedPeerHost (enrollment pending hostname verification)")
                 return
             }
             if (!fingerprint.equals(trusted, ignoreCase = true)) {
-                Log.e(TAG, "TLS fingerprint mismatch for host=$normalizedPeerHost")
+                logError("TLS fingerprint mismatch for host=$normalizedPeerHost")
                 throw CertificateFingerprintMismatchException(normalizedPeerHost, trusted, fingerprint)
             }
         }
@@ -210,7 +212,9 @@ object SelfSignedCertTrustManager {
     }
 
     private fun String?.normalizeHost(): String? =
-        this?.trim()?.takeIf(String::isNotEmpty)?.lowercase(Locale.ROOT)
+        this?.trim()?.takeIf(String::isNotEmpty)
+            ?.removePrefix("[")?.removeSuffix("]")
+            ?.lowercase(Locale.ROOT)
 
     private fun X509Certificate.sha256Fingerprint(): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(encoded)

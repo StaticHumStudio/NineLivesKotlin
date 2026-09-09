@@ -16,6 +16,26 @@ import org.junit.Test
 class SettingsLoadOutcomeTest {
 
     @Test
+    fun `encrypted false overrides legacy true`() {
+        assertFalse(persistedAllowSelfSignedCertificates("{\"allowSelfSignedCertificates\":false}", "{\"allowSelfSignedCertificates\":true}"))
+    }
+
+    @Test
+    fun `encrypted true overrides legacy false`() {
+        assertTrue(persistedAllowSelfSignedCertificates("{\"allowSelfSignedCertificates\":true}", "{\"allowSelfSignedCertificates\":false}"))
+    }
+
+    @Test
+    fun `valid legacy only policy is honored`() {
+        assertTrue(persistedAllowSelfSignedCertificates(null, "{\"allowSelfSignedCertificates\":true}"))
+    }
+
+    @Test
+    fun `malformed encrypted policy fails closed without legacy fallback`() {
+        assertFalse(persistedAllowSelfSignedCertificates("{broken", "{\"allowSelfSignedCertificates\":true}"))
+    }
+
+    @Test
     fun `successful load is not degraded`() = runBlocking {
         val loaded = AppSettings(serverUrl = "https://server.example")
 

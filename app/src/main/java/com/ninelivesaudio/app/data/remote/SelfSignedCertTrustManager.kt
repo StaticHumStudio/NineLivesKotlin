@@ -186,7 +186,7 @@ object SelfSignedCertTrustManager {
                 return
             }
             if (!fingerprint.equals(trusted, ignoreCase = true)) {
-                Log.e(TAG, "TLS fingerprint mismatch for host=$normalizedPeerHost expected=$trusted actual=$fingerprint")
+                Log.e(TAG, "TLS fingerprint mismatch for host=$normalizedPeerHost")
                 throw CertificateFingerprintMismatchException(normalizedPeerHost, trusted, fingerprint)
             }
         }

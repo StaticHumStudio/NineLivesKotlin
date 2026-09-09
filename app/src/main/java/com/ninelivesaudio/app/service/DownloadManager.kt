@@ -713,8 +713,9 @@ class DownloadManager @Inject constructor(
             }
         }
 
+        if (selected.any { it == null }) return null
         return files.mapIndexed { index, file ->
-            file.copy(localPath = selected[index]?.absolutePath)
+            file.copy(localPath = requireNotNull(selected[index]).absolutePath)
         }
     }
 

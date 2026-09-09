@@ -22,11 +22,12 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * Streams an audiobook's audio files to disk: `.part`-then-atomic-rename,
@@ -52,6 +53,12 @@ class DownloadEngine @Inject constructor(
         private const val BUFFER_SIZE = 81_920 // 80 KB
     }
 
+    private val metadataPathMutex = Mutex()
+
+    /** Timing receipt for the real metadata publication boundary. */
+    @Volatile
+    internal var metadataBoundaryObserver: (suspend () -> Unit)? = null
+
     /**
      * Download every audio file of [audioBook] for [item]. Persists status and
      * progress to Room throughout and invokes [onProgress] for UI liveliness.
@@ -68,17 +75,16 @@ class DownloadEngine @Inject constructor(
         var download = item.copy(status = DownloadStatus.Downloading)
         if (!guardedUpsert(scope, download)) return item
 
+        // Always ask for the expanded snapshot. A sparse catalog row is not an
+        // authoritative replacement for durable offline metadata.
+        val book = fetchFullBookDetails(scope, audioBook.id)?.let { detailedBook ->
+            if (detailedBook.coverPath == null) detailedBook.copy(coverPath = audioBook.coverPath) else detailedBook
+        } ?: audioBook
+
         // Create download directory
         if (!canMutate(scope, item)) return item
         val downloadDir = getDownloadPath(audioBook)
         if (!runScopedFilesystemMutation({ canMutate(scope, item) }) { downloadDir.mkdirs() }) return item
-
-        // Get full book details if audio files are missing
-        val book = if (audioBook.audioFiles.isEmpty()) {
-            fetchFullBookDetails(scope, audioBook.id) ?: audioBook
-        } else {
-            audioBook
-        }
 
         if (book.audioFiles.isEmpty()) {
             download = download.copy(
@@ -91,6 +97,10 @@ class DownloadEngine @Inject constructor(
 
         val totalBytes = estimateTotalBytes(book.audioFiles)
         download = download.copy(totalBytes = totalBytes)
+        val resolvedFileNames = resolveDownloadFileNames(book.audioFiles)
+        val canonicalAudioFiles = book.audioFiles.mapIndexed { index, audioFile ->
+            audioFile.copy(localPath = File(downloadDir, resolvedFileNames[index]).absolutePath)
+        }
 
         var downloadedBytes = 0L
         var lastPersistedBytes = 0L
@@ -104,9 +114,10 @@ class DownloadEngine @Inject constructor(
             // Check for cancellation
             currentCoroutineContext().ensureActive()
 
-            val fileName = sanitizeDownloadFileName(audioFile.filename.ifEmpty { "track_${i + 1}" })
+            val fileName = resolvedFileNames[i]
             val finalPath = File(downloadDir, fileName)
             val partPath = File(downloadDir, "$fileName.part")
+            if (!isContained(downloadDir, finalPath) || !isContained(downloadDir, partPath)) return item
 
             // Skip if already downloaded
             if (shouldSkipDownloadedFile(finalPath.exists(), finalPath.length())) {
@@ -258,38 +269,47 @@ class DownloadEngine @Inject constructor(
         )
         if (!guardedUpsert(scope, download)) return item
 
-        // Persist the cover next to the audio so it renders offline. Best-effort:
-        // a cover failure must never fail an otherwise-complete download.
-        val localCoverUri = persistCover(scope, download, book, downloadDir)
-
-        // Update audiobook as downloaded with local path
-        val bookEntity = audioBookDao.getById(audioBook.id)
-        if (bookEntity != null && canMutate(scope, download) &&
-            scope.decodeForEgress(bookEntity.id) != null
-        ) {
+        // Fetch cover bytes outside the metadata boundary. The bytes and the
+        // resulting cover path are committed with the canonical snapshot below.
+        val coverBytes = fetchCoverBytes(scope, book)
+        withMetadataPathBoundary(scope, download) {
+            val currentItem = downloadItemDao.getRemoteByIdForOwner(download.id, scope.idPrefix)?.toDomain()
+                ?: return@withMetadataPathBoundary
+            if (currentItem.status != DownloadStatus.Completed || !canMutate(scope, currentItem)) {
+                return@withMetadataPathBoundary
+            }
+            val bookEntity = audioBookDao.getById(audioBook.id) ?: return@withMetadataPathBoundary
+            if (bookEntity.id != audioBook.id || scope.decodeForEgress(bookEntity.id) == null) {
+                return@withMetadataPathBoundary
+            }
+            val currentBook = bookEntity.toDomain()
+            val localCoverUri = if (coverBytes != null) {
+                val coverFile = File(downloadDir, "cover.jpg")
+                if (!isContained(downloadDir, coverFile)) return@withMetadataPathBoundary
+                coverFile.writeBytes(coverBytes)
+                Uri.fromFile(coverFile).toString()
+            } else {
+                currentBook.localCoverPath
+            }
             audioBookDao.upsert(
-                bookEntity.copy(
-                    isDownloaded = 1,
+                currentBook.copy(
+                    isDownloaded = true,
                     localPath = downloadDir.absolutePath,
-                    localCoverPath = localCoverUri ?: bookEntity.localCoverPath,
-                )
+                    localCoverPath = localCoverUri,
+                    audioFiles = canonicalAudioFiles,
+                    chapters = book.chapters,
+                ).toEntity()
             )
         }
 
         return download
     }
 
-    /**
-     * Download and save the book cover into its download dir so it shows with no
-     * network. Returns the file:// URI, or null on any failure — the cover is
-     * optional and must not break a completed download.
-     */
-    private suspend fun persistCover(
+    /** Fetch cover bytes without performing a metadata-path filesystem mutation. */
+    private suspend fun fetchCoverBytes(
         scope: ActiveRemoteScope,
-        item: DownloadItem,
         book: AudioBook,
-        downloadDir: File,
-    ): String? {
+    ): ByteArray? {
         if (book.coverPath.isNullOrEmpty()) return null
         return try {
             val rawBookId = scope.decodeForEgress(book.id) ?: return null
@@ -305,48 +325,33 @@ class DownloadEngine @Inject constructor(
             }
             val body = response.body() ?: return null
             val bytes = body.use { it.bytes() }
-            if (bytes.isEmpty()) return null
-            val coverFile = File(downloadDir, "cover.jpg")
-            if (!runScopedFilesystemMutation({ canMutate(scope, item) }) {
-                    coverFile.writeBytes(bytes)
-                }
-            ) return null
-            Uri.fromFile(coverFile).toString()
+            bytes.takeIf { it.isNotEmpty() }
         } catch (e: Exception) {
-            Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
+            Log.w(TAG, "fetchCoverBytes: cover fetch failed for ${book.id}: ${e.message}")
             null
         }
     }
 
-    /** Fetch full book details (audio file metadata) from the server. */
+    /** Fetch the canonical expanded snapshot through the scoped ApiService mapper. */
     internal suspend fun fetchFullBookDetails(scope: ActiveRemoteScope, audioBookId: String): AudioBook? {
-        val rawBookId = scope.decodeForEgress(audioBookId) ?: return null
         return try {
-            val response = apiService.dispatchActiveRemoteScope(
-                scope,
-                request = { tag -> api.getItem(rawBookId, expanded = 1, dispatch = tag) },
-                publish = { it },
-            ) ?: return null
-            if (response.isSuccessful) {
-                response.body()?.let { apiItem ->
-                    val audioFiles = apiItem.media?.audioFiles?.mapIndexed { idx, af ->
-                        com.ninelivesaudio.app.domain.model.AudioFile(
-                            id = af.ino ?: "",
-                            ino = af.ino ?: "",
-                            index = idx,
-                            duration = (af.duration ?: 0.0).seconds,
-                            filename = af.metadata?.filename ?: "track_${idx + 1}",
-                            size = af.metadata?.size ?: 0,
-                        )
-                    } ?: emptyList()
-
-                    if (!apiService.isCurrentActiveRemoteScope(scope)) null else {
-                        audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
-                    }
-                }
-            } else null
+            apiService.getAudioBook(scope, audioBookId)
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /** Serialize completion, backfill publication, and deletion metadata work. */
+    internal suspend fun <T> withMetadataPathBoundary(
+        scope: ActiveRemoteScope,
+        item: DownloadItem,
+        block: suspend () -> T,
+    ): T? = metadataPathMutex.withLock {
+        if (!canMutate(scope, item)) {
+            null
+        } else {
+            metadataBoundaryObserver?.invoke()
+            block()
         }
     }
 
@@ -398,6 +403,12 @@ class DownloadEngine @Inject constructor(
         // Fallback to app-specific external storage.
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
         return File(musicDir, "Audiobookshelf")
+    }
+
+    private fun isContained(parent: File, child: File): Boolean = try {
+        child.canonicalFile.toPath().startsWith(parent.canonicalFile.toPath())
+    } catch (_: Exception) {
+        false
     }
 }
 

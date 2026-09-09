@@ -192,7 +192,7 @@ private class DelayedLibraryFilterDao {
         audioBook = AudioBookEntity(
             id = "beta-book",
             libraryId = FixtureLibraries.beta.id,
-            isLocal = 0,
+            isLocal = 1,
             title = "Beta Book",
             author = "Author",
         ),
@@ -203,7 +203,7 @@ private class DelayedLibraryFilterDao {
         audioBook = AudioBookEntity(
             id = "alpha-book",
             libraryId = FixtureLibraries.alpha.id,
-            isLocal = 0,
+            isLocal = 1,
             title = "Alpha Book",
             author = "Author",
         ),

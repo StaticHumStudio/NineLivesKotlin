@@ -382,7 +382,12 @@ class DownloadMetadataRuntimeCanaryTest {
                     }
                 }
 
-                assertEquals(reopened.audioFiles.sortedBy { it.index }.map { "file://${it.localPath}" }, uris)
+                assertEquals(
+                    reopened.audioFiles.sortedBy { it.index }.map { file ->
+                        android.net.Uri.fromFile(File(requireNotNull(file.localPath))).toString()
+                    },
+                    uris,
+                )
                 assertEquals(callsBeforeOffline, fixture.api.remoteCallCount)
             } finally {
                 withContext(Dispatchers.Main) { playbackManager.release() }

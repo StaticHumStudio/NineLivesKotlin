@@ -42,6 +42,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
 import okhttp3.Request
@@ -260,6 +261,47 @@ class DownloadMetadataRuntimeCanaryTest {
             fixture.close()
         }
     }
+
+    @Test
+    fun `force stopped resume reopens room then loads canonical tracks offline in server index order`() = runBlocking {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as NineLivesApp
+        val fixture = MetadataFixture(InstrumentationRegistry.getInstrumentation().targetContext, app)
+        try {
+            val scope = fixture.login("owner-a")
+            val catalog = fixture.sparseBook(scope.encodeIncoming("resume-book"), "Resume")
+            val item = fixture.item(scope.encodeIncoming("resume-download"), catalog.id)
+            fixture.seed(catalog, item)
+            fixture.api.holdAfterFirstStream = true
+
+            val interrupted = async(Dispatchers.Default) { fixture.engine.download(item, catalog, scope) { _, _, _ -> } }
+            fixture.api.awaitFirstStream()
+            interrupted.cancel()
+            val beforeResume = requireNotNull(fixture.database.audioBookDao().getById(catalog.id)).toDomain()
+            assertTrue(beforeResume.audioFiles.isEmpty())
+            assertTrue(beforeResume.chapters.isEmpty())
+
+            fixture.api.releaseStream()
+            val persisted = requireNotNull(fixture.database.downloadItemDao().getById(item.id)).toDomain()
+            fixture.reopenRoomAndEngine()
+            fixture.engine.download(persisted, catalog, scope) { _, _, _ -> }
+            val reopened = requireNotNull(fixture.database.audioBookDao().getById(catalog.id)).toDomain()
+            fixture.api.unreachable = true
+            val callsBeforeOffline = fixture.api.remoteCallCount
+
+            val loaded = withContext(Dispatchers.Main) {
+                app.playbackManager.loadAudioBook(reopened, autoPlay = false)
+            }
+            val uris = withContext(Dispatchers.Main) {
+                requireNotNull(app.playbackManager.getPlayer()).mediaItems.map { requireNotNull(it.localConfiguration).uri.toString() }
+            }
+
+            assertTrue(loaded)
+            assertEquals(reopened.audioFiles.sortedBy { it.index }.map { "file://${it.localPath}" }, uris)
+            assertEquals(callsBeforeOffline, fixture.api.remoteCallCount)
+        } finally {
+            fixture.close()
+        }
+    }
 }
 
 private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
@@ -352,6 +394,12 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
         database.close()
         context.clear()
     }
+
+    fun reopenRoomAndEngine() {
+        // The durable reopen is intentionally a fixture operation. GREEN must
+        // replace the engine and database handles from this same file-backed path.
+        database.close()
+    }
 }
 
 private class MetadataApi {
@@ -359,6 +407,13 @@ private class MetadataApi {
     var failDetails = false
     var failCover = false
     var detailRequests = 0
+    var holdAfterFirstStream = false
+    var unreachable = false
+    var remoteCallCount = 0
+    private val firstStream = CompletableDeferred<Unit>()
+    private val releaseStream = CompletableDeferred<Unit>()
+    suspend fun awaitFirstStream() = firstStream.await()
+    fun releaseStream() { releaseStream.complete(Unit) }
     val service: AudiobookshelfApi = Proxy.newProxyInstance(
         AudiobookshelfApi::class.java.classLoader,
         arrayOf(AudiobookshelfApi::class.java),
@@ -369,12 +424,20 @@ private class MetadataApi {
                     loginSequence += 1
                     response(LoginResponse(ApiUser(id = "account-${request.username}", token = "token-$loginSequence")))
                 }
-                "getAudioFileStream" -> response("${args.orEmpty()[1]}-bytes".toResponseBody("audio/mpeg".toMediaType()))
+                "getAudioFileStream" -> {
+                    remoteCallCount += 1
+                    firstStream.complete(Unit)
+                    if (unreachable) failure() else response("${args.orEmpty()[1]}-bytes".toResponseBody("audio/mpeg".toMediaType()))
+                }
                 "getItem" -> {
+                    remoteCallCount += 1
                     detailRequests += 1
                     if (failDetails) failure() else response(expanded(args.orEmpty()[0] as String))
                 }
-                "getCoverImage" -> if (failCover) failure<ResponseBody>() else response("cover".toResponseBody("image/jpeg".toMediaType()))
+                "getCoverImage" -> {
+                    remoteCallCount += 1
+                    if (failCover || unreachable) failure<ResponseBody>() else response("cover".toResponseBody("image/jpeg".toMediaType()))
+                }
                 "toString" -> "MetadataApi"
                 "hashCode" -> System.identityHashCode(proxy)
                 "equals" -> proxy === args.orEmpty().singleOrNull()

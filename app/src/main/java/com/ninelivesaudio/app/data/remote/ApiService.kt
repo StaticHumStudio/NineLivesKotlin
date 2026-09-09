@@ -175,6 +175,24 @@ internal fun namespaceIncomingBook(
     libraryId = rawLibraryId?.takeIf { it.isNotBlank() }?.let(scope::encodeIncoming),
 )
 
+/** Listening history arrives with server IDs and must match owner-scoped catalog IDs. */
+internal fun namespaceIncomingListeningSession(
+    ownerKey: String,
+    session: ApiListeningSession,
+): ListeningSession = ListeningSession(
+    id = session.id,
+    libraryItemId = RemoteIdCodec.encode(ownerKey, session.libraryItemId),
+    currentTime = session.currentTime.seconds,
+    timeListening = session.timeListening.seconds,
+    startedAt = normalizeEpoch(session.startedAt),
+    updatedAt = normalizeEpoch(session.updatedAt),
+    displayTitle = session.displayTitle,
+)
+
+/** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
+private fun normalizeEpoch(value: Long): Long =
+    if (value in 1..999_999_999_999L) value * 1000 else value
+
 /** A raw or foreign durable ID is not an authorization to make a catalog request. */
 internal fun catalogEgressId(scope: ActiveRemoteScope, encodedId: String): String? =
     scope.decodeForEgress(encodedId)
@@ -1312,8 +1330,9 @@ class ApiService @Inject constructor(
             Log.w(TAG, "getListeningSessions failed", error)
             lastError = "Failed to load listening sessions: ${error.message}"
         }) {
-            val frozen = captureFrozenRemoteRequest()
+            val scope = captureActiveRemoteScope()
                 ?: return@remoteResultCatching RemoteResult.Failed("auth session changed")
+            val frozen = scope.frozenRequest
             val result = runPaginatedFetch(
                 limit = itemsPerPage,
                 itemKey = { it.id },
@@ -1335,7 +1354,9 @@ class ApiService @Inject constructor(
                             PageOutcome.Stopped("page $page: empty body")
                         } else {
                             PageOutcome.Page(
-                                results = body.sessions.map(::mapListeningSession),
+                                results = body.sessions.map {
+                                    namespaceIncomingListeningSession(scope.ownerKey, it)
+                                },
                                 total = body.total,
                                 reportedPage = body.page.takeIf { body.numPages > 0 },
                                 reportedPageCount = body.numPages.takeIf { it > 0 },
@@ -1344,27 +1365,12 @@ class ApiService @Inject constructor(
                     }
                 } ?: PageOutcome.Stopped("page $page: auth session changed")
             }
-            if (isCurrentFrozenRemoteRequest(frozen)) {
+            if (isCurrentActiveRemoteScope(scope)) {
                 result.map { sessions -> sessions.sortedByDescending { it.startedAt } }
             } else {
                 RemoteResult.Failed("auth session changed")
             }
         }
-    }
-
-    private fun mapListeningSession(session: ApiListeningSession): ListeningSession = ListeningSession(
-        id = session.id,
-        libraryItemId = session.libraryItemId,
-        currentTime = session.currentTime.seconds,
-        timeListening = session.timeListening.seconds,
-        startedAt = normalizeEpoch(session.startedAt),
-        updatedAt = normalizeEpoch(session.updatedAt),
-        displayTitle = session.displayTitle,
-    )
-
-    /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
-    private fun normalizeEpoch(value: Long): Long {
-        return if (value in 1..999_999_999_999L) value * 1000 else value
     }
 
     // ─── Bookmarks ───────────────────────────────────────────────────────

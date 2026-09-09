@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.service.download
 import com.ninelivesaudio.app.domain.model.AudioFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.time.Duration.Companion.seconds
@@ -35,28 +36,73 @@ class DownloadPoliciesTest {
     // ─── downloadFolderName ───────────────────────────────────────────────
 
     @Test
-    fun `folder name combines author and title`() {
-        assertEquals("Jane Doe - My Book", downloadFolderName("Jane Doe", "My Book", "id1"))
+    fun `folder name retains the human label before its stable identity`() {
+        val folder = downloadFolderName("Jane Doe", "My Book", "scoped-id1")
+
+        assertTrue(folder.startsWith("Jane Doe - My Book"))
+        assertTrue(folder.endsWith("scoped-id1"))
     }
 
     @Test
-    fun `folder name omits the Unknown Author placeholder`() {
-        assertEquals("My Book", downloadFolderName("Unknown Author", "My Book", "id1"))
+    fun `folder name omits the Unknown Author placeholder without dropping identity`() {
+        val folder = downloadFolderName("Unknown Author", "My Book", "scoped-id1")
+
+        assertTrue(folder.startsWith("My Book"))
+        assertTrue(folder.endsWith("scoped-id1"))
     }
 
     @Test
-    fun `folder name omits a blank author`() {
-        assertEquals("My Book", downloadFolderName("", "My Book", "id1"))
+    fun `folder name omits a blank author without dropping identity`() {
+        val folder = downloadFolderName("", "My Book", "scoped-id1")
+
+        assertTrue(folder.startsWith("My Book"))
+        assertTrue(folder.endsWith("scoped-id1"))
     }
 
     @Test
-    fun `folder name falls back to id when author and title are blank`() {
+    fun `folder name falls back to its identity when author and title are blank`() {
         assertEquals("id1", downloadFolderName("", "", "id1"))
     }
 
     @Test
-    fun `folder name sanitizes illegal characters in author and title`() {
-        assertEquals("A_B - C_D", downloadFolderName("A/B", "C:D", "id1"))
+    fun `folder name sanitizes its label without dropping identity`() {
+        val folder = downloadFolderName("A/B", "C:D", "scoped-id1")
+
+        assertTrue(folder.startsWith("A_B - C_D"))
+        assertTrue(folder.endsWith("scoped-id1"))
+    }
+
+    @Test
+    fun `same owner same title different raw ids keep separate scoped directories`() {
+        val firstScope = "https___abs.example|owner-a|raw-book-1"
+        val secondScope = "https___abs.example|owner-a|raw-book-2"
+        val first = downloadFolderName("Same Author", "Same Title", firstScope)
+        val second = downloadFolderName("Same Author", "Same Title", secondScope)
+
+        assertNotEquals(first, second)
+        assertTrue(first.endsWith(firstScope))
+        assertTrue(second.endsWith(secondScope))
+    }
+
+    @Test
+    fun `different owners same raw id keep separate scoped directories`() {
+        val ownerA = "https___abs.example|owner-a|raw-book"
+        val ownerB = "https___abs.example|owner-b|raw-book"
+        val first = downloadFolderName("Same Author", "Same Title", ownerA)
+        val second = downloadFolderName("Same Author", "Same Title", ownerB)
+
+        assertNotEquals(first, second)
+        assertTrue(first.endsWith(ownerA))
+        assertTrue(second.endsWith(ownerB))
+    }
+
+    @Test
+    fun `identity suffix survives a maximum length label`() {
+        val scope = "https___abs.example|owner-a|raw-book"
+        val folder = downloadFolderName("a".repeat(200), "b".repeat(200), scope)
+
+        assertTrue(folder.length <= 200)
+        assertTrue(folder.endsWith(scope))
     }
 
     // ─── estimateTotalBytes ───────────────────────────────────────────────

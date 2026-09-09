@@ -258,6 +258,7 @@ class C3LegacyCacheClaimRuntimeCanaryInstrumentedTest {
         val release = CountDownLatch(1)
         val monitorEntered = CountDownLatch(1)
         replaceEncryptedPreferences(settings, BlockingReadPreferences(backing, "app_settings", entered, release))
+        resetSerializedSettingsLoaded(settings)
         apiService.setCommittedScopeMonitorObserverForTest { monitorEntered.countDown() }
         val claim = async(Dispatchers.IO) { coordinator().claimIfEligible() }
         assertTrue(entered.await(10, TimeUnit.SECONDS))
@@ -483,6 +484,15 @@ class C3LegacyCacheClaimRuntimeCanaryInstrumentedTest {
     private fun replaceEncryptedPreferences(manager: SettingsManager, replacement: SharedPreferences) {
         val field = SettingsManager::class.java.getDeclaredField("encryptedPrefs" + "$" + "delegate").apply { isAccessible = true }
         field.set(manager, lazyOf(replacement))
+    }
+
+    private fun resetSerializedSettingsLoaded(manager: SettingsManager) {
+        val stateField = SettingsManager::class.java.getDeclaredField("serializedState").apply { isAccessible = true }
+        val state = stateField.get(manager)
+        state.javaClass.getDeclaredField("loaded").apply {
+            isAccessible = true
+            setBoolean(state, false)
+        }
     }
 
     private data class GraphRows(

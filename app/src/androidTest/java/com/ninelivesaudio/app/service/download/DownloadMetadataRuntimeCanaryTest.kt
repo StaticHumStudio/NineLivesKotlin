@@ -397,7 +397,10 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
     private val settings = SettingsManager(context)
     val api = MetadataApi()
     private val apiService = ApiService(api.service, AuthInterceptor(settings), settings)
-    val root = File(context.filesDir, "downloads")
+    val root = File(
+        requireNotNull(context.getExternalFilesDir(null)) { "Fixture requires app-specific external storage" },
+        "download-metadata-${UUID.randomUUID()}",
+    )
     private var boundaryEntered = CompletableDeferred<Unit>()
     private var releaseBoundary = CompletableDeferred<Unit>()
     private val entitlements = EntitlementRepository(
@@ -503,6 +506,7 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
 
     fun close() {
         database.close()
+        root.deleteRecursively()
         context.clear()
     }
 

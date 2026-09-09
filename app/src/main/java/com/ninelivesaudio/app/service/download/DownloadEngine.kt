@@ -333,6 +333,8 @@ class DownloadEngine @Inject constructor(
             val body = response.body() ?: return null
             val bytes = body.use { it.bytes() }
             bytes.takeIf { it.isNotEmpty() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (e: Exception) {
             Log.w(TAG, "fetchCoverBytes: cover fetch failed for ${book.id}: ${e.message}")
             null
@@ -343,6 +345,8 @@ class DownloadEngine @Inject constructor(
     internal suspend fun fetchFullBookDetails(scope: ActiveRemoteScope, audioBookId: String): AudioBook? {
         return try {
             apiService.getAudioBook(scope, audioBookId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (_: Exception) {
             null
         }

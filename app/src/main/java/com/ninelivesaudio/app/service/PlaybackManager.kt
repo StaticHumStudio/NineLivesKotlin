@@ -2109,6 +2109,8 @@ class PlaybackManager @Inject internal constructor(
     }
 
     private fun uriFromLocalPath(path: String): Uri {
+        val file = File(path)
+        if (file.isAbsolute) return Uri.fromFile(file)
         val parsed = Uri.parse(path)
         return if (parsed.scheme.isNullOrBlank()) {
             Uri.fromFile(File(path))
@@ -2118,6 +2120,8 @@ class PlaybackManager @Inject internal constructor(
     }
 
     private fun fileFromLocalPath(path: String): File? {
+        val file = File(path)
+        if (file.isAbsolute) return file
         val parsed = Uri.parse(path)
         return when (parsed.scheme?.lowercase()) {
             null, "" -> File(path)

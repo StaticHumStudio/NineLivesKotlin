@@ -155,7 +155,7 @@ private class DelayedLibraryFilterDao {
     val audioBookDao: AudioBookDao = proxy { method, args ->
         when (method.name) {
             "getFilteredBooks" -> filteredBooks(args)
-            "countByLibrary" -> 2
+            "countByLibrary", "countByLibraryAndSource" -> 2
             "getDistinctSeries", "getDistinctAuthors", "getDistinctGenresJson" -> emptyList<String>()
             "toString" -> "DelayedLibraryFilterDao"
             "hashCode" -> System.identityHashCode(this)

@@ -307,7 +307,7 @@ class DownloadMetadataRuntimeCanaryTest {
 private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
     private val context = MetadataContext(baseContext)
     private val databaseFile = File(context.filesDir, "metadata-canary.db")
-    val database: AppDatabase = Room.databaseBuilder(context, AppDatabase::class.java, databaseFile.absolutePath).allowMainThreadQueries().build()
+    var database: AppDatabase = openDatabase()
     private val settings = SettingsManager(context)
     val api = MetadataApi()
     private val apiService = ApiService(api.service, AuthInterceptor(settings), settings)
@@ -329,7 +329,7 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
         reminderScheduler = TrialReminderScheduler { },
         nowEpochMs = { 0L },
     )
-    val engine = DownloadEngine(context, database.downloadItemDao(), database.audioBookDao(), api.service, apiService, settings)
+    var engine = newEngine()
     val manager = DownloadManager(
         context, database.downloadItemDao(), database.audioBookDao(), engine,
         DownloadSlotStore(database.downloadItemDao(), database.audioBookDao(), database.playbackProgressDao(), entitlements,
@@ -396,10 +396,25 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
     }
 
     fun reopenRoomAndEngine() {
-        // The durable reopen is intentionally a fixture operation. GREEN must
-        // replace the engine and database handles from this same file-backed path.
         database.close()
+        database = openDatabase()
+        engine = newEngine()
     }
+
+    private fun openDatabase(): AppDatabase = Room.databaseBuilder(
+        context,
+        AppDatabase::class.java,
+        databaseFile.absolutePath,
+    ).allowMainThreadQueries().build()
+
+    private fun newEngine() = DownloadEngine(
+        context,
+        database.downloadItemDao(),
+        database.audioBookDao(),
+        api.service,
+        apiService,
+        settings,
+    )
 }
 
 private class MetadataApi {

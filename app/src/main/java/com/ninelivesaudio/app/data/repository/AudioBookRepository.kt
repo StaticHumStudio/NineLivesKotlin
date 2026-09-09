@@ -30,6 +30,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
 
+/** Detail reads require two valid envelopes, not merely a namespaced book ID. */
+internal fun isVisibleActiveRemoteBook(
+    scope: ActiveRemoteScope,
+    bookId: String,
+    libraryId: String?,
+): Boolean = scope.decodeForEgress(bookId) != null &&
+    libraryId?.let(scope::decodeForEgress) != null
+
 @Singleton
 class AudioBookRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -75,7 +83,9 @@ class AudioBookRepository @Inject constructor(
         .flatMapLatest { scope ->
             when {
                 scope?.decodeForEgress(id) != null -> audioBookDao.observeById(id)
-                    .map { row -> row?.takeIf { it.isLocal == 0 && scope.decodeForEgress(it.id) != null }?.toDomain() }
+                    .map { row -> row?.takeIf {
+                        it.isLocal == 0 && isVisibleActiveRemoteBook(scope, it.id, it.libraryId)
+                    }?.toDomain() }
                 id.startsWith("nlr1:") -> flowOf(null)
                 else -> audioBookDao.observeById(id).map { row -> row?.takeIf { it.isLocal == 1 }?.toDomain() }
             }
@@ -129,7 +139,9 @@ class AudioBookRepository @Inject constructor(
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =
         activeRemoteScopeFor(id)?.let { scope ->
-            audioBookDao.getById(id)?.takeIf { it.isLocal == 0 && scope.decodeForEgress(it.id) != null }?.toDomain()
+            audioBookDao.getById(id)?.takeIf {
+                it.isLocal == 0 && isVisibleActiveRemoteBook(scope, it.id, it.libraryId)
+            }?.toDomain()
         } ?: audioBookDao.getById(id)?.takeIf { it.isLocal == 1 }?.toDomain()
 
     /** Search audiobooks by title or author. */

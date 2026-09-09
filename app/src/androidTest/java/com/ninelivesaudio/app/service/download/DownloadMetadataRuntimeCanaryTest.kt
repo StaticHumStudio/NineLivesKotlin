@@ -264,7 +264,7 @@ class DownloadMetadataRuntimeCanaryTest {
             val staleItem = fixture.item(scope.encodeIncoming("legacy-backfill-stale-download"), stale.id)
                 .copy(status = DownloadStatus.Completed)
             fixture.seed(stale, staleItem)
-            fixture.armBoundaryPause()
+            fixture.armBoundaryPause(MetadataBoundaryOperation.BACKFILL)
             val rerun = async(Dispatchers.Default) { fixture.manager.backfillDownloadedMetadata() }
             fixture.awaitBoundary()
             fixture.database.audioBookDao().deleteById(stale.id)
@@ -286,7 +286,7 @@ class DownloadMetadataRuntimeCanaryTest {
             val book = fixture.book(scope.encodeIncoming("held-completion"), "Held completion").copy(coverPath = "/cover")
             val item = fixture.item(scope.encodeIncoming("held-completion-download"), book.id)
             fixture.seed(book, item)
-            fixture.armBoundaryPause()
+            fixture.armBoundaryPause(MetadataBoundaryOperation.COMPLETION)
             val completion = async(Dispatchers.Default) { fixture.engine.download(item, book, scope) { _, _, _ -> } }
             fixture.awaitBoundary()
             val delete = async(Dispatchers.Default) { fixture.manager.deleteDownload(book.id) }
@@ -315,7 +315,7 @@ class DownloadMetadataRuntimeCanaryTest {
             val book = fixture.book(scope.encodeIncoming("stale-completion"), "Stale completion").copy(coverPath = "/cover")
             val item = fixture.item(scope.encodeIncoming("stale-completion-download"), book.id)
             fixture.seed(book, item)
-            fixture.armBoundaryPause()
+            fixture.armBoundaryPause(MetadataBoundaryOperation.COMPLETION)
             val completion = async(Dispatchers.Default) { fixture.engine.download(item, book, scope) { _, _, _ -> } }
             fixture.awaitBoundary()
             val itemBefore = requireNotNull(fixture.database.downloadItemDao().getById(item.id))
@@ -472,10 +472,10 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
         return directory.listFiles().orEmpty().associate { it.name to it.readBytes() }
     }
 
-    fun armBoundaryPause() {
+    fun armBoundaryPause(expectedOperation: MetadataBoundaryOperation) {
         boundaryEntered = CompletableDeferred()
         releaseBoundary = CompletableDeferred()
-        engine.metadataBoundaryObserver = ::pauseMetadataBoundary
+        engine.metadataBoundaryObserver = { operation -> pauseMetadataBoundary(expectedOperation, operation) }
     }
 
     suspend fun awaitBoundary() {
@@ -486,7 +486,11 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
         releaseBoundary.complete(Unit)
     }
 
-    suspend fun pauseMetadataBoundary() {
+    suspend fun pauseMetadataBoundary(
+        expectedOperation: MetadataBoundaryOperation,
+        operation: MetadataBoundaryOperation,
+    ) {
+        if (operation != expectedOperation) return
         boundaryEntered.complete(Unit)
         releaseBoundary.await()
     }

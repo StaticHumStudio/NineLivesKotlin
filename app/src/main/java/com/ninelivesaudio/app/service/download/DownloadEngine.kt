@@ -29,6 +29,12 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal enum class MetadataBoundaryOperation {
+    COMPLETION,
+    BACKFILL,
+    DELETE,
+}
+
 /**
  * Streams an audiobook's audio files to disk: `.part`-then-atomic-rename,
  * skip-already-finished, per-file retry with exponential backoff, throttled
@@ -57,7 +63,7 @@ class DownloadEngine @Inject constructor(
 
     /** Timing receipt for the real metadata publication boundary. */
     @Volatile
-    internal var metadataBoundaryObserver: (suspend () -> Unit)? = null
+    internal var metadataBoundaryObserver: (suspend (MetadataBoundaryOperation) -> Unit)? = null
 
     /**
      * Download every audio file of [audioBook] for [item]. Persists status and
@@ -272,7 +278,7 @@ class DownloadEngine @Inject constructor(
         // Fetch cover bytes outside the metadata boundary. The bytes and the
         // resulting cover path are committed with the canonical snapshot below.
         val coverBytes = fetchCoverBytes(scope, book)
-        withMetadataPathBoundary(scope, download) {
+        withMetadataPathBoundary(scope, download, MetadataBoundaryOperation.COMPLETION) {
             val currentItem = downloadItemDao.getRemoteByIdForOwner(download.id, scope.idPrefix)?.toDomain()
                 ?: return@withMetadataPathBoundary
             if (currentItem.status != DownloadStatus.Completed || !canMutate(scope, currentItem)) {
@@ -345,13 +351,14 @@ class DownloadEngine @Inject constructor(
     internal suspend fun <T> withMetadataPathBoundary(
         scope: ActiveRemoteScope,
         item: DownloadItem,
+        operation: MetadataBoundaryOperation,
         block: suspend () -> T,
     ): T? = metadataPathMutex.withLock {
         if (!canMutate(scope, item)) {
             null
         } else {
-            metadataBoundaryObserver?.invoke()
-            block()
+            metadataBoundaryObserver?.invoke(operation)
+            if (!canMutate(scope, item)) null else block()
         }
     }
 

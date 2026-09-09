@@ -77,7 +77,9 @@ class SelfSignedCertTrustInstrumentedTest {
         }
 
         coldSettings.updateSettings { it.copy(allowSelfSignedCertificates = true) }
-        val reenabledClient = configuredClient(SettingsManager(context))
+        val reenabledSettings = SettingsManager(context)
+        val reenabledClient = configuredClient(reenabledSettings)
+        reenabledSettings.loadSettings()
         reenabledClient.newCall(Request.Builder().url("$FIXTURE_URL/healthcheck").build()).execute().use {
             assertEquals(200, it.code)
         }

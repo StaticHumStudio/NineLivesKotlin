@@ -7,7 +7,10 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "PendingProgressUpdates",
-    indices = [Index(value = ["ItemId"], name = "idx_pending_item")]
+    indices = [
+        Index(value = ["ItemId"], name = "idx_pending_item"),
+        Index(value = ["OwnerKey", "ItemId", "Id"], name = "idx_pending_owner_item_id"),
+    ],
 )
 data class PendingProgressEntity(
     @PrimaryKey(autoGenerate = true)
@@ -16,6 +19,10 @@ data class PendingProgressEntity(
 
     @ColumnInfo(name = "ItemId")
     val itemId: String,
+
+    /** Null only for v8 rows whose remote owner cannot be recovered safely. */
+    @ColumnInfo(name = "OwnerKey")
+    val ownerKey: String? = null,
 
     @ColumnInfo(name = "CurrentTime", defaultValue = "0")
     val currentTime: Double = 0.0,

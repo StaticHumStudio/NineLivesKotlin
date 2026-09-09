@@ -98,6 +98,18 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // v8 rows have no durable account provenance. Preserve that fact as NULL
+        // instead of assigning whichever account happens to be active next.
+        db.execSQL("ALTER TABLE PendingProgressUpdates ADD COLUMN OwnerKey TEXT")
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_pending_owner_item_id " +
+                "ON PendingProgressUpdates (OwnerKey, ItemId, Id)",
+        )
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -110,4 +122,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_5_6,
     MIGRATION_6_7,
     MIGRATION_7_8,
+    MIGRATION_8_9,
 )

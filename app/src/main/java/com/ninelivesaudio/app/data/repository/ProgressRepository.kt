@@ -6,6 +6,7 @@ import com.ninelivesaudio.app.data.local.dao.PendingProgressDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.domain.model.UserProgress
 import com.ninelivesaudio.app.domain.util.toEpochMillis
@@ -19,123 +20,159 @@ import javax.inject.Singleton
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+internal const val LOCAL_PROGRESS_OWNER_KEY = "local-progress-v1"
+
+/** The complete ownership key for every mutable pending-progress lifetime. */
+internal data class ProgressIdentity(
+    val ownerKey: String,
+    val itemId: String,
+)
+
+/** Only confirmed local work or an exact active remote scope may become executable. */
+internal sealed interface ProgressScope {
+    data object Local : ProgressScope
+    data class Remote(val scope: ActiveRemoteScope) : ProgressScope
+}
+
+/**
+ * Resolves the only durable identity accepted by C2a. Remote IDs must already
+ * be C3 envelopes for the exact captured scope, and a stale scope resolves to
+ * nothing. There is deliberately no ownerless remote variant.
+ */
+internal fun resolveProgressIdentity(
+    progressScope: ProgressScope,
+    itemId: String,
+    localItemIsConfirmed: Boolean = true,
+    isRemoteScopeCurrent: (ActiveRemoteScope) -> Boolean,
+): ProgressIdentity? = when (progressScope) {
+    ProgressScope.Local -> if (localItemIsConfirmed) {
+        ProgressIdentity(LOCAL_PROGRESS_OWNER_KEY, itemId)
+    } else {
+        null
+    }
+    is ProgressScope.Remote -> progressScope.scope
+        .takeIf(isRemoteScopeCurrent)
+        ?.decodeForEgress(itemId)
+        ?.let { ProgressIdentity(progressScope.scope.ownerKey, itemId) }
+}
+
 internal class PendingProgressQueueOwner {
     private val mutex = Mutex()
     private val ownerLock = Any()
-    private val itemMutexes = mutableMapOf<String, Mutex>()
-    private val itemGenerations = mutableMapOf<String, Long>()
+    private val itemMutexes = mutableMapOf<ProgressIdentity, Mutex>()
+    private val itemGenerations = mutableMapOf<ProgressIdentity, Long>()
     private val rowTokens = mutableMapOf<Long, Token>()
     private val activeTransitionMutex = Mutex()
-    private var activeItemId: String? = null
-    private val terminalImportLeases = mutableMapOf<String, Int>()
-    private val importGenerations = mutableMapOf<String, Long>()
+    private var activeIdentity: ProgressIdentity? = null
+    private val terminalImportLeases = mutableMapOf<ProgressIdentity, Int>()
+    private val importGenerations = mutableMapOf<ProgressIdentity, Long>()
 
-    data class Token(val itemId: String, val generation: Long)
-    data class ImportToken(val generations: Map<String, Long>)
+    data class Token(val identity: ProgressIdentity, val generation: Long)
+    data class ImportToken(val generations: Map<ProgressIdentity, Long>)
 
-    private fun itemMutex(itemId: String): Mutex = synchronized(ownerLock) {
-        itemMutexes.getOrPut(itemId, ::Mutex)
+    private fun itemMutex(identity: ProgressIdentity): Mutex = synchronized(ownerLock) {
+        itemMutexes.getOrPut(identity, ::Mutex)
     }
 
     suspend fun <T> withLock(block: suspend () -> T): T =
         mutex.withLock { block() }
 
-    suspend fun <T> withItemLock(itemId: String, block: suspend () -> T): T =
-        itemMutex(itemId).withLock { block() }
+    suspend fun <T> withItemLock(identity: ProgressIdentity, block: suspend () -> T): T =
+        itemMutex(identity).withLock { block() }
 
     suspend fun <T> withItemLockIfCurrent(
-        itemId: String,
+        identity: ProgressIdentity,
         isCurrent: () -> Boolean,
         block: suspend () -> T,
-    ): T? = itemMutex(itemId).withLock {
+    ): T? = itemMutex(identity).withLock {
         if (isCurrent()) block() else null
     }
 
-    suspend fun <T> withItemLockIfInactive(itemId: String, block: suspend () -> T): T? =
-        itemMutex(itemId).withLock {
+    suspend fun <T> withItemLockIfInactive(identity: ProgressIdentity, block: suspend () -> T): T? =
+        itemMutex(identity).withLock {
             if (
                 synchronized(ownerLock) {
-                    activeItemId != itemId && (terminalImportLeases[itemId] ?: 0) == 0
+                    activeIdentity != identity && (terminalImportLeases[identity] ?: 0) == 0
                 }
             ) block() else null
         }
 
-    suspend fun <T> withTerminalImportLease(itemId: String, block: suspend () -> T): T {
+    suspend fun <T> withTerminalImportLease(identity: ProgressIdentity, block: suspend () -> T): T {
         synchronized(ownerLock) {
-            terminalImportLeases[itemId] = (terminalImportLeases[itemId] ?: 0) + 1
+            terminalImportLeases[identity] = (terminalImportLeases[identity] ?: 0) + 1
         }
         return try {
             block()
         } finally {
             synchronized(ownerLock) {
-                val remaining = (terminalImportLeases[itemId] ?: 1) - 1
-                if (remaining == 0) terminalImportLeases.remove(itemId)
-                else terminalImportLeases[itemId] = remaining
+                val remaining = (terminalImportLeases[identity] ?: 1) - 1
+                if (remaining == 0) terminalImportLeases.remove(identity)
+                else terminalImportLeases[identity] = remaining
             }
         }
     }
 
     suspend fun setActiveItem(
-        itemId: String?,
+        identity: ProgressIdentity?,
         isCurrent: () -> Boolean = { true },
     ): Boolean = activeTransitionMutex.withLock {
         if (!isCurrent()) return@withLock false
-        if (itemId == null) {
-            publishActiveItem(null)
+        if (identity == null) {
+            publishActiveIdentity(null)
             true
         } else {
-            itemMutex(itemId).withLock {
+            itemMutex(identity).withLock {
                 if (!isCurrent()) {
                     false
                 } else {
-                    publishActiveItem(itemId)
+                    publishActiveIdentity(identity)
                     true
                 }
             }
         }
     }
 
-    suspend fun clearActiveItemIf(itemId: String): Boolean = activeTransitionMutex.withLock {
-        itemMutex(itemId).withLock {
-            if (synchronized(ownerLock) { activeItemId != itemId }) {
+    suspend fun clearActiveItemIf(identity: ProgressIdentity): Boolean = activeTransitionMutex.withLock {
+        itemMutex(identity).withLock {
+            if (synchronized(ownerLock) { activeIdentity != identity }) {
                 false
             } else {
-                publishActiveItem(null)
+                publishActiveIdentity(null)
                 true
             }
         }
     }
 
-    private fun publishActiveItem(itemId: String?) = synchronized(ownerLock) {
-        val previous = activeItemId
-        activeItemId = itemId
-        listOfNotNull(previous, itemId).distinct().forEach(::incrementImportGeneration)
+    private fun publishActiveIdentity(identity: ProgressIdentity?) = synchronized(ownerLock) {
+        val previous = activeIdentity
+        activeIdentity = identity
+        listOfNotNull(previous, identity).distinct().forEach(::incrementImportGeneration)
     }
 
     fun importToken(): ImportToken = synchronized(ownerLock) {
         ImportToken(importGenerations.toMap())
     }
 
-    fun importTokenIsCurrent(itemId: String, token: ImportToken): Boolean =
+    fun importTokenIsCurrent(identity: ProgressIdentity, token: ImportToken): Boolean =
         synchronized(ownerLock) {
-            (token.generations[itemId] ?: 0L) == (importGenerations[itemId] ?: 0L)
+            (token.generations[identity] ?: 0L) == (importGenerations[identity] ?: 0L)
         }
 
-    fun localWriteOccurred(itemId: String) {
-        synchronized(ownerLock) { incrementImportGeneration(itemId) }
+    fun localWriteOccurred(identity: ProgressIdentity) {
+        synchronized(ownerLock) { incrementImportGeneration(identity) }
     }
 
-    private fun incrementImportGeneration(itemId: String) {
-        importGenerations[itemId] = (importGenerations[itemId] ?: 0L) + 1L
+    private fun incrementImportGeneration(identity: ProgressIdentity) {
+        importGenerations[identity] = (importGenerations[identity] ?: 0L) + 1L
     }
 
-    fun token(itemId: String): Token = synchronized(ownerLock) {
-        Token(itemId, itemGenerations[itemId] ?: 0L)
+    fun token(identity: ProgressIdentity): Token = synchronized(ownerLock) {
+        Token(identity, itemGenerations[identity] ?: 0L)
     }
 
-    fun invalidate(itemId: String) {
+    fun invalidate(identity: ProgressIdentity) {
         synchronized(ownerLock) {
-            itemGenerations[itemId] = (itemGenerations[itemId] ?: 0L) + 1L
+            itemGenerations[identity] = (itemGenerations[identity] ?: 0L) + 1L
         }
     }
 
@@ -145,16 +182,16 @@ internal class PendingProgressQueueOwner {
 
     fun rowIsCurrent(rowId: Long): Boolean = synchronized(ownerLock) {
         val token = rowTokens[rowId] ?: return@synchronized true
-        token.generation == (itemGenerations[token.itemId] ?: 0L)
+        token.generation == (itemGenerations[token.identity] ?: 0L)
     }
 
     fun forgetRows(rowIds: Collection<Long>) {
         synchronized(ownerLock) { rowIds.forEach(rowTokens::remove) }
     }
 
-    fun forgetItemRows(itemId: String) {
+    fun forgetItemRows(identity: ProgressIdentity) {
         synchronized(ownerLock) {
-            rowTokens.entries.removeAll { (_, token) -> token.itemId == itemId }
+            rowTokens.entries.removeAll { (_, token) -> token.identity == identity }
         }
     }
 }
@@ -192,6 +229,10 @@ class ProgressRepository @Inject constructor(
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
 
+    // C2b replaces string-only caller bridges with captured remote scopes.
+    // C2a's string-only remote entry points below are fail closed.
+    private fun localIdentity(itemId: String) = ProgressIdentity(LOCAL_PROGRESS_OWNER_KEY, itemId)
+
     // ─── Local Playback Progress ─────────────────────────────────────────
 
     suspend fun savePlaybackProgress(
@@ -199,7 +240,7 @@ class ProgressRepository @Inject constructor(
         position: Duration,
         isFinished: Boolean,
         onPersisted: suspend () -> Unit = {},
-    ) = pendingProgressQueueOwner.withItemLock(audioBookId) {
+    ) = pendingProgressQueueOwner.withItemLock(localIdentity(audioBookId)) {
         withContext(NonCancellable) {
             database.withTransaction {
                 savePlaybackProgressLocked(audioBookId, position, isFinished)
@@ -223,7 +264,7 @@ class ProgressRepository @Inject constructor(
                 )
             )
         } finally {
-            pendingProgressQueueOwner.localWriteOccurred(audioBookId)
+            pendingProgressQueueOwner.localWriteOccurred(localIdentity(audioBookId))
         }
     }
 
@@ -245,16 +286,17 @@ class ProgressRepository @Inject constructor(
     // ─── Offline Queue ───────────────────────────────────────────────────
 
     internal fun pendingProgressToken(itemId: String): PendingProgressQueueOwner.Token =
-        pendingProgressQueueOwner.token(itemId)
+        pendingProgressQueueOwner.token(localIdentity(itemId))
 
     internal fun invalidatePendingProgressLifetime(itemId: String) {
-        pendingProgressQueueOwner.invalidate(itemId)
+        pendingProgressQueueOwner.invalidate(localIdentity(itemId))
     }
 
     suspend fun getPendingProgressEntries(): List<PendingProgressEntry> =
         pendingProgressQueueOwner.withLock {
             pendingProgressDao.getAll().map { entity ->
                 PendingProgressEntry(
+                    ownerKey = entity.ownerKey,
                     itemId = entity.itemId,
                     currentTime = entity.currentTime,
                     isFinished = entity.isFinished == 1,
@@ -265,7 +307,9 @@ class ProgressRepository @Inject constructor(
         }
 
     suspend fun getPendingProgressCount(): Int =
-        pendingProgressQueueOwner.withLock { pendingProgressDao.getCount() }
+        pendingProgressQueueOwner.withLock {
+            pendingProgressDao.countDeliverableForOwner(LOCAL_PROGRESS_OWNER_KEY)
+        }
 
     suspend fun clearPendingProgress() {
         pendingProgressQueueOwner.withLock {
@@ -279,24 +323,7 @@ class ProgressRepository @Inject constructor(
         progress: PlaybackProgressEntity,
         importToken: PendingProgressQueueOwner.ImportToken,
         onImported: suspend () -> Unit,
-    ): Boolean =
-        pendingProgressQueueOwner.withItemLockIfInactive(progress.audioBookId) {
-            pendingProgressQueueOwner.withLock {
-                if (!pendingProgressQueueOwner.importTokenIsCurrent(progress.audioBookId, importToken) ||
-                    !serverProgressMayReplaceLocal(
-                        hasPendingProgress = pendingProgressDao.getCountForItem(progress.audioBookId) > 0,
-                    )
-                ) {
-                    false
-                } else {
-                    database.withTransaction {
-                        playbackProgressDao.upsert(progress)
-                        onImported()
-                    }
-                    true
-                }
-            }
-        } ?: false
+    ): Boolean = false
 
     internal fun progressImportToken(): PendingProgressQueueOwner.ImportToken =
         pendingProgressQueueOwner.importToken()
@@ -304,15 +331,15 @@ class ProgressRepository @Inject constructor(
     internal suspend fun <T> withTerminalProgressOwnership(
         itemId: String,
         block: suspend () -> T,
-    ): T = pendingProgressQueueOwner.withTerminalImportLease(itemId, block)
+    ): T = pendingProgressQueueOwner.withTerminalImportLease(localIdentity(itemId), block)
 
     suspend fun setActiveProgressItem(
         itemId: String?,
         isCurrent: () -> Boolean = { true },
-    ): Boolean = pendingProgressQueueOwner.setActiveItem(itemId, isCurrent)
+    ): Boolean = pendingProgressQueueOwner.setActiveItem(itemId?.let(::localIdentity), isCurrent)
 
     suspend fun clearActiveProgressItemIf(itemId: String): Boolean =
-        pendingProgressQueueOwner.clearActiveItemIf(itemId)
+        pendingProgressQueueOwner.clearActiveItemIf(localIdentity(itemId))
 
     suspend fun savePushOrEnqueueProgress(
         itemId: String,
@@ -321,28 +348,7 @@ class ProgressRepository @Inject constructor(
         duration: Double,
         pushToServer: Boolean,
         onPersisted: suspend () -> Unit = {},
-    ): Boolean = pendingProgressQueueOwner.withItemLock(itemId) {
-        persistProgressAndEnqueueLocked(
-            itemId = itemId,
-            currentTime = currentTime,
-            isFinished = isFinished,
-            duration = duration,
-            onPersisted = onPersisted,
-        )
-        val pushed = if (pushToServer && progressCanBeDelivered(isFinished, duration)) {
-            try {
-                apiService.updateProgress(itemId, currentTime, isFinished, duration)
-            } catch (cancellation: kotlinx.coroutines.CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {
-                false
-            }
-        } else {
-            false
-        }
-        if (pushed) acknowledgePendingProgressLocked(itemId)
-        pushed
-    }
+    ): Boolean = false
 
     suspend fun saveSessionProgressOrEnqueue(
         itemId: String,
@@ -352,35 +358,49 @@ class ProgressRepository @Inject constructor(
         duration: Double,
         timeListened: Double,
         onPersisted: suspend () -> Unit = {},
-    ): Boolean = pendingProgressQueueOwner.withItemLock(itemId) {
-        persistProgressAndEnqueueLocked(
-            itemId = itemId,
-            currentTime = currentTime,
-            isFinished = isFinished,
-            duration = duration,
-            onPersisted = onPersisted,
-        )
-        acknowledgePendingFallbackOnSuccess(
-            deliver = {
-                try {
-                    apiService.syncSessionProgress(
-                        sessionId = sessionId,
-                        currentTime = currentTime,
-                        duration = duration,
-                        timeListened = timeListened,
-                    )
-                } catch (cancellation: kotlinx.coroutines.CancellationException) {
-                    throw cancellation
-                } catch (_: Exception) {
-                    false
-                }
-            },
-            acknowledge = { acknowledgePendingProgressLocked(itemId) },
-        )
+    ): Boolean = false
+
+    /**
+     * C2b's only C2a persistence seam. It validates a captured scope before and
+     * after obtaining the pair-keyed lock, then atomically writes the durable
+     * progress row and its owner-stamped pending row. C2a never dispatches it.
+     */
+    internal suspend fun saveScopedProgressAndEnqueue(
+        progressScope: ProgressScope,
+        itemId: String,
+        currentTime: Double,
+        isFinished: Boolean,
+        duration: Double,
+        localItemIsConfirmed: Boolean = true,
+        isRemoteScopeCurrent: (ActiveRemoteScope) -> Boolean,
+        onPersisted: suspend () -> Unit = {},
+    ): Boolean {
+        val identity = resolveProgressIdentity(
+            progressScope,
+            itemId,
+            localItemIsConfirmed,
+            isRemoteScopeCurrent,
+        ) ?: return false
+        return pendingProgressQueueOwner.withItemLock(identity) {
+            val currentIdentity = resolveProgressIdentity(
+                progressScope,
+                itemId,
+                localItemIsConfirmed,
+                isRemoteScopeCurrent,
+            ) ?: return@withItemLock false
+            persistProgressAndEnqueueLocked(
+                identity = currentIdentity,
+                currentTime = currentTime,
+                isFinished = isFinished,
+                duration = duration,
+                onPersisted = onPersisted,
+            )
+            true
+        }
     }
 
     private suspend fun persistProgressAndEnqueueLocked(
-        itemId: String,
+        identity: ProgressIdentity,
         currentTime: Double,
         isFinished: Boolean,
         duration: Double,
@@ -391,14 +411,16 @@ class ProgressRepository @Inject constructor(
             pendingProgressQueueOwner.withLock {
                 database.withTransaction {
                     pendingProgressDao.saveProgressAndEnqueue(
+                        ownerKey = identity.ownerKey,
                         progress = PlaybackProgressEntity(
-                            audioBookId = itemId,
+                            audioBookId = identity.itemId,
                             positionSeconds = currentTime,
                             isFinished = if (isFinished) 1 else 0,
                             updatedAt = timestamp,
                         ),
                         pending = PendingProgressEntity(
-                            itemId = itemId,
+                            itemId = identity.itemId,
+                            ownerKey = identity.ownerKey,
                             currentTime = currentTime,
                             isFinished = if (isFinished) 1 else 0,
                             duration = duration,
@@ -409,27 +431,25 @@ class ProgressRepository @Inject constructor(
                     onPersisted()
                 }
             }
-            pendingProgressQueueOwner.localWriteOccurred(itemId)
+            pendingProgressQueueOwner.localWriteOccurred(identity)
         }
     }
 
-    private suspend fun acknowledgePendingProgressLocked(itemId: String) {
+    private suspend fun acknowledgePendingProgressLocked(identity: ProgressIdentity) {
         withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
-                pendingProgressDao.deleteByItemId(itemId)
-                pendingProgressQueueOwner.forgetItemRows(itemId)
+                pendingProgressDao.deleteForOwnerAndItem(identity.ownerKey, identity.itemId)
+                pendingProgressQueueOwner.forgetItemRows(identity)
             }
-            pendingProgressQueueOwner.localWriteOccurred(itemId)
+            pendingProgressQueueOwner.localWriteOccurred(identity)
         }
     }
 
     // ─── Remote Progress ─────────────────────────────────────────────────
 
-    suspend fun fetchAllProgressFromServer(): List<UserProgress> =
-        apiService.getAllUserProgress()
+    suspend fun fetchAllProgressFromServer(): List<UserProgress> = emptyList()
 
-    suspend fun fetchProgressFromServer(itemId: String): UserProgress? =
-        apiService.getUserProgress(itemId)
+    suspend fun fetchProgressFromServer(itemId: String): UserProgress? = null
 
     suspend fun syncSessionProgress(
         itemId: String,
@@ -437,9 +457,7 @@ class ProgressRepository @Inject constructor(
         currentTime: Double,
         duration: Double,
         timeListened: Double = 0.0,
-    ) = pendingProgressQueueOwner.withItemLock(itemId) {
-        apiService.syncSessionProgress(sessionId, currentTime, duration, timeListened)
-    }
+    ): Boolean = false
 
     internal suspend fun syncSessionProgressIfCurrent(
         itemId: String,
@@ -448,103 +466,10 @@ class ProgressRepository @Inject constructor(
         duration: Double,
         timeListened: Double = 0.0,
         isCurrent: () -> Boolean,
-    ): Boolean? = pendingProgressQueueOwner.withItemLockIfCurrent(itemId, isCurrent) {
-        apiService.syncSessionProgress(sessionId, currentTime, duration, timeListened)
-    }
+    ): Boolean? = null
 
-    /** Flush all pending progress updates to the server. */
-    suspend fun flushPendingProgress(): Boolean {
-        val itemIds = pendingProgressQueueOwner.withLock {
-            pendingProgressDao.getAll().map { it.itemId }.distinct()
-        }
-        if (itemIds.isEmpty()) return true
-
-        // Group by item, push only the latest entry per item. On success, delete
-        // ALL fetched rows for that item so superseded older rows don't linger.
-        var allSuccess = true
-        for (itemId in itemIds) {
-            pendingProgressQueueOwner.withItemLock(itemId) {
-                var rows = pendingProgressQueueOwner.withLock {
-                    pendingProgressDao.getForItem(itemId)
-                }
-
-                var durableProgress = playbackProgressDao.getByAudioBookId(itemId)
-                val legacySnapshot = legacyProgressSnapshot(rows, durableProgress)
-                if (legacySnapshot != null) {
-                    val timestamp = System.currentTimeMillis().toIso8601()
-                    withContext(NonCancellable) {
-                        pendingProgressQueueOwner.withLock {
-                            pendingProgressDao.saveProgressAndEnqueue(
-                                progress = PlaybackProgressEntity(
-                                    audioBookId = itemId,
-                                    positionSeconds = legacySnapshot.currentTime,
-                                    isFinished = if (legacySnapshot.isFinished) 1 else 0,
-                                    updatedAt = timestamp,
-                                ),
-                                pending = PendingProgressEntity(
-                                    itemId = itemId,
-                                    currentTime = legacySnapshot.currentTime,
-                                    isFinished = if (legacySnapshot.isFinished) 1 else 0,
-                                    duration = legacySnapshot.duration,
-                                    isAtomic = 1,
-                                    timestamp = timestamp,
-                                ),
-                            )
-                            pendingProgressQueueOwner.forgetItemRows(itemId)
-                        }
-                        pendingProgressQueueOwner.localWriteOccurred(itemId)
-                    }
-                    rows = pendingProgressQueueOwner.withLock {
-                        pendingProgressDao.getForItem(itemId)
-                    }
-                    durableProgress = playbackProgressDao.getByAudioBookId(itemId)
-                }
-
-                if (queuedRowsAreSuperseded(rows, durableProgress)) {
-                    withContext(NonCancellable) {
-                        pendingProgressQueueOwner.withLock {
-                            pendingProgressDao.deleteByItemId(itemId)
-                            pendingProgressQueueOwner.forgetItemRows(itemId)
-                        }
-                        pendingProgressQueueOwner.localWriteOccurred(itemId)
-                    }
-                    return@withItemLock
-                }
-
-                val staleRowIds = rows.filterNot { row ->
-                    pendingProgressQueueOwner.rowIsCurrent(row.id)
-                }.map { it.id }
-                if (staleRowIds.isNotEmpty()) {
-                    pendingProgressQueueOwner.withLock {
-                        pendingProgressDao.deleteByIds(staleRowIds)
-                        pendingProgressQueueOwner.forgetRows(staleRowIds)
-                    }
-                }
-
-                val currentRows = rows.filterNot { it.id in staleRowIds }
-                val push = latestPushArgs(currentRows) ?: return@withItemLock
-                val success = apiService.updateProgress(
-                    itemId,
-                    push.currentTime,
-                    push.isFinished,
-                    push.duration,
-                )
-                if (success) {
-                    withContext(NonCancellable) {
-                        pendingProgressQueueOwner.withLock {
-                            pendingProgressDao.deleteByItemId(itemId)
-                            pendingProgressQueueOwner.forgetItemRows(itemId)
-                        }
-                        pendingProgressQueueOwner.localWriteOccurred(itemId)
-                    }
-                } else {
-                    allSuccess = false
-                }
-            }
-        }
-
-        return allSuccess
-    }
+    /** Remote delivery remains disabled until C2b carries a captured scope end to end. */
+    suspend fun flushPendingProgress(): Boolean = true
 
     // ─── Clear ───────────────────────────────────────────────────────────
 
@@ -555,6 +480,7 @@ class ProgressRepository @Inject constructor(
 }
 
 data class PendingProgressEntry(
+    val ownerKey: String?,
     val itemId: String,
     val currentTime: Double,
     val isFinished: Boolean,

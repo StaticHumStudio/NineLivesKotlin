@@ -15,7 +15,7 @@ import com.ninelivesaudio.app.data.local.entity.*
         LocalListeningSessionEntity::class,
         LocalBookmarkEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {

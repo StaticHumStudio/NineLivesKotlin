@@ -19,10 +19,14 @@ interface PendingProgressDao {
 
     @Transaction
     suspend fun saveProgressAndEnqueue(
+        ownerKey: String,
         progress: PlaybackProgressEntity,
         pending: PendingProgressEntity,
     ): Long {
-        deleteByItemId(pending.itemId)
+        require(pending.ownerKey == ownerKey) {
+            "Pending progress must carry the same owner as its live identity"
+        }
+        deleteForOwnerAndItem(ownerKey, pending.itemId)
         upsertPlaybackProgress(progress)
         return insert(pending)
     }
@@ -30,21 +34,24 @@ interface PendingProgressDao {
     @Query("SELECT * FROM PendingProgressUpdates ORDER BY Timestamp ASC")
     suspend fun getAll(): List<PendingProgressEntity>
 
-    @Query("SELECT COUNT(*) FROM PendingProgressUpdates")
-    suspend fun getCount(): Int
+    @Query("SELECT * FROM PendingProgressUpdates WHERE OwnerKey IS NULL ORDER BY Id ASC")
+    suspend fun getLegacyUnowned(): List<PendingProgressEntity>
 
-    @Query("SELECT COUNT(*) FROM PendingProgressUpdates WHERE ItemId = :itemId")
-    suspend fun getCountForItem(itemId: String): Int
+    @Query("SELECT * FROM PendingProgressUpdates WHERE OwnerKey = :ownerKey AND ItemId = :itemId ORDER BY Id ASC")
+    suspend fun getForOwnerAndItem(ownerKey: String, itemId: String): List<PendingProgressEntity>
 
-    @Query("SELECT * FROM PendingProgressUpdates WHERE ItemId = :itemId ORDER BY Timestamp ASC")
-    suspend fun getForItem(itemId: String): List<PendingProgressEntity>
+    @Query("SELECT * FROM PendingProgressUpdates WHERE OwnerKey = :ownerKey ORDER BY Id ASC")
+    suspend fun getDeliverableForOwner(ownerKey: String): List<PendingProgressEntity>
+
+    @Query("SELECT COUNT(*) FROM PendingProgressUpdates WHERE OwnerKey = :ownerKey")
+    suspend fun countDeliverableForOwner(ownerKey: String): Int
 
     @Query("DELETE FROM PendingProgressUpdates")
     suspend fun deleteAll()
 
-    @Query("DELETE FROM PendingProgressUpdates WHERE Id IN (:ids)")
-    suspend fun deleteByIds(ids: List<Long>)
+    @Query("DELETE FROM PendingProgressUpdates WHERE OwnerKey = :ownerKey AND ItemId = :itemId AND Id IN (:ids)")
+    suspend fun deleteIdsForOwnerAndItem(ownerKey: String, itemId: String, ids: List<Long>)
 
-    @Query("DELETE FROM PendingProgressUpdates WHERE ItemId = :itemId")
-    suspend fun deleteByItemId(itemId: String)
+    @Query("DELETE FROM PendingProgressUpdates WHERE OwnerKey = :ownerKey AND ItemId = :itemId")
+    suspend fun deleteForOwnerAndItem(ownerKey: String, itemId: String)
 }

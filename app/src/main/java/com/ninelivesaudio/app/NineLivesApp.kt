@@ -12,6 +12,7 @@ import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
+import com.ninelivesaudio.app.service.LegacyRemoteCacheClaimCoordinator
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.repairedLibrarySelections
@@ -60,6 +61,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var entitlementRepository: EntitlementRepository
+
+    @Inject
+    lateinit var legacyRemoteCacheClaimCoordinator: LegacyRemoteCacheClaimCoordinator
 
     // The app's OkHttpClient carries the auth token, self-signed cert config, and
     // dynamic base URL, so cover requests authenticate like every other call.
@@ -129,15 +133,6 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // fails with ConnectException, which the app would misread as a
         // "session expired" / signed-out state on every cold start.
         appScope.launch {
-            // Before any queue, resume or drain path can run. A provisional slot
-            // claim stranded by a process death is invisible to the drain and can
-            // never promote itself, so it would otherwise hold the free tier's
-            // only download slot forever.
-            downloadManager.cleanupStrandedClaims()
-            // A persisted pause outlives the notification that carried its only
-            // Resume control, so put the control back.
-            downloadManager.restorePausedNotificationIfNeeded()
-
             settingsManager.loadSettings()
             // Older builds healed Local mode by copying selectedLocalLibraryId
             // into selectedLibraryId. That destroyed the independent server
@@ -156,6 +151,16 @@ class NineLivesApp : Application(), ImageLoaderFactory {
                 settingsManager.saveSettings(repairedSettings)
             }
             apiService.initializeFromSettings()
+            legacyRemoteCacheClaimCoordinator.claimIfEligible()
+            // Before any queue, resume or drain path can run. A provisional slot
+            // claim stranded by a process death is invisible to the drain and can
+            // never promote itself, so it would otherwise hold the free tier's
+            // only download slot forever.
+            downloadManager.cleanupStrandedClaims()
+            // A persisted pause outlives the notification that carried its only
+            // Resume control, so put the control back.
+            downloadManager.restorePausedNotificationIfNeeded()
+            startEntitlementObserver()
             // serverUrl + token are now loaded, so it is safe to probe the
             // server and start syncing.
             connectivityMonitor.startMonitoring()
@@ -163,11 +168,14 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             syncManager.start()
         }
 
-        // Re-resolve the download slot whenever entitlement is or becomes free.
-        // Deliberately includes the initial emission rather than transitions
-        // only, so a downgrade that happened while the app was dead is still
-        // handled. Resolution early-returns when there is nothing over cap, so
-        // the common case costs one query and never touches the worker.
+    }
+
+    // Re-resolve the download slot whenever entitlement is or becomes free.
+    // Deliberately includes the initial emission rather than transitions only,
+    // so a downgrade that happened while the app was dead is still handled.
+    // Resolution early-returns when there is nothing over cap, so the common
+    // case costs one query and never touches the worker.
+    private fun startEntitlementObserver() {
         appScope.launch {
             entitlementRepository.state
                 .map { it.isUnlocked }

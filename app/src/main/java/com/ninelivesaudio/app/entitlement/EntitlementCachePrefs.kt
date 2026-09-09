@@ -2,6 +2,8 @@ package com.ninelivesaudio.app.entitlement
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,11 +24,21 @@ import javax.inject.Singleton
  * Verify the include/exclude for BOTH files in BOTH rule documents whenever
  * either one changes. Do not assume the default.
  */
+internal enum class ScopedPreferenceWrite { APPLIED, UNCHANGED, STALE, FAILED }
+
 @Singleton
-class EntitlementCachePrefs @Inject constructor(
-    @ApplicationContext context: Context,
+class EntitlementCachePrefs private constructor(
+    private val prefs: android.content.SharedPreferences,
+    @Suppress("unused") private val testOnly: Boolean,
 ) : PlayEntitlementCache {
-    private val prefs = context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
+    @Inject constructor(@ApplicationContext context: Context) : this(
+        context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE),
+        false,
+    )
+
+    internal constructor(prefs: android.content.SharedPreferences) : this(prefs, true)
+
+    private val slotWinnerMutex = Mutex()
 
     /**
      * Last known PURCHASED state of `nine_lives_unlock`.
@@ -66,6 +78,23 @@ class EntitlementCachePrefs @Inject constructor(
     var slotWinnerAudioBookId: String?
         get() = prefs.getString(KEY_SLOT_WINNER, null)
         set(value) = prefs.edit().putString(KEY_SLOT_WINNER, value).apply()
+
+    internal suspend fun replaceSlotWinnerIfCurrent(
+        expectedRaw: String,
+        replacement: String,
+        commitIfCurrentScope: ((() -> Boolean) -> Boolean?),
+    ): ScopedPreferenceWrite = slotWinnerMutex.withLock {
+        if (prefs.getString(KEY_SLOT_WINNER, null) != expectedRaw) {
+            return@withLock ScopedPreferenceWrite.UNCHANGED
+        }
+        when (commitIfCurrentScope {
+            prefs.edit().putString(KEY_SLOT_WINNER, replacement).commit()
+        }) {
+            null -> ScopedPreferenceWrite.STALE
+            true -> ScopedPreferenceWrite.APPLIED
+            false -> ScopedPreferenceWrite.FAILED
+        }
+    }
 
     /**
      * Whether the whole download queue is user-paused.

@@ -84,6 +84,7 @@ internal class FrozenRemoteRequest internal constructor(
  */
 internal class ActiveRemoteScope internal constructor(
     internal val frozenRequest: FrozenRemoteRequest,
+    internal val committedAuthFence: Long = 0L,
 ) {
     val target: RemoteTarget = requireNotNull(frozenRequest.owner) {
         "An active remote scope requires a confirmed owner"

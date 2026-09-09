@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 
 private val json = Json { ignoreUnknownKeys = true }
+private val strictFolderJson = Json { ignoreUnknownKeys = false }
 
 private inline fun <reified T> decodeJsonList(jsonString: String?): List<T> =
     jsonString?.let {
@@ -206,3 +207,19 @@ internal fun Folder.toJson(): FolderJson = FolderJson(
     FullPath = fullPath,
     LibraryId = libraryId,
 )
+
+/** Rewrites only a well-formed legacy library folder payload with exact links. */
+internal fun rewriteLegacyFolderLibraryIds(
+    foldersJson: String?,
+    rawLibraryId: String,
+    scopedLibraryId: String,
+): String? {
+    if (foldersJson == null) return null
+    val folders = try {
+        strictFolderJson.decodeFromString<List<FolderJson>>(foldersJson)
+    } catch (_: Exception) {
+        return null
+    }
+    if (folders.any { it.LibraryId != rawLibraryId }) return null
+    return json.encodeToString(folders.map { it.copy(LibraryId = scopedLibraryId) })
+}

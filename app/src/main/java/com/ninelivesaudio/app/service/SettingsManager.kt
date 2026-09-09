@@ -10,6 +10,7 @@ import com.ninelivesaudio.app.data.remote.ServerRoute
 import com.ninelivesaudio.app.data.remote.StoredAuthRecord
 import com.ninelivesaudio.app.data.remote.matchesRestoredRecord
 import com.ninelivesaudio.app.data.remote.restoredCredentialFingerprint
+import com.ninelivesaudio.app.entitlement.ScopedPreferenceWrite
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -109,6 +110,8 @@ internal fun clearInvalidRemoteLibrarySelection(
     ?: settings
 
 private class StaleSettingsMutation : IllegalStateException()
+private class UnchangedSettingsMutation : IllegalStateException()
+private class FailedSettingsMutation : IllegalStateException()
 
 /** Serializes the first disk load with every later settings mutation. */
 internal class SerializedSettingsState<T>(
@@ -363,6 +366,10 @@ class SettingsManager @Inject constructor(
     }
 
     private suspend fun persistSettingsToDisk(settings: AppSettings) = withContext(Dispatchers.IO) {
+        persistSettingsToDiskBlocking(settings)
+    }
+
+    private fun persistSettingsToDiskBlocking(settings: AppSettings) {
         Log.d(TAG, "saveSettings: Saving settings - unhingedThemeEnabled=${settings.unhingedThemeEnabled}")
         try {
             requireSuccessfulSettingsCommit(
@@ -424,6 +431,43 @@ class SettingsManager @Inject constructor(
             true
         } catch (_: StaleSettingsMutation) {
             false
+        }
+    }
+
+    internal suspend fun replaceSelectedLibraryIfCurrent(
+        expectedRaw: String,
+        replacement: String,
+        commitIfCurrentScope: ((() -> Boolean) -> Boolean?),
+    ): ScopedPreferenceWrite = withContext(Dispatchers.IO) {
+        var matched = false
+        try {
+            serializedState.update(
+                read = { readSettingsFromDisk() },
+                persist = { candidate ->
+                    if (!matched) throw UnchangedSettingsMutation()
+                    when (commitIfCurrentScope {
+                        runCatching { persistSettingsToDiskBlocking(candidate); true }.getOrDefault(false)
+                    }) {
+                        null -> throw StaleSettingsMutation()
+                        false -> throw FailedSettingsMutation()
+                        true -> Unit
+                    }
+                },
+                transform = { current ->
+                    if (current.selectedLibraryId != expectedRaw) current else {
+                        matched = true
+                        current.copy(selectedLibraryId = replacement)
+                    }
+                },
+            )
+            _isLoaded.value = true
+            ScopedPreferenceWrite.APPLIED
+        } catch (_: UnchangedSettingsMutation) {
+            ScopedPreferenceWrite.UNCHANGED
+        } catch (_: StaleSettingsMutation) {
+            ScopedPreferenceWrite.STALE
+        } catch (_: FailedSettingsMutation) {
+            ScopedPreferenceWrite.FAILED
         }
     }
 
@@ -583,6 +627,21 @@ class SettingsManager @Inject constructor(
         authTokenMutex.withLock { readLegacyRemoteCacheState() }
     }
 
+    internal suspend fun claimLegacyRemoteCacheStateIfCurrent(
+        expected: LegacyRemoteCacheState.PendingRestoredOwner,
+        commitIfCurrentScope: ((() -> Boolean) -> Boolean?),
+    ): Boolean = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock {
+            if (readLegacyRemoteCacheState() != expected) return@withLock false
+            commitIfCurrentScope {
+                runCatching {
+                    persistLegacyRemoteCacheState(LegacyRemoteCacheState.Claimed)
+                    true
+                }.getOrDefault(false)
+            } == true
+        }
+    }
+
     /** Seeds only a cold-restored durable session. Fresh credentials never create provenance. */
     internal suspend fun seedLegacyRemoteCacheForRestoredRecord(
         record: StoredAuthRecord,
@@ -604,6 +663,7 @@ class SettingsManager @Inject constructor(
             val existing = readLegacyRemoteCacheState()
             val needsQuarantine = existing is LegacyRemoteCacheState.PendingRestoredSession ||
                 existing is LegacyRemoteCacheState.PendingRestoredOwner ||
+                existing == LegacyRemoteCacheState.Claimed ||
                 existing == null && previousRecord?.let {
                     legacyStateForRestoredRecord(it, selectedServerUrl)
                 } != null

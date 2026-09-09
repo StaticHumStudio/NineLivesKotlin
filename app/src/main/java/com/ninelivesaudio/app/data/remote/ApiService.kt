@@ -200,6 +200,9 @@ class ApiService @Inject constructor(
 
     private val tokenValidationMutex = Mutex()
     private val authMutationMutex = Mutex()
+    private val committedScopeMonitor = Any()
+    private var committedAuthFence = 0L
+    @Volatile private var committedScopeMonitorObserverForTest: (() -> Unit)? = null
     private val authReadiness = AuthReadiness()
     private val scopeGeneration = MutableStateFlow(0L)
     @Volatile private var authGeneration: Long = 0L
@@ -231,7 +234,9 @@ class ApiService @Inject constructor(
 
     /** Captures a confirmed owner plus C1b's exact immutable request identity. */
     internal suspend fun captureActiveRemoteScope(): ActiveRemoteScope? =
-        captureFrozenRemoteRequest()?.takeIf { it.owner != null }?.let(::ActiveRemoteScope)
+        captureFrozenRemoteRequest()?.takeIf { it.owner != null }?.let { frozen ->
+            synchronized(committedScopeMonitor) { ActiveRemoteScope(frozen, committedAuthFence) }
+        }
 
     /** Delegates to C1b instead of comparing only owner or target identity. */
     internal suspend fun isCurrentActiveRemoteScope(scope: ActiveRemoteScope): Boolean =
@@ -249,6 +254,27 @@ class ApiService @Inject constructor(
         awaitAuthReady()
         return authMutationMutex.withLock {
             if (isCurrentCommittedFrozenRequestLocked(scope.frozenRequest)) publish() else null
+        }
+    }
+
+    /**
+     * Linearizes one checked durable publication against auth invalidation.
+     * The callback is deliberately non-suspending and may only perform its
+     * direct synchronous commit.
+     */
+    internal fun <T> commitIfCurrentActiveRemoteScope(
+        scope: ActiveRemoteScope,
+        publish: () -> T,
+    ): T? = synchronized(committedScopeMonitor) {
+        if (scope.committedAuthFence == committedAuthFence &&
+            isCurrentCommittedFrozenRequestLocked(scope.frozenRequest)
+        ) publish() else null
+    }
+
+    /** Test timing receipt only. It cannot influence authorization or publication. */
+    internal fun setCommittedScopeMonitorObserverForTest(observer: (() -> Unit)?) {
+        synchronized(committedScopeMonitor) {
+            committedScopeMonitorObserverForTest = observer
         }
     }
 
@@ -284,6 +310,7 @@ class ApiService @Inject constructor(
             return null
         }
         return authMutationMutex.withLock {
+            beginCommittedAuthMutation()
             val accepted = acceptDirectResponse(
                 response = response,
                 dispatch = RemoteDispatchTag.frozen(frozen),
@@ -492,6 +519,7 @@ class ApiService @Inject constructor(
     suspend fun login(serverUrl: String, username: String, password: String): CredentialLoginResult {
         return withContext(Dispatchers.IO) {
             authMutationMutex.withLock {
+                beginCommittedAuthMutation()
                 // Snapshot so a failed attempt can restore the PREVIOUS server/
                 // username instead of leaving settings pointing at the new,
                 // never-authenticated server. Without this, validateRetainedSession
@@ -593,6 +621,7 @@ class ApiService @Inject constructor(
     suspend fun loginWithToken(serverUrl: String, token: String): Boolean {
         return withContext(Dispatchers.IO) {
             authMutationMutex.withLock {
+                beginCommittedAuthMutation()
                 val previousSettings = settingsManager.currentSettings
                 var previousRecord = settingsManager.getAuthRecord()
                 val previousToken = previousRecord?.token
@@ -726,6 +755,7 @@ class ApiService @Inject constructor(
 
     suspend fun logout() {
         authMutationMutex.withLock {
+            beginCommittedAuthMutation()
             applyAuthTokenMutation(
                 updateRuntimeAuth = { authInterceptor.setToken(null, "") },
                 recordMutation = { recordAuthMutation() },
@@ -788,6 +818,7 @@ class ApiService @Inject constructor(
             if (!authSessionMatches(expected, currentAuthSessionLocked(settingsManager.getAuthToken()))) {
                 return@withLock false
             }
+            beginCommittedAuthMutation()
             applyAuthTokenMutation(
                 updateRuntimeAuth = { authInterceptor.setToken(null, "") },
                 recordMutation = { recordAuthMutation() },
@@ -817,11 +848,22 @@ class ApiService @Inject constructor(
 
     /** Validation verdicts belong to one exact auth generation and server. */
     private fun recordAuthMutation() {
-        authGeneration++
-        scopeGeneration.value++
-        authInterceptor.updateGeneration(authGeneration)
-        if (!authInterceptor.hasToken()) lastPersistedAuthRecord = null
-        clearValidationCache()
+        synchronized(committedScopeMonitor) {
+            committedAuthFence++
+            authGeneration++
+            scopeGeneration.value++
+            authInterceptor.updateGeneration(authGeneration)
+            if (!authInterceptor.hasToken()) lastPersistedAuthRecord = null
+            clearValidationCache()
+        }
+    }
+
+    /** Must run immediately after an auth mutation acquires authMutationMutex. */
+    private fun beginCommittedAuthMutation() {
+        synchronized(committedScopeMonitor) {
+            committedAuthFence++
+            committedScopeMonitorObserverForTest?.invoke()
+        }
     }
 
     /**
@@ -961,6 +1003,7 @@ class ApiService @Inject constructor(
             // Load settings here too so Android Auto can safely trigger the same
             // idempotent startup path instead of waiting on app-owned work.
             authMutationMutex.withLock {
+                beginCommittedAuthMutation()
                 settingsManager.loadSettings()
                 // A corrupt token entry must degrade to logged-out networking,
                 // not crash the app scope or the media service that got here

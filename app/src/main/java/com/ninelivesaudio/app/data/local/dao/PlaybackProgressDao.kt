@@ -9,6 +9,9 @@ import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 @Dao
 interface PlaybackProgressDao {
 
+    @Query("SELECT * FROM PlaybackProgress")
+    suspend fun getAll(): List<PlaybackProgressEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(progress: PlaybackProgressEntity)
 

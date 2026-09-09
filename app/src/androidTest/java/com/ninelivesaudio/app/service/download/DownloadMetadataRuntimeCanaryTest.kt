@@ -63,6 +63,10 @@ import okhttp3.Request
 import okhttp3.OkHttpClient
 import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import okio.Source
+import okio.Timeout
+import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -572,11 +576,13 @@ private class MetadataApi {
                 "getAudioFileStream" -> {
                     remoteCallCount += 1
                     streamRequestCount += 1
-                    if (holdAfterFirstStream && streamRequestCount == 2) {
-                        secondStreamEntered.complete(Unit)
-                        runBlocking { releaseStream.await() }
+                    if (unreachable) {
+                        failure()
+                    } else if (holdAfterFirstStream && streamRequestCount == 2) {
+                        response(heldAudioResponse("${args.orEmpty()[1]}-bytes"))
+                    } else {
+                        response("${args.orEmpty()[1]}-bytes".toResponseBody("audio/mpeg".toMediaType()))
                     }
-                    if (unreachable) failure() else response("${args.orEmpty()[1]}-bytes".toResponseBody("audio/mpeg".toMediaType()))
                 }
                 "getItem" -> {
                     remoteCallCount += 1
@@ -602,6 +608,36 @@ private class MetadataApi {
     )
 
     private fun <T> failure(): Response<T> = Response.error(500, "fixture failure".toResponseBody("text/plain".toMediaType()))
+
+    private fun heldAudioResponse(payload: String): ResponseBody {
+        val bytes = payload.toByteArray()
+        val source = object : Source {
+            private var offset = 0
+            private var entered = false
+
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                if (!entered) {
+                    entered = true
+                    secondStreamEntered.complete(Unit)
+                    runBlocking { releaseStream.await() }
+                }
+                if (offset == bytes.size) return -1
+                val count = minOf(byteCount, (bytes.size - offset).toLong()).toInt()
+                sink.write(bytes, offset, count)
+                offset += count
+                return count.toLong()
+            }
+
+            override fun timeout() = Timeout.NONE
+
+            override fun close() = Unit
+        }.buffer()
+        return object : ResponseBody() {
+            override fun contentType() = "audio/mpeg".toMediaType()
+            override fun contentLength() = bytes.size.toLong()
+            override fun source() = source
+        }
+    }
 
     private fun expanded(rawId: String) = com.ninelivesaudio.app.data.remote.dto.ApiLibraryItem(
         id = rawId,

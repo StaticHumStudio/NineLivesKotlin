@@ -53,7 +53,7 @@ class SelfSignedCertTrustInstrumentedTest {
         assertEquals(CredentialLoginResult.SUCCESS, service.apiService.login(FIXTURE_URL, "fixture", "password"))
         assertEquals(FIXTURE_URL, coldSettings.currentSettings.serverUrl)
         assertEquals(CredentialLoginResult.UNREACHABLE, service.apiService.login("https://127.0.0.1:1", "fixture", "password"))
-        assertEquals(FIXTURE_URL, coldSettings.currentSettings.serverUrl, "failed B login must retain route A")
+        assertEquals("failed B login must retain route A", FIXTURE_URL, coldSettings.currentSettings.serverUrl)
         assertTrue(hostAwareCalls.any { (_, host) -> host == "127.0.0.1" })
         assertTrue(coldSettings.getTrustedCertificateFingerprint("127.0.0.1") != null)
 

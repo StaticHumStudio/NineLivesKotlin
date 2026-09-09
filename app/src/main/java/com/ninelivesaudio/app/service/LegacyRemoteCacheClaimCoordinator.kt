@@ -76,8 +76,8 @@ class LegacyRemoteCacheClaimCoordinator @Inject constructor(
             it.copy(id = scope.encodeIncoming(it.id), audioBookId = scope.encodeIncoming(it.audioBookId))
         }
 
-        if (scopedLibraries.hasDuplicateIds() || scopedBooks.hasDuplicateIds() ||
-            scopedProgress.hasDuplicateIds() || scopedDownloads.hasDuplicateIds()
+        if (hasDuplicateIds(scopedLibraries) { it.id } || hasDuplicateIds(scopedBooks) { it.id } ||
+            hasDuplicateIds(scopedProgress) { it.audioBookId } || hasDuplicateIds(scopedDownloads) { it.id }
         ) return@withTransaction false
         for (library in scopedLibraries) if (libraryDao.getById(library.id) != null) return@withTransaction false
         for (book in scopedBooks) if (audioBookDao.getById(book.id) != null) return@withTransaction false
@@ -120,8 +120,6 @@ class LegacyRemoteCacheClaimCoordinator @Inject constructor(
     private fun ScopedPreferenceWrite.isSuccessfulRepair(): Boolean =
         this == ScopedPreferenceWrite.APPLIED || this == ScopedPreferenceWrite.UNCHANGED
 
-    private fun List<LibraryEntity>.hasDuplicateIds(): Boolean = map { it.id }.toSet().size != size
-    private fun List<AudioBookEntity>.hasDuplicateIds(): Boolean = map { it.id }.toSet().size != size
-    private fun List<PlaybackProgressEntity>.hasDuplicateIds(): Boolean = map { it.audioBookId }.toSet().size != size
-    private fun List<DownloadItemEntity>.hasDuplicateIds(): Boolean = map { it.id }.toSet().size != size
+    private fun <T> hasDuplicateIds(items: List<T>, id: (T) -> String): Boolean =
+        items.map(id).toSet().size != items.size
 }

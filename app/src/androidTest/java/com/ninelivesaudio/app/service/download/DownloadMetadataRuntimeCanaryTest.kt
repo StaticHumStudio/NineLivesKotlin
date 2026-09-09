@@ -54,6 +54,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -171,6 +172,8 @@ class DownloadMetadataRuntimeCanaryTest {
             fixture.manager.deleteDownload(first.id)
 
             assertTrue(File(sharedDirectory, "legacy.m4b").isFile)
+            assertFalse(requireNotNull(fixture.database.audioBookDao().getById(first.id)).toDomain().isDownloaded)
+            assertTrue(fixture.database.downloadItemDao().getById(scope.encodeIncoming("legacy-download-one")) == null)
             assertTrue(requireNotNull(fixture.database.audioBookDao().getById(second.id)).toDomain().isDownloaded)
         } finally {
             fixture.close()
@@ -183,17 +186,25 @@ class DownloadMetadataRuntimeCanaryTest {
         val fixture = MetadataFixture(InstrumentationRegistry.getInstrumentation().targetContext, app)
         try {
             val scope = fixture.login("owner-a")
-            val cached = fixture.book(scope.encodeIncoming("detail-failure"), "Detail failure").copy(audioFiles = emptyList())
+            val cached = fixture.sparseBook(scope.encodeIncoming("detail-failure"), "Detail failure").copy(
+                audioFiles = listOf(AudioFile(id = "cached", ino = "cached", index = 1, filename = "cached.m4b")),
+                chapters = listOf(Chapter(99, 0.0, 10.0, "Cached chapter")),
+            )
             val item = fixture.item(scope.encodeIncoming("detail-failure-download"), cached.id)
             fixture.seed(cached, item)
             fixture.api.failDetails = true
 
-            fixture.engine.download(item, cached, scope) { _, _, _ -> }
+            val result = fixture.engine.download(item, cached, scope) { _, _, _ -> }
 
             val after = requireNotNull(fixture.database.audioBookDao().getById(cached.id)).toDomain()
-            assertTrue(after.audioFiles.isEmpty())
-            assertTrue(after.chapters.isEmpty())
-            assertFalse(after.isDownloaded)
+            assertEquals(DownloadStatus.Completed, result.status)
+            assertEquals(1, fixture.api.detailRequests)
+            assertEquals(
+                cached.audioFiles.map { it.copy(localPath = null) },
+                after.audioFiles.map { it.copy(localPath = null) },
+            )
+            assertEquals(cached.chapters, after.chapters)
+            assertTrue(after.isDownloaded)
         } finally {
             fixture.close()
         }
@@ -205,14 +216,16 @@ class DownloadMetadataRuntimeCanaryTest {
         val fixture = MetadataFixture(InstrumentationRegistry.getInstrumentation().targetContext, app)
         try {
             val scope = fixture.login("owner-a")
-            val book = fixture.book(scope.encodeIncoming("cover-failure"), "Cover failure").copy(coverPath = "/cover")
+            val book = fixture.sparseBook(scope.encodeIncoming("cover-failure"), "Cover failure").copy(coverPath = "/cover")
             val item = fixture.item(scope.encodeIncoming("cover-failure-download"), book.id)
             fixture.seed(book, item)
             fixture.api.failCover = true
 
             assertEquals(DownloadStatus.Completed, fixture.engine.download(item, book, scope) { _, _, _ -> }.status)
             val after = requireNotNull(fixture.database.audioBookDao().getById(book.id)).toDomain()
-            assertEquals(book.chapters, after.chapters)
+            assertEquals(1, fixture.api.detailRequests)
+            assertEquals(fixture.expandedChapters, after.chapters)
+            assertEquals(listOf(1, 2, 3), after.audioFiles.map { it.index })
             assertTrue(after.audioFiles.all { !it.localPath.isNullOrBlank() })
             assertTrue(after.localCoverPath.isNullOrBlank())
         } finally {
@@ -238,20 +251,30 @@ class DownloadMetadataRuntimeCanaryTest {
             fixture.manager.backfillDownloadedMetadata()
             assertEquals(1, fixture.api.detailRequests)
 
-            fixture.engine.metadataBoundaryObserver = fixture::pauseMetadataBoundary
+            val stale = fixture.book(scope.encodeIncoming("legacy-backfill-stale"), "Legacy stale").copy(
+                isDownloaded = true,
+                localPath = fixture.legacyDirectory("legacy-backfill-stale").absolutePath,
+                audioFiles = emptyList(),
+                chapters = emptyList(),
+            )
+            val staleItem = fixture.item(scope.encodeIncoming("legacy-backfill-stale-download"), stale.id)
+                .copy(status = DownloadStatus.Completed)
+            fixture.seed(stale, staleItem)
+            fixture.armBoundaryPause()
             val rerun = async(Dispatchers.Default) { fixture.manager.backfillDownloadedMetadata() }
-            fixture.boundaryEntered.await()
-            fixture.database.audioBookDao().deleteById(legacy.id)
-            fixture.releaseBoundary.complete(Unit)
+            fixture.awaitBoundary()
+            fixture.database.audioBookDao().deleteById(stale.id)
+            fixture.releaseMetadataBoundary()
             rerun.await()
-            assertTrue(fixture.database.audioBookDao().getById(legacy.id) == null)
+            assertTrue(fixture.database.audioBookDao().getById(stale.id) == null)
         } finally {
+            fixture.clearBoundaryPause()
             fixture.close()
         }
     }
 
     @Test
-    fun `completion delete and stale scope freeze at the real metadata boundary`() = runBlocking {
+    fun `completion and same scope delete serialize at the real metadata boundary`() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as NineLivesApp
         val fixture = MetadataFixture(InstrumentationRegistry.getInstrumentation().targetContext, app)
         try {
@@ -259,19 +282,51 @@ class DownloadMetadataRuntimeCanaryTest {
             val book = fixture.book(scope.encodeIncoming("held-completion"), "Held completion").copy(coverPath = "/cover")
             val item = fixture.item(scope.encodeIncoming("held-completion-download"), book.id)
             fixture.seed(book, item)
-            fixture.engine.metadataBoundaryObserver = fixture::pauseMetadataBoundary
+            fixture.armBoundaryPause()
             val completion = async(Dispatchers.Default) { fixture.engine.download(item, book, scope) { _, _, _ -> } }
-            fixture.boundaryEntered.await()
-            val directory = fixture.directorySnapshot(book)
+            fixture.awaitBoundary()
             val delete = async(Dispatchers.Default) { fixture.manager.deleteDownload(book.id) }
             assertFalse(delete.isCompleted)
-            fixture.login("owner-b")
-            fixture.releaseBoundary.complete(Unit)
+            fixture.releaseMetadataBoundary()
             completion.await()
             delete.await()
-            assertEquals(directory, fixture.directorySnapshot(book))
-            assertFalse(requireNotNull(fixture.database.audioBookDao().getById(book.id)).toDomain().isDownloaded)
+            val clearedBook = requireNotNull(fixture.database.audioBookDao().getById(book.id)).toDomain()
+            assertFalse(clearedBook.isDownloaded)
+            assertTrue(clearedBook.localPath.isNullOrBlank())
+            assertTrue(clearedBook.localCoverPath.isNullOrBlank())
+            assertTrue(fixture.database.downloadItemDao().getById(item.id) == null)
+            assertFalse(fixture.downloadDirectory(book).exists())
         } finally {
+            fixture.clearBoundaryPause()
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun `stale completion leaves the completed row and files unchanged after scope loss`() = runBlocking {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as NineLivesApp
+        val fixture = MetadataFixture(InstrumentationRegistry.getInstrumentation().targetContext, app)
+        try {
+            val scope = fixture.login("owner-a")
+            val book = fixture.book(scope.encodeIncoming("stale-completion"), "Stale completion").copy(coverPath = "/cover")
+            val item = fixture.item(scope.encodeIncoming("stale-completion-download"), book.id)
+            fixture.seed(book, item)
+            fixture.armBoundaryPause()
+            val completion = async(Dispatchers.Default) { fixture.engine.download(item, book, scope) { _, _, _ -> } }
+            fixture.awaitBoundary()
+            val itemBefore = requireNotNull(fixture.database.downloadItemDao().getById(item.id))
+            val bookBefore = requireNotNull(fixture.database.audioBookDao().getById(book.id))
+            val filesBefore = fixture.directorySnapshot(book)
+
+            fixture.login("owner-b")
+            fixture.releaseMetadataBoundary()
+            completion.await()
+
+            assertEquals(itemBefore, fixture.database.downloadItemDao().getById(item.id))
+            assertEquals(bookBefore, fixture.database.audioBookDao().getById(book.id))
+            assertEquals(filesBefore, fixture.directorySnapshot(book))
+        } finally {
+            fixture.clearBoundaryPause()
             fixture.close()
         }
     }
@@ -288,13 +343,18 @@ class DownloadMetadataRuntimeCanaryTest {
             fixture.api.holdAfterFirstStream = true
 
             val interrupted = async(Dispatchers.Default) { fixture.engine.download(item, catalog, scope) { _, _, _ -> } }
-            fixture.api.awaitFirstStream()
-            interrupted.cancel()
+            fixture.api.awaitSecondStream()
+            try {
+                assertTrue(File(fixture.downloadDirectory(catalog), "z-last.m4b").isFile)
+                interrupted.cancel()
+            } finally {
+                fixture.api.releaseStream()
+            }
             val beforeResume = requireNotNull(fixture.database.audioBookDao().getById(catalog.id)).toDomain()
             assertTrue(beforeResume.audioFiles.isEmpty())
             assertTrue(beforeResume.chapters.isEmpty())
 
-            fixture.api.releaseStream()
+            interrupted.cancelAndJoin()
             val persisted = requireNotNull(fixture.database.downloadItemDao().getById(item.id)).toDomain()
             fixture.reopenRoomAndEngine()
             fixture.engine.download(persisted, catalog, scope) { _, _, _ -> }
@@ -303,19 +363,22 @@ class DownloadMetadataRuntimeCanaryTest {
             val callsBeforeOffline = fixture.api.remoteCallCount
 
             val playbackManager = fixture.newPlaybackManager()
-            val loaded = withContext(Dispatchers.Main) { playbackManager.loadAudioBook(reopened, autoPlay = false) }
-            val uris = withContext(Dispatchers.Main) {
-                requireNotNull(playbackManager.getPlayer()).let { player ->
-                    (0 until player.mediaItemCount).map { index ->
-                        requireNotNull(player.getMediaItemAt(index).localConfiguration).uri.toString()
+            try {
+                val loaded = withContext(Dispatchers.Main) { playbackManager.loadAudioBook(reopened, autoPlay = false) }
+                val uris = withContext(Dispatchers.Main) {
+                    requireNotNull(playbackManager.getPlayer()).let { player ->
+                        (0 until player.mediaItemCount).map { index ->
+                            requireNotNull(player.getMediaItemAt(index).localConfiguration).uri.toString()
+                        }
                     }
                 }
-            }
 
-            assertTrue(loaded)
-            assertEquals(reopened.audioFiles.sortedBy { it.index }.map { "file://${it.localPath}" }, uris)
-            assertEquals(callsBeforeOffline, fixture.api.remoteCallCount)
-            withContext(Dispatchers.Main) { playbackManager.release() }
+                assertTrue(loaded)
+                assertEquals(reopened.audioFiles.sortedBy { it.index }.map { "file://${it.localPath}" }, uris)
+                assertEquals(callsBeforeOffline, fixture.api.remoteCallCount)
+            } finally {
+                withContext(Dispatchers.Main) { playbackManager.release() }
+            }
         } finally {
             fixture.close()
         }
@@ -330,8 +393,8 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
     val api = MetadataApi()
     private val apiService = ApiService(api.service, AuthInterceptor(settings), settings)
     val root = File(context.filesDir, "downloads")
-    val boundaryEntered = CompletableDeferred<Unit>()
-    val releaseBoundary = CompletableDeferred<Unit>()
+    private var boundaryEntered = CompletableDeferred<Unit>()
+    private var releaseBoundary = CompletableDeferred<Unit>()
     private val entitlements = EntitlementRepository(
         prefs = object : DurableEntitlementStore {
             override val legacyPaid = false
@@ -398,14 +461,35 @@ private class MetadataFixture(baseContext: Context, app: NineLivesApp) {
         canonicalFiles().forEach { File(this, it.filename.substringAfterLast('/').replace(':', '_')).writeText(it.ino) }
     }
 
+    fun downloadDirectory(book: AudioBook): File = File(root, downloadFolderName(book.author, book.title, book.id))
+
     fun directorySnapshot(book: AudioBook): Map<String, ByteArray> {
-        val directory = File(root, downloadFolderName(book.author, book.title, book.id))
+        val directory = downloadDirectory(book)
         return directory.listFiles().orEmpty().associate { it.name to it.readBytes() }
+    }
+
+    fun armBoundaryPause() {
+        boundaryEntered = CompletableDeferred()
+        releaseBoundary = CompletableDeferred()
+        engine.metadataBoundaryObserver = ::pauseMetadataBoundary
+    }
+
+    suspend fun awaitBoundary() {
+        withTimeout(5_000) { boundaryEntered.await() }
+    }
+
+    fun releaseMetadataBoundary() {
+        releaseBoundary.complete(Unit)
     }
 
     suspend fun pauseMetadataBoundary() {
         boundaryEntered.complete(Unit)
         releaseBoundary.await()
+    }
+
+    fun clearBoundaryPause() {
+        engine.metadataBoundaryObserver = null
+        releaseBoundary.complete(Unit)
     }
 
     fun close() {
@@ -470,9 +554,10 @@ private class MetadataApi {
     var holdAfterFirstStream = false
     var unreachable = false
     var remoteCallCount = 0
-    private val firstStream = CompletableDeferred<Unit>()
+    private var streamRequestCount = 0
+    private val secondStreamEntered = CompletableDeferred<Unit>()
     private val releaseStream = CompletableDeferred<Unit>()
-    suspend fun awaitFirstStream() = firstStream.await()
+    suspend fun awaitSecondStream() = withTimeout(5_000) { secondStreamEntered.await() }
     fun releaseStream() { releaseStream.complete(Unit) }
     val service: AudiobookshelfApi = Proxy.newProxyInstance(
         AudiobookshelfApi::class.java.classLoader,
@@ -486,7 +571,11 @@ private class MetadataApi {
                 }
                 "getAudioFileStream" -> {
                     remoteCallCount += 1
-                    firstStream.complete(Unit)
+                    streamRequestCount += 1
+                    if (holdAfterFirstStream && streamRequestCount == 2) {
+                        secondStreamEntered.complete(Unit)
+                        runBlocking { releaseStream.await() }
+                    }
                     if (unreachable) failure() else response("${args.orEmpty()[1]}-bytes".toResponseBody("audio/mpeg".toMediaType()))
                 }
                 "getItem" -> {
@@ -520,10 +609,14 @@ private class MetadataApi {
         media = com.ninelivesaudio.app.data.remote.dto.ApiMedia(
             metadata = com.ninelivesaudio.app.data.remote.dto.ApiMetadata(title = "Expanded", authorName = "Same author"),
             audioFiles = listOf(
-                com.ninelivesaudio.app.data.remote.dto.ApiAudioFile(ino = "one", index = 1, metadata = com.ninelivesaudio.app.data.remote.dto.ApiFileMetadata(filename = "a/first.m4b")),
                 com.ninelivesaudio.app.data.remote.dto.ApiAudioFile(ino = "two", index = 2, metadata = com.ninelivesaudio.app.data.remote.dto.ApiFileMetadata(filename = "z-last.m4b")),
+                com.ninelivesaudio.app.data.remote.dto.ApiAudioFile(ino = "one", index = 1, metadata = com.ninelivesaudio.app.data.remote.dto.ApiFileMetadata(filename = "a/first.m4b")),
+                com.ninelivesaudio.app.data.remote.dto.ApiAudioFile(ino = "collision", index = 3, metadata = com.ninelivesaudio.app.data.remote.dto.ApiFileMetadata(filename = "a:first.m4b")),
             ),
-            chapters = listOf(com.ninelivesaudio.app.data.remote.dto.ApiChapter(1, 0.0, 1.0, "One")),
+            chapters = listOf(
+                com.ninelivesaudio.app.data.remote.dto.ApiChapter(1, 0.0, 1.0, "One"),
+                com.ninelivesaudio.app.data.remote.dto.ApiChapter(2, 1.0, 2.0, "Two"),
+            ),
         ),
     )
 }

@@ -212,8 +212,10 @@ class DownloadEngine @Inject constructor(
                     // the new account.
                     return item
                 } catch (e: Exception) {
-                    try { partPath.delete() } catch (cleanupError: Exception) {
-                        // Ignore cleanup errors - file may already be deleted
+                    if (canMutate(scope, download)) {
+                        try { partPath.delete() } catch (cleanupError: Exception) {
+                            // Ignore cleanup errors - file may already be deleted
+                        }
                     }
                     downloadedBytes = bytesBeforeAttempt
 
@@ -292,12 +294,12 @@ class DownloadEngine @Inject constructor(
             val body = response.body() ?: return null
             val bytes = body.use { it.bytes() }
             if (bytes.isEmpty()) return null
-            var coverFile: File? = null
+            val coverFile = File(downloadDir, "cover.jpg")
             if (!runScopedFilesystemMutation({ canMutate(scope, item) }) {
-                    coverFile = writeCoverFile(bytes, downloadDir)
+                    coverFile.writeBytes(bytes)
                 }
             ) return null
-            Uri.fromFile(requireNotNull(coverFile)).toString()
+            Uri.fromFile(coverFile).toString()
         } catch (e: Exception) {
             Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
             null
@@ -338,8 +340,13 @@ class DownloadEngine @Inject constructor(
 
     private suspend fun canMutate(scope: ActiveRemoteScope, item: DownloadItem): Boolean {
         if (scope.decodeForEgress(item.id) == null || scope.decodeForEgress(item.audioBookId) == null) return false
-        if (!apiService.isCurrentActiveRemoteScope(scope)) return false
-        return downloadItemDao.getRemoteByIdForOwner(item.id, scope.idPrefix)?.audioBookId == item.audioBookId
+        return ownerScopedDownloadRowCurrent(
+            isCurrent = { apiService.isCurrentActiveRemoteScope(scope) },
+            readAudioBookId = {
+                downloadItemDao.getRemoteByIdForOwner(item.id, scope.idPrefix)?.audioBookId
+            },
+            expectedAudioBookId = item.audioBookId,
+        )
     }
 
     private suspend fun guardedUpsert(scope: ActiveRemoteScope, item: DownloadItem): Boolean {
@@ -401,4 +408,16 @@ internal suspend fun runScopedFilesystemMutation(
     if (!isCurrent()) return false
     mutation()
     return true
+}
+
+/** The row read itself suspends, so currentness must be checked on both sides. */
+internal suspend fun ownerScopedDownloadRowCurrent(
+    isCurrent: suspend () -> Boolean,
+    readAudioBookId: suspend () -> String?,
+    expectedAudioBookId: String,
+): Boolean {
+    if (!isCurrent()) return false
+    val actualAudioBookId = readAudioBookId()
+    if (!isCurrent()) return false
+    return actualAudioBookId == expectedAudioBookId
 }

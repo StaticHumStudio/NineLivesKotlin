@@ -370,7 +370,9 @@ class DownloadMetadataRuntimeCanaryTest {
 
             val playbackManager = fixture.newPlaybackManager()
             try {
-                val loaded = withContext(Dispatchers.Main) { playbackManager.loadAudioBook(reopened, autoPlay = false) }
+                val loaded = withContext(Dispatchers.Main) {
+                    playbackManager.loadAudioBook(reopened, skipServiceStart = true, autoPlay = false)
+                }
                 assertTrue(loaded)
                 val uris = withContext(Dispatchers.Main) {
                     requireNotNull(playbackManager.getPlayer()).let { player ->

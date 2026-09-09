@@ -168,7 +168,13 @@ class OwnerScopedDownloadRuntimeCanaryTest {
                 assertEquals(RETAINED_PART_BYTES, partFile.readText())
                 assertFalse(finalFile.exists())
                 assertFalse(coverFile.exists())
-                assertEquals(listOf(MediaCall.Stream(RAW_BOOK_ID)), fixture.api.mediaCalls)
+                assertEquals(
+                    listOf(
+                        MediaCall.Detail(RAW_BOOK_ID),
+                        MediaCall.Stream(RAW_BOOK_ID),
+                    ),
+                    fixture.api.mediaCalls,
+                )
             } finally {
                 instrumentation.runOnMainSync { viewModelStore.clear() }
             }

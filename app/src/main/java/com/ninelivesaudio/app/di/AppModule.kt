@@ -5,6 +5,9 @@ import androidx.room.Room
 import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.dao.*
 import com.ninelivesaudio.app.data.local.migration.ALL_MIGRATIONS
+import com.ninelivesaudio.app.service.DefaultRemotePlaybackSessionCoordinatorFactory
+import com.ninelivesaudio.app.service.RemotePlaybackSessionCoordinatorFactory
+import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -51,4 +54,14 @@ object AppModule {
     @Provides
     fun provideLocalBookmarkDao(db: AppDatabase): LocalBookmarkDao =
         db.localBookmarkDao()
+}
+
+@Module
+@InstallIn(SingletonComponent::class)
+internal abstract class PlaybackSessionCoordinatorModule {
+    @Binds
+    @Singleton
+    internal abstract fun bindRemotePlaybackSessionCoordinatorFactory(
+        implementation: DefaultRemotePlaybackSessionCoordinatorFactory,
+    ): RemotePlaybackSessionCoordinatorFactory
 }

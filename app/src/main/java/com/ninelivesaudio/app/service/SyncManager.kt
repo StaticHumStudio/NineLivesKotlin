@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ActiveRemoteScope
 
 import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
@@ -10,6 +11,8 @@ import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.data.repository.ProgressDeliveryOutcome
+import com.ninelivesaudio.app.data.repository.ProgressActiveClaim
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
@@ -263,10 +266,11 @@ class SyncManager @Inject constructor(
         // C2 owns durable remote progress IDs and egress. Until then, importing
         // or pushing a raw ABS item ID is unsafe, so remote progress sync is a
         // deliberate no-op. LOCAL behavior still uses the local repository path.
-        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
+        val scope = apiService.captureActiveRemoteScope() ?: return
         try {
-            val importToken = progressRepository.progressImportToken()
-            val serverProgressList = progressRepository.fetchAllProgressFromServer()
+            val importToken = progressRepository.progressImportToken(scope)
+            val serverProgressList = progressRepository.fetchAllProgressFromServer(scope)
             if (serverProgressList.isEmpty()) return
 
             for (progress in serverProgressList) {
@@ -274,21 +278,18 @@ class SyncManager @Inject constructor(
                 // particular, never compare server and phone wall clocks to
                 // decide whether an unsent offline write survives.
                 try {
+                    if (!apiService.isCurrentActiveRemoteScope(scope)) return
                     var book = audioBookDao.getById(progress.libraryItemId)
-                    if (book == null) {
-                        val remoteBook = audioBookRepository.fetchFromServer(progress.libraryItemId)
-                        if (remoteBook != null) {
-                            audioBookDao.upsert(remoteBook.toEntity())
-                            book = audioBookDao.getById(progress.libraryItemId)
-                        }
-                    }
+                    // A missing catalog row is not permission to recapture current
+                    // auth. The next catalog sync will fetch it with its own scope.
+                    if (book == null) continue
 
                     val currentTimeSecs = progress.currentTime.toDouble(kotlin.time.DurationUnit.SECONDS)
                     val positionSeconds = if (currentTimeSecs > 0) {
                         currentTimeSecs
                     } else {
                         // Estimate from progress fraction × duration
-                        if (book != null && book.durationSeconds > 0) {
+                        if (book.durationSeconds > 0) {
                             progress.progress * book.durationSeconds
                         } else 0.0
                     }
@@ -299,7 +300,8 @@ class SyncManager @Inject constructor(
                     // per-book ownership used by enqueue and flush. A pending
                     // local write wins regardless of server clock skew.
                     val imported = progressRepository.importServerProgressIfNoPending(
-                        PlaybackProgressEntity(
+                        scope = scope,
+                        progress = PlaybackProgressEntity(
                             audioBookId = progress.libraryItemId,
                             positionSeconds = positionSeconds,
                             isFinished = if (progress.isFinished) 1 else 0,
@@ -307,7 +309,7 @@ class SyncManager @Inject constructor(
                         ),
                         importToken = importToken,
                         onImported = {
-                            if (book != null) {
+                            if (apiService.isCurrentActiveRemoteScope(scope)) {
                                 audioBookDao.upsert(
                                     book.copy(
                                         currentTimeSeconds = positionSeconds,
@@ -334,18 +336,55 @@ class SyncManager @Inject constructor(
      * Mark the currently playing item.
      * Called by PlaybackManager when a new audiobook starts playing.
      */
-    suspend fun setActivePlaybackItem(
+    internal suspend fun setActivePlaybackItem(
         itemId: String?,
-        isCurrent: () -> Boolean = { true },
+        isLocal: Boolean,
+        remoteScope: ActiveRemoteScope?,
+        isCurrent: suspend () -> Boolean = { true },
     ): Boolean = activeItemMutationMutex.withLock {
-        val claimed = progressRepository.setActiveProgressItem(itemId, isCurrent)
+        val claimed = when {
+            itemId == null -> false
+            isLocal -> progressRepository.setActiveProgressItem(itemId, isCurrent)
+            remoteScope != null -> progressRepository.setActiveProgressItem(remoteScope, itemId, isCurrent)
+            else -> false
+        }
         if (claimed) activeItemId = itemId
         claimed
     }
 
-    private suspend fun clearActivePlaybackItemIf(itemId: String): Boolean =
+    internal suspend fun claimActivePlaybackItem(
+        itemId: String,
+        isLocal: Boolean,
+        remoteScope: ActiveRemoteScope?,
+        isCurrent: suspend () -> Boolean = { true },
+    ): ProgressActiveClaim? = activeItemMutationMutex.withLock {
+        val claim = when {
+            isLocal -> progressRepository.claimActiveProgressItem(itemId, isCurrent)
+            remoteScope != null -> progressRepository.claimActiveProgressItem(remoteScope, itemId, isCurrent)
+            else -> null
+        }
+        if (claim != null) activeItemId = itemId
+        claim
+    }
+
+    internal suspend fun clearActivePlaybackClaim(claim: ProgressActiveClaim): Boolean =
         activeItemMutationMutex.withLock {
-            val cleared = progressRepository.clearActiveProgressItemIf(itemId)
+            progressRepository.clearActiveProgressClaim(claim).also { cleared ->
+                if (cleared) activeItemId = null
+            }
+        }
+
+    internal suspend fun clearActivePlaybackItemIf(
+        itemId: String,
+        isLocal: Boolean,
+        remoteScope: ActiveRemoteScope?,
+    ): Boolean =
+        activeItemMutationMutex.withLock {
+            val cleared = when {
+                isLocal -> progressRepository.clearActiveProgressItemIf(itemId)
+                remoteScope != null -> progressRepository.clearActiveProgressItemIf(remoteScope, itemId)
+                else -> false
+            }
             if (cleared) activeItemId = null
             cleared
         }
@@ -354,21 +393,23 @@ class SyncManager @Inject constructor(
      * Report playback position with throttling.
      * Always saves locally. Only pushes to server if throttle conditions are met.
      */
-    suspend fun reportPlaybackPosition(
+    internal suspend fun reportPlaybackPosition(
         itemId: String,
         currentTime: Double,
         duration: Double,
         isFinished: Boolean,
+        isLocal: Boolean,
+        remoteScope: ActiveRemoteScope? = null,
     ) {
-        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
+        val scope = if (isLocal) null else remoteScope ?: return
+        if (!isLocal && !apiService.isCurrentActiveRemoteScope(requireNotNull(scope))) return
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
         // Only auto-mark as finished if position is within 1 second of the end.
         // Exact >= comparison can fire prematurely during seeks near the end.
         val computedFinished = isFinished || (safeDuration > 0.0 && safeDuration - safeCurrentTime < 1.0)
-        val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL
         val now = System.currentTimeMillis()
-        val shouldSync = !isLocalMode && shouldPushPlaybackPosition(
+        val shouldSync = !isLocal && shouldPushPlaybackPosition(
             throttle = playbackThrottleOwner.snapshot(itemId),
             currentTime = safeCurrentTime,
             duration = safeDuration,
@@ -399,16 +440,17 @@ class SyncManager @Inject constructor(
             )
         }
 
-        val pushed = if (isLocalMode) {
+        val pushed = if (isLocal) {
             progressRepository.savePlaybackProgress(
                 audioBookId = itemId,
                 position = safeCurrentTime.seconds,
                 isFinished = computedFinished,
                 onPersisted = updateShelf,
             )
-            false
+            ProgressDeliveryOutcome(persisted = true, remoteDelivered = false)
         } else {
             progressRepository.savePushOrEnqueueProgress(
+                scope = requireNotNull(scope),
                 itemId = itemId,
                 currentTime = safeCurrentTime,
                 isFinished = computedFinished,
@@ -418,7 +460,7 @@ class SyncManager @Inject constructor(
             )
         }
 
-        if (pushed) {
+        if (pushed.remoteDelivered) {
             playbackThrottleOwner.recordSuccess(itemId, safeCurrentTime, now)
         }
     }
@@ -427,42 +469,48 @@ class SyncManager @Inject constructor(
      * Force-push final position on playback stop.
      * If offline, enqueue for later.
      */
-    suspend fun flushPlaybackProgress(
+    internal suspend fun flushPlaybackProgress(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean,
         duration: Double = 0.0,
         onPersisted: suspend () -> Unit = {},
+        isLocal: Boolean,
+        remoteScope: ActiveRemoteScope? = null,
+        activeClaim: ProgressActiveClaim? = null,
     ) {
-        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
-        val safeCurrentTime = currentTime.coerceAtLeast(0.0)
-        val safeDuration = duration.coerceAtLeast(0.0)
-        val computedFinished = isFinished
+        try {
+            val scope = if (isLocal) null else remoteScope ?: return
+            if (!isLocal && !apiService.isCurrentActiveRemoteScope(requireNotNull(scope))) return
+            val safeCurrentTime = currentTime.coerceAtLeast(0.0)
+            val safeDuration = duration.coerceAtLeast(0.0)
 
-        // LOCAL mode: local save above is the source of truth. Skip server push and
-        // do NOT enqueue. Local item IDs would 404 against the server and poison the queue.
-        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
-            progressRepository.savePlaybackProgress(
-                audioBookId = itemId,
-                position = safeCurrentTime.seconds,
-                isFinished = computedFinished,
+            // LOCAL mode: local save above is the source of truth. Skip server push and
+            // do NOT enqueue. Local item IDs would 404 against the server and poison the queue.
+            if (isLocal) {
+                progressRepository.savePlaybackProgress(
+                    audioBookId = itemId,
+                    position = safeCurrentTime.seconds,
+                    isFinished = isFinished,
+                    onPersisted = onPersisted,
+                )
+                return
+            }
+
+            progressRepository.savePushOrEnqueueProgress(
+                scope = requireNotNull(scope),
+                itemId = itemId,
+                currentTime = safeCurrentTime,
+                isFinished = isFinished,
+                duration = safeDuration,
+                pushToServer = connectivityMonitor.isOnline.value,
                 onPersisted = onPersisted,
             )
-            clearActivePlaybackItemIf(itemId)
-            return
+        } finally {
+            activeClaim?.let { claim ->
+                withContext(NonCancellable) { clearActivePlaybackClaim(claim) }
+            }
         }
-
-        progressRepository.savePushOrEnqueueProgress(
-            itemId = itemId,
-            currentTime = safeCurrentTime,
-            isFinished = computedFinished,
-            duration = safeDuration,
-            pushToServer = connectivityMonitor.isOnline.value,
-            onPersisted = onPersisted,
-        )
-
-        // Clear active item
-        clearActivePlaybackItemIf(itemId)
     }
 
     // ─── Offline Queue ───────────────────────────────────────────────────────
@@ -472,19 +520,21 @@ class SyncManager @Inject constructor(
      * Called on reconnect.
      */
     private suspend fun flushOfflineQueue() {
-        if (!remoteProgressMutationAllowed(settingsManager.currentSettings.appMode)) return
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
         if (!hasAuthToken()) return
         // Never push to a server while in LOCAL mode. (The rising-edge caller
         // already gates on this; guard here too since the periodic loop also calls us.)
         if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return
         try {
-            val count = progressRepository.getPendingProgressCount()
-            if (count > 0) {
-                progressRepository.flushPendingProgress()
-            }
+            val scope = apiService.captureActiveRemoteScope() ?: return
+            flushOfflineQueue(scope, progressRepository.pendingProgressCount(scope))
         } catch (_: Exception) {
             // Will try again on next reconnect
         }
+    }
+
+    internal suspend fun flushOfflineQueue(scope: ActiveRemoteScope, expectedPendingRows: Int) {
+        if (expectedPendingRows > 0) progressRepository.flushPendingProgress(scope)
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -496,7 +546,7 @@ class SyncManager @Inject constructor(
 }
 
 /** C2 is the first package authorized to resume remote progress mutation. */
-internal fun remoteProgressMutationAllowed(mode: AppMode): Boolean = mode == AppMode.LOCAL
+internal fun remoteProgressMutationAllowed(mode: AppMode): Boolean = mode == AppMode.LOCAL || mode == AppMode.AUDIOBOOKSHELF
 
 internal class SyncLifecycleOwner(
     private val scope: CoroutineScope,

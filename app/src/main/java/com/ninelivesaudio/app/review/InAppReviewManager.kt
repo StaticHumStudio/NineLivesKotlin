@@ -16,6 +16,7 @@ import com.google.android.play.core.review.ReviewManagerFactory
 import com.google.android.play.core.ktx.launchReview
 import com.google.android.play.core.ktx.requestReview
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
+import com.ninelivesaudio.app.data.remote.ApiService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -48,6 +49,7 @@ import javax.inject.Singleton
 class InAppReviewManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val playbackProgressDao: PlaybackProgressDao,
+    private val apiService: ApiService,
     private val prefs: ReviewPrefs,
 ) {
     /**
@@ -91,17 +93,19 @@ class InAppReviewManager @Inject constructor(
         crashedThisSession = true
     }
 
-    private suspend fun isEligible(): Boolean =
-        ReviewEligibility.isEligible(
+    private suspend fun isEligible(): Boolean {
+        val remoteIdPrefix = apiService.captureActiveRemoteScope()?.idPrefix
+        return ReviewEligibility.isEligible(
             ReviewSignals(
                 installAgeDays = installAgeDays(),
-                completedBooks = playbackProgressDao.countFinished(),
-                listeningSessions = playbackProgressDao.countStarted(),
+                completedBooks = playbackProgressDao.countFinishedForReview(remoteIdPrefix),
+                listeningSessions = playbackProgressDao.countStartedForReview(remoteIdPrefix),
                 crashedThisSession = crashedThisSession,
                 lastAttemptAt = prefs.lastAttemptAt,
                 now = System.currentTimeMillis(),
             )
         )
+    }
 
     private fun installAgeDays(): Long {
         // PackageInfoFlags is API 33+, and minSdk here is 30. The deprecated

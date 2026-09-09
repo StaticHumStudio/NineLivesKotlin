@@ -18,9 +18,11 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -144,7 +146,10 @@ class DownloadEngine @Inject constructor(
                     }
 
                     response.body()?.use { body ->
-                        partPath.outputStream().buffered().use { output ->
+                        val streamed = withScopedPartOutput(
+                            isCurrent = { canMutate(scope, download) },
+                            partPath = partPath,
+                        ) { output ->
                             body.byteStream().use { input ->
                                 val buffer = ByteArray(BUFFER_SIZE)
                                 var bytesRead: Int
@@ -171,7 +176,9 @@ class DownloadEngine @Inject constructor(
                                     }
                                 }
                             }
-                        }
+                            true
+                        } ?: return item
+                        if (!streamed) return item
                     }
 
                     // Atomic rename .part → final
@@ -202,8 +209,11 @@ class DownloadEngine @Inject constructor(
                     // properly. The DownloadManager facade owns the resulting Room
                     // status; an interrupted item stays Downloading so the next drain
                     // worker resumes it (the engine skips already-finished files).
-                    try { partPath.delete() } catch (cleanupError: Exception) {
-                        // Ignore cleanup errors - file may already be deleted
+                    withContext(NonCancellable) {
+                        deleteScopedPartIfCurrent(
+                            isCurrent = { canMutate(scope, download) },
+                            partPath = partPath,
+                        )
                     }
                     throw e
                 } catch (_: StaleRemoteRequestException) {
@@ -409,6 +419,27 @@ internal suspend fun runScopedFilesystemMutation(
     mutation()
     return true
 }
+
+/** Checks before opening a stream, since opening itself can create or truncate. */
+internal suspend fun <T> withScopedPartOutput(
+    isCurrent: suspend () -> Boolean,
+    partPath: File,
+    write: suspend (java.io.OutputStream) -> T,
+): T? {
+    if (!isCurrent()) return null
+    val output = partPath.outputStream().buffered()
+    return try {
+        write(output)
+    } finally {
+        output.close()
+    }
+}
+
+/** Cancellation cleanup must preserve old partial bytes after an owner switch. */
+internal suspend fun deleteScopedPartIfCurrent(
+    isCurrent: suspend () -> Boolean,
+    partPath: File,
+): Boolean = runScopedFilesystemMutation(isCurrent) { partPath.delete() }
 
 /** The row read itself suspends, so currentness must be checked on both sides. */
 internal suspend fun ownerScopedDownloadRowCurrent(

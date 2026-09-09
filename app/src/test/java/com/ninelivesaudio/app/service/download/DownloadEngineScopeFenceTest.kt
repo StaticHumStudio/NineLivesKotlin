@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class DownloadEngineScopeFenceTest {
 
@@ -63,5 +64,87 @@ class DownloadEngineScopeFenceTest {
         releaseRowRead.complete(Unit)
 
         assertFalse(result.await())
+    }
+
+    @Test
+    fun `stale stream-open gate neither creates nor truncates part bytes`() = runBlocking {
+        val directory = createTempDir(prefix = "download-scope-")
+        try {
+            val absent = File(directory, "absent.part")
+            val retained = File(directory, "retained.part").apply { writeText("retain") }
+            val reachedGate = CompletableDeferred<Unit>()
+            val releaseGate = CompletableDeferred<Unit>()
+            var current = true
+
+            val absentResult = async {
+                withScopedPartOutput(
+                    isCurrent = {
+                        reachedGate.complete(Unit)
+                        releaseGate.await()
+                        current
+                    },
+                    partPath = absent,
+                ) { it.write(1); true }
+            }
+            reachedGate.await()
+            current = false
+            releaseGate.complete(Unit)
+
+            assertFalse(absentResult.await() ?: false)
+            assertFalse(absent.exists())
+
+            val retainedReachedGate = CompletableDeferred<Unit>()
+            val releaseRetainedGate = CompletableDeferred<Unit>()
+            current = true
+            val retainedResult = async {
+                withScopedPartOutput(
+                    isCurrent = {
+                        retainedReachedGate.complete(Unit)
+                        releaseRetainedGate.await()
+                        current
+                    },
+                    partPath = retained,
+                ) { it.write(1); true }
+            }
+            retainedReachedGate.await()
+            current = false
+            releaseRetainedGate.complete(Unit)
+
+            assertFalse(retainedResult.await() ?: false)
+            assertTrue(retained.readText() == "retain")
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `stale cancellation cleanup leaves retained part bytes alone`() = runBlocking {
+        val directory = createTempDir(prefix = "download-cancel-")
+        try {
+            val part = File(directory, "retained.part").apply { writeText("retain") }
+            val reachedGate = CompletableDeferred<Unit>()
+            val releaseGate = CompletableDeferred<Unit>()
+            var current = true
+
+            val deleted = async {
+                deleteScopedPartIfCurrent(
+                    isCurrent = {
+                        reachedGate.complete(Unit)
+                        releaseGate.await()
+                        current
+                    },
+                    partPath = part,
+                )
+            }
+            reachedGate.await()
+            current = false
+            releaseGate.complete(Unit)
+
+            assertFalse(deleted.await())
+            assertTrue(part.exists())
+            assertTrue(part.readText() == "retain")
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 }

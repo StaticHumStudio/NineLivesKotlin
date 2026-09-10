@@ -1220,7 +1220,6 @@ class PlaybackManager @Inject constructor(
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
             _currentBook.value = book
-            retainedBookFinalized = false
             cachedChapters = book.chapters.sortedBy { it.start }
             _chapters.value = cachedChapters
             _currentChapter.value = null
@@ -1428,6 +1427,12 @@ class PlaybackManager @Inject constructor(
             // Update duration
             _duration.value = calculateTotalDuration(effectiveBook)
 
+            // Only a book that reached this point has a position and duration
+            // of its own. A load that bailed out earlier (superseded by another
+            // tap, or a failed session open) leaves the flag set, so the next
+            // load does not finalize a book that never played with the previous
+            // book's position.
+            retainedBookFinalized = false
             _events.tryEmit(PlaybackEvent.BookLoaded(effectiveBook))
 
             settingsManager.saveCurrentPlaybackBookId(effectiveBook.id)

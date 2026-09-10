@@ -49,4 +49,19 @@ class DossierHistoryResultTest {
         assertTrue(presentation.unavailableMessage.orEmpty().contains("Statistics are unavailable"))
         assertTrue(presentation.unavailableMessage.orEmpty().contains("page 0: HTTP 500"))
     }
+
+    @Test
+    fun `a failed fetch resets the header whisper with the statistics`() {
+        val previous = NightwatchDossierViewModel.DossierState(
+            isLoading = false,
+            headerWhisper = "You listened like someone with a deadline.",
+            totalSessions = 23,
+            overviewWhisper = "Busy month.",
+        )
+        val failed = previous.historyUnavailable("Statistics are unavailable: page 0: HTTP 500")
+        assertEquals("Statistics are unavailable: page 0: HTTP 500", failed.error)
+        assertEquals(NightwatchDossierViewModel.DossierState().headerWhisper, failed.headerWhisper)
+        assertEquals(0, failed.totalSessions)
+        assertEquals(null, failed.overviewWhisper)
+    }
 }

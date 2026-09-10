@@ -480,34 +480,7 @@ class NightwatchDossierViewModel @Inject constructor(
     }
 
     private fun publishHistoryUnavailable(message: String) {
-        _uiState.update {
-            it.copy(
-                isLoading = false,
-                isConnected = true,
-                error = message,
-                historyWarning = null,
-                totalListeningTime = Duration.ZERO,
-                totalSessions = 0,
-                filteredNoiseSessions = 0,
-                uniqueBooks = 0,
-                bookStats = emptyList(),
-                narratorStats = emptyList(),
-                genreStats = emptyList(),
-                authorStats = emptyList(),
-                booksFinished = 0,
-                dailyAverage = Duration.ZERO,
-                bestDay = null,
-                bestDayTime = Duration.ZERO,
-                hourlyDistribution = emptyMap(),
-                peakHour = null,
-                peakDayOfWeek = null,
-                overviewWhisper = null,
-                narratorWhisper = null,
-                authorWhisper = null,
-                genreWhisper = null,
-                temporalWhisper = null,
-            )
-        }
+        _uiState.update { it.historyUnavailable(message) }
     }
 
     // ─── Session Sanitization ──────────────────────────────────────────────
@@ -868,3 +841,37 @@ internal fun dossierNeedsReloadOnEntitlementChange(
     selectedPeriod: DossierPeriod,
     isUnlocked: Boolean,
 ): Boolean = !FreeTier.allowsDossierPeriod(selectedPeriod, isUnlocked)
+
+/**
+ * A failed history fetch has nothing to show. Every derived line resets,
+ * the header included, so a failure after a period change does not sit
+ * under a conclusion drawn from the previous period.
+ */
+internal fun NightwatchDossierViewModel.DossierState.historyUnavailable(message: String): NightwatchDossierViewModel.DossierState =
+    copy(
+        isLoading = false,
+        isConnected = true,
+        error = message,
+        historyWarning = null,
+        totalListeningTime = Duration.ZERO,
+        totalSessions = 0,
+        filteredNoiseSessions = 0,
+        uniqueBooks = 0,
+        bookStats = emptyList(),
+        narratorStats = emptyList(),
+        genreStats = emptyList(),
+        authorStats = emptyList(),
+        booksFinished = 0,
+        dailyAverage = Duration.ZERO,
+        bestDay = null,
+        bestDayTime = Duration.ZERO,
+        hourlyDistribution = emptyMap(),
+        peakHour = null,
+        peakDayOfWeek = null,
+        headerWhisper = NightwatchDossierViewModel.DossierState().headerWhisper,
+        overviewWhisper = null,
+        narratorWhisper = null,
+        authorWhisper = null,
+        genreWhisper = null,
+        temporalWhisper = null,
+            )

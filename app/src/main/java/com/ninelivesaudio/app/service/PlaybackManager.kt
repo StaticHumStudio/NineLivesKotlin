@@ -1937,7 +1937,14 @@ class PlaybackManager @Inject constructor(
         if (reason == PlaybackTermination.COMPLETED) _position.value = _duration.value
         // Capture the final elapsed tick once, before clearing either session.
         // Paused snapshots already folded their tick and zeroed the timestamp.
-        val captured = capturePlaybackProgressSnapshot()
+        // A retained book that is already finalized, or that an abandoned load
+        // left current with the previous book's position, gets no terminal
+        // write at all. Teardown below still runs.
+        val captured = if (shouldFinalizeRetainedBook(book != null, retainedBookFinalized)) {
+            capturePlaybackProgressSnapshot()
+        } else {
+            null
+        }
         val localSession = detachLocalSession()
         synchronized(sessionLock) {
             currentSession = null

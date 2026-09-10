@@ -44,14 +44,26 @@ internal fun resolveDownloadFileNames(files: List<AudioFile>): List<String> {
     val baseNames = files.mapIndexed { index, file ->
         sanitizeDownloadFileName(file.filename.ifBlank { "track_${index + 1}" })
     }
+    val taken = mutableSetOf<String>()
     return baseNames.mapIndexed { index, base ->
-        if (baseNames.count { it == base } == 1) {
+        val resolved = if (baseNames.count { it == base } == 1) {
             base
         } else {
             val dot = base.lastIndexOf('.')
-            val suffix = "_${index + 1}"
-            if (dot <= 0) "$base$suffix" else "${base.substring(0, dot)}$suffix${base.substring(dot)}"
+            val stem = if (dot <= 0) base else base.substring(0, dot)
+            val extension = if (dot <= 0) "" else base.substring(dot)
+            var counter = index + 1
+            var candidate = "${stem}_$counter$extension"
+            // The suffixed name has to be free of every other track's base name
+            // and of everything already handed out, or two tracks share a file.
+            while (candidate in baseNames || candidate in taken) {
+                counter++
+                candidate = "${stem}_$counter$extension"
+            }
+            candidate
         }
+        taken += resolved
+        resolved
     }
 }
 

@@ -157,6 +157,19 @@ class DownloadPoliciesTest {
         assertEquals(listOf("track_1"), resolveDownloadFileNames(files))
     }
 
+    @Test
+    fun resolveDownloadFileNames_suffixNeverCollidesWithAnotherTrack() {
+        // A generated suffix must not land on a name another track already owns.
+        val files = listOf(
+            audioFile("a.mp3", index = 0),
+            audioFile("a.mp3", index = 1),
+            audioFile("a_1.mp3", index = 2),
+        )
+        val names = resolveDownloadFileNames(files)
+        assertEquals(3, names.toSet().size)
+        assertEquals("a_1.mp3", names[2])
+    }
+
     private fun audioFile(filename: String, index: Int) = AudioFile(
         id = "f$index", ino = "i$index", index = index,
         duration = 1.seconds, filename = filename,

@@ -3,7 +3,7 @@ package com.ninelivesaudio.app.service
 import com.ninelivesaudio.app.data.remote.validatedServerBaseUrl
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
-import com.ninelivesaudio.app.service.download.sanitizeDownloadFileName
+import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
 import java.io.File
 import java.net.URI
 
@@ -83,9 +83,9 @@ private fun File.containsPlayableAudio(book: AudioBook): Boolean {
             track.isFile && track.length() > 0L
         }
     }
-    val expectedNames = book.audioFiles.mapIndexed { index, audioFile ->
-        sanitizeDownloadFileName(audioFile.filename.ifEmpty { "track_${index + 1}" })
-    }.toSet()
+    // Resolve names the same way the download engine writes them, or a book with
+    // colliding filenames reads as unplayable even though its bytes are on disk.
+    val expectedNames = resolveDownloadFileNames(book.audioFiles.sortedBy { it.index }).toSet()
     fun File.isPlayableAudio(): Boolean =
         isFile && length() > 0L &&
             (extension.lowercase() in PLAYABLE_AUDIO_EXTENSIONS || name in expectedNames)

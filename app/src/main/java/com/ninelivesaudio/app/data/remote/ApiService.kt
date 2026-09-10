@@ -164,6 +164,9 @@ class ApiService @Inject constructor(
     companion object {
         private const val TAG = "ApiService"
         private const val TOKEN_VALIDATION_DEBOUNCE_MS = 15_000L
+        // A runaway guard, not a product limit: 1000 pages of 100 is far past
+        // any real library, so a normal shelf never reaches it.
+        private const val LIBRARY_ITEMS_PAGE_CAP = 1000
     }
 
     var lastError: String? = null
@@ -681,6 +684,7 @@ class ApiService @Inject constructor(
         withContext(Dispatchers.IO) {
             runPaginatedFetch(
                 limit = limit,
+                maxPages = LIBRARY_ITEMS_PAGE_CAP,
                 onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
             ) { page ->
                 val response = api.getLibraryItems(libraryId, limit, page)

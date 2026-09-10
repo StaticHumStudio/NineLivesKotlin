@@ -50,4 +50,15 @@ class PlaybackTerminationTest {
         assertFalse(shouldFinalizeRetainedBook(hasRetainedBook = false, alreadyFinalized = false))
         assertFalse(shouldFinalizeRetainedBook(hasRetainedBook = false, alreadyFinalized = true))
     }
+
+    @Test
+    fun `play on a stopped book with no media items reloads instead of resuming`() {
+        assertTrue(shouldReloadRetainedBook(mediaItemCount = 0, hasRetainedBook = true))
+    }
+
+    @Test
+    fun `play with media items or without a book resumes as before`() {
+        assertFalse(shouldReloadRetainedBook(mediaItemCount = 8, hasRetainedBook = true))
+        assertFalse(shouldReloadRetainedBook(mediaItemCount = 0, hasRetainedBook = false))
+    }
 }

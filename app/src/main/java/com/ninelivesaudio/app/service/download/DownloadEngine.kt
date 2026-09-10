@@ -88,14 +88,19 @@ class DownloadEngine @Inject constructor(
         var lastPersistedAt = System.currentTimeMillis()
         val maxRetries = item.maxRetries
 
+        // Track order comes from the server-reported index, not response order,
+        // and leaf names are resolved once so sanitization collisions stay distinct.
+        val orderedFiles = book.audioFiles.sortedBy { it.index }
+        val fileNames = resolveDownloadFileNames(orderedFiles)
+
         // Download each audio file
-        for (i in book.audioFiles.indices) {
-            val audioFile = book.audioFiles[i]
+        for (i in orderedFiles.indices) {
+            val audioFile = orderedFiles[i]
 
             // Check for cancellation
             currentCoroutineContext().ensureActive()
 
-            val fileName = sanitizeDownloadFileName(audioFile.filename.ifEmpty { "track_${i + 1}" })
+            val fileName = fileNames[i]
             val finalPath = File(downloadDir, fileName)
             val partPath = File(downloadDir, "$fileName.part")
 
@@ -254,6 +259,8 @@ class DownloadEngine @Inject constructor(
             val bytes = body.use { it.bytes() }
             if (bytes.isEmpty()) return null
             Uri.fromFile(writeCoverFile(bytes, downloadDir)).toString()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (e: Exception) {
             Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
             null
@@ -280,6 +287,8 @@ class DownloadEngine @Inject constructor(
                     audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
                 }
             } else null
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (_: Exception) {
             null
         }

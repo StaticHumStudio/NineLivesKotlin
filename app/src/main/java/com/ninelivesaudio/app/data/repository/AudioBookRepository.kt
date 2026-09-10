@@ -1,7 +1,9 @@
 package com.ninelivesaudio.app.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
+import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -36,6 +38,7 @@ class AudioBookRepository @Inject constructor(
     private val localListeningSessionDao: LocalListeningSessionDao,
     private val localBookmarkDao: LocalBookmarkDao,
     private val playbackProgressDao: PlaybackProgressDao,
+    private val database: AppDatabase,
 ) {
     private val syncLibraryItemsMutex = Mutex()
 
@@ -248,6 +251,25 @@ class AudioBookRepository @Inject constructor(
         audioBookDao.upsertAll(audioBooks.map { it.toEntity() })
     }
 
+    /**
+     * Import a scan's books and carry any moved book's place onto its new row,
+     * as one database transaction. Together or not at all: a half-applied pass
+     * (rows imported, position not yet moved) would look on the next scan like
+     * the new row had always been there, and the carry-over would never be
+     * retried while the old row got archived out from under it.
+     */
+    suspend fun importLocalBooksCarryingMoves(
+        libraryId: String,
+        books: List<AudioBook>,
+        existingIds: List<String>,
+        seenIds: List<String>,
+    ) {
+        database.withTransaction {
+            importLocalBooks(libraryId, books)
+            carryOverMovedLocalProgress(existingIds, seenIds, books)
+        }
+    }
+
     /** Import scanned Local Library books into one local library. */
     suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
         if (books.isEmpty()) return
@@ -345,7 +367,10 @@ class AudioBookRepository @Inject constructor(
     private fun AudioBook.fingerprint() = LocalBookFingerprint(
         id = id,
         folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
-        trackFilenames = audioFiles.map { it.filename }.filter { it.isNotBlank() }.toSet(),
+        tracks = audioFiles
+            .filter { it.filename.isNotBlank() }
+            .map { it.filename to it.size }
+            .toSet(),
     )
 
     /**

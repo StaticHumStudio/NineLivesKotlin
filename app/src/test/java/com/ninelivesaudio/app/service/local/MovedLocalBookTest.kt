@@ -11,14 +11,14 @@ import org.junit.Test
  */
 class MovedLocalBookTest {
 
-    private fun book(id: String, folder: String, vararg tracks: String) =
+    private fun book(id: String, folder: String, vararg tracks: Pair<String, Long>) =
         LocalBookFingerprint(id, folder, tracks.toSet())
 
     @Test
     fun `same folder name and same files carries over`() {
         val moves = matchMovedLocalBooks(
-            vanished = listOf(book("old", "Dune", "01.mp3", "02.mp3")),
-            arrived = listOf(book("new", "Dune", "02.mp3", "01.mp3")),
+            vanished = listOf(book("old", "Dune", "01.mp3" to 10L, "02.mp3" to 20L)),
+            arrived = listOf(book("new", "Dune", "02.mp3" to 20L, "01.mp3" to 10L)),
         )
 
         assertEquals(mapOf("old" to "new"), moves)
@@ -27,8 +27,8 @@ class MovedLocalBookTest {
     @Test
     fun `a changed file set is not the same book`() {
         val moves = matchMovedLocalBooks(
-            vanished = listOf(book("old", "Dune", "01.mp3", "02.mp3")),
-            arrived = listOf(book("new", "Dune", "01.mp3")),
+            vanished = listOf(book("old", "Dune", "01.mp3" to 10L, "02.mp3" to 20L)),
+            arrived = listOf(book("new", "Dune", "01.mp3" to 10L)),
         )
 
         assertTrue(moves.isEmpty())
@@ -37,8 +37,18 @@ class MovedLocalBookTest {
     @Test
     fun `two identical copies moving at once is ambiguous and skipped`() {
         val moves = matchMovedLocalBooks(
-            vanished = listOf(book("oldA", "Dune", "01.mp3"), book("oldB", "Dune", "01.mp3")),
-            arrived = listOf(book("newA", "Dune", "01.mp3"), book("newB", "Dune", "01.mp3")),
+            vanished = listOf(book("oldA", "Dune", "01.mp3" to 10L), book("oldB", "Dune", "01.mp3" to 10L)),
+            arrived = listOf(book("newA", "Dune", "01.mp3" to 10L), book("newB", "Dune", "01.mp3" to 10L)),
+        )
+
+        assertTrue(moves.isEmpty())
+    }
+
+    @Test
+    fun `a same-shaped folder with different file sizes is a different book`() {
+        val moves = matchMovedLocalBooks(
+            vanished = listOf(book("old", "CD 1", "01.mp3" to 10L)),
+            arrived = listOf(book("new", "CD 1", "01.mp3" to 99L)),
         )
 
         assertTrue(moves.isEmpty())

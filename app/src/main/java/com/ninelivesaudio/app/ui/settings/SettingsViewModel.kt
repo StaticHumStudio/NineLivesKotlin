@@ -823,11 +823,15 @@ class SettingsViewModel @Inject constructor(
             emptyList()
         }
 
-        audioBookRepository.importLocalBooks(libraryId, books)
+        audioBookRepository.importLocalBooksCarryingMoves(
+            libraryId = libraryId,
+            books = books,
+            existingIds = existingIds,
+            seenIds = seenIds,
+        )
 
         if (!scanResult.coverageComplete) return
 
-        audioBookRepository.carryOverMovedLocalProgress(existingIds, seenIds, books)
         archiveMissingBooks(libraryId, seenIds)
     }
 

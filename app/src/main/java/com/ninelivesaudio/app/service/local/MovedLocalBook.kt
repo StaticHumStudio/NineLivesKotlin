@@ -8,24 +8,32 @@ package com.ninelivesaudio.app.service.local
  * folder anywhere else in the tree produces a brand new id and the old row
  * reconciles away (issue #20). The user's place in the book would go with it.
  * This is the narrow, opt-out-when-unsure rescue for that: same folder name,
- * same filenames, one candidate on each side.
+ * same files at the same sizes, one candidate on each side.
  */
 data class LocalBookFingerprint(
     val id: String,
     val folderName: String,
-    val trackFilenames: Set<String>,
+    /**
+     * Each track as name plus byte size. Sizes are what stop a coincidence:
+     * a folder called "CD 1" holding "01.mp3" is a shape half a library can
+     * share, and one book being deleted while an unrelated one is added would
+     * otherwise read as a move and hand the wrong bookmark over. A move copies
+     * bytes exactly, so requiring the sizes to line up costs a real move
+     * nothing.
+     */
+    val tracks: Set<Pair<String, Long>>,
 )
 
 /**
  * Pair books that vanished in this scan with books that arrived in it, and
  * return `vanished id -> arrived id` for the pairs that are beyond doubt.
  *
- * A pair is beyond doubt only when its (folder name, filename set) key matches
- * exactly ONE book on each side. Two identical copies of a book moving at once,
- * or a folder name reused across a library, is ambiguous: guessing there would
- * hand someone else's position to the wrong book, which is worse than making
- * the user find their place again. Ambiguous keys are dropped, silently and
- * deliberately. A book with no tracks is never matched at all.
+ * A pair is beyond doubt only when its (folder name, track name and size set)
+ * key matches exactly ONE book on each side. Two identical copies of a book
+ * moving at once is ambiguous: guessing there would hand someone else's
+ * position to the wrong book, which is worse than making the user find their
+ * place again. Ambiguous keys are dropped, silently and deliberately. A book
+ * with no tracks is never matched at all.
  */
 fun matchMovedLocalBooks(
     vanished: List<LocalBookFingerprint>,
@@ -33,9 +41,9 @@ fun matchMovedLocalBooks(
 ): Map<String, String> {
     if (vanished.isEmpty() || arrived.isEmpty()) return emptyMap()
 
-    fun key(book: LocalBookFingerprint) = book.folderName to book.trackFilenames
+    fun key(book: LocalBookFingerprint) = book.folderName to book.tracks
     fun unambiguous(books: List<LocalBookFingerprint>) = books
-        .filter { it.folderName.isNotBlank() && it.trackFilenames.isNotEmpty() }
+        .filter { it.folderName.isNotBlank() && it.tracks.isNotEmpty() }
         .groupBy(::key)
         .filterValues { it.size == 1 }
         .mapValues { (_, matches) -> matches.single() }

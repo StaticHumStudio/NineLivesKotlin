@@ -671,6 +671,9 @@ class LibraryViewModel @Inject constructor(
             scope = viewModelScope,
             request = snapshot.request,
             load = { buildFilterResult(snapshot) },
+            onFailure = { e ->
+                _uiState.update { it.copy(errorMessage = "Failed to load audiobooks: ${e.message}") }
+            },
         ) { result ->
             result?.let(::publishFilterResult)
         }

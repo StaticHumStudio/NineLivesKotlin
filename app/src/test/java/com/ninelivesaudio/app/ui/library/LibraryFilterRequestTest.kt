@@ -56,4 +56,26 @@ class LibraryFilterRequestTest {
         assertEquals("library B shelf", visibleShelf)
         scope.cancel()
     }
+
+    @Test
+    fun `a failing filter query reports instead of escaping the scope`() = runBlocking {
+        val publication = LibraryFilterPublication()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var reported: String? = null
+        var published = false
+
+        val request = publication.replace("library")
+        val job = publication.launch(
+            scope,
+            request,
+            load = { throw IllegalStateException("room is closed") },
+            onFailure = { reported = it.message },
+        ) { _: String -> published = true }
+        job.join()
+
+        assertEquals("room is closed", reported)
+        assertEquals(false, published)
+        assertEquals(false, job.isCancelled)
+        scope.cancel()
+    }
 }

@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.library
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -37,9 +38,20 @@ internal class LibraryFilterPublication {
         scope: CoroutineScope,
         request: LibraryFilterRequest,
         load: suspend () -> T,
+        onFailure: (Exception) -> Unit = {},
         publish: (T) -> Unit,
     ): Job = scope.launch {
-            val result = load()
+            // The shelf load that used to await this calculation no longer
+            // does, so a failing filter query has nowhere to land but here.
+            // Report it to the caller instead of escaping the scope.
+            val result = try {
+                load()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (current == request) onFailure(e)
+                return@launch
+            }
             if (current == request) publish(result)
         }.also { job = it }
 }

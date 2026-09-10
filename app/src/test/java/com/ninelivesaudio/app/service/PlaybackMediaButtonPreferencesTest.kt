@@ -1,8 +1,11 @@
 package com.ninelivesaudio.app.service
 
+import androidx.annotation.OptIn
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackMediaButtonPreferencesTest {
@@ -20,6 +23,21 @@ class PlaybackMediaButtonPreferencesTest {
         assertEquals(CommandButton.ICON_PREVIOUS, buttons[2].icon)
         assertEquals(Player.COMMAND_SEEK_TO_NEXT, buttons[3].playerCommand)
         assertEquals(CommandButton.ICON_NEXT, buttons[3].icon)
+    }
+
+    @Test
+    @OptIn(UnstableApi::class)
+    fun `configured button slots stay inside Media3's declared set`() {
+        val validSlots = setOf(
+            CommandButton.SLOT_CENTRAL,
+            CommandButton.SLOT_BACK,
+            CommandButton.SLOT_FORWARD,
+            CommandButton.SLOT_BACK_SECONDARY,
+            CommandButton.SLOT_FORWARD_SECONDARY,
+            CommandButton.SLOT_OVERFLOW,
+        )
+
+        assertTrue(audiobookButtonSpecs().flatMap { it.slots }.all(validSlots::contains))
     }
 
     @Test

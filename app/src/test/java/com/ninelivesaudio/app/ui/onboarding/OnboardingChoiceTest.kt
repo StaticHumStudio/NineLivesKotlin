@@ -13,6 +13,7 @@ class OnboardingChoiceTest {
         val result = applyOnboardingChoice(AppSettings(), AppMode.AUDIOBOOKSHELF)
         assertEquals(AppMode.AUDIOBOOKSHELF, result.appMode)
         assertTrue(result.onboardingComplete)
+        assertEquals(OnboardingDestination.SETTINGS, onboardingDestinationFor(AppMode.AUDIOBOOKSHELF))
     }
 
     @Test
@@ -21,6 +22,7 @@ class OnboardingChoiceTest {
         val result = applyOnboardingChoice(current, AppMode.LOCAL)
         assertEquals(AppMode.LOCAL, result.appMode)
         assertTrue(result.onboardingComplete)
+        assertEquals(OnboardingDestination.SETTINGS, onboardingDestinationFor(AppMode.LOCAL))
     }
 
     @Test

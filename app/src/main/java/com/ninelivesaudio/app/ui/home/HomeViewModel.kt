@@ -70,6 +70,18 @@ class HomeViewModel @Inject constructor(
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
     private val reconnectJobOwner = HomeReconnectJobOwner(viewModelScope)
 
+    private val romanNumerals = arrayOf("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX")
+
+    private val colorStops = listOf(
+        ColorStop(0.0, 0x4A, 0x4A, 0x4A),   // Dim gray
+        ColorStop(1.0, 0x2C, 0x5F, 0x6E),   // NebulaLight — first glow
+        ColorStop(5.0, 0x1A, 0x3A, 0x4A),   // NebulaMid — deeper teal
+        ColorStop(10.0, 0x8A, 0x73, 0x39),  // SigilGoldDim — muted gold
+        ColorStop(25.0, 0xC5, 0xA5, 0x5A),  // SigilGold — primary gold
+        ColorStop(50.0, 0xD4, 0xAF, 0x37),  // SigilGoldBright — active gold
+        ColorStop(100.0, 0xFF, 0xF0, 0xC8), // Brilliant white-gold
+    )
+
     init {
         // Observe connection status
         viewModelScope.launch {
@@ -235,8 +247,6 @@ class HomeViewModel @Inject constructor(
 
     // ─── Roman Numerals ──────────────────────────────────────────────────────
 
-    private val romanNumerals = arrayOf("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX")
-
     private fun toRoman(number: Int): String =
         if (number in 1..romanNumerals.size) romanNumerals[number - 1] else number.toString()
 
@@ -244,16 +254,6 @@ class HomeViewModel @Inject constructor(
     // Progression: dim gray → nebula teal → sigil gold → brilliant white-gold
 
     private data class ColorStop(val hours: Double, val r: Int, val g: Int, val b: Int)
-
-    private val colorStops = listOf(
-        ColorStop(0.0, 0x4A, 0x4A, 0x4A),   // Dim gray
-        ColorStop(1.0, 0x2C, 0x5F, 0x6E),   // NebulaLight — first glow
-        ColorStop(5.0, 0x1A, 0x3A, 0x4A),   // NebulaMid — deeper teal
-        ColorStop(10.0, 0x8A, 0x73, 0x39),  // SigilGoldDim — muted gold
-        ColorStop(25.0, 0xC5, 0xA5, 0x5A),  // SigilGold — primary gold
-        ColorStop(50.0, 0xD4, 0xAF, 0x37),  // SigilGoldBright — active gold
-        ColorStop(100.0, 0xFF, 0xF0, 0xC8), // Brilliant white-gold
-    )
 
     private fun getCosmicEnergyColor(hoursListened: Double): Color {
         if (hoursListened <= 0) {

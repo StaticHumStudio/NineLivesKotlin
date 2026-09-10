@@ -60,6 +60,10 @@ class AudioBookRepository @Inject constructor(
     suspend fun getByLibrary(libraryId: String): List<AudioBook> =
         audioBookDao.getByLibrary(libraryId).map { it.toDomain() }
 
+    /** Get audiobooks for one library and source mode (one-shot). */
+    suspend fun getByLibraryAndSource(libraryId: String, isLocal: Boolean): List<AudioBook> =
+        audioBookDao.getByLibraryAndSource(libraryId, if (isLocal) 1 else 0).map { it.toDomain() }
+
     /** Get all local-source audiobooks (one-shot). */
     suspend fun getLocalBooks(): List<AudioBook> =
         audioBookDao.getBySource(isLocal = 1).map { it.toDomain() }

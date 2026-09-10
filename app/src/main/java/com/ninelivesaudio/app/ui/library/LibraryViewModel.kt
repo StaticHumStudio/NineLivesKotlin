@@ -204,6 +204,7 @@ class LibraryViewModel @Inject constructor(
 
     // Search debounce
     private var searchJob: Job? = null
+    private val filterPublication = LibraryFilterPublication()
 
     // Initial load, refresh, and selection all write the same shelf state.
     // Keep them in one lane so an older operation cannot finish last.
@@ -223,6 +224,9 @@ class LibraryViewModel @Inject constructor(
                     ),
                 )
                 autoDownloadedOnly = decision.autoDownloadedOnly
+                if (decision.showDownloadedOnly != currentState.showDownloadedOnly) {
+                    filterPublication.invalidate()
+                }
                 _uiState.update {
                     it.copy(
                         connectionStatus = status,
@@ -308,6 +312,7 @@ class LibraryViewModel @Inject constructor(
                     isLocalMode = isLocalMode,
                 )
             }
+            filterPublication.invalidate()
 
             val itemResult = selected?.let {
                 loadAudioBooks(it.id, persistResult = false)
@@ -379,8 +384,10 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            updateAvailableGroups(libraryId)
-            applyFilterSuspend()
+            // The load owns the spinner, so it waits for the filtered shelf
+            // before its caller clears it. A superseded filter job returns
+            // from join at once and the newer one publishes instead.
+            applyFilter()?.join()
         } catch (e: Exception) {
             rethrowLibraryLoadCancellation(e)
             _uiState.update {
@@ -430,6 +437,8 @@ class LibraryViewModel @Inject constructor(
     // ─── User Actions ─────────────────────────────────────────────────────
 
     fun onLibrarySelected(library: Library) {
+        searchJob?.cancel()
+        filterPublication.invalidate()
         _uiState.update {
             it.copy(
                 selectedLibrary = library,
@@ -458,45 +467,39 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun onSearchQueryChanged(query: String) {
+        filterPublication.invalidate()
         _uiState.update { it.copy(searchQuery = query) }
         // Debounce search
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(300)
-            applyFilterSuspend()
+            applyFilter()
         }
     }
 
     fun onViewModeChanged(mode: ViewMode) {
-        _uiState.update { it.copy(viewMode = mode, selectedGroupFilter = null) }
-        viewModelScope.launch { updateAvailableGroups() }
-        applyFilter()
+        updateFilterInputs { it.copy(viewMode = mode, selectedGroupFilter = null) }
     }
 
     fun onSortModeChanged(mode: SortMode) {
-        _uiState.update { it.copy(sortMode = mode) }
-        applyFilter()
+        updateFilterInputs { it.copy(sortMode = mode) }
     }
 
     fun onGroupFilterSelected(group: String?) {
-        _uiState.update { it.copy(selectedGroupFilter = group) }
-        applyFilter()
+        updateFilterInputs { it.copy(selectedGroupFilter = group) }
     }
 
     fun onLibraryTabChanged(tab: LibraryTab) {
-        _uiState.update { it.copy(selectedTab = tab) }
-        applyFilter()
+        updateFilterInputs { it.copy(selectedTab = tab) }
     }
 
     fun onHideFinishedChanged(value: Boolean) {
-        _uiState.update { it.copy(hideFinished = value) }
-        applyFilter()
+        updateFilterInputs { it.copy(hideFinished = value) }
     }
 
     fun onShowDownloadedOnlyChanged(value: Boolean) {
         autoDownloadedOnly = false
-        _uiState.update { it.copy(showDownloadedOnly = value) }
-        applyFilter()
+        updateFilterInputs { it.copy(showDownloadedOnly = value) }
     }
 
     fun onGroupExpansionToggled(groupKey: String) {
@@ -510,7 +513,8 @@ class LibraryViewModel @Inject constructor(
 
     fun resetFilters() {
         autoDownloadedOnly = false
-        _uiState.update {
+        searchJob?.cancel()
+        updateFilterInputs {
             it.copy(
                 searchQuery = "",
                 viewMode = ViewMode.ALL,
@@ -521,8 +525,6 @@ class LibraryViewModel @Inject constructor(
                 sortMode = SortMode.RECENTLY_PLAYED,
             )
         }
-        viewModelScope.launch { updateAvailableGroups() }
-        applyFilter()
     }
 
     fun refresh() {
@@ -544,24 +546,39 @@ class LibraryViewModel @Inject constructor(
 
     // ─── Filter/Sort Logic ────────────────────────────────────────────────
 
-    private suspend fun updateAvailableGroups(libraryId: String? = null) {
-        val libId = libraryId ?: _uiState.value.selectedLibrary?.id ?: return
-        val state = _uiState.value
-        val groups = when (state.viewMode) {
-            ViewMode.SERIES -> audioBookRepository.getDistinctSeries(libId)
-            ViewMode.AUTHOR -> audioBookRepository.getDistinctAuthors(libId)
-            ViewMode.GENRE -> audioBookRepository.getDistinctGenres(libId)
+    private data class FilterSnapshot(
+        val request: LibraryFilterRequest,
+        val libraries: List<Library>,
+        val selectedTab: LibraryTab,
+        val isLocalMode: Boolean,
+        val hideFinished: Boolean,
+        val showDownloadedOnly: Boolean,
+        val searchQuery: String,
+        val sortMode: SortMode,
+        val viewMode: ViewMode,
+        val selectedGroupFilter: String?,
+    )
+
+    private data class FilterResult(
+        val books: List<AudioBook>,
+        val availableGroups: List<String>,
+        val groupedSections: List<GroupedSection>,
+        val totalBookCount: Int,
+    )
+
+    private suspend fun buildFilterResult(snapshot: FilterSnapshot): FilterResult? {
+        val libraryId = snapshot.request.libraryId
+
+        val groups = when (snapshot.viewMode) {
+            ViewMode.SERIES -> audioBookRepository.getDistinctSeries(libraryId)
+            ViewMode.AUTHOR -> audioBookRepository.getDistinctAuthors(libraryId)
+            ViewMode.GENRE -> audioBookRepository.getDistinctGenres(libraryId)
             ViewMode.ALL -> emptyList()
         }
-        _uiState.update { it.copy(availableGroups = groups) }
-    }
-
-    private suspend fun applyFilterSuspend() {
-        val state = _uiState.value
-        val libraryId = state.selectedLibrary?.id ?: return
+        if (!filterPublication.isCurrent(snapshot.request)) return null
 
         // Push filters to SQL — only load the books that match
-        val tab = when (state.selectedTab) {
+        val tab = when (snapshot.selectedTab) {
             LibraryTab.All -> 0
             LibraryTab.InProgress -> 1
             LibraryTab.Completed -> 2
@@ -569,21 +586,22 @@ class LibraryViewModel @Inject constructor(
             // Defensive: if the Archive tab is somehow selected outside LOCAL
             // mode (stale state after a mode switch), fall back to All so the
             // shelf is not silently empty.
-            LibraryTab.Archive -> if (state.isLocalMode) 4 else 0
+            LibraryTab.Archive -> if (snapshot.isLocalMode) 4 else 0
         }
         val storedBooks = audioBookRepository.getFilteredBooks(
             libraryId = libraryId,
             tab = tab,
-            hideFinished = state.hideFinished,
-            downloadedOnly = state.showDownloadedOnly,
-            searchQuery = state.searchQuery.trim(),
+            hideFinished = snapshot.hideFinished,
+            downloadedOnly = snapshot.showDownloadedOnly,
+            searchQuery = snapshot.searchQuery.trim(),
         )
-        val accessibleLocalIds = localFolderAccess.accessibleLibraryIds(state.libraries)
+        if (!filterPublication.isCurrent(snapshot.request)) return null
+        val accessibleLocalIds = localFolderAccess.accessibleLibraryIds(snapshot.libraries)
         val books = storedBooks
             .map { reconcileLocalBookAccess(it, accessibleLocalIds).book }
             .filterNot {
                 !it.isDownloaded &&
-                    (state.selectedTab == LibraryTab.Downloaded || state.showDownloadedOnly)
+                    (snapshot.selectedTab == LibraryTab.Downloaded || snapshot.showDownloadedOnly)
             }
 
         // Clamped at the point of consumption, not just in the UI. Gating the
@@ -593,8 +611,8 @@ class LibraryViewModel @Inject constructor(
         //
         // The stored choice in uiState is left alone, so unlocking restores it.
         val isUnlocked = entitlements.current.isUnlocked
-        val effectiveSort = FreeTier.effectiveSort(state.sortMode, isUnlocked)
-        val effectiveViewMode = FreeTier.effectiveViewMode(state.viewMode, isUnlocked)
+        val effectiveSort = FreeTier.effectiveSort(snapshot.sortMode, isUnlocked)
+        val effectiveViewMode = FreeTier.effectiveViewMode(snapshot.viewMode, isUnlocked)
 
         // Sort and group in-memory (complex logic stays in Kotlin)
         val sortedBooks = sortBooks(books, effectiveSort)
@@ -604,29 +622,74 @@ class LibraryViewModel @Inject constructor(
             sortMode = effectiveSort,
         )
 
-        // Preserve expansions for existing groups; auto-expand newly appearing groups
-        val groupKeys = groupedSections.map { it.key }.toSet()
-        val previousKeys = state.groupedSections.map { it.key }.toSet()
-        val expandedGroups = state.expandedGroups
-            .filterTo(mutableSetOf()) { it in groupKeys }
-            .apply { addAll(groupKeys - previousKeys) }
-
         // Get total count from DB (not from filtered set)
         val totalCount = audioBookRepository.countByLibrary(libraryId)
+        if (!filterPublication.isCurrent(snapshot.request)) return null
 
+        return FilterResult(
+            books = sortedBooks,
+            availableGroups = groups,
+            groupedSections = groupedSections,
+            totalBookCount = totalCount,
+        )
+    }
+
+    private fun publishFilterResult(result: FilterResult) {
         _uiState.update {
+            val groupKeys = result.groupedSections.map { section -> section.key }.toSet()
+            val previousKeys = it.groupedSections.map { section -> section.key }.toSet()
+            val expandedGroups = it.expandedGroups
+                .filterTo(mutableSetOf()) { key -> key in groupKeys }
+                .apply { addAll(groupKeys - previousKeys) }
             it.copy(
-                filteredBooks = sortedBooks,
-                groupedSections = groupedSections,
+                filteredBooks = result.books,
+                availableGroups = result.availableGroups,
+                groupedSections = result.groupedSections,
                 expandedGroups = expandedGroups,
-                totalBookCount = totalCount,
+                totalBookCount = result.totalBookCount,
             )
         }
     }
 
-    /** Fire-and-forget filter for non-suspend callers. */
-    private fun applyFilter() {
-        viewModelScope.launch { applyFilterSuspend() }
+    /**
+     * Starts the filtered-shelf calculation and returns its job, or null when
+     * no library is selected. Non-suspend callers drop the job. A load that
+     * owns a loading indicator joins it.
+     */
+    private fun applyFilter(): Job? {
+        val state = _uiState.value
+        val libraryId = state.selectedLibrary?.id ?: run {
+            filterPublication.invalidate()
+            return null
+        }
+        val snapshot = FilterSnapshot(
+            request = filterPublication.replace(libraryId),
+            libraries = state.libraries,
+            selectedTab = state.selectedTab,
+            isLocalMode = state.isLocalMode,
+            hideFinished = state.hideFinished,
+            showDownloadedOnly = state.showDownloadedOnly,
+            searchQuery = state.searchQuery,
+            sortMode = state.sortMode,
+            viewMode = state.viewMode,
+            selectedGroupFilter = state.selectedGroupFilter,
+        )
+        return filterPublication.launch(
+            scope = viewModelScope,
+            request = snapshot.request,
+            load = { buildFilterResult(snapshot) },
+            onFailure = { e ->
+                _uiState.update { it.copy(errorMessage = "Failed to load audiobooks: ${e.message}") }
+            },
+        ) { result ->
+            result?.let(::publishFilterResult)
+        }
+    }
+
+    private inline fun updateFilterInputs(transform: (UiState) -> UiState) {
+        filterPublication.invalidate()
+        _uiState.update(transform)
+        applyFilter()
     }
 
 }

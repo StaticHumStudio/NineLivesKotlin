@@ -334,6 +334,7 @@ class PlaybackService : MediaLibraryService() {
             super.onDisconnected(session, controller)
         }
 
+        @OptIn(UnstableApi::class)
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,
             browser: MediaSession.ControllerInfo,

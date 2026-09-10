@@ -332,7 +332,10 @@ class NightwatchDossierViewModel @Inject constructor(
                     return@launch
                 }
                 val allSessions = history.sessions
-                val allBooks = dossierBooksInActiveScope(audioBookRepository.getAll(), settings)
+                val scopedBooks = settings.activeLibraryId?.let { libraryId ->
+                    audioBookRepository.getByLibraryAndSource(libraryId, isLocalMode)
+                }.orEmpty()
+                val allBooks = dossierBooksInActiveScope(scopedBooks, settings)
                 val bookMap = allBooks.associateBy { it.id }
 
                 // Time period window, clamped by entitlement.

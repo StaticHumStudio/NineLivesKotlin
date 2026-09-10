@@ -27,4 +27,6 @@
     <exclude domain="sharedpref" path="nine_lives_secure_prefs.xml" />
     <exclude domain="sharedpref" path="nine_lives_entitlement_cache.xml" />
     <exclude domain="file" path="NineLivesAudio/settings.json" />
+    <!-- Default downloads live in external/Music/Audiobookshelf and can exceed cloud quota. -->
+    <exclude domain="external" path="Music/Audiobookshelf" />
 </full-backup-content>

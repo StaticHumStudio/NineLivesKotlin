@@ -91,6 +91,10 @@ interface AudioBookDao {
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1")
     suspend fun getLocalIdsByLibrary(libraryId: String): List<String>
 
+    /** Ids of the LOCAL books a library currently shows (archived ones excluded). */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND ArchivedAt IS NULL")
+    suspend fun getLiveLocalIdsByLibrary(libraryId: String): List<String>
+
     /** Ids of the archived (soft-deleted) LOCAL books in a library. */
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND ArchivedAt IS NOT NULL")
     suspend fun getArchivedLocalIdsByLibrary(libraryId: String): List<String>
@@ -98,6 +102,18 @@ interface AudioBookDao {
     /** Soft-delete: stamp ArchivedAt on the given books (skips already-archived). */
     @Query("UPDATE AudioBooks SET ArchivedAt = :archivedAt WHERE Id IN (:ids) AND ArchivedAt IS NULL")
     suspend fun archiveByIds(ids: List<String>, archivedAt: Long)
+
+    /** Carry a moved local book's place onto its new row (issue #20). */
+    @Query(
+        "UPDATE AudioBooks SET CurrentTimeSeconds = :currentTimeSeconds, " +
+            "Progress = :progress, IsFinished = :isFinished WHERE Id = :id"
+    )
+    suspend fun updateLocalPosition(
+        id: String,
+        currentTimeSeconds: Double,
+        progress: Double,
+        isFinished: Int,
+    )
 
     /** Repoint a book's cover to a durable path (persisting a SAF folder cover). */
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")

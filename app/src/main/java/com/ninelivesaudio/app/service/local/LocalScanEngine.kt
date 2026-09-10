@@ -46,12 +46,30 @@ interface ScanMetadataSource {
  */
 class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
 
+    /**
+     * [coverageComplete] and [retainedBookIds] are what a caller needs before it
+     * dares delete anything on the strength of a scan (issue #20).
+     *
+     * [coverageComplete] is true only when the scan actually walked every folder
+     * it set out to walk. It goes false when a folder listing throws (a failed
+     * listing is NOT an empty folder: the books under it were never seen) and
+     * when the depth or folder cap truncated traversal (an unvisited folder is
+     * not a gone folder). Either way [books] is a partial inventory and nothing
+     * may be removed for being absent from it.
+     *
+     * [retainedBookIds] is the other half: books the scan positively saw on disk
+     * but could not turn into a [ScannedLocalBook] (a loose root file whose
+     * metadata read blew up). Their ids are known, so they count as seen. Without
+     * this, one flaky file would keep a whole library from ever reconciling.
+     */
     data class EngineResult(
         val books: List<ScannedLocalBook>,
         val skippedCount: Int,
         val errorMessages: List<String>,
         val foldersScanned: Int,
         val archiveFileCount: Int,
+        val coverageComplete: Boolean = true,
+        val retainedBookIds: Set<String> = emptySet(),
     )
 
     companion object {
@@ -116,23 +134,40 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         val books = mutableListOf<ScannedLocalBook>()
         val errorMessages = mutableListOf<String>()
         val childrenCache = mutableMapOf<String, List<ScanNode>>()
+        val retainedBookIds = mutableSetOf<String>()
         var skippedCount = 0
-        var foldersScanned = 0
         var depthCapMessageAdded = false
         var folderCapMessageAdded = false
         var folderCapHit = false
         var archiveFileCount = 0
+        // Cleared the moment any part of the tree goes unseen. See EngineResult.
+        var coverageComplete = true
 
+        // Every folder listing in the scan goes through here, merge lookahead and
+        // disc-probing included, so the cache holds exactly the set of folders
+        // this scan actually listed. That set IS the folder count (issue #23):
+        // charging it by construction ends the family of incremental
+        // under/over-counting bugs that PR #22 took three review rounds on.
         fun childrenOf(node: ScanNode): List<ScanNode> =
             childrenCache.getOrPut(node.uriString) {
-                node.children().also { children ->
-                    archiveFileCount += children.count {
-                        !it.isDirectory && !isHidden(it) && isArchiveFile(it)
-                    }
+                val children = try {
+                    node.children()
+                } catch (e: Exception) {
+                    // Unreadable folder: whatever lives under it was never seen.
+                    coverageComplete = false
+                    throw e
                 }
+                archiveFileCount += children.count {
+                    !it.isDirectory && !isHidden(it) && isArchiveFile(it)
+                }
+                children
             }
 
+        fun foldersListed(): Int = childrenCache.size
+
         fun addDepthCapMessage() {
+            // Truncated traversal: folders below the cap were never listed.
+            coverageComplete = false
             if (!depthCapMessageAdded) {
                 errorMessages += "Scan stopped early: folders nested deeper than " +
                     "$MAX_SCAN_DEPTH levels were skipped."
@@ -141,6 +176,8 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
         }
 
         fun addFolderCapMessage() {
+            // Same story as the depth cap: the scan stopped short of the tree's end.
+            coverageComplete = false
             if (!folderCapMessageAdded) {
                 errorMessages += "Scan stopped early: more than $MAX_FOLDERS_SCANNED folders. " +
                     "Pick a more specific folder."
@@ -155,13 +192,12 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                 skippedCount++
                 return
             }
-            if (foldersScanned >= MAX_FOLDERS_SCANNED) {
+            if (foldersListed() >= MAX_FOLDERS_SCANNED) {
                 folderCapHit = true
                 addFolderCapMessage()
                 skippedCount++
                 return
             }
-            foldersScanned++
 
             try {
                 val children = childrenOf(folder).filterNot { isHidden(it) }
@@ -181,7 +217,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                         skippedCount += subfolders.size
                     } else if (
                         directAudio.isEmpty() &&
-                        foldersScanned + subfolders.size <= MAX_FOLDERS_SCANNED
+                        foldersListed() + subfolders.size <= MAX_FOLDERS_SCANNED
                     ) {
                         val audioSubdirs = subfolders.filter { hasDirectAudio(it, ::childrenOf) }
                         val others = subfolders - audioSubdirs.toSet()
@@ -216,21 +252,11 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                                 }.getOrDefault(true)
                             }
 
-                        // The lookahead can list descendants many levels below the
-                        // immediate siblings without ever recursing into them normally,
-                        // so charge whatever budget it actually consumed regardless of
-                        // whether the merge went through. Otherwise a tree of merge
-                        // parents each hiding a large empty subtree behind one sibling
-                        // probes far past the advertised cap while this counter crawls.
-                        foldersScanned += MAX_LOOKAHEAD_FOLDERS - lookaheadBudget.foldersRemaining
-
+                        // No accounting to do here any more (issue #23). Merge
+                        // detection, the lookahead, and the merge builder all list
+                        // folders through childrenOf, so every folder any of them
+                        // touched is already in the cache and already counted, once.
                         if (shouldMerge) {
-                            // Merge detection listed every subfolder to decide, not just
-                            // the audio-bearing ones, so every one of them counts toward
-                            // the folders-scanned total. Charging only audioSubdirs let a
-                            // tree of merge parents with crowds of empty siblings probe
-                            // far past the advertised cap while the counter crawled.
-                            foldersScanned += subfolders.size
                             books += buildMergedDiscBook(
                                 folder,
                                 relPath,
@@ -267,7 +293,6 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
 
         // The root is special: loose audio files here are single-file books (R1),
         // not folded into a "root folder book". Subfolders recurse normally.
-        foldersScanned++
         val rootChildren = childrenOf(root).filterNot { isHidden(it) }
         val rootAudioFiles = rootChildren.filter { !it.isDirectory && isAudioFile(it) }
         val rootSubfolders = rootChildren.filter { it.isDirectory }
@@ -278,6 +303,12 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             } catch (e: Exception) {
                 errorMessages += "Skipped file '${file.name}': ${e.message}"
                 skippedCount++
+                // The file is right here on disk and its id is a pure function of
+                // its name, so this is a build failure, not a coverage gap. Hand
+                // the id back as retained rather than clearing coverage: a book
+                // that exists must never be reconciled away over a bad metadata
+                // read, and one bad file must not freeze the whole library.
+                file.name?.let { retainedBookIds += singleFileBookId(rootUriString, it) }
             }
         }
 
@@ -289,17 +320,23 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             books = books,
             skippedCount = skippedCount,
             errorMessages = errorMessages,
-            foldersScanned = foldersScanned,
+            foldersScanned = foldersListed(),
             archiveFileCount = archiveFileCount,
+            coverageComplete = coverageComplete,
+            retainedBookIds = retainedBookIds,
         )
     }
 
     // ─── Book builders ─────────────────────────────────────────────────────
 
+    /** The id a loose root audio file gets, known before any metadata is read. */
+    private fun singleFileBookId(rootUri: String, filename: String): String =
+        "local_book_${sha256("$rootUri/$filename")}"
+
     private fun buildSingleFileBook(file: ScanNode, rootUri: String): ScannedLocalBook {
         val meta = metadataSource.extract(file.uriString)
         val filename = file.name ?: "Unknown"
-        val bookId = "local_book_${sha256("$rootUri/$filename")}"
+        val bookId = singleFileBookId(rootUri, filename)
 
         val title = meta?.title?.takeIf { it.isNotBlank() }
             ?: meta?.album?.takeIf { it.isNotBlank() }

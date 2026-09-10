@@ -556,10 +556,7 @@ class SettingsViewModel @Inject constructor(
                 // Create or reuse the local library row after confirming the folder is readable.
                 val library = libraryRepository.createLocalLibrary(displayName, uriString)
 
-                // Import discovered books, but only delete missing books after a clean scan.
-                val books = scanResult.books.map { it.toAudioBook(library.id) }
-                audioBookRepository.importLocalBooks(library.id, books)
-                removeMissingBooksAfterSuccessfulScan(library.id, scanResult)
+                importAndReconcile(library.id, scanResult)
 
                 // Select this library
                 settingsManager.updateSettings {
@@ -599,10 +596,7 @@ class SettingsViewModel @Inject constructor(
                 }
                 failEmptyScanWithErrors(scanResult)
 
-                // Import discovered books, but only delete missing books after a clean scan.
-                val books = scanResult.books.map { it.toAudioBook(library.id) }
-                audioBookRepository.importLocalBooks(library.id, books)
-                removeMissingBooksAfterSuccessfulScan(library.id, scanResult)
+                importAndReconcile(library.id, scanResult)
 
                 val outcome = buildScanOutcome(scanResult, countedAs = "found") { "Rescan complete: $it" }
 
@@ -792,13 +786,49 @@ class SettingsViewModel @Inject constructor(
         return localLibraries.firstOrNull { it.id == savedLocalId } ?: localLibraries.firstOrNull()
     }
 
-    private suspend fun removeMissingBooksAfterSuccessfulScan(
+    /**
+     * Import what the scan found, then reconcile the library against it: any
+     * local book whose folder was not seen in this scan leaves the library
+     * (issue #20). Without this a rescan only ever adds, so moving a folder one
+     * level deeper leaves a ghost entry pointing at files that are gone, and
+     * playing it fails.
+     *
+     * Removal is gated on [LocalLibraryScanner.ScanResult.coverageComplete], NOT
+     * on "the scan reported no warnings". The distinction is the whole safety
+     * argument: a folder that could not be listed, a revoked permission, or a
+     * traversal cut short by the depth or folder cap all mean books exist that
+     * this scan never saw, and absence from a partial inventory is not evidence
+     * a book is gone. Those scans import and reconcile nothing. A warning that
+     * is not a coverage gap (a single unreadable file, whose id the scan hands
+     * back as retained) no longer freezes the whole library forever.
+     *
+     * "Leaves the library" means archived, not deleted. A folder can come back:
+     * the card is out of the library and its Archive tab entry keeps the cover,
+     * progress, and history, and re-adding the folder restores it in place. The
+     * Orphaned Books sweep in this screen stays the one path that actually
+     * deletes rows, and it already cascades progress, sessions, bookmarks, and
+     * the local_covers file.
+     */
+    private suspend fun importAndReconcile(
         libraryId: String,
         scanResult: LocalLibraryScanner.ScanResult,
     ) {
-        if (scanResult.errorMessages.isEmpty()) {
-            archiveMissingBooks(libraryId, scanResult.books.map { it.id })
+        val books = scanResult.books.map { it.toAudioBook(libraryId) }
+        val seenIds = scanResult.seenBookIds()
+        // Captured before the import, so a book that arrived in THIS scan is
+        // distinguishable from one that was already in the library.
+        val existingIds = if (scanResult.coverageComplete) {
+            audioBookRepository.getLiveLocalIds(libraryId)
+        } else {
+            emptyList()
         }
+
+        audioBookRepository.importLocalBooks(libraryId, books)
+
+        if (!scanResult.coverageComplete) return
+
+        audioBookRepository.carryOverMovedLocalProgress(existingIds, seenIds, books)
+        archiveMissingBooks(libraryId, seenIds)
     }
 
     /**

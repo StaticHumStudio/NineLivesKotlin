@@ -34,7 +34,23 @@ class LocalLibraryScanner @Inject constructor(
         val errorMessages: List<String>,
         val foldersScanned: Int,
         val archiveFileCount: Int = 0,
-    )
+        /**
+         * True only when the scan walked the whole tree. False after an
+         * unreadable folder or a cap-truncated traversal, and nothing may be
+         * removed for being absent from a scan that says false. See
+         * [LocalScanEngine.EngineResult].
+         */
+        val coverageComplete: Boolean = true,
+        /** Books seen on disk but not built. Count as scanned, never removed. */
+        val retainedBookIds: Set<String> = emptySet(),
+    ) {
+        /**
+         * Every book id this scan can vouch for existing: the ones it built,
+         * plus the ones it saw but could not build. This is the set a
+         * reconciliation compares the database against.
+         */
+        fun seenBookIds(): List<String> = books.map { it.id } + retainedBookIds
+    }
 
     companion object {
         internal val NATURAL_FILENAME_COMPARATOR: Comparator<String> =
@@ -54,6 +70,9 @@ class LocalLibraryScanner @Inject constructor(
                 skippedCount = 0,
                 errorMessages = listOf("Cannot read folder. Permission may have been revoked."),
                 foldersScanned = 0,
+                // An inaccessible root is the loudest possible failed listing.
+                // Zero books here means "could not look", not "nothing there".
+                coverageComplete = false,
             )
         }
 
@@ -76,6 +95,8 @@ class LocalLibraryScanner @Inject constructor(
             errorMessages = result.errorMessages,
             foldersScanned = result.foldersScanned,
             archiveFileCount = result.archiveFileCount,
+            coverageComplete = result.coverageComplete,
+            retainedBookIds = result.retainedBookIds,
         )
     }
 }

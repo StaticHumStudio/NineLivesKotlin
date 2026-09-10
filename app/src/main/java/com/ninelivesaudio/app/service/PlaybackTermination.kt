@@ -25,3 +25,9 @@ internal fun finishedAtTermination(reason: PlaybackTermination, position: Durati
 // time, under whatever mode is current by then.
 internal fun shouldFinalizeRetainedBook(hasRetainedBook: Boolean, alreadyFinalized: Boolean): Boolean =
     hasRetainedBook && !alreadyFinalized
+
+// Play on a retained book whose media items are gone must reload it. Preparing
+// the empty playlist ends at once and the COMPLETED terminal writes the book
+// as finished at its full duration.
+internal fun shouldReloadRetainedBook(mediaItemCount: Int, hasRetainedBook: Boolean): Boolean =
+    mediaItemCount == 0 && hasRetainedBook

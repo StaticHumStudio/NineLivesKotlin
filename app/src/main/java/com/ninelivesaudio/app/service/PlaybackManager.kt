@@ -1846,6 +1846,15 @@ class PlaybackManager @Inject constructor(
     // ─── Playback Controls ────────────────────────────────────────────────
 
     fun play() {
+        // A stopped or restored book keeps its place in the mini-player, but
+        // the player either lost its media items or was never created.
+        // Resuming that would prepare an empty playlist, which ends at once
+        // and marks the book finished. Reload it instead.
+        val retained = _currentBook.value
+        if (shouldReloadRetainedBook(exoPlayer?.mediaItemCount ?: 0, retained != null)) {
+            scope.launch { loadAudioBook(retained!!) }
+            return
+        }
         exoPlayer?.let { player ->
             // Resuming a book that a non-STOP termination left playable re-arms
             // its terminal flush. A stopped book kept the shared player but lost

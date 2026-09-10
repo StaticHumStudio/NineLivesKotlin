@@ -12,7 +12,7 @@ import org.junit.Test
 class MovedLocalBookTest {
 
     private fun book(id: String, folder: String, vararg tracks: Pair<String, Long>) =
-        LocalBookFingerprint(id, folder, tracks.toSet())
+        LocalBookFingerprint(id, folder, tracks.sortedWith(compareBy({ it.first }, { it.second })))
 
     @Test
     fun `same folder name and same files carries over`() {
@@ -49,6 +49,26 @@ class MovedLocalBookTest {
         val moves = matchMovedLocalBooks(
             vanished = listOf(book("old", "CD 1", "01.mp3" to 10L)),
             arrived = listOf(book("new", "CD 1", "01.mp3" to 99L)),
+        )
+
+        assertTrue(moves.isEmpty())
+    }
+
+    @Test
+    fun `repeated tracks are not collapsed, so a fat book stays fat`() {
+        val moves = matchMovedLocalBooks(
+            vanished = listOf(book("old", "CD 1", "01.mp3" to 10L, "01.mp3" to 10L)),
+            arrived = listOf(book("new", "CD 1", "01.mp3" to 10L)),
+        )
+
+        assertTrue(moves.isEmpty())
+    }
+
+    @Test
+    fun `tracks with no reported size are not evidence and never match`() {
+        val moves = matchMovedLocalBooks(
+            vanished = listOf(book("old", "Dune", "01.mp3" to 0L)),
+            arrived = listOf(book("new", "Dune", "01.mp3" to 0L)),
         )
 
         assertTrue(moves.isEmpty())

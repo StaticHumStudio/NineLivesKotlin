@@ -367,10 +367,13 @@ class AudioBookRepository @Inject constructor(
     private fun AudioBook.fingerprint() = LocalBookFingerprint(
         id = id,
         folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
+        // Sorted so the same book fingerprints the same whichever side of the
+        // move it is read from, without collapsing repeated tracks the way a
+        // set would.
         tracks = audioFiles
             .filter { it.filename.isNotBlank() }
             .map { it.filename to it.size }
-            .toSet(),
+            .sortedWith(compareBy({ it.first }, { it.second })),
     )
 
     /**

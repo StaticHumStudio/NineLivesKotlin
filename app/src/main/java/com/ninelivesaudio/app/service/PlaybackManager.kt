@@ -1946,9 +1946,17 @@ class PlaybackManager @Inject constructor(
             null
         }
         val localSession = detachLocalSession()
-        synchronized(sessionLock) {
-            currentSession = null
-            lastSyncTimestamp = 0L
+        val orphanServerSession = synchronized(sessionLock) {
+            currentSession.also {
+                currentSession = null
+                lastSyncTimestamp = 0L
+            }
+        }
+        // No snapshot means no terminal job, and the terminal job is what
+        // closes the session. Close the orphan here so a stop after an
+        // abandoned load does not leave an accepted server session open.
+        if (captured == null && orphanServerSession != null) {
+            scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id) }
         }
         val terminal = captured?.let {
             terminalPlaybackSnapshot(

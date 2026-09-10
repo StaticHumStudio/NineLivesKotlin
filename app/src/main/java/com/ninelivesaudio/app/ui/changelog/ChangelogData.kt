@@ -16,7 +16,7 @@ object ChangelogData {
 
     val releases = listOf(
         ChangelogRelease(
-            version = "2.1.3",
+            version = "2.1.4",
             dateLabel = "Current",
             sections = listOf(
                 ChangelogSection(
@@ -57,6 +57,9 @@ object ChangelogData {
                         "The app gives a clear reason when a download cannot start.",
                         "Switching back to Audiobookshelf reconnects automatically.",
                         "Downloaded Only turns off after you reconnect.",
+                        "A moved or deleted book folder no longer leaves a ghost on your shelf.",
+                        "Downloaded books keep their track details through a library refresh.",
+                        "Switching between local files and your server keeps your place.",
                     ),
                 ),
             ),

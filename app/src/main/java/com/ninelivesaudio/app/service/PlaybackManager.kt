@@ -347,7 +347,7 @@ internal class PendingTerminalOwner {
     suspend fun runAfterPending(
         bookId: String,
         isCurrent: () -> Boolean,
-        block: () -> Unit,
+        block: suspend () -> Unit,
     ): Boolean {
         await(bookId)
         if (!isCurrent()) return false
@@ -1865,6 +1865,12 @@ class PlaybackManager @Inject constructor(
                                     needsPlaybackPreparation(player.playbackState)
                             },
                         ) {
+                            // An error terminal flushed progress and released
+                            // sync ownership of this book. The retry keeps the
+                            // loaded player, so reclaim ownership here the way
+                            // a fresh load does, or a background sync imports
+                            // server progress over the retried playback.
+                            if (!syncManager.setActivePlaybackItem(bookId) { _currentBook.value?.id == bookId }) return@runAfterPending
                             startPlaybackService()
                             val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
                             player.seekTo(resume.mediaItemIndex, resume.positionMs)

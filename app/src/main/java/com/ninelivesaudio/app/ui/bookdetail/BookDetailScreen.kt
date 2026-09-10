@@ -564,7 +564,20 @@ private fun BookDetailContent(
         }
 
         if (uiState.isHistoryExpanded) {
-            if (uiState.listeningSessions.isEmpty() && !uiState.isHistoryLoading) {
+            uiState.historyMessage?.let { message ->
+                item {
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextMuted,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                }
+            }
+            if (uiState.listeningSessions.isEmpty() &&
+                !uiState.isHistoryLoading &&
+                uiState.historyLoadStatus == HistoryLoadStatus.COMPLETE
+            ) {
                 item {
                     Text(
                         text = "No listening sessions found",

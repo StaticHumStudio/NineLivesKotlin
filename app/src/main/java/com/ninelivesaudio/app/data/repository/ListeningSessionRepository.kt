@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.data.repository
 import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.entity.LocalListeningSessionEntity
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.service.SettingsManager
@@ -27,9 +28,9 @@ class ListeningSessionRepository @Inject constructor(
     private val apiService: ApiService,
     private val settingsManager: SettingsManager,
 ) {
-    suspend fun getAllSessions(): List<ListeningSession> {
+    suspend fun getAllSessions(): RemoteResult<List<ListeningSession>> {
         return if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
-            sessionDao.getAll().map { it.toDomain() }
+            RemoteResult.Ok(sessionDao.getAll().map { it.toDomain() })
         } else {
             apiService.getAllListeningSessions()
         }
@@ -37,12 +38,13 @@ class ListeningSessionRepository @Inject constructor(
 
     /**
      * Sessions scoped to a single book — backs the Book Detail "Listening history"
-     * panel. LOCAL mode reads from Room; AUDIOBOOKSHELF mode hits the paginated
-     * server endpoint that filters by libraryItemId.
+     * panel. LOCAL mode reads from Room. AUDIOBOOKSHELF mode retrieves the complete
+     * paginated server history, then scopes it because the supported endpoint has
+     * no verified item-id query.
      */
-    suspend fun getSessionsForBook(audioBookId: String): List<ListeningSession> {
+    suspend fun getSessionsForBook(audioBookId: String): RemoteResult<List<ListeningSession>> {
         return if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
-            sessionDao.getByAudioBookId(audioBookId).map { it.toDomain() }
+            RemoteResult.Ok(sessionDao.getByAudioBookId(audioBookId).map { it.toDomain() })
         } else {
             apiService.getListeningSessions(audioBookId)
         }

@@ -384,7 +384,10 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            applyFilter()
+            // The load owns the spinner, so it waits for the filtered shelf
+            // before its caller clears it. A superseded filter job returns
+            // from join at once and the newer one publishes instead.
+            applyFilter()?.join()
         } catch (e: Exception) {
             rethrowLibraryLoadCancellation(e)
             _uiState.update {
@@ -648,12 +651,16 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /** Fire-and-forget filter for non-suspend callers. */
-    private fun applyFilter() {
+    /**
+     * Starts the filtered-shelf calculation and returns its job, or null when
+     * no library is selected. Non-suspend callers drop the job. A load that
+     * owns a loading indicator joins it.
+     */
+    private fun applyFilter(): Job? {
         val state = _uiState.value
         val libraryId = state.selectedLibrary?.id ?: run {
             filterPublication.invalidate()
-            return
+            return null
         }
         val snapshot = FilterSnapshot(
             request = filterPublication.replace(libraryId),
@@ -667,7 +674,7 @@ class LibraryViewModel @Inject constructor(
             viewMode = state.viewMode,
             selectedGroupFilter = state.selectedGroupFilter,
         )
-        filterPublication.launch(
+        return filterPublication.launch(
             scope = viewModelScope,
             request = snapshot.request,
             load = { buildFilterResult(snapshot) },

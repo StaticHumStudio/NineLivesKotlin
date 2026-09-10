@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.service.download
 import com.ninelivesaudio.app.domain.model.AudioFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.time.Duration.Companion.seconds
@@ -118,4 +119,46 @@ class DownloadPoliciesTest {
     fun `do not skip an existing but empty file`() {
         assertFalse(shouldSkipDownloadedFile(exists = true, length = 0))
     }
+
+    // ─── resolveDownloadFileNames ─────────────────────────────────────────
+
+    @Test
+    fun resolveDownloadFileNames_leavesUniqueNamesAlone() {
+        val files = listOf(audioFile("one.mp3", index = 0), audioFile("two.mp3", index = 1))
+        assertEquals(listOf("one.mp3", "two.mp3"), resolveDownloadFileNames(files))
+    }
+
+    @Test
+    fun resolveDownloadFileNames_disambiguatesCollisionsByPosition() {
+        val files = listOf(
+            audioFile("disc/one.mp3", index = 0),
+            audioFile("disc:one.mp3", index = 1),
+            audioFile("three.mp3", index = 2),
+        )
+        val names = resolveDownloadFileNames(files)
+        assertEquals(3, names.toSet().size)
+        assertEquals("three.mp3", names[2])
+        assertTrue(names[0].endsWith("_1.mp3"))
+        assertTrue(names[1].endsWith("_2.mp3"))
+    }
+
+    @Test
+    fun resolveDownloadFileNames_zeroAndOneIndexCollisionStayDistinct() {
+        // Regression for the PR #33 suffix bug: index 0 fell back to position+1 == 1,
+        // index 1 produced 1, and both files landed on the same name.
+        val files = listOf(audioFile("same.mp3", index = 0), audioFile("same.mp3", index = 1))
+        val names = resolveDownloadFileNames(files)
+        assertNotEquals(names[0], names[1])
+    }
+
+    @Test
+    fun resolveDownloadFileNames_blankFilenameUsesTrackNumber() {
+        val files = listOf(audioFile("", index = 0))
+        assertEquals(listOf("track_1"), resolveDownloadFileNames(files))
+    }
+
+    private fun audioFile(filename: String, index: Int) = AudioFile(
+        id = "f$index", ino = "i$index", index = index,
+        duration = 1.seconds, filename = filename,
+    )
 }

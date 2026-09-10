@@ -76,6 +76,13 @@ private val PLAYABLE_AUDIO_EXTENSIONS = setOf(
 )
 
 private fun File.containsPlayableAudio(book: AudioBook): Boolean {
+    val canonicalPaths = book.audioFiles.mapNotNull { it.localPath }.takeIf { it.isNotEmpty() }
+    if (canonicalPaths != null) {
+        return canonicalPaths.all { path ->
+            val track = File(path)
+            track.isFile && track.length() > 0L
+        }
+    }
     val expectedNames = book.audioFiles.mapIndexed { index, audioFile ->
         sanitizeDownloadFileName(audioFile.filename.ifEmpty { "track_${index + 1}" })
     }.toSet()

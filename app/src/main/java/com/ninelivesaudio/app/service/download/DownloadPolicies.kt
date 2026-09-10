@@ -39,6 +39,22 @@ internal fun downloadFolderName(author: String, title: String, fallbackId: Strin
     return sanitizeDownloadFileName(raw).ifBlank { fallbackId }
 }
 
+/** Stable on-disk leaf names, disambiguating only sanitization collisions. */
+internal fun resolveDownloadFileNames(files: List<AudioFile>): List<String> {
+    val baseNames = files.mapIndexed { index, file ->
+        sanitizeDownloadFileName(file.filename.ifBlank { "track_${index + 1}" })
+    }
+    return baseNames.mapIndexed { index, base ->
+        if (baseNames.count { it == base } == 1) {
+            base
+        } else {
+            val dot = base.lastIndexOf('.')
+            val suffix = "_${index + 1}"
+            if (dot <= 0) "$base$suffix" else "${base.substring(0, dot)}$suffix${base.substring(dot)}"
+        }
+    }
+}
+
 /**
  * Total bytes for a book. Uses reported file sizes when present, otherwise
  * estimates from total duration at a ~128 kbps bitrate so progress bars have a

@@ -37,6 +37,7 @@ import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
+import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
 import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
 import androidx.media3.session.CommandButton
@@ -1619,9 +1620,16 @@ class PlaybackManager @Inject constructor(
                 // missing-durations guard, wrong enough to seek the absolute
                 // position into the last track.
                 val perTrack = mutableListOf<Double>()
-                for (af in book.audioFiles.sortedBy { it.index }) {
+                // Same order and the same resolved names the download engine wrote,
+                // with the raw filename kept as a fallback for older downloads.
+                val orderedFiles = book.audioFiles.sortedBy { it.index }
+                val resolvedNames = resolveDownloadFileNames(orderedFiles)
+                for ((position, af) in orderedFiles.withIndex()) {
                     val path = af.localPath
-                        ?: localDir?.let { File(it, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath }
+                        ?: localDir?.let { dir ->
+                            File(dir, resolvedNames[position]).takeIf { f -> f.exists() }?.absolutePath
+                                ?: File(dir, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath
+                        }
                         ?: continue
 
                     mediaItems.add(

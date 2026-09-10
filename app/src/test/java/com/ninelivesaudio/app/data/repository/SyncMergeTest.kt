@@ -1,7 +1,10 @@
 package com.ninelivesaudio.app.data.repository
 
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.AudioFile
+import com.ninelivesaudio.app.domain.model.Chapter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -84,4 +87,63 @@ class SyncMergeTest {
         assertEquals(50L, merged.currentTime.inWholeSeconds)
         assertEquals("file:///books/1/cover.jpg", merged.localCoverPath)
     }
+
+    @Test
+    fun `sparse sync retains downloaded canonical tracks and chapters`() {
+        val local = downloadedDetailedBook().toEntity()
+        val sparseRemote = AudioBook(id = "1", title = "Server title")
+
+        val merged = mergeSyncedBook(sparseRemote, local)
+
+        assertEquals(downloadedDetailedBook().audioFiles, merged.audioFiles)
+        assertEquals(downloadedDetailedBook().chapters, merged.chapters)
+        assertTrue(merged.audioFiles.all { !it.localPath.isNullOrBlank() })
+    }
+
+    @Test
+    fun `expanded sync replaces stale downloaded detail`() {
+        val local = downloadedDetailedBook().toEntity()
+        val expandedRemote = AudioBook(
+            id = "1",
+            title = "Server title",
+            audioFiles = listOf(AudioFile(id = "new", index = 0, filename = "new.m4b")),
+            chapters = listOf(Chapter(id = 3, start = 0.0, end = 20.0, title = "New chapter")),
+        )
+
+        val merged = mergeSyncedBook(expandedRemote, local)
+
+        assertEquals(expandedRemote.audioFiles, merged.audioFiles)
+        assertEquals(expandedRemote.chapters, merged.chapters)
+    }
+
+    @Test
+    fun `expanded sync replaces detail for a non downloaded row`() {
+        val remote = AudioBook(
+            id = "1",
+            title = "Server title",
+            audioFiles = listOf(AudioFile(id = "remote", index = 4, filename = "remote.m4b")),
+            chapters = listOf(Chapter(id = 4, start = 0.0, end = 30.0, title = "Remote chapter")),
+        )
+        val local = downloadedDetailedBook().toEntity().copy(isDownloaded = 0)
+
+        val merged = mergeSyncedBook(remote, local)
+
+        assertEquals(remote.audioFiles, merged.audioFiles)
+        assertEquals(remote.chapters, merged.chapters)
+    }
+
+    private fun downloadedDetailedBook() = AudioBook(
+        id = "1",
+        title = "Downloaded title",
+        isDownloaded = true,
+        localPath = "/books/1",
+        audioFiles = listOf(
+            AudioFile(id = "two", index = 2, filename = "z-last.m4b", localPath = "/books/1/track-2.m4b"),
+            AudioFile(id = "one", index = 1, filename = "a-first.m4b", localPath = "/books/1/track-1.m4b"),
+        ),
+        chapters = listOf(
+            Chapter(id = 1, start = 0.0, end = 12.0, title = "One"),
+            Chapter(id = 2, start = 12.0, end = 24.0, title = "Two"),
+        ),
+    )
 }

@@ -936,6 +936,9 @@ class PlaybackManager @Inject constructor(
             playbackWorkActive = { playbackWorkActive(positionPollingJob, sessionSyncJob) },
             publishState = { _playbackState.value = it },
             startPlaybackWork = {
+                // A resume that arrives through the intent owner (notification,
+                // Android Auto) re-arms the terminal flush the same way play() does.
+                exoPlayer?.let { if (it.mediaItemCount > 0) retainedBookFinalized = false }
                 _currentBook.value?.id?.let(playbackProgressOwner::invalidateSnapshots)
                 val requestedGeneration = nextPlaybackGeneration()
                 applyResumeBookkeeping()
@@ -975,6 +978,11 @@ class PlaybackManager @Inject constructor(
 
     private val _currentBook = MutableStateFlow<AudioBook?>(null)
     val currentBook: StateFlow<AudioBook?> = _currentBook.asStateFlow()
+
+    // A terminated book stays in _currentBook so the UI keeps showing it. This
+    // records that its terminal flush already ran, so the next load does not
+    // repeat it under a mode the book does not belong to.
+    private var retainedBookFinalized = false
 
     private val _position = MutableStateFlow(Duration.ZERO)
     val position: StateFlow<Duration> = _position.asStateFlow()
@@ -1202,7 +1210,7 @@ class PlaybackManager @Inject constructor(
         var effectiveBook = book
         try {
             playbackProgressOwner.invalidateSnapshots(book.id)
-            if (_currentBook.value != null) {
+            if (shouldFinalizeRetainedBook(_currentBook.value != null, retainedBookFinalized)) {
                 finishPlayback(PlaybackTermination.STOP, keepServiceConnection = true)
             }
             pendingTerminalOwner.await(book.id)
@@ -1211,6 +1219,7 @@ class PlaybackManager @Inject constructor(
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
             _currentBook.value = book
+            retainedBookFinalized = false
             cachedChapters = book.chapters.sortedBy { it.start }
             _chapters.value = cachedChapters
             _currentChapter.value = null
@@ -1811,6 +1820,11 @@ class PlaybackManager @Inject constructor(
 
     fun play() {
         exoPlayer?.let { player ->
+            // Resuming a book that a non-STOP termination left playable re-arms
+            // its terminal flush. A stopped book kept the shared player but lost
+            // its media items, so its finalized flag stands and the next load
+            // does not flush it a second time.
+            if (player.mediaItemCount > 0) retainedBookFinalized = false
             // ── Resume ────────────────────────────────────────────────
             if (needsPlaybackPreparation(player.playbackState)) {
                 val bookId = _currentBook.value?.id
@@ -1975,6 +1989,7 @@ class PlaybackManager @Inject constructor(
             }
         }
         if (reason == PlaybackTermination.COMPLETED) _events.tryEmit(PlaybackEvent.BookFinished)
+        retainedBookFinalized = true
     }
 
     suspend fun resetNowPlayingForDisconnect() {
@@ -2285,6 +2300,10 @@ class PlaybackManager @Inject constructor(
 
     private fun seekToPosition(position: Duration) {
         val player = exoPlayer ?: return
+        // Moving the place in a book that still has media makes the flushed
+        // terminal snapshot stale, so the next load flushes it again. A stopped
+        // book has no media items and keeps its finalized flag.
+        if (player.mediaItemCount > 0) retainedBookFinalized = false
         val posSeconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
 
         if (trackDurations.isEmpty() && player.mediaItemCount > 1) {

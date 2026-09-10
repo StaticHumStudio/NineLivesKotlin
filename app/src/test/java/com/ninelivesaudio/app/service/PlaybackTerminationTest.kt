@@ -38,4 +38,16 @@ class PlaybackTerminationTest {
         assertFalse(needsPlaybackPreparation(Player.STATE_READY))
         assertFalse(needsPlaybackPreparation(Player.STATE_BUFFERING))
     }
+
+    @Test
+    fun `a retained book that stop already finalized is not finalized again by the next load`() {
+        // Fresh playback still gets its terminal flush when the next book loads.
+        assertTrue(shouldFinalizeRetainedBook(hasRetainedBook = true, alreadyFinalized = false))
+        // stop() finalized the retained book already. Loading the next book after a
+        // mode switch must not re-run that flush under the new mode.
+        assertFalse(shouldFinalizeRetainedBook(hasRetainedBook = true, alreadyFinalized = true))
+        // Nothing retained, nothing to finalize.
+        assertFalse(shouldFinalizeRetainedBook(hasRetainedBook = false, alreadyFinalized = false))
+        assertFalse(shouldFinalizeRetainedBook(hasRetainedBook = false, alreadyFinalized = true))
+    }
 }

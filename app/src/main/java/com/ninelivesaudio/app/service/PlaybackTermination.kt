@@ -19,3 +19,9 @@ internal fun finishedAtTermination(reason: PlaybackTermination, position: Durati
     reason == PlaybackTermination.COMPLETED ||
         (reason == PlaybackTermination.STOP && duration > Duration.ZERO &&
             position >= (duration - 1.seconds).coerceAtLeast(Duration.ZERO))
+
+// Loading a book finalizes whatever was playing before it. A stop() already ran
+// that finalization, so re-running it here would flush the retained book a second
+// time, under whatever mode is current by then.
+internal fun shouldFinalizeRetainedBook(hasRetainedBook: Boolean, alreadyFinalized: Boolean): Boolean =
+    hasRetainedBook && !alreadyFinalized

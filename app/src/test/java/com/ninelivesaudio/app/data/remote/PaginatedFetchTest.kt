@@ -267,4 +267,18 @@ class PaginatedFetchTest {
         assertEquals(listOf(0, 1, 2, 3, 4, 5), (result as RemoteResult.Partial).value)
     }
 
+    @Test
+    fun `an empty history reported as zero pages is a complete empty result`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 50, maxPages = 3) {
+            PageOutcome.Page(
+                results = emptyList(),
+                total = 0,
+                reportedPage = 0,
+                reportedPageCount = 0,
+            )
+        }
+
+        assertEquals(RemoteResult.Ok(emptyList<String>()), result)
+    }
+
 }

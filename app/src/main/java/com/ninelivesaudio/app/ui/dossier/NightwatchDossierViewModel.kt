@@ -39,12 +39,29 @@ import kotlin.time.Duration.Companion.seconds
 
 // ─── Dossier Time Period ────────────────────────────────────────────────────
 
-internal fun dossierHistoryUnavailableMessage(
+/**
+ * What the Dossier can do with a history fetch. A partial fetch still carries
+ * rows worth aggregating, so it gets its statistics plus a warning that they
+ * cover only part of the history. Only a failed fetch has nothing to show.
+ */
+internal data class DossierHistoryPresentation(
+    val sessions: List<ListeningSession>,
+    val warning: String? = null,
+    val unavailableMessage: String? = null,
+)
+
+internal fun dossierHistoryPresentation(
     result: RemoteResult<List<ListeningSession>>,
-): String? = when (result) {
-    is RemoteResult.Ok -> null
-    is RemoteResult.Partial -> "Statistics are unavailable because history stopped before it was complete: ${result.reason}"
-    is RemoteResult.Failed -> "Statistics are unavailable because history did not complete: ${result.reason}"
+): DossierHistoryPresentation = when (result) {
+    is RemoteResult.Ok -> DossierHistoryPresentation(result.value)
+    is RemoteResult.Partial -> DossierHistoryPresentation(
+        sessions = result.value,
+        warning = "These statistics cover part of your history. Loading stopped early: ${result.reason}",
+    )
+    is RemoteResult.Failed -> DossierHistoryPresentation(
+        sessions = emptyList(),
+        unavailableMessage = "Statistics are unavailable because history did not complete: ${result.reason}",
+    )
 }
 
 enum class DossierPeriod(
@@ -180,6 +197,8 @@ class NightwatchDossierViewModel @Inject constructor(
     data class DossierState(
         val isLoading: Boolean = true,
         val error: String? = null,
+        /** Statistics are on screen but cover an incomplete history. */
+        val historyWarning: String? = null,
         val isConnected: Boolean = true,
         val selectedPeriod: DossierPeriod = DossierPeriod.THIRTY_DAYS,
 
@@ -307,15 +326,12 @@ class NightwatchDossierViewModel @Inject constructor(
             }
 
             try {
-                val allSessions = when (val sessionResult = sessionRepository.getAllSessions()) {
-                    is RemoteResult.Ok -> sessionResult.value
-                    is RemoteResult.Partial, is RemoteResult.Failed -> {
-                        publishHistoryUnavailable(
-                            requireNotNull(dossierHistoryUnavailableMessage(sessionResult)),
-                        )
-                        return@launch
-                    }
+                val history = dossierHistoryPresentation(sessionRepository.getAllSessions())
+                history.unavailableMessage?.let { message ->
+                    publishHistoryUnavailable(message)
+                    return@launch
                 }
+                val allSessions = history.sessions
                 val allBooks = dossierBooksInActiveScope(audioBookRepository.getAll(), settings)
                 val bookMap = allBooks.associateBy { it.id }
 
@@ -423,6 +439,7 @@ class NightwatchDossierViewModel @Inject constructor(
                         isLoading = false,
                         isConnected = true,
                         error = null,
+                        historyWarning = history.warning,
                         totalListeningTime = totalTime,
                         totalSessions = validSessions.size,
                         filteredNoiseSessions = noiseSessions,
@@ -468,6 +485,7 @@ class NightwatchDossierViewModel @Inject constructor(
                 isLoading = false,
                 isConnected = true,
                 error = message,
+                historyWarning = null,
                 totalListeningTime = Duration.ZERO,
                 totalSessions = 0,
                 filteredNoiseSessions = 0,

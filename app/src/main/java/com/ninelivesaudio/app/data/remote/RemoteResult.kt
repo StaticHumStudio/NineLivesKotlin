@@ -116,7 +116,13 @@ internal suspend fun <T> runPaginatedFetch(
                             "page $currentPage: server reported page ${outcome.reportedPage}",
                         )
                     }
-                    if (outcome.reportedPageCount != null && outcome.reportedPageCount <= currentPage) {
+                    // An empty page is checked below, not here. A real empty history
+                    // reports numPages 0 (and the DTO defaults it to 0 for a server
+                    // that omits the field), so guarding it as an impossible page
+                    // count would turn "you have no history" into a failed fetch.
+                    if (outcome.results.isNotEmpty() &&
+                        outcome.reportedPageCount != null && outcome.reportedPageCount <= currentPage
+                    ) {
                         return stoppedShort(
                             allItems,
                             "page $currentPage: invalid page count ${outcome.reportedPageCount}",

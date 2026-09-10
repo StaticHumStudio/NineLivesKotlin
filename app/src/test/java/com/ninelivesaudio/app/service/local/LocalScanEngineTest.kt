@@ -1022,6 +1022,160 @@ class LocalScanEngineTest {
         assertFalse(result.errorMessages.any { it.contains("null") })
     }
 
+    // ─── Scan coverage (issue #20): what the scan can and cannot vouch for ──
+
+    @Test
+    fun `a clean scan vouches for full coverage`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        file("track.mp3", "$rootUri/Book/track.mp3"),
+                    )
+                )
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        assertTrue(result.coverageComplete)
+        assertTrue(result.retainedBookIds.isEmpty())
+    }
+
+    @Test
+    fun `a folder that cannot be listed clears coverage`() {
+        val root = dir(
+            null, rootUri, children = listOf(
+                dir(
+                    "Good", "$rootUri/Good", children = listOf(
+                        file("track.mp3", "$rootUri/Good/track.mp3"),
+                    )
+                ),
+                ThrowingNode("Locked", "$rootUri/Locked"),
+            )
+        )
+
+        val result = engine().scan(root, rootUri)
+
+        // A failed listing is not an empty folder: the books under Locked were
+        // never seen, so this scan is not a complete inventory of the library.
+        assertEquals(1, result.books.size)
+        assertFalse(result.coverageComplete)
+    }
+
+    @Test
+    fun `a scan truncated by the folder cap clears coverage`() {
+        val subfolders = (0 until LocalScanEngine.MAX_FOLDERS_SCANNED + 6).map { i ->
+            dir(
+                "Book$i", "$rootUri/Book$i", children = listOf(
+                    file("track.mp3", "$rootUri/Book$i/track.mp3"),
+                )
+            )
+        }
+
+        val result = engine().scan(dir(null, rootUri, children = subfolders), rootUri)
+
+        assertFalse(result.coverageComplete)
+    }
+
+    @Test
+    fun `a scan truncated by the depth cap clears coverage`() {
+        var node: ScanNode = dir(
+            "deepest", "$rootUri/deepest", children = listOf(
+                file("track.mp3", "$rootUri/deepest/track.mp3"),
+            )
+        )
+        repeat(LocalScanEngine.MAX_SCAN_DEPTH + 1) { level ->
+            node = dir("level$level", "$rootUri/level$level", children = listOf(node))
+        }
+
+        val result = engine().scan(dir(null, rootUri, children = listOf(node)), rootUri)
+
+        assertFalse(result.coverageComplete)
+    }
+
+    @Test
+    fun `a root file the scan cannot build keeps coverage and retains its id`() {
+        // The file is right there and its id is known; only the metadata read
+        // blew up. Blocking the whole library's reconciliation over one flaky
+        // file is how a scan ends up adding forever and never removing.
+        val failing = "$rootUri/broken.mp3"
+        val source = object : ScanMetadataSource {
+            override fun extract(uriString: String): LocalMetadataExtractor.TrackMetadata? =
+                if (uriString == failing) throw RuntimeException("retriever died") else null
+            override fun persistFolderCover(coverUriString: String?, bookId: String): String? = null
+            override fun extractEmbeddedCover(uriString: String, bookId: String): String? = null
+        }
+        val root = dir(
+            null, rootUri, children = listOf(
+                file("broken.mp3", failing),
+                dir(
+                    "Book", "$rootUri/Book", children = listOf(
+                        file("track.mp3", "$rootUri/Book/track.mp3"),
+                    )
+                ),
+            )
+        )
+
+        val result = LocalScanEngine(source).scan(root, rootUri)
+
+        assertTrue(result.coverageComplete)
+        assertEquals(
+            setOf("local_book_" + sha256Hex("$rootUri/broken.mp3")),
+            result.retainedBookIds,
+        )
+    }
+
+    // ─── Folder accounting (issue #23) ─────────────────────────────────────
+
+    @Test
+    fun `foldersScanned counts each distinct folder listing exactly once`() {
+        // A disc-merge parent with an extras subtree: the folders here get
+        // looked at by merge detection, by the lookahead that proves Extras
+        // holds no audio, and by the merge builder. The old incremental
+        // accounting charged some of them twice over and reported eight for
+        // the seven folders this tree actually has (issue #23).
+        val discs = (1..2).map { n ->
+            dir(
+                "CD $n", "$rootUri/Book/CD $n", children = listOf(
+                    file("track.mp3", "$rootUri/Book/CD $n/track.mp3"),
+                )
+            )
+        }
+        val extras = dir(
+            "Extras", "$rootUri/Book/Extras", children = (1..2).map { n ->
+                dir("Notes$n", "$rootUri/Book/Extras/Notes$n")
+            }
+        )
+        val book = dir("Book", "$rootUri/Book", children = discs + extras)
+        val root = dir(null, rootUri, children = listOf(book))
+
+        val result = engine().scan(root, rootUri)
+
+        assertEquals(1, result.books.size)
+        assertEquals("Book", result.books.single().title)
+        assertEquals(7, result.foldersScanned)
+    }
+
+    @Test
+    fun `no folder is listed twice, so the reported count is the work done`() {
+        val discs = (1..3).map { n ->
+            dir(
+                "CD $n", "$rootUri/Book/CD $n", children = listOf(
+                    file("track.mp3", "$rootUri/Book/CD $n/track.mp3"),
+                )
+            )
+        }
+        val book = dir("Book", "$rootUri/Book", children = discs)
+        val root = dir(null, rootUri, children = listOf(book))
+
+        val result = engine().scan(root, rootUri)
+
+        val listed = listOf(root, book) + discs.filterIsInstance<FakeNode>()
+        assertTrue(listed.all { it.childrenCallCount == 1 })
+        assertEquals(listed.size, result.foldersScanned)
+    }
+
     private fun sha256Hex(value: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }

@@ -1,10 +1,13 @@
 package com.ninelivesaudio.app.service.local
 
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,7 +37,23 @@ class LocalLibraryScanner @Inject constructor(
         val errorMessages: List<String>,
         val foldersScanned: Int,
         val archiveFileCount: Int = 0,
-    )
+        /**
+         * True only when the scan walked the whole tree. False after an
+         * unreadable folder or a cap-truncated traversal, and nothing may be
+         * removed for being absent from a scan that says false. See
+         * [LocalScanEngine.EngineResult].
+         */
+        val coverageComplete: Boolean = true,
+        /** Books seen on disk but not built. Count as scanned, never removed. */
+        val retainedBookIds: Set<String> = emptySet(),
+    ) {
+        /**
+         * Every book id this scan can vouch for existing: the ones it built,
+         * plus the ones it saw but could not build. This is the set a
+         * reconciliation compares the database against.
+         */
+        fun seenBookIds(): List<String> = books.map { it.id } + retainedBookIds
+    }
 
     companion object {
         internal val NATURAL_FILENAME_COMPARATOR: Comparator<String> =
@@ -54,11 +73,35 @@ class LocalLibraryScanner @Inject constructor(
                 skippedCount = 0,
                 errorMessages = listOf("Cannot read folder. Permission may have been revoked."),
                 foldersScanned = 0,
+                // An inaccessible root is the loudest possible failed listing.
+                // Zero books here means "could not look", not "nothing there".
+                coverageComplete = false,
             )
         }
 
         val engine = LocalScanEngine(DocumentFileMetadataSource(metadataExtractor))
-        val result = engine.scan(DocumentFileScanNode(rootDoc), rootTreeUri.toString())
+        val rootNode = SafScanNode(
+            resolver = context.contentResolver,
+            treeUri = rootTreeUri,
+            documentId = DocumentsContract.getTreeDocumentId(rootTreeUri),
+            displayName = rootDoc.name,
+            mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+            sizeBytes = 0L,
+        )
+        val result = try {
+            engine.scan(rootNode, rootTreeUri.toString())
+        } catch (e: Exception) {
+            // The root's own listing failed. Same fact as an unreadable root:
+            // nothing was seen, so nothing may be concluded about what is gone.
+            Log.e(TAG, "Root listing failed for $rootTreeUri", e)
+            return ScanResult(
+                books = emptyList(),
+                skippedCount = 0,
+                errorMessages = listOf("Could not read folder contents: ${e.message}"),
+                foldersScanned = 0,
+                coverageComplete = false,
+            )
+        }
 
         for (message in result.errorMessages) {
             Log.w(TAG, message)
@@ -76,18 +119,73 @@ class LocalLibraryScanner @Inject constructor(
             errorMessages = result.errorMessages,
             foldersScanned = result.foldersScanned,
             archiveFileCount = result.archiveFileCount,
+            coverageComplete = result.coverageComplete,
+            retainedBookIds = result.retainedBookIds,
         )
     }
 }
 
-/** Wraps a [DocumentFile] so [LocalScanEngine] can walk it without any Android imports. */
-private class DocumentFileScanNode(private val doc: DocumentFile) : ScanNode {
-    override val name: String? get() = doc.name
-    override val isDirectory: Boolean get() = doc.isDirectory
-    override val uriString: String get() = doc.uri.toString()
-    override val sizeBytes: Long get() = if (doc.isFile) doc.length() else 0L
-    override val mimeType: String? get() = doc.type
-    override fun children(): List<ScanNode> = doc.listFiles().map { DocumentFileScanNode(it) }
+/**
+ * A SAF document as a [ScanNode], listed straight off the content resolver.
+ *
+ * Deliberately NOT built on [DocumentFile.listFiles]: that swallows a provider
+ * or query failure and hands back the rows it managed to read (an empty array
+ * in the worst case), which is indistinguishable from a folder that really is
+ * empty. The scanner's whole removal guard rests on telling those two apart
+ * (issue #20), so this queries the child-documents cursor itself and lets the
+ * failure through as an exception. A null cursor counts as a failure too: a
+ * healthy provider answers an empty folder with an empty cursor.
+ *
+ * The URIs it produces are byte-identical to the ones [DocumentFile] produced
+ * (both are DocumentsContract.buildDocumentUriUsingTree over the same tree and
+ * document ids), so existing local book and track ids are unchanged.
+ */
+private class SafScanNode(
+    private val resolver: ContentResolver,
+    private val treeUri: Uri,
+    private val documentId: String,
+    private val displayName: String?,
+    override val mimeType: String?,
+    override val sizeBytes: Long,
+) : ScanNode {
+    override val name: String? get() = displayName
+    override val isDirectory: Boolean
+        get() = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+    override val uriString: String
+        get() = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId).toString()
+
+    override fun children(): List<ScanNode> {
+        if (!isDirectory) return emptyList()
+        val childrenUri =
+            DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+        val cursor = resolver.query(childrenUri, PROJECTION, null, null, null)
+            ?: throw IOException("No cursor for $childrenUri")
+        return cursor.use {
+            buildList {
+                while (it.moveToNext()) {
+                    add(
+                        SafScanNode(
+                            resolver = resolver,
+                            treeUri = treeUri,
+                            documentId = it.getString(0),
+                            displayName = if (it.isNull(1)) null else it.getString(1),
+                            mimeType = if (it.isNull(2)) null else it.getString(2),
+                            sizeBytes = if (it.isNull(3)) 0L else it.getLong(3),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private companion object {
+        val PROJECTION = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+        )
+    }
 }
 
 /** Bridges [LocalMetadataExtractor] (which speaks [Uri]) to the engine (which speaks strings). */

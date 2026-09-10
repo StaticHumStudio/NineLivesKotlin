@@ -1,7 +1,9 @@
 package com.ninelivesaudio.app.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
+import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -13,6 +15,9 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
+import com.ninelivesaudio.app.service.local.LocalBookFingerprint
+import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
+import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
@@ -33,6 +38,7 @@ class AudioBookRepository @Inject constructor(
     private val localListeningSessionDao: LocalListeningSessionDao,
     private val localBookmarkDao: LocalBookmarkDao,
     private val playbackProgressDao: PlaybackProgressDao,
+    private val database: AppDatabase,
 ) {
     private val syncLibraryItemsMutex = Mutex()
 
@@ -245,6 +251,25 @@ class AudioBookRepository @Inject constructor(
         audioBookDao.upsertAll(audioBooks.map { it.toEntity() })
     }
 
+    /**
+     * Import a scan's books and carry any moved book's place onto its new row,
+     * as one database transaction. Together or not at all: a half-applied pass
+     * (rows imported, position not yet moved) would look on the next scan like
+     * the new row had always been there, and the carry-over would never be
+     * retried while the old row got archived out from under it.
+     */
+    suspend fun importLocalBooksCarryingMoves(
+        libraryId: String,
+        books: List<AudioBook>,
+        existingIds: List<String>,
+        seenIds: List<String>,
+    ) {
+        database.withTransaction {
+            importLocalBooks(libraryId, books)
+            carryOverMovedLocalProgress(existingIds, seenIds, books)
+        }
+    }
+
     /** Import scanned Local Library books into one local library. */
     suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
         if (books.isEmpty()) return
@@ -284,6 +309,72 @@ class AudioBookRepository @Inject constructor(
             audioBookDao.archiveByIds(toArchive, System.currentTimeMillis())
         }
     }
+
+    /**
+     * Best-effort rescue for a book that moved rather than disappeared
+     * (issue #20). A local book's id hashes its path under the picked root, so
+     * dragging a folder one level deeper archives the old row and imports a new
+     * one, and the user's place stays with the row nobody can see any more.
+     *
+     * Call this AFTER the scan's books are imported and BEFORE the missing ones
+     * are archived. [existingIds] is the library's LIVE local ids as they were
+     * before the import, [seenIds] is what the scan vouched for. Anything in one
+     * and not the other is a candidate; [matchMovedLocalBooks] only pairs the
+     * unambiguous ones, so a scan with nothing obvious to carry does nothing.
+     *
+     * Live, not all: a book that was sitting in the archive and turns up at a
+     * new path in this scan has arrived as far as the library is concerned, and
+     * a move into a folder someone used before is an ordinary thing to do.
+     * Counting archived rows as "already here" quietly skipped that case.
+     */
+    suspend fun carryOverMovedLocalProgress(
+        existingIds: List<String>,
+        seenIds: List<String>,
+        arrived: List<AudioBook>,
+    ) {
+        val seen = seenIds.toSet()
+        val vanishedIds = existingIds.filterNot { it in seen }
+        if (vanishedIds.isEmpty()) return
+
+        val existing = existingIds.toSet()
+        val arrivedBooks = arrived.filterNot { it.id in existing }
+        if (arrivedBooks.isEmpty()) return
+
+        val vanishedBooks = fetchByIdChunks(vanishedIds, audioBookDao::getByIds).map { it.toDomain() }
+        val moves = matchMovedLocalBooks(
+            vanished = vanishedBooks.map { it.fingerprint() },
+            arrived = arrivedBooks.map { it.fingerprint() },
+        )
+        if (moves.isEmpty()) return
+        val vanishedById = vanishedBooks.associateBy { it.id }
+
+        for ((from, to) in moves) {
+            val progress = playbackProgressDao.getByAudioBookId(from) ?: continue
+            // The destination row was just imported with a fresh zero position,
+            // so there is nothing of the user's here to overwrite. The progress
+            // fraction rides along from the old row: it is the same book with
+            // the same runtime, and it is what the library card actually shows.
+            playbackProgressDao.upsert(progress.copy(audioBookId = to))
+            audioBookDao.updateLocalPosition(
+                id = to,
+                currentTimeSeconds = progress.positionSeconds,
+                progress = vanishedById[from]?.progress ?: 0.0,
+                isFinished = progress.isFinished,
+            )
+        }
+    }
+
+    private fun AudioBook.fingerprint() = LocalBookFingerprint(
+        id = id,
+        folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
+        // Sorted so the same book fingerprints the same whichever side of the
+        // move it is read from, without collapsing repeated tracks the way a
+        // set would.
+        tracks = audioFiles
+            .filter { it.filename.isNotBlank() }
+            .map { it.filename to it.size }
+            .sortedWith(compareBy({ it.first }, { it.second })),
+    )
 
     /**
      * Make every local cover in [libraryId] durable before archiving. Books
@@ -333,6 +424,10 @@ class AudioBookRepository @Inject constructor(
     /** Ids of every local book in a library (live + archived). */
     suspend fun getLocalIds(libraryId: String): List<String> =
         audioBookDao.getLocalIdsByLibrary(libraryId)
+
+    /** Ids of the local books a library currently shows (archived excluded). */
+    suspend fun getLiveLocalIds(libraryId: String): List<String> =
+        audioBookDao.getLiveLocalIdsByLibrary(libraryId)
 
     /** Ids of the archived local books in a library. */
     suspend fun getArchivedLocalIds(libraryId: String): List<String> =

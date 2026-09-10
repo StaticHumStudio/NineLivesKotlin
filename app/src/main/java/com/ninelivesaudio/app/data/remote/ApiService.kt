@@ -124,8 +124,10 @@ internal suspend fun rollbackFailedPasswordLogin(
     restoreSettings: suspend () -> Unit,
     recordMutation: () -> Unit,
     onRollbackFailure: (Throwable) -> Unit = {},
+    restoreRuntimeAuth: () -> Unit = {},
 ) {
     runCatching {
+        restoreRuntimeAuth()
         restoreSettings()
         recordMutation()
     }.onFailure(onRollbackFailure)
@@ -142,10 +144,10 @@ internal suspend fun rollbackFailedTokenLogin(
 ): Boolean {
     val storedToken = readStoredToken()
     if (storedToken != attemptedToken && storedToken != previousToken) return false
-    restorePreviousSettings()
-    if (storedToken == attemptedToken) replaceStoredToken(attemptedToken, previousToken)
     restoreRuntimeAuth(previousToken)
     recordMutation()
+    restorePreviousSettings()
+    if (storedToken == attemptedToken) replaceStoredToken(attemptedToken, previousToken)
     return true
 }
 
@@ -162,6 +164,12 @@ class ApiService @Inject constructor(
     companion object {
         private const val TAG = "ApiService"
         private const val TOKEN_VALIDATION_DEBOUNCE_MS = 15_000L
+        // A runaway guard, not a product limit: 1000 pages of 100 is far past
+        // any real library, so a normal shelf never reaches it.
+        private const val LIBRARY_ITEMS_PAGE_CAP = 1000
+        private const val LISTENING_SESSIONS_PAGE_SIZE = 50
+        private const val LISTENING_SESSIONS_ITEM_PAGE_CAP = 3
+        private const val LISTENING_SESSIONS_ALL_PAGE_CAP = 20
     }
 
     var lastError: String? = null
@@ -170,13 +178,13 @@ class ApiService @Inject constructor(
     private val tokenValidationMutex = Mutex()
     private val authMutationMutex = Mutex()
     private val authReadiness = AuthReadiness()
-    private var authGeneration: Long = 0L
-    @Volatile private var lastValidatedToken: String? = null
+    @Volatile private var authGeneration: Long = 0L
+    @Volatile private var lastValidatedSession: AuthSessionIdentity? = null
     @Volatile private var lastValidationAtMs: Long = 0L
     @Volatile private var lastValidationResult: TokenValidationResult? = null
 
     val isAuthenticated: Boolean
-        get() = authInterceptor.hasToken() &&
+        get() = authInterceptor.hasTokenFor(settingsManager.currentSettings.serverUrl) &&
             validatedServerBaseUrl(settingsManager.currentSettings.serverUrl) != null
 
     // ─── Auth ────────────────────────────────────────────────────────────
@@ -190,7 +198,18 @@ class ApiService @Inject constructor(
                 // would validate the old token against the new server and a 401
                 // there would wipe a token still valid for the original server.
                 val previousSettings = settingsManager.currentSettings
+                val restorePreviousAuth = authInterceptor.restorePoint()
+                var previousToken: String? = null
+                var previousTokenServerUrl = previousSettings.serverUrl
+                var attemptedToken: String? = null
+                suspend fun restorePreviousSettings() {
+                    settingsManager.saveSettings(previousSettings)
+                    attemptedToken?.let { settingsManager.replaceAuthTokenIfCurrent(it, previousToken, previousTokenServerUrl) }
+                }
                 try {
+                    previousToken = settingsManager.getAuthToken()
+                    previousToken?.let { settingsManager.persistAuthTokenServerBinding(it, previousSettings.serverUrl) }
+                    previousTokenServerUrl = settingsManager.getAuthTokenServerUrl() ?: previousSettings.serverUrl
                     val normalizedUrl = normalizeServerUrl(serverUrl)
                     val normalizedUsername = username.trim()
 
@@ -205,7 +224,8 @@ class ApiService @Inject constructor(
                     if (!response.isSuccessful) {
                         lastError = "Login failed: ${response.code()} - ${response.errorBody()?.string()}"
                         rollbackFailedPasswordLogin(
-                            restoreSettings = { settingsManager.saveSettings(previousSettings) },
+                            restoreSettings = { restorePreviousSettings() },
+                            restoreRuntimeAuth = restorePreviousAuth,
                             recordMutation = { recordAuthMutation() },
                             onRollbackFailure = { e ->
                                 Log.e(TAG, "login: Failed to roll back settings after a rejected login", e)
@@ -220,7 +240,8 @@ class ApiService @Inject constructor(
                     if (token.isNullOrEmpty()) {
                         lastError = "Server response did not contain authentication token"
                         rollbackFailedPasswordLogin(
-                            restoreSettings = { settingsManager.saveSettings(previousSettings) },
+                            restoreSettings = { restorePreviousSettings() },
+                            restoreRuntimeAuth = restorePreviousAuth,
                             recordMutation = { recordAuthMutation() },
                             onRollbackFailure = { e ->
                                 Log.e(TAG, "login: Failed to roll back settings after a rejected login", e)
@@ -229,11 +250,12 @@ class ApiService @Inject constructor(
                         return@withLock CredentialLoginResult.REJECTED
                     }
 
-                    // Save token and update interceptor
+                    // Retain the prior full scope if secure persistence fails.
+                    attemptedToken = token
                     applyAuthTokenMutation(
-                        updateRuntimeAuth = { authInterceptor.setToken(token) },
+                        updateRuntimeAuth = { authInterceptor.setToken(token, normalizedUrl) },
                         recordMutation = { recordAuthMutation() },
-                        persistSecureStorage = { settingsManager.saveAuthToken(token) },
+                        persistSecureStorage = { settingsManager.saveAuthToken(token, normalizedUrl) },
                     )
 
                     lastError = null
@@ -241,7 +263,8 @@ class ApiService @Inject constructor(
                 } catch (e: Exception) {
                     lastError = formatConnectionError(e)
                     rollbackFailedPasswordLogin(
-                        restoreSettings = { settingsManager.saveSettings(previousSettings) },
+                        restoreSettings = { restorePreviousSettings() },
+                        restoreRuntimeAuth = restorePreviousAuth,
                         recordMutation = { recordAuthMutation() },
                         onRollbackFailure = { rollbackError ->
                             Log.e(TAG, "login: Failed to roll back settings after an unreachable login", rollbackError)
@@ -258,8 +281,10 @@ class ApiService @Inject constructor(
             authMutationMutex.withLock {
                 val previousSettings = settingsManager.currentSettings
                 val previousToken = settingsManager.getAuthToken()
+                val previousTokenServerUrl = settingsManager.getAuthTokenServerUrl() ?: previousSettings.serverUrl
                 val normalizedToken = token.trim()
                 try {
+                    previousToken?.let { settingsManager.persistAuthTokenServerBinding(it, previousSettings.serverUrl) }
                     val normalizedUrl = normalizeServerUrl(serverUrl)
 
                     // Set server URL so Retrofit uses it
@@ -269,9 +294,9 @@ class ApiService @Inject constructor(
 
                     // Set token and validate it
                     applyAuthTokenMutation(
-                        updateRuntimeAuth = { authInterceptor.setToken(normalizedToken) },
+                        updateRuntimeAuth = { authInterceptor.setToken(normalizedToken, normalizedUrl) },
                         recordMutation = { recordAuthMutation() },
-                        persistSecureStorage = { settingsManager.saveAuthToken(normalizedToken) },
+                        persistSecureStorage = { settingsManager.saveAuthToken(normalizedToken, normalizedUrl) },
                     )
 
                     when (validateTokenDetailed(forceRefresh = true, tokenOverride = normalizedToken)) {
@@ -291,12 +316,12 @@ class ApiService @Inject constructor(
                                     attemptedToken = normalizedToken,
                                     readStoredToken = { settingsManager.getAuthToken() },
                                     replaceStoredToken = { expected, replacement ->
-                                        check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement)) {
+                                        check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement, previousTokenServerUrl)) {
                                             "Auth session changed during token rollback"
                                         }
                                     },
                                     restorePreviousSettings = { settingsManager.saveSettings(previousSettings) },
-                                    restoreRuntimeAuth = { authInterceptor.setToken(it) },
+                                    restoreRuntimeAuth = { authInterceptor.setToken(it, previousTokenServerUrl) },
                                     recordMutation = { recordAuthMutation() },
                                 )
                             }.onFailure { e ->
@@ -319,12 +344,12 @@ class ApiService @Inject constructor(
                             attemptedToken = normalizedToken,
                             readStoredToken = { settingsManager.getAuthToken() },
                             replaceStoredToken = { expected, replacement ->
-                                check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement)) {
+                                check(settingsManager.replaceAuthTokenIfCurrent(expected, replacement, previousTokenServerUrl)) {
                                     "Auth session changed during token rollback"
                                 }
                             },
                             restorePreviousSettings = { settingsManager.saveSettings(previousSettings) },
-                            restoreRuntimeAuth = { authInterceptor.setToken(it) },
+                            restoreRuntimeAuth = { authInterceptor.setToken(it, previousTokenServerUrl) },
                             recordMutation = { recordAuthMutation() },
                         )
                     }.exceptionOrNull()?.let(e::addSuppressed)
@@ -360,7 +385,7 @@ class ApiService @Inject constructor(
     suspend fun logout() {
         authMutationMutex.withLock {
             applyAuthTokenMutation(
-                updateRuntimeAuth = { authInterceptor.setToken(null) },
+                updateRuntimeAuth = { authInterceptor.setToken(null, "") },
                 recordMutation = { recordAuthMutation() },
                 persistSecureStorage = { settingsManager.clearAuthToken() },
             )
@@ -422,7 +447,7 @@ class ApiService @Inject constructor(
                 return@withLock false
             }
             applyAuthTokenMutation(
-                updateRuntimeAuth = { authInterceptor.setToken(null) },
+                updateRuntimeAuth = { authInterceptor.setToken(null, "") },
                 recordMutation = { recordAuthMutation() },
                 persistSecureStorage = { settingsManager.clearAuthToken() },
             )
@@ -443,7 +468,7 @@ class ApiService @Inject constructor(
     }
 
     private fun clearValidationCache() {
-        lastValidatedToken = null
+        lastValidatedSession = null
         lastValidationAtMs = 0L
         lastValidationResult = null
     }
@@ -494,11 +519,18 @@ class ApiService @Inject constructor(
                     return@withContext TokenValidationResult.UNREACHABLE
                 }
 
+                val session = AuthSessionIdentity(authGeneration, token, settingsManager.currentSettings.serverUrl)
+                fun isCurrent(): Boolean =
+                    session.generation == authGeneration &&
+                        session.serverUrl == settingsManager.currentSettings.serverUrl &&
+                        authInterceptor.matches(session.token, session.serverUrl)
                 tokenValidationMutex.withLock {
-                    getCachedValidation(token, forceRefresh)?.let { return@withContext it }
+                    if (!isCurrent()) return@withContext TokenValidationResult.UNREACHABLE
+                    getCachedValidation(session, forceRefresh)?.let { return@withContext it }
 
                     val result = validateTokenWithLightweightEndpoint()
-                    cacheValidation(token, result)
+                    if (!isCurrent()) return@withContext TokenValidationResult.UNREACHABLE
+                    cacheValidation(session, result)
                     result
                 }
             } catch (e: Exception) {
@@ -533,21 +565,21 @@ class ApiService @Inject constructor(
         return classifyValidationStatus(response.code())
     }
 
-    private fun getCachedValidation(token: String, forceRefresh: Boolean): TokenValidationResult? {
+    private fun getCachedValidation(session: AuthSessionIdentity, forceRefresh: Boolean): TokenValidationResult? {
         if (forceRefresh) return null
         val cachedResult = lastValidationResult ?: return null
-        val isSameToken = token == lastValidatedToken
+        val isSameSession = session == lastValidatedSession
         val isFresh = (System.currentTimeMillis() - lastValidationAtMs) < TOKEN_VALIDATION_DEBOUNCE_MS
-        return if (isSameToken && isFresh) cachedResult else null
+        return if (isSameSession && isFresh) cachedResult else null
     }
 
-    private fun cacheValidation(token: String, result: TokenValidationResult) {
+    private fun cacheValidation(session: AuthSessionIdentity, result: TokenValidationResult) {
         // Only cache definitive verdicts. UNREACHABLE is transient: caching it
         // would make a forced foreground reachability check return the stale
         // "unreachable" answer for up to the debounce window even after the
         // server comes back, delaying recovery.
         if (result == TokenValidationResult.UNREACHABLE) return
-        lastValidatedToken = token
+        lastValidatedSession = session
         lastValidationResult = result
         lastValidationAtMs = System.currentTimeMillis()
     }
@@ -568,8 +600,18 @@ class ApiService @Inject constructor(
                 // a swallowed CancellationException here would latch the gate
                 // with a null token and poison every later validation.
                 var tokenReadable = true
+                var tokenServerUrl = ""
                 val token = try {
-                    settingsManager.getAuthToken()
+                    settingsManager.getAuthToken()?.also { restored ->
+                        var boundUrl = settingsManager.getAuthTokenServerUrl()
+                        if (boundUrl == null) {
+                            // Existing installations trust their previously saved
+                            // session pair. Bind once before any future URL change.
+                            settingsManager.persistAuthTokenServerBinding(restored, settingsManager.currentSettings.serverUrl)
+                            boundUrl = settingsManager.getAuthTokenServerUrl()
+                        }
+                        tokenServerUrl = boundUrl ?: ""
+                    }
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (e: Exception) {
@@ -577,7 +619,7 @@ class ApiService @Inject constructor(
                     tokenReadable = false
                     null
                 }
-                authInterceptor.setToken(token)
+                authInterceptor.setToken(token, tokenServerUrl)
                 recordAuthMutation()
                 // Latch readiness only when the restore ran against healthy
                 // storage. A degraded run must stay retryable so the token
@@ -645,6 +687,7 @@ class ApiService @Inject constructor(
         withContext(Dispatchers.IO) {
             runPaginatedFetch(
                 limit = limit,
+                maxPages = LIBRARY_ITEMS_PAGE_CAP,
                 onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
             ) { page ->
                 val response = api.getLibraryItems(libraryId, limit, page)
@@ -822,97 +865,60 @@ class ApiService @Inject constructor(
 
     // ─── Listening Sessions ──────────────────────────────────────────────
 
+    /**
+     * Sessions for one book. The server endpoint has no verified item-id filter, so
+     * this pages the account history and scopes it client-side. The page cap keeps
+     * the per-book Dossier bounded for large histories.
+     */
     suspend fun getListeningSessions(
         libraryItemId: String,
-        itemsPerPage: Int = 50,
-    ): List<ListeningSession> = withContext(Dispatchers.IO) {
-        try {
-            val allSessions = mutableListOf<ListeningSession>()
-            var currentPage = 0
-            val maxPages = 3
-
-            while (currentPage < maxPages) {
-                val response = api.getListeningSessions(
-                    itemsPerPage = itemsPerPage,
-                    page = currentPage,
-                )
-                if (!response.isSuccessful) break
-
-                val body = response.body() ?: break
-                if (body.sessions.isEmpty()) break
-
-                val filtered = body.sessions
-                    .filter { it.libraryItemId == libraryItemId }
-                    .map { session ->
-                        val startedAtMillis = normalizeEpoch(session.startedAt)
-                        val updatedAtMillis = normalizeEpoch(session.updatedAt)
-
-                        ListeningSession(
-                            id = session.id,
-                            libraryItemId = session.libraryItemId,
-                            currentTime = session.currentTime.seconds,
-                            timeListening = session.timeListening.seconds,
-                            startedAt = startedAtMillis,
-                            updatedAt = updatedAtMillis,
-                            displayTitle = session.displayTitle,
-                        )
-                    }
-                allSessions.addAll(filtered)
-
-                if (currentPage >= body.numPages - 1) break
-                currentPage++
-            }
-
-            allSessions.sortedByDescending { it.startedAt }
-        } catch (e: Exception) {
-            lastError = "Failed to load listening sessions: ${e.message}"
-            emptyList()
+        itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
+    ): RemoteResult<List<ListeningSession>> =
+        fetchListeningSessions(itemsPerPage, LISTENING_SESSIONS_ITEM_PAGE_CAP).map { sessions ->
+            sessions.filter { it.libraryItemId == libraryItemId }
         }
-    }
 
-    /** Fetch ALL listening sessions across all books (for stats/dossier). */
+    /** All sessions across all books, for stats and the Dossier. */
     suspend fun getAllListeningSessions(
-        itemsPerPage: Int = 50,
-    ): List<ListeningSession> = withContext(Dispatchers.IO) {
-        try {
-            val allSessions = mutableListOf<ListeningSession>()
-            var currentPage = 0
-            val maxPages = 20
+        itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
+    ): RemoteResult<List<ListeningSession>> =
+        fetchListeningSessions(itemsPerPage, LISTENING_SESSIONS_ALL_PAGE_CAP)
 
-            while (currentPage < maxPages) {
-                val response = api.getListeningSessions(
-                    itemsPerPage = itemsPerPage,
-                    page = currentPage,
-                )
-                if (!response.isSuccessful) break
-
-                val body = response.body() ?: break
-                if (body.sessions.isEmpty()) break
-
-                allSessions.addAll(body.sessions.map { session ->
-                    val startedAtMillis = normalizeEpoch(session.startedAt)
-                    val updatedAtMillis = normalizeEpoch(session.updatedAt)
-
+    private suspend fun fetchListeningSessions(
+        itemsPerPage: Int,
+        maxPages: Int,
+    ): RemoteResult<List<ListeningSession>> = withContext(Dispatchers.IO) {
+        runPaginatedFetch(
+            limit = itemsPerPage,
+            maxPages = maxPages,
+            itemKey = { it.id },
+            onPageFailure = { page, e ->
+                lastError = "Failed to load listening sessions page $page: ${e.message}"
+            },
+        ) { page ->
+            val response = api.getListeningSessions(itemsPerPage = itemsPerPage, page = page)
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                throw java.io.IOException("HTTP ${response.code()} loading listening sessions page $page")
+            }
+            val body = response.body() ?: throw java.io.IOException("Empty listening sessions body on page $page")
+            PageOutcome.Page(
+                results = body.sessions.map { session ->
                     ListeningSession(
                         id = session.id,
                         libraryItemId = session.libraryItemId,
                         currentTime = session.currentTime.seconds,
                         timeListening = session.timeListening.seconds,
-                        startedAt = startedAtMillis,
-                        updatedAt = updatedAtMillis,
+                        startedAt = normalizeEpoch(session.startedAt),
+                        updatedAt = normalizeEpoch(session.updatedAt),
                         displayTitle = session.displayTitle,
                     )
-                })
-
-                if (currentPage >= body.numPages - 1) break
-                currentPage++
-            }
-
-            allSessions.sortedByDescending { it.startedAt }
-        } catch (e: Exception) {
-            lastError = "Failed to load listening sessions: ${e.message}"
-            emptyList()
-        }
+                },
+                total = body.total,
+                reportedPage = body.page,
+                reportedPageCount = body.numPages,
+            )
+        }.map { sessions -> sessions.sortedByDescending { it.startedAt } }
     }
 
     /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */

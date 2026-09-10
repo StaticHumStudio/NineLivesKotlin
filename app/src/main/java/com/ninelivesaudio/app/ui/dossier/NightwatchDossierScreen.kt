@@ -124,12 +124,25 @@ fun NightwatchDossierScreen(
             }
 
             else -> {
-                DossierContent(
-                    state = state,
-                    viewModel = viewModel,
-                    isUnlocked = unlockState.isUnlocked,
-                    onNavigateToUnlock = onNavigateToUnlock,
-                )
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Statistics computed over an incomplete history still beat a
+                    // blank screen, so this warns above them instead of replacing
+                    // them the way the error branch does.
+                    state.historyWarning?.let { warning ->
+                        Text(
+                            text = warning,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NineLivesTheme.colors.archiveTextSecondary,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                    DossierContent(
+                        state = state,
+                        viewModel = viewModel,
+                        isUnlocked = unlockState.isUnlocked,
+                        onNavigateToUnlock = onNavigateToUnlock,
+                    )
+                }
             }
         }
     }

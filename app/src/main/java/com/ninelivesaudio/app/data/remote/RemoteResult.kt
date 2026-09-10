@@ -58,7 +58,13 @@ internal fun <T> paginationResult(allItems: List<T>, total: Int, currentPage: In
 
 /** One page of a paginated fetch: either items (and the server's reported running total), or a reason the fetch stopped (HTTP failure, missing body). */
 internal sealed class PageOutcome<T> {
-    data class Page<T>(val results: List<T>, val total: Int) : PageOutcome<T>()
+    data class Page<T>(
+        val results: List<T>,
+        val total: Int,
+        /** Optional server pagination metadata, validated when supplied. */
+        val reportedPage: Int? = null,
+        val reportedPageCount: Int? = null,
+    ) : PageOutcome<T>()
     data class Stopped<T>(val reason: String) : PageOutcome<T>()
 }
 
@@ -71,6 +77,10 @@ internal sealed class PageOutcome<T> {
  * whether that stop is a genuine Ok or a Partial/Failed shortfall against the
  * highest positive total reported by the run.
  *
+ * [maxPages] bounds the run: reaching it returns a Partial (or Failed when
+ * nothing was fetched) rather than an Ok, because a capped fetch has not
+ * proved it saw the whole collection.
+ *
  * [onPageFailure] is a side-channel for the caller's own logging (e.g.
  * android.util.Log, which this function must stay free of to remain
  * unit-testable) — it does not affect the returned [RemoteResult].
@@ -81,25 +91,67 @@ internal sealed class PageOutcome<T> {
  */
 internal suspend fun <T> runPaginatedFetch(
     limit: Int,
+    maxPages: Int,
     onPageFailure: (page: Int, e: Exception) -> Unit = { _, _ -> },
+    itemKey: ((T) -> String)? = null,
     fetchPage: suspend (page: Int) -> PageOutcome<T>,
 ): RemoteResult<List<T>> {
+    require(maxPages > 0) { "maxPages must be positive" }
     val allItems = mutableListOf<T>()
+    val seenKeys = mutableSetOf<String>()
     var currentPage = 0
     var highestReportedTotal = 0
+    var expectedPageCount: Int? = null
     return try {
         while (true) {
+            if (currentPage >= maxPages) {
+                return stoppedShort(allItems, "page $currentPage: reached the $maxPages page cap")
+            }
             when (val outcome = fetchPage(currentPage)) {
                 is PageOutcome.Stopped -> return stoppedShort(allItems, outcome.reason)
                 is PageOutcome.Page -> {
+                    if (outcome.reportedPage != null && outcome.reportedPage != currentPage) {
+                        return stoppedShort(
+                            allItems,
+                            "page $currentPage: server reported page ${outcome.reportedPage}",
+                        )
+                    }
+                    // An empty page is checked below, not here. A real empty history
+                    // reports numPages 0 (and the DTO defaults it to 0 for a server
+                    // that omits the field), so guarding it as an impossible page
+                    // count would turn "you have no history" into a failed fetch.
+                    if (outcome.results.isNotEmpty() &&
+                        outcome.reportedPageCount != null && outcome.reportedPageCount <= currentPage
+                    ) {
+                        return stoppedShort(
+                            allItems,
+                            "page $currentPage: invalid page count ${outcome.reportedPageCount}",
+                        )
+                    }
+                    if (expectedPageCount != null && outcome.reportedPageCount != null &&
+                        expectedPageCount != outcome.reportedPageCount
+                    ) {
+                        return stoppedShort(
+                            allItems,
+                            "page $currentPage: server changed page count from $expectedPageCount to ${outcome.reportedPageCount}",
+                        )
+                    }
+                    if (outcome.reportedPageCount != null) expectedPageCount = outcome.reportedPageCount
                     highestReportedTotal = maxOf(highestReportedTotal, outcome.total)
                     if (outcome.results.isEmpty()) {
                         return paginationResult(allItems, highestReportedTotal, currentPage)
                     }
-                    allItems.addAll(outcome.results)
+                    val newResults = itemKey?.let { key ->
+                        outcome.results.filter { seenKeys.add(key(it)) }
+                    } ?: outcome.results
+                    if (newResults.isEmpty()) {
+                        return stoppedShort(allItems, "page $currentPage: repeated rows made no progress")
+                    }
+                    allItems.addAll(newResults)
                     if (
                         (highestReportedTotal > 0 && allItems.size >= highestReportedTotal) ||
-                        outcome.results.size < limit
+                        outcome.results.size < limit ||
+                        (outcome.reportedPageCount != null && currentPage == outcome.reportedPageCount - 1)
                     ) {
                         return paginationResult(allItems, highestReportedTotal, currentPage)
                     }

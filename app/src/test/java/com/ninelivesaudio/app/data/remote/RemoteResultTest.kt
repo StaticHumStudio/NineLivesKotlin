@@ -116,7 +116,7 @@ class RemoteResultTest {
 
     @Test
     fun `an omitted final total cannot erase an earlier reported shortfall`() = runBlocking {
-        val result = runPaginatedFetch(limit = 100) { page ->
+        val result = runPaginatedFetch(limit = 100, maxPages = 100) { page ->
             when (page) {
                 0 -> PageOutcome.Page((1..100).toList(), total = 250)
                 1 -> PageOutcome.Page((101..200).toList(), total = 0)
@@ -133,7 +133,7 @@ class RemoteResultTest {
 
     @Test
     fun `a later higher total governs an omitted short final page`() = runBlocking {
-        val result = runPaginatedFetch(limit = 100) { page ->
+        val result = runPaginatedFetch(limit = 100, maxPages = 100) { page ->
             when (page) {
                 0 -> PageOutcome.Page((1..100).toList(), total = 150)
                 1 -> PageOutcome.Page((101..200).toList(), total = 250)
@@ -150,7 +150,7 @@ class RemoteResultTest {
 
     @Test
     fun `a single page with its total remains Ok`() = runBlocking {
-        val result = runPaginatedFetch(limit = 100) { page ->
+        val result = runPaginatedFetch(limit = 100, maxPages = 100) { page ->
             check(page == 0)
             PageOutcome.Page(listOf("a", "b"), total = 2)
         }
@@ -160,7 +160,7 @@ class RemoteResultTest {
 
     @Test
     fun `all omitted totals still finish at their natural page end`() = runBlocking {
-        val result = runPaginatedFetch(limit = 2) { page ->
+        val result = runPaginatedFetch(limit = 2, maxPages = 100) { page ->
             when (page) {
                 0 -> PageOutcome.Page(listOf("a", "b"), total = 0)
                 1 -> PageOutcome.Page(emptyList(), total = 0)

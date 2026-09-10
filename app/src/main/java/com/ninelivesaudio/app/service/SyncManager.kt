@@ -1,5 +1,7 @@
 package com.ninelivesaudio.app.service
 
+import com.ninelivesaudio.app.data.remote.ApiService
+
 import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
@@ -39,6 +41,7 @@ private const val MIN_PROGRESS_DELTA = 0.01
  */
 @Singleton
 class SyncManager @Inject constructor(
+    private val apiService: ApiService,
     private val libraryRepository: LibraryRepository,
     private val audioBookRepository: AudioBookRepository,
     private val progressRepository: ProgressRepository,
@@ -480,7 +483,8 @@ class SyncManager @Inject constructor(
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private suspend fun hasAuthToken(): Boolean {
-        return settingsManager.getAuthToken()?.isNotBlank() == true
+        apiService.awaitAuthReady()
+        return apiService.isAuthenticated && settingsManager.getAuthToken()?.isNotBlank() == true
     }
 }
 

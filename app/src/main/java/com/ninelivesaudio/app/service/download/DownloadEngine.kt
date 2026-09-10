@@ -9,7 +9,9 @@ import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
+import com.ninelivesaudio.app.data.remote.dto.ApiAudioFile
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.AudioFile
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.SettingsManager
@@ -88,14 +90,19 @@ class DownloadEngine @Inject constructor(
         var lastPersistedAt = System.currentTimeMillis()
         val maxRetries = item.maxRetries
 
+        // Track order comes from the server-reported index, not response order,
+        // and leaf names are resolved once so sanitization collisions stay distinct.
+        val orderedFiles = book.audioFiles.sortedBy { it.index }
+        val fileNames = resolveDownloadFileNames(orderedFiles)
+
         // Download each audio file
-        for (i in book.audioFiles.indices) {
-            val audioFile = book.audioFiles[i]
+        for (i in orderedFiles.indices) {
+            val audioFile = orderedFiles[i]
 
             // Check for cancellation
             currentCoroutineContext().ensureActive()
 
-            val fileName = sanitizeDownloadFileName(audioFile.filename.ifEmpty { "track_${i + 1}" })
+            val fileName = fileNames[i]
             val finalPath = File(downloadDir, fileName)
             val partPath = File(downloadDir, "$fileName.part")
 
@@ -254,6 +261,8 @@ class DownloadEngine @Inject constructor(
             val bytes = body.use { it.bytes() }
             if (bytes.isEmpty()) return null
             Uri.fromFile(writeCoverFile(bytes, downloadDir)).toString()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (e: Exception) {
             Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
             null
@@ -266,20 +275,13 @@ class DownloadEngine @Inject constructor(
             val response = api.getItem(audioBookId, expanded = 1)
             if (response.isSuccessful) {
                 response.body()?.let { apiItem ->
-                    val audioFiles = apiItem.media?.audioFiles?.mapIndexed { idx, af ->
-                        com.ninelivesaudio.app.domain.model.AudioFile(
-                            id = af.ino ?: "",
-                            ino = af.ino ?: "",
-                            index = idx,
-                            duration = (af.duration ?: 0.0).seconds,
-                            filename = af.metadata?.filename ?: "track_${idx + 1}",
-                            size = af.metadata?.size ?: 0,
-                        )
-                    } ?: emptyList()
+                    val audioFiles = toDomainAudioFiles(apiItem.media?.audioFiles.orEmpty())
 
                     audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
                 }
             } else null
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (_: Exception) {
             null
         }
@@ -329,3 +331,20 @@ internal fun writeCoverFile(bytes: ByteArray, dir: File): File {
     file.writeBytes(bytes)
     return file
 }
+
+/**
+ * Map the expanded item response's audio files onto the domain model. Pure so the
+ * index handling can be tested without Retrofit. Track order comes from the
+ * server-reported index when it is present, matching the mapping in ApiService.
+ */
+internal fun toDomainAudioFiles(files: List<ApiAudioFile>): List<AudioFile> =
+    files.mapIndexed { idx, af ->
+        AudioFile(
+            id = af.ino ?: "",
+            ino = af.ino ?: "",
+            index = af.index ?: idx,
+            duration = (af.duration ?: 0.0).seconds,
+            filename = af.metadata?.filename ?: "track_${idx + 1}",
+            size = af.metadata?.size ?: 0,
+        )
+    }

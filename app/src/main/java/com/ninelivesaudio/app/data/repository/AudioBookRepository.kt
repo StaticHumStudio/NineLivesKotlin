@@ -477,6 +477,8 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
             isDownloaded = true,
             localPath = local.localPath,
             localCoverPath = local.localCoverPath,
+            audioFiles = remote.audioFiles.ifEmpty { local.toDomain().audioFiles },
+            chapters = remote.chapters.ifEmpty { local.toDomain().chapters },
         )
     } else remote
 

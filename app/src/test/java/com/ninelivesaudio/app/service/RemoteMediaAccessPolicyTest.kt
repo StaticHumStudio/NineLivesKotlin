@@ -139,4 +139,59 @@ class RemoteMediaAccessPolicyTest {
 
         assertTrue(hasUsableLocalDownload(book))
     }
+
+    @Test
+    fun `canonical local paths win over colliding raw filenames`() {
+        val downloadDirectory = tempFolder.newFolder("canonical-download")
+        val first = downloadDirectory.resolve("track-2.m4b").apply { writeBytes(byteArrayOf(2)) }
+        val second = downloadDirectory.resolve("track-1.m4b").apply { writeBytes(byteArrayOf(1)) }
+        val book = cachedServerBook.copy(
+            isDownloaded = true,
+            localPath = downloadDirectory.absolutePath,
+            audioFiles = listOf(
+                AudioFile(filename = "disc/one.m4b", index = 2, localPath = first.absolutePath),
+                AudioFile(filename = "disc:one.m4b", index = 1, localPath = second.absolutePath),
+            ),
+        )
+
+        assertTrue(hasUsableLocalDownload(book))
+
+        second.delete()
+
+        assertFalse(hasUsableLocalDownload(book))
+    }
+
+    @Test
+    fun `colliding filenames are found under their resolved download names`() {
+        val downloadDirectory = tempFolder.newFolder("collision-download")
+        val first = downloadDirectory.resolve("a_1.mp3").apply { writeBytes(byteArrayOf(1)) }
+        downloadDirectory.resolve("a_2.mp3").writeBytes(byteArrayOf(2))
+        val book = cachedServerBook.copy(
+            isDownloaded = true,
+            localPath = downloadDirectory.absolutePath,
+            audioFiles = listOf(
+                AudioFile(filename = "a.mp3", index = 0),
+                AudioFile(filename = "a.mp3", index = 1),
+            ),
+        )
+
+        assertTrue(hasUsableLocalDownload(book))
+
+        first.delete()
+
+        assertFalse(hasUsableLocalDownload(book))
+    }
+
+    @Test
+    fun `a legacy single download still matches its raw filename`() {
+        val downloadDirectory = tempFolder.newFolder("legacy-download")
+        downloadDirectory.resolve("a.mp3").writeBytes(byteArrayOf(1))
+        val book = cachedServerBook.copy(
+            isDownloaded = true,
+            localPath = downloadDirectory.absolutePath,
+            audioFiles = listOf(AudioFile(filename = "a.mp3", index = 0)),
+        )
+
+        assertTrue(hasUsableLocalDownload(book))
+    }
 }

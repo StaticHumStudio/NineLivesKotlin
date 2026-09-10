@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.ui.dossier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -37,6 +38,31 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 // ─── Dossier Time Period ────────────────────────────────────────────────────
+
+/**
+ * What the Dossier can do with a history fetch. A partial fetch still carries
+ * rows worth aggregating, so it gets its statistics plus a warning that they
+ * cover only part of the history. Only a failed fetch has nothing to show.
+ */
+internal data class DossierHistoryPresentation(
+    val sessions: List<ListeningSession>,
+    val warning: String? = null,
+    val unavailableMessage: String? = null,
+)
+
+internal fun dossierHistoryPresentation(
+    result: RemoteResult<List<ListeningSession>>,
+): DossierHistoryPresentation = when (result) {
+    is RemoteResult.Ok -> DossierHistoryPresentation(result.value)
+    is RemoteResult.Partial -> DossierHistoryPresentation(
+        sessions = result.value,
+        warning = "These statistics cover part of your history. Loading stopped early: ${result.reason}",
+    )
+    is RemoteResult.Failed -> DossierHistoryPresentation(
+        sessions = emptyList(),
+        unavailableMessage = "Statistics are unavailable because history did not complete: ${result.reason}",
+    )
+}
 
 enum class DossierPeriod(
     val label: String,
@@ -171,6 +197,8 @@ class NightwatchDossierViewModel @Inject constructor(
     data class DossierState(
         val isLoading: Boolean = true,
         val error: String? = null,
+        /** Statistics are on screen but cover an incomplete history. */
+        val historyWarning: String? = null,
         val isConnected: Boolean = true,
         val selectedPeriod: DossierPeriod = DossierPeriod.THIRTY_DAYS,
 
@@ -298,7 +326,12 @@ class NightwatchDossierViewModel @Inject constructor(
             }
 
             try {
-                val allSessions = sessionRepository.getAllSessions()
+                val history = dossierHistoryPresentation(sessionRepository.getAllSessions())
+                history.unavailableMessage?.let { message ->
+                    publishHistoryUnavailable(message)
+                    return@launch
+                }
+                val allSessions = history.sessions
                 val scopedBooks = settings.activeLibraryId?.let { libraryId ->
                     audioBookRepository.getByLibraryAndSource(libraryId, isLocalMode)
                 }.orEmpty()
@@ -409,6 +442,7 @@ class NightwatchDossierViewModel @Inject constructor(
                         isLoading = false,
                         isConnected = true,
                         error = null,
+                        historyWarning = history.warning,
                         totalListeningTime = totalTime,
                         totalSessions = validSessions.size,
                         filteredNoiseSessions = noiseSessions,
@@ -446,6 +480,10 @@ class NightwatchDossierViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun publishHistoryUnavailable(message: String) {
+        _uiState.update { it.historyUnavailable(message) }
     }
 
     // ─── Session Sanitization ──────────────────────────────────────────────
@@ -806,3 +844,37 @@ internal fun dossierNeedsReloadOnEntitlementChange(
     selectedPeriod: DossierPeriod,
     isUnlocked: Boolean,
 ): Boolean = !FreeTier.allowsDossierPeriod(selectedPeriod, isUnlocked)
+
+/**
+ * A failed history fetch has nothing to show. Every derived line resets,
+ * the header included, so a failure after a period change does not sit
+ * under a conclusion drawn from the previous period.
+ */
+internal fun NightwatchDossierViewModel.DossierState.historyUnavailable(message: String): NightwatchDossierViewModel.DossierState =
+    copy(
+        isLoading = false,
+        isConnected = true,
+        error = message,
+        historyWarning = null,
+        totalListeningTime = Duration.ZERO,
+        totalSessions = 0,
+        filteredNoiseSessions = 0,
+        uniqueBooks = 0,
+        bookStats = emptyList(),
+        narratorStats = emptyList(),
+        genreStats = emptyList(),
+        authorStats = emptyList(),
+        booksFinished = 0,
+        dailyAverage = Duration.ZERO,
+        bestDay = null,
+        bestDayTime = Duration.ZERO,
+        hourlyDistribution = emptyMap(),
+        peakHour = null,
+        peakDayOfWeek = null,
+        headerWhisper = NightwatchDossierViewModel.DossierState().headerWhisper,
+        overviewWhisper = null,
+        narratorWhisper = null,
+        authorWhisper = null,
+        genreWhisper = null,
+        temporalWhisper = null,
+            )

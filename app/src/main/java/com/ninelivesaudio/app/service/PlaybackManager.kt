@@ -1214,6 +1214,17 @@ class PlaybackManager @Inject constructor(
             if (shouldFinalizeRetainedBook(_currentBook.value != null, retainedBookFinalized)) {
                 finishPlayback(PlaybackTermination.STOP, keepServiceConnection = true)
             }
+            // A load that was abandoned after opening its server session leaves
+            // that session behind with nothing to finalize. Finalizing takes the
+            // session it owns and nulls it first, so this only ever finds the
+            // orphan. Closing it here is what every load did before the
+            // finalization consolidation.
+            val orphanServerSession = synchronized(sessionLock) {
+                currentSession.also { currentSession = null }
+            }
+            if (orphanServerSession != null) {
+                scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id) }
+            }
             pendingTerminalOwner.await(book.id)
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             val requestedGeneration = nextPlaybackGeneration(book.id)

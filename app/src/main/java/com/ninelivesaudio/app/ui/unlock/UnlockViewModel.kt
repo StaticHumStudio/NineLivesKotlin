@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.BillingManager
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.entitlement.EntitlementSource
+import com.ninelivesaudio.app.entitlement.RefreshPurchasesResult
 import com.ninelivesaudio.app.entitlement.EntitlementState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,12 @@ import javax.inject.Inject
 
 /** A restore result plus a nonce, so identical messages still emit. */
 data class RestoreMessage(val id: Long, val text: String)
+
+internal fun restoreMessageText(result: RefreshPurchasesResult): String = when (result) {
+    RefreshPurchasesResult.SUCCEEDED -> "Play refreshed your ownership."
+    RefreshPurchasesResult.BUSY -> "Another ownership refresh is already running."
+    RefreshPurchasesResult.FAILED -> "Play could not confirm ownership. Your current access has not changed."
+}
 
 data class UnlockUiState(
     val entitlement: EntitlementState = EntitlementState.FREE,
@@ -147,8 +154,8 @@ class UnlockViewModel @Inject constructor(
      */
     fun restorePurchases() {
         viewModelScope.launch {
-            billing.refreshPurchases()
-            _restoreMessage.value = RestoreMessage(++restoreNonce, "Checked with Google Play.")
+            val result = billing.refreshPurchases()
+            _restoreMessage.value = RestoreMessage(++restoreNonce, restoreMessageText(result))
         }
     }
 

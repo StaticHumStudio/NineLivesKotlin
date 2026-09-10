@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.ui.unlock
 
 import com.ninelivesaudio.app.entitlement.EntitlementSource
+import com.ninelivesaudio.app.entitlement.RefreshPurchasesResult
 import com.ninelivesaudio.app.entitlement.EntitlementState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,4 +78,21 @@ class UnlockUiStateTest {
 
         assertEquals("1 day remains in your trial.", state.trialRemainingText)
     }
+
+    @Test
+    fun `restore messages distinguish completed busy and failed ownership checks`() {
+        assertEquals(
+            "Play refreshed your ownership.",
+            restoreMessageText(RefreshPurchasesResult.SUCCEEDED),
+        )
+        assertEquals(
+            "Another ownership refresh is already running.",
+            restoreMessageText(RefreshPurchasesResult.BUSY),
+        )
+        assertEquals(
+            "Play could not confirm ownership. Your current access has not changed.",
+            restoreMessageText(RefreshPurchasesResult.FAILED),
+        )
+    }
+
 }

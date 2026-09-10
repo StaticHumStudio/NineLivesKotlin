@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.toDomain
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
@@ -28,6 +29,28 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlin.time.Duration
+
+enum class HistoryLoadStatus { NOT_LOADED, COMPLETE, PARTIAL, FAILED }
+
+internal data class HistoryPresentation(
+    val sessions: List<ListeningSession>,
+    val status: HistoryLoadStatus,
+    val message: String? = null,
+)
+
+internal fun historyPresentation(result: RemoteResult<List<ListeningSession>>): HistoryPresentation = when (result) {
+    is RemoteResult.Ok -> HistoryPresentation(result.value, HistoryLoadStatus.COMPLETE)
+    is RemoteResult.Partial -> HistoryPresentation(
+        sessions = result.value,
+        status = HistoryLoadStatus.PARTIAL,
+        message = "Some listening history is shown, but loading stopped early: ${result.reason}",
+    )
+    is RemoteResult.Failed -> HistoryPresentation(
+        sessions = emptyList(),
+        status = HistoryLoadStatus.FAILED,
+        message = "Listening history could not load: ${result.reason}",
+    )
+}
 
 /** Tracks resumes for one ViewModel lifetime, never across process recreation. */
 internal class BookDetailResumeTracker {
@@ -106,6 +129,8 @@ class BookDetailViewModel @Inject constructor(
         val listeningSessions: List<ListeningSession> = emptyList(),
         val isHistoryExpanded: Boolean = false,
         val isHistoryLoading: Boolean = false,
+        val historyLoadStatus: HistoryLoadStatus = HistoryLoadStatus.NOT_LOADED,
+        val historyMessage: String? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -398,21 +423,43 @@ class BookDetailViewModel @Inject constructor(
     fun toggleHistoryExpanded() {
         val wasExpanded = _uiState.value.isHistoryExpanded
         _uiState.update { it.copy(isHistoryExpanded = !wasExpanded) }
-        if (!wasExpanded && _uiState.value.listeningSessions.isEmpty() && !_uiState.value.isHistoryLoading) {
+        if (!wasExpanded &&
+            _uiState.value.historyLoadStatus != HistoryLoadStatus.COMPLETE &&
+            !_uiState.value.isHistoryLoading
+        ) {
             loadListeningSessions()
         }
     }
 
     private fun loadListeningSessions() {
+        _uiState.update { it.copy(isHistoryLoading = true, historyMessage = null) }
         viewModelScope.launch {
-            _uiState.update { it.copy(isHistoryLoading = true) }
             try {
-                val sessions = listeningSessionRepository.getSessionsForBook(bookId)
+                val presentation = historyPresentation(
+                    listeningSessionRepository.getSessionsForBook(bookId),
+                )
                 _uiState.update {
-                    it.copy(listeningSessions = sessions, isHistoryLoading = false)
+                    it.copy(
+                        listeningSessions = presentation.sessions,
+                        isHistoryLoading = false,
+                        historyLoadStatus = presentation.status,
+                        historyMessage = presentation.message,
+                    )
                 }
-            } catch (_: Exception) {
-                _uiState.update { it.copy(isHistoryLoading = false) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val presentation = historyPresentation(
+                    RemoteResult.Failed(e.message ?: "unknown error"),
+                )
+                _uiState.update {
+                    it.copy(
+                        listeningSessions = presentation.sessions,
+                        isHistoryLoading = false,
+                        historyLoadStatus = presentation.status,
+                        historyMessage = presentation.message,
+                    )
+                }
             }
         }
     }

@@ -164,6 +164,12 @@ class ApiService @Inject constructor(
     companion object {
         private const val TAG = "ApiService"
         private const val TOKEN_VALIDATION_DEBOUNCE_MS = 15_000L
+        // A runaway guard, not a product limit: 1000 pages of 100 is far past
+        // any real library, so a normal shelf never reaches it.
+        private const val LIBRARY_ITEMS_PAGE_CAP = 1000
+        private const val LISTENING_SESSIONS_PAGE_SIZE = 50
+        private const val LISTENING_SESSIONS_ITEM_PAGE_CAP = 3
+        private const val LISTENING_SESSIONS_ALL_PAGE_CAP = 20
     }
 
     var lastError: String? = null
@@ -681,6 +687,7 @@ class ApiService @Inject constructor(
         withContext(Dispatchers.IO) {
             runPaginatedFetch(
                 limit = limit,
+                maxPages = LIBRARY_ITEMS_PAGE_CAP,
                 onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
             ) { page ->
                 val response = api.getLibraryItems(libraryId, limit, page)
@@ -858,97 +865,60 @@ class ApiService @Inject constructor(
 
     // ─── Listening Sessions ──────────────────────────────────────────────
 
+    /**
+     * Sessions for one book. The server endpoint has no verified item-id filter, so
+     * this pages the account history and scopes it client-side. The page cap keeps
+     * the per-book Dossier bounded for large histories.
+     */
     suspend fun getListeningSessions(
         libraryItemId: String,
-        itemsPerPage: Int = 50,
-    ): List<ListeningSession> = withContext(Dispatchers.IO) {
-        try {
-            val allSessions = mutableListOf<ListeningSession>()
-            var currentPage = 0
-            val maxPages = 3
-
-            while (currentPage < maxPages) {
-                val response = api.getListeningSessions(
-                    itemsPerPage = itemsPerPage,
-                    page = currentPage,
-                )
-                if (!response.isSuccessful) break
-
-                val body = response.body() ?: break
-                if (body.sessions.isEmpty()) break
-
-                val filtered = body.sessions
-                    .filter { it.libraryItemId == libraryItemId }
-                    .map { session ->
-                        val startedAtMillis = normalizeEpoch(session.startedAt)
-                        val updatedAtMillis = normalizeEpoch(session.updatedAt)
-
-                        ListeningSession(
-                            id = session.id,
-                            libraryItemId = session.libraryItemId,
-                            currentTime = session.currentTime.seconds,
-                            timeListening = session.timeListening.seconds,
-                            startedAt = startedAtMillis,
-                            updatedAt = updatedAtMillis,
-                            displayTitle = session.displayTitle,
-                        )
-                    }
-                allSessions.addAll(filtered)
-
-                if (currentPage >= body.numPages - 1) break
-                currentPage++
-            }
-
-            allSessions.sortedByDescending { it.startedAt }
-        } catch (e: Exception) {
-            lastError = "Failed to load listening sessions: ${e.message}"
-            emptyList()
+        itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
+    ): RemoteResult<List<ListeningSession>> =
+        fetchListeningSessions(itemsPerPage, LISTENING_SESSIONS_ITEM_PAGE_CAP).map { sessions ->
+            sessions.filter { it.libraryItemId == libraryItemId }
         }
-    }
 
-    /** Fetch ALL listening sessions across all books (for stats/dossier). */
+    /** All sessions across all books, for stats and the Dossier. */
     suspend fun getAllListeningSessions(
-        itemsPerPage: Int = 50,
-    ): List<ListeningSession> = withContext(Dispatchers.IO) {
-        try {
-            val allSessions = mutableListOf<ListeningSession>()
-            var currentPage = 0
-            val maxPages = 20
+        itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
+    ): RemoteResult<List<ListeningSession>> =
+        fetchListeningSessions(itemsPerPage, LISTENING_SESSIONS_ALL_PAGE_CAP)
 
-            while (currentPage < maxPages) {
-                val response = api.getListeningSessions(
-                    itemsPerPage = itemsPerPage,
-                    page = currentPage,
-                )
-                if (!response.isSuccessful) break
-
-                val body = response.body() ?: break
-                if (body.sessions.isEmpty()) break
-
-                allSessions.addAll(body.sessions.map { session ->
-                    val startedAtMillis = normalizeEpoch(session.startedAt)
-                    val updatedAtMillis = normalizeEpoch(session.updatedAt)
-
+    private suspend fun fetchListeningSessions(
+        itemsPerPage: Int,
+        maxPages: Int,
+    ): RemoteResult<List<ListeningSession>> = withContext(Dispatchers.IO) {
+        runPaginatedFetch(
+            limit = itemsPerPage,
+            maxPages = maxPages,
+            itemKey = { it.id },
+            onPageFailure = { page, e ->
+                lastError = "Failed to load listening sessions page $page: ${e.message}"
+            },
+        ) { page ->
+            val response = api.getListeningSessions(itemsPerPage = itemsPerPage, page = page)
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                throw java.io.IOException("HTTP ${response.code()} loading listening sessions page $page")
+            }
+            val body = response.body() ?: throw java.io.IOException("Empty listening sessions body on page $page")
+            PageOutcome.Page(
+                results = body.sessions.map { session ->
                     ListeningSession(
                         id = session.id,
                         libraryItemId = session.libraryItemId,
                         currentTime = session.currentTime.seconds,
                         timeListening = session.timeListening.seconds,
-                        startedAt = startedAtMillis,
-                        updatedAt = updatedAtMillis,
+                        startedAt = normalizeEpoch(session.startedAt),
+                        updatedAt = normalizeEpoch(session.updatedAt),
                         displayTitle = session.displayTitle,
                     )
-                })
-
-                if (currentPage >= body.numPages - 1) break
-                currentPage++
-            }
-
-            allSessions.sortedByDescending { it.startedAt }
-        } catch (e: Exception) {
-            lastError = "Failed to load listening sessions: ${e.message}"
-            emptyList()
-        }
+                },
+                total = body.total,
+                reportedPage = body.page,
+                reportedPageCount = body.numPages,
+            )
+        }.map { sessions -> sessions.sortedByDescending { it.startedAt } }
     }
 
     /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */

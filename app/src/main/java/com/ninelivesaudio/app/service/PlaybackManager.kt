@@ -983,7 +983,10 @@ class PlaybackManager @Inject constructor(
     // A terminated book stays in _currentBook so the UI keeps showing it. This
     // records that its terminal flush already ran, so the next load does not
     // repeat it under a mode the book does not belong to.
-    private var retainedBookFinalized = false
+    // Starts finalized: there is no retained book at process start, and a
+    // first load that exits before its OK line must not turn the book it
+    // marked current into one with a pending terminal write.
+    private var retainedBookFinalized = true
 
     private val _position = MutableStateFlow(Duration.ZERO)
     val position: StateFlow<Duration> = _position.asStateFlow()

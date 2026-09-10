@@ -206,4 +206,30 @@ class TokenValidationTest {
         assertEquals(CredentialLoginResult.UNREACHABLE, classifyLoginHttpFailure(503))
         assertEquals(CredentialLoginResult.UNREACHABLE, classifyLoginHttpFailure(302))
     }
+    @Test fun `password rollback restores origin even when settings restoration fails`() = runBlocking {
+        val auth = AuthInterceptor().apply { setToken("attempted", "https://b.example") }
+        rollbackFailedPasswordLogin(
+            restoreSettings = { error("settings unavailable") },
+            restoreRuntimeAuth = { auth.setToken("retained", "https://a.example") },
+            recordMutation = {},
+        )
+        assertTrue(auth.matches("retained", "https://a.example"))
+        assertFalse(auth.matches("retained", "https://b.example"))
+    }
+
+    @Test fun `token rollback restores origin before fallible secure storage`() = runBlocking {
+        val auth = AuthInterceptor().apply { setToken("attempted", "https://b.example") }
+        runCatching {
+            rollbackFailedTokenLogin(
+                previousToken = "retained", attemptedToken = "attempted",
+                readStoredToken = { "attempted" },
+                replaceStoredToken = { _, _ -> error("secure storage unavailable") },
+                restoreRuntimeAuth = { auth.setToken(it, "https://a.example") },
+                recordMutation = {},
+            )
+        }
+        assertTrue(auth.matches("retained", "https://a.example"))
+        assertFalse(auth.matches("retained", "https://b.example"))
+    }
+
 }

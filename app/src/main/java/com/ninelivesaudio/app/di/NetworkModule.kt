@@ -42,7 +42,7 @@ object NetworkModule {
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .addInterceptor(dynamicBaseUrlInterceptor)
-            .addInterceptor(authInterceptor)
+            .addNetworkInterceptor(authInterceptor)
 
         // Only log HTTP requests in debug builds to prevent token/URL leakage in production
         if (BuildConfig.DEBUG) {

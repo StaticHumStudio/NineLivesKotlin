@@ -406,6 +406,7 @@ class SettingsManager @Inject constructor(
 
     companion object {
         private const val KEY_AUTH_TOKEN = "auth_token"
+        private const val KEY_AUTH_TOKEN_SERVER_URL = "auth_token_server_url"
         private const val KEY_SETTINGS = "app_settings"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_CURRENT_PLAYBACK_BOOK_ID = "current_playback_book_id"
@@ -439,16 +440,32 @@ class SettingsManager @Inject constructor(
         encryptedPrefs.getString(KEY_AUTH_TOKEN, null)
     }
 
-    suspend fun saveAuthToken(token: String) = withContext(Dispatchers.IO) {
+    suspend fun getAuthTokenServerUrl(): String? = withContext(Dispatchers.IO) {
+        encryptedPrefs.getString(KEY_AUTH_TOKEN_SERVER_URL, null)
+    }
+
+    /** Flush the existing token binding before changing settings, including a legacy binding. */
+    suspend fun persistAuthTokenServerBinding(expected: String, serverUrl: String) = withContext(Dispatchers.IO) {
+        authTokenMutex.withLock {
+            check(encryptedPrefs.getString(KEY_AUTH_TOKEN, null) == expected) { "Auth session changed before binding" }
+            val boundUrl = encryptedPrefs.getString(KEY_AUTH_TOKEN_SERVER_URL, null) ?: serverUrl
+            // A failed SharedPreferences commit can still change its memory map.
+            // Always require a successful flush before a later URL transition.
+            requireSuccessfulSettingsCommit(encryptedPrefs.edit()
+                .putString(KEY_AUTH_TOKEN_SERVER_URL, boundUrl).commit())
+        }
+    }
+
+    suspend fun saveAuthToken(token: String, serverUrl: String) = withContext(Dispatchers.IO) {
         authTokenMutex.withLock {
             persistAuthTokenChange(
                 token = token,
                 commit = { sanitized ->
                     val editor = encryptedPrefs.edit()
                     if (sanitized == null) {
-                        editor.remove(KEY_AUTH_TOKEN)
+                        editor.remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL)
                     } else {
-                        editor.putString(KEY_AUTH_TOKEN, sanitized)
+                        editor.putString(KEY_AUTH_TOKEN, sanitized).putString(KEY_AUTH_TOKEN_SERVER_URL, serverUrl)
                     }
                     editor.commit()
                 },
@@ -461,13 +478,13 @@ class SettingsManager @Inject constructor(
         authTokenMutex.withLock {
             persistAuthTokenChange(
                 token = null,
-                commit = { encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).commit() },
+                commit = { encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL).commit() },
                 publish = { _hasAuthToken.value = it },
             )
         }
     }
 
-    suspend fun replaceAuthTokenIfCurrent(expected: String, replacement: String?): Boolean =
+    suspend fun replaceAuthTokenIfCurrent(expected: String, replacement: String?, replacementServerUrl: String): Boolean =
         withContext(Dispatchers.IO) {
             authTokenMutex.withLock {
                 if (encryptedPrefs.getString(KEY_AUTH_TOKEN, null) != expected.trim()) {
@@ -478,9 +495,9 @@ class SettingsManager @Inject constructor(
                     commit = { sanitized ->
                         val editor = encryptedPrefs.edit()
                         if (sanitized == null) {
-                            editor.remove(KEY_AUTH_TOKEN)
+                            editor.remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL)
                         } else {
-                            editor.putString(KEY_AUTH_TOKEN, sanitized)
+                            editor.putString(KEY_AUTH_TOKEN, sanitized).putString(KEY_AUTH_TOKEN_SERVER_URL, replacementServerUrl)
                         }
                         editor.commit()
                     },

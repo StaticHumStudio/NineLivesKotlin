@@ -78,11 +78,11 @@ Android 11+ (API 30).
 
 ## What's New (Release Notes)
 
-v2.1.3
+v2.1.4
 
-Nine Lives is now free. Point it at a folder of audiobooks, or your Audiobookshelf server, and start listening. One optional one-time unlock opens every speed, unlimited offline books, and full sleep timer control. Paid-app owners: you're grandfathered, you already have it all. Also new: silence skipping.
+Nine Lives is now free. Point it at a folder of audiobooks or your Audiobookshelf server and start listening. One optional unlock opens every speed, unlimited offline books, and the full sleep timer. Paid-app owners are grandfathered. New: silence skipping.
 
-Fixed: the reported import bug. Nested folders and multi-disc sets now scan correctly, sync failures are shown instead of hidden, and reconnecting after a network drop just works.
+Fixed: nested folders and multi-disc sets scan correctly, moved or deleted folders leave no ghosts, downloads keep their track details, reconnecting after a network drop works, and switching between local files and server keeps your place.
 
 v2.0.0
 

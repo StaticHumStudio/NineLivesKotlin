@@ -99,6 +99,20 @@ internal fun shouldRequeryShelfAfterSync(
     record.outcomeSequence != previousSequence &&
     record.result != SyncResult.FAILED
 
+/**
+ * Whether a sync that brought data back needs the library list and selection
+ * reloaded, not just the shelf re-filtered. Re-filtering with nothing selected
+ * is a no-op, so an offline cold start with no saved libraries stayed empty
+ * after the server returned. An empty cache with nothing shown stays put, or a
+ * server with no libraries would reload on every sync record it writes.
+ */
+internal fun shouldReloadLibrariesAfterSync(
+    selectedLibrary: Library?,
+    shownLibraryIds: List<String>,
+    cachedLibraryIds: List<String>,
+): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
+    cachedLibraryIds != shownLibraryIds
+
 internal fun decideDownloadedOnlyFilter(
     previousStatus: ConnectionStatus,
     newStatus: ConnectionStatus,
@@ -271,7 +285,23 @@ class LibraryViewModel @Inject constructor(
                     }
                     // A background sync (reconnect or periodic) wrote new rows.
                     // Re-query so the shelf shows them, not just a cleared banner.
-                    if (shouldRequeryShelfAfterSync(previousSequence, record)) applyFilter()
+                    if (shouldRequeryShelfAfterSync(previousSequence, record)) {
+                        val state = _uiState.value
+                        val cached = visibleCachedLibraries(
+                            settings = settingsManager.currentSettings,
+                            cached = libraryRepository.getAudiobookshelf(),
+                        )
+                        if (shouldReloadLibrariesAfterSync(
+                                selectedLibrary = state.selectedLibrary,
+                                shownLibraryIds = state.libraries.map { it.id },
+                                cachedLibraryIds = cached.map { it.id },
+                            )
+                        ) {
+                            libraryLoadLaunch.launch(viewModelScope) { loadLibraries() }
+                        } else {
+                            applyFilter()
+                        }
+                    }
                 }
         }
 

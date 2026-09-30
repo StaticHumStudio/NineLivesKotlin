@@ -15,6 +15,7 @@ import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLSession
+import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509ExtendedTrustManager
@@ -76,12 +77,16 @@ object SelfSignedCertTrustManager {
             saveFingerprint = settingsManager::saveTrustedCertificateFingerprint,
         )
 
-        val trustManager = PrefGatedTrustManager(platformTrustManager(), allowSelfSigned, tofu)
+        val isConfiguredHost = { host: String ->
+            val configured = runCatching { URI(settingsManager.currentSettings.serverUrl).host }.getOrNull()
+            configured != null && host.equals(configured, ignoreCase = true)
+        }
+        val trustManager = PrefGatedTrustManager(platformTrustManager(), allowSelfSigned, tofu, isConfiguredHost)
         val sslContext = SSLContext.getInstance("TLS")
         sslContext.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
 
         sslSocketFactory(sslContext.socketFactory, trustManager)
-        hostnameVerifier(PrefGatedHostnameVerifier(OkHostnameVerifier, allowSelfSigned, tofu))
+        hostnameVerifier(PrefGatedHostnameVerifier(OkHostnameVerifier, allowSelfSigned, tofu, isConfiguredHost))
 
         return this
     }
@@ -97,13 +102,23 @@ object SelfSignedCertTrustManager {
 /**
  * Off: the platform trust manager, every overload forwarded as is. The socket
  * and engine forms matter on Android, where the Network Security Config trust
- * manager needs the peer host they carry. On: trust-on-first-use.
+ * manager needs the peer host they carry. On: trust-on-first-use, but only for
+ * the configured server. Any other host (a CDN or proxy an absolute playback
+ * URL points at) keeps the platform check, since the pinned fingerprint is the
+ * configured server's and would reject a valid certificate elsewhere.
  */
 internal class PrefGatedTrustManager(
     private val platform: X509TrustManager,
     private val allowSelfSigned: () -> Boolean,
     private val tofu: X509TrustManager,
+    private val isConfiguredHost: (String) -> Boolean = { true },
 ) : X509ExtendedTrustManager() {
+
+    // The plain overloads carry no peer host, so they keep the configured
+    // server's TOFU behavior. Android's TLS stack calls the socket and engine
+    // forms, which do carry it.
+    private fun tofuFor(peerHost: String?): Boolean =
+        allowSelfSigned() && (peerHost == null || isConfiguredHost(peerHost))
 
     override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
         if (allowSelfSigned()) tofu.checkClientTrusted(chain, authType)
@@ -128,13 +143,13 @@ internal class PrefGatedTrustManager(
     }
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?, socket: Socket?) {
-        if (allowSelfSigned()) tofu.checkServerTrusted(chain, authType)
+        if (tofuFor((socket as? SSLSocket)?.handshakeSession?.peerHost)) tofu.checkServerTrusted(chain, authType)
         else if (platform is X509ExtendedTrustManager) platform.checkServerTrusted(chain, authType, socket)
         else platform.checkServerTrusted(chain, authType)
     }
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?, engine: SSLEngine?) {
-        if (allowSelfSigned()) tofu.checkServerTrusted(chain, authType)
+        if (tofuFor(engine?.peerHost)) tofu.checkServerTrusted(chain, authType)
         else if (platform is X509ExtendedTrustManager) platform.checkServerTrusted(chain, authType, engine)
         else platform.checkServerTrusted(chain, authType)
     }
@@ -143,14 +158,16 @@ internal class PrefGatedTrustManager(
         if (allowSelfSigned()) tofu.acceptedIssuers else platform.acceptedIssuers
 }
 
-/** Off: the platform verifier's answer. On: the configured host only, plus TOFU enrollment. */
+/** Off, or any host but the configured server: the platform verifier. On for the server: TOFU enrollment. */
 internal class PrefGatedHostnameVerifier(
     private val platform: HostnameVerifier,
     private val allowSelfSigned: () -> Boolean,
     private val tofu: HostnameVerifier,
+    private val isConfiguredHost: (String) -> Boolean = { true },
 ) : HostnameVerifier {
     override fun verify(hostname: String, session: SSLSession): Boolean =
-        if (allowSelfSigned()) tofu.verify(hostname, session) else platform.verify(hostname, session)
+        if (allowSelfSigned() && isConfiguredHost(hostname)) tofu.verify(hostname, session)
+        else platform.verify(hostname, session)
 }
 
 /**

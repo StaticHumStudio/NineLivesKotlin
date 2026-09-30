@@ -34,11 +34,13 @@ class SelfSignedCertTrustTest {
         log = { _, _ -> },
     )
 
+    private val isConfiguredHost = { host: String -> host.equals("abs.local", ignoreCase = true) }
+
     private fun gatedTrust(platform: X509TrustManager = SelfSignedCertTrustManager.platformTrustManager()) =
-        PrefGatedTrustManager(platform, { allow }, tofu)
+        PrefGatedTrustManager(platform, { allow }, tofu, isConfiguredHost)
 
     private fun gatedVerifier(platform: HostnameVerifier) =
-        PrefGatedHostnameVerifier(platform, { allow }, tofu)
+        PrefGatedHostnameVerifier(platform, { allow }, tofu, isConfiguredHost)
 
     // ─── Pref off: the platform decides, nothing else ─────────────────────
 
@@ -94,9 +96,11 @@ class SelfSignedCertTrustTest {
     }
 
     @Test
-    fun `on refuses a host other than the configured server`() {
+    fun `on refuses another host whose certificate the platform rejects`() {
+        // Other hosts get the platform's answer, not TOFU, so a self-signed
+        // certificate on any host but the configured server stays refused.
         allow = true
-        val verifier = gatedVerifier { _, _ -> true }
+        val verifier = gatedVerifier { _, _ -> false }
         assertFalse(verifier.verify("evil.example", session(certA)))
         assertTrue(fingerprints.isEmpty())
     }
@@ -116,6 +120,36 @@ class SelfSignedCertTrustTest {
     }
 
     // ─── Fixtures ─────────────────────────────────────────────────────────
+
+    // ─── Pref on, but another host: the platform decides ──────────────────
+
+    @Test
+    fun `on hands a different host's hostname check to the platform`() {
+        allow = true
+        var consulted = 0
+        val platform = HostnameVerifier { _, _ -> consulted++; true }
+        assertTrue(gatedVerifier(platform).verify("cdn.example.com", session(certB)))
+        assertEquals(1, consulted)
+        assertTrue("another host must never enroll", fingerprints.isEmpty())
+    }
+
+    @Test
+    fun `on hands a different host's chain to the platform trust manager`() {
+        allow = true
+        val platform = RecordingTrustManager()
+        val engine = javax.net.ssl.SSLContext.getDefault().createSSLEngine("cdn.example.com", 443)
+        gatedTrust(platform).checkServerTrusted(arrayOf(certB), "RSA", engine)
+        assertEquals(1, platform.serverChecks)
+    }
+
+    @Test
+    fun `on keeps trust on first use for the configured server's engine`() {
+        allow = true
+        val platform = RecordingTrustManager()
+        val engine = javax.net.ssl.SSLContext.getDefault().createSSLEngine("abs.local", 13378)
+        gatedTrust(platform).checkServerTrusted(arrayOf(certA), "RSA", engine)
+        assertEquals("configured server must not reach the platform while on", 0, platform.serverChecks)
+    }
 
     private class RecordingTrustManager : X509TrustManager {
         var serverChecks = 0

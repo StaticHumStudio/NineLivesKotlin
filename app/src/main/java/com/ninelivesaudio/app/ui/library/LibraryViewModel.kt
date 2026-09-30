@@ -14,6 +14,7 @@ import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.service.ConnectivityMonitor
@@ -84,6 +85,19 @@ internal data class DownloadedOnlyFilterState(
     val showDownloadedOnly: Boolean,
     val autoDownloadedOnly: Boolean,
 )
+
+/**
+ * A new sync outcome that brought data back (not a plain failure) should
+ * re-query the shelf. The first record seen is skipped because the initial
+ * load already queried it.
+ */
+internal fun shouldRequeryShelfAfterSync(
+    previousSequence: Long?,
+    record: LastSyncRecord?,
+): Boolean = previousSequence != null &&
+    record != null &&
+    record.outcomeSequence != previousSequence &&
+    record.result != SyncResult.FAILED
 
 internal fun decideDownloadedOnlyFilter(
     previousStatus: ConnectionStatus,
@@ -247,6 +261,7 @@ class LibraryViewModel @Inject constructor(
                 }
                 .distinctUntilChanged()
                 .collect { record ->
+                    val previousSequence = _uiState.value.lastSyncSequence
                     _uiState.update {
                         it.copy(
                             lastSyncResult = record?.result,
@@ -254,6 +269,9 @@ class LibraryViewModel @Inject constructor(
                             lastSyncFailedLibraryIds = record?.failedLibraryIds,
                         )
                     }
+                    // A background sync (reconnect or periodic) wrote new rows.
+                    // Re-query so the shelf shows them, not just a cleared banner.
+                    if (shouldRequeryShelfAfterSync(previousSequence, record)) applyFilter()
                 }
         }
 
@@ -279,7 +297,7 @@ class LibraryViewModel @Inject constructor(
                 if (shouldSyncOnLibraryLoad(
                         isLocalLibrary = false,
                         isOnline = connectivityMonitor.isOnline.value,
-                    )
+                    ) && connectivityMonitor.checkServerReachable()
                 ) {
                     refreshRemoteLibraryList(
                         readCached = {
@@ -353,10 +371,12 @@ class LibraryViewModel @Inject constructor(
             // connectivity. In airplane mode the old code attempted syncLibraryItems
             // regardless, leaving the switch spinning on a doomed request until the
             // OkHttp timeout. Skipping the sync lets cached data load instantly.
+            // A live VPN (Tailscale) keeps isOnline true with the server gone,
+            // so the short /ping probe decides before the 30s request does.
             if (shouldSyncOnLibraryLoad(
                     isLocalLibrary = selected?.isLocal == true,
                     isOnline = connectivityMonitor.isOnline.value,
-                )
+                ) && connectivityMonitor.checkServerReachable()
             ) {
                 itemResult = refreshSelectedLibraryItems(
                     libraryId = libraryId,

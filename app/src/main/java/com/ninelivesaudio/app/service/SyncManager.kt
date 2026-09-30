@@ -127,6 +127,27 @@ class SyncManager @Inject constructor(
                     }
             }
 
+            // Resync when the server comes back after a failed or partial sync.
+            // The flush above only pushes queued progress, so without this the
+            // library and its "Last sync failed" banner stayed stale until a
+            // manual Retry or the next periodic tick (up to 5 minutes).
+            // SYNCING counts as live so a sync's own status flip is not an edge.
+            launch {
+                combine(
+                    connectivityMonitor.connectionStatus,
+                    settingsManager.settings,
+                ) { status, settings -> isServerSessionLive(status, settings.appMode) }
+                    .distinctUntilChanged()
+                    .collect { live ->
+                        if (live && shouldResyncOnServerReturn(
+                                settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
+                            )
+                        ) {
+                            syncNow()
+                        }
+                    }
+            }
+
             launch {
                 var previousMode: AppMode? = null
                 settingsManager.settings
@@ -523,6 +544,26 @@ internal suspend fun performModeSwitchReconnect(
     refreshIsOnline()
     syncNow()
 }
+
+/**
+ * True while the server is usable for this session. SYNCING is included so
+ * the brief SYNCING status a sync sets on itself never reads as the server
+ * leaving and coming back, which would retrigger the resync in a loop.
+ */
+internal fun isServerSessionLive(
+    status: ConnectivityMonitor.ConnectionStatus,
+    appMode: AppMode,
+): Boolean = appMode != AppMode.LOCAL &&
+    (status == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        status == ConnectivityMonitor.ConnectionStatus.SYNCING)
+
+/**
+ * A returning server only needs a resync when the last recorded attempt did
+ * not fully succeed. No record means the startup sync has not run yet and
+ * will cover it, so the edge stays quiet rather than doubling that sync.
+ */
+internal fun shouldResyncOnServerReturn(lastResult: SyncResult?): Boolean =
+    lastResult != null && lastResult != SyncResult.SUCCESS
 
 internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,

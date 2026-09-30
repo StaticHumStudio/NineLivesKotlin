@@ -223,6 +223,7 @@ fun LibraryScreen(
                                         SyncWarningBanner(
                                             result = warning,
                                             onRetry = viewModel::refresh,
+                                            showingSavedBooks = false,
                                             modifier = Modifier.padding(horizontal = 18.dp),
                                         )
                                     }
@@ -1053,12 +1054,9 @@ private fun SyncWarningBanner(
     result: SyncResult,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    showingSavedBooks: Boolean = true,
 ) {
-    val message = when (result) {
-        SyncResult.PARTIAL -> "Last sync was incomplete. Showing saved books."
-        SyncResult.FAILED -> "Last sync failed. Showing saved books."
-        SyncResult.SUCCESS -> return
-    }
+    val message = syncWarningMessage(result, showingSavedBooks) ?: return
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = NineLivesTheme.colors.archiveVoidSurface,
@@ -1099,6 +1097,8 @@ private fun EmptyState(uiState: LibraryViewModel.UiState) {
     val (title, subtitle) = when {
         uiState.searchQuery.isNotBlank() ->
             CopyStyleGuide.Search.NO_RESULTS to (searchFlavor ?: "Nothing in the Archive matches \"${uiState.searchQuery}\".")
+        isOfflineDownloadedOnlyEmpty(uiState) ->
+            "Nothing Downloaded" to "Streamed books come back when the server does."
         uiState.connectionStatus == com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus.OFFLINE ->
             "The Archive Is Sealed" to (CopyEngine.getEmptyStateFlavor(
                 "Connection lost. Check your network.",
@@ -1138,3 +1138,27 @@ private fun EmptyState(uiState: LibraryViewModel.UiState) {
         )
     }
 }
+
+/**
+ * Banner copy for a degraded sync. The "showing saved books" half is only
+ * true when the shelf below actually has books on it.
+ */
+internal fun syncWarningMessage(result: SyncResult, showingSavedBooks: Boolean): String? {
+    val lead = when (result) {
+        SyncResult.PARTIAL -> "Last sync was incomplete."
+        SyncResult.FAILED -> "Last sync failed."
+        SyncResult.SUCCESS -> return null
+    }
+    return if (showingSavedBooks) "$lead Showing saved books." else lead
+}
+
+/**
+ * The server dropped, the shelf auto-switched to downloaded books, and there
+ * are none. Saved streamed books exist but cannot play, so say that instead
+ * of blaming a filter the user never touched.
+ */
+internal fun isOfflineDownloadedOnlyEmpty(uiState: LibraryViewModel.UiState): Boolean =
+    uiState.showDownloadedOnly &&
+        uiState.totalBookCount > 0 &&
+        uiState.connectionStatus != com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus.CONNECTED &&
+        uiState.connectionStatus != com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus.SYNCING

@@ -286,6 +286,9 @@ class BookDetailViewModel @Inject constructor(
                             downloadProgress = 100,
                         )
                     }
+                    // The held book predates the download and has no local path,
+                    // so Play would stream it (or refuse offline). Reload it.
+                    loadBook()
                 }
             }
         }

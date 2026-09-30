@@ -127,6 +127,27 @@ class SyncManager @Inject constructor(
                     }
             }
 
+            // Resync when the server comes back after a failed or partial sync.
+            // The flush above only pushes queued progress, so without this the
+            // library and its "Last sync failed" banner stayed stale until a
+            // manual Retry or the next periodic tick (up to 5 minutes).
+            // SYNCING counts as live so a sync's own status flip is not an edge.
+            launch {
+                combine(
+                    connectivityMonitor.connectionStatus,
+                    settingsManager.settings,
+                ) { status, settings -> isServerSessionLive(status, settings.appMode) }
+                    .distinctUntilChanged()
+                    .collect { live ->
+                        if (live && shouldResyncOnServerReturn(
+                                settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
+                            )
+                        ) {
+                            syncNow()
+                        }
+                    }
+            }
+
             launch {
                 var previousMode: AppMode? = null
                 settingsManager.settings
@@ -451,7 +472,11 @@ class SyncManager @Inject constructor(
             currentTime = safeCurrentTime,
             isFinished = computedFinished,
             duration = safeDuration,
-            pushToServer = connectivityMonitor.isOnline.value,
+            pushToServer = terminalProgressPushAllowed(
+                isOnline = connectivityMonitor.isOnline.value,
+                connectionStatus = connectivityMonitor.connectionStatus.value,
+            ),
+            pushTimeout = TERMINAL_PROGRESS_PUSH_TIMEOUT,
             onPersisted = onPersisted,
         )
 
@@ -524,10 +549,60 @@ internal suspend fun performModeSwitchReconnect(
     syncNow()
 }
 
+/**
+ * True while the server is usable for this session. SYNCING is included so
+ * the brief SYNCING status a sync sets on itself never reads as the server
+ * leaving and coming back, which would retrigger the resync in a loop.
+ */
+internal fun isServerSessionLive(
+    status: ConnectivityMonitor.ConnectionStatus,
+    appMode: AppMode,
+): Boolean = appMode != AppMode.LOCAL &&
+    (status == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        status == ConnectivityMonitor.ConnectionStatus.SYNCING)
+
+/**
+ * A returning server only needs a resync when the last recorded attempt did
+ * not fully succeed. No record means the startup sync has not run yet and
+ * will cover it, so the edge stays quiet rather than doubling that sync.
+ */
+internal fun shouldResyncOnServerReturn(lastResult: SyncResult?): Boolean =
+    lastResult != null && lastResult != SyncResult.SUCCESS
+
 internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,
     newMode: AppMode,
 ): Boolean = previousMode != AppMode.AUDIOBOOKSHELF && newMode == AppMode.AUDIOBOOKSHELF
+
+/** How long a stopped book's final progress push waits on the server. */
+internal val TERMINAL_PROGRESS_PUSH_TIMEOUT = 5.seconds
+
+/**
+ * Whether a stopped book's final progress tries the server now. The next
+ * book's load waits on this push, and a VPN can keep the OS online while the
+ * server is gone, so only a live server gets the attempt. The local write and
+ * its offline queue row land first either way, and the reconnect flush
+ * delivers the row.
+ */
+internal fun terminalProgressPushAllowed(
+    isOnline: Boolean,
+    connectionStatus: ConnectivityMonitor.ConnectionStatus,
+): Boolean = isOnline &&
+    (connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING)
+
+/**
+ * Run one of a stopped book's final server calls (session sync, session
+ * close) the way its progress push runs: not at all unless [serverLive], and
+ * given up after [timeout]. The next book's load waits on these. Returns null
+ * when skipped or timed out. The call must be cancellable, so bound it inside
+ * any NonCancellable wrapper, not outside.
+ */
+internal suspend fun <T> terminalServerCall(
+    serverLive: Boolean,
+    timeout: kotlin.time.Duration = TERMINAL_PROGRESS_PUSH_TIMEOUT,
+    call: suspend () -> T,
+): T? = if (serverLive) withTimeoutOrNull(timeout) { call() } else null
 
 /**
  * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an

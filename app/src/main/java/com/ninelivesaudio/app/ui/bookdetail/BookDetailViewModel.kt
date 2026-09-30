@@ -279,13 +279,12 @@ class BookDetailViewModel @Inject constructor(
         viewModelScope.launch {
             downloadManager.downloadCompleted.collect { completedItem ->
                 if (completedItem.audioBookId == bookId) {
-                    _uiState.update {
-                        it.copy(
-                            isDownloaded = true,
-                            downloadState = DownloadButtonState.COMPLETED,
-                            downloadProgress = 100,
-                        )
-                    }
+                    // The held book predates the download and has no local path,
+                    // so Play would stream it (or refuse offline). Reload it and
+                    // let the stored row decide. This flow replays its last event
+                    // to new collectors, so trusting the event itself marked a
+                    // book whose download was since deleted as downloaded.
+                    loadBook()
                 }
             }
         }

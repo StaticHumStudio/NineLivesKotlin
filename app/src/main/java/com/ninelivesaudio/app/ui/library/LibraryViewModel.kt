@@ -14,6 +14,7 @@ import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.service.ConnectivityMonitor
@@ -84,6 +85,36 @@ internal data class DownloadedOnlyFilterState(
     val showDownloadedOnly: Boolean,
     val autoDownloadedOnly: Boolean,
 )
+
+/**
+ * A new sync outcome that brought data back (not a plain failure) should
+ * re-query the shelf. The first record seen is skipped because the initial
+ * load already queried it.
+ */
+internal fun shouldRequeryShelfAfterSync(
+    previousSequence: Long?,
+    record: LastSyncRecord?,
+): Boolean = previousSequence != null &&
+    record != null &&
+    record.outcomeSequence != previousSequence &&
+    record.result != SyncResult.FAILED
+
+/**
+ * Whether a sync that brought data back needs the library list and selection
+ * reloaded, not just the shelf re-filtered. Re-filtering with nothing selected
+ * is a no-op, so an offline cold start with no saved libraries stayed empty
+ * after the server returned. An empty cache with nothing shown stays put, or a
+ * server with no libraries would reload on every sync record it writes.
+ * Membership is compared as a set: the shown list puts retained libraries
+ * after fetched ones while the cache sorts by display order, and treating
+ * that order difference as a change reloaded on every sync, forever.
+ */
+internal fun shouldReloadLibrariesAfterSync(
+    selectedLibrary: Library?,
+    shownLibraryIds: List<String>,
+    cachedLibraryIds: List<String>,
+): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
+    cachedLibraryIds.toSet() != shownLibraryIds.toSet()
 
 internal fun decideDownloadedOnlyFilter(
     previousStatus: ConnectionStatus,
@@ -247,12 +278,35 @@ class LibraryViewModel @Inject constructor(
                 }
                 .distinctUntilChanged()
                 .collect { record ->
+                    val previousSequence = _uiState.value.lastSyncSequence
                     _uiState.update {
                         it.copy(
                             lastSyncResult = record?.result,
                             lastSyncSequence = record?.outcomeSequence,
                             lastSyncFailedLibraryIds = record?.failedLibraryIds,
                         )
+                    }
+                    // A background sync (reconnect or periodic) wrote new rows.
+                    // Re-query so the shelf shows them, not just a cleared banner.
+                    if (shouldRequeryShelfAfterSync(previousSequence, record)) {
+                        val state = _uiState.value
+                        val cached = visibleCachedLibraries(
+                            settings = settingsManager.currentSettings,
+                            cached = libraryRepository.getAudiobookshelf(),
+                        )
+                        if (shouldReloadLibrariesAfterSync(
+                                selectedLibrary = state.selectedLibrary,
+                                shownLibraryIds = state.libraries.map { it.id },
+                                cachedLibraryIds = cached.map { it.id },
+                            )
+                        ) {
+                            // This can replace a manual refresh in the lane, and the
+                            // cancelled refresh never clears its spinner, so this
+                            // load owns that cleanup.
+                            libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
+                        } else {
+                            applyFilter()
+                        }
                     }
                 }
         }
@@ -273,13 +327,16 @@ class LibraryViewModel @Inject constructor(
             val serverUrlAtStart = settings.serverUrl
             val isLocalMode = settings.appMode == AppMode.LOCAL
             var libraryResult: RemoteResult<List<Library>>? = null
+            // The item load below reuses this probe so a dead server costs one
+            // 5s wait on a cold start, not two back to back.
+            var serverReachable: Boolean? = null
             val libs = if (isLocalMode) {
                 libraryRepository.getLocalLibraries()
             } else {
                 if (shouldSyncOnLibraryLoad(
                         isLocalLibrary = false,
                         isOnline = connectivityMonitor.isOnline.value,
-                    )
+                    ) && connectivityMonitor.checkServerReachable().also { serverReachable = it }
                 ) {
                     refreshRemoteLibraryList(
                         readCached = {
@@ -315,7 +372,7 @@ class LibraryViewModel @Inject constructor(
             filterPublication.invalidate()
 
             val itemResult = selected?.let {
-                loadAudioBooks(it.id, persistResult = false)
+                loadAudioBooks(it.id, persistResult = false, serverReachable = serverReachable)
             }
             if (!isLocalMode) {
                 buildShelfSyncReport(libraryResult, selected, itemResult)?.let { report ->
@@ -344,6 +401,7 @@ class LibraryViewModel @Inject constructor(
     private suspend fun loadAudioBooks(
         libraryId: String,
         persistResult: Boolean = true,
+        serverReachable: Boolean? = null,
     ): RemoteResult<List<AudioBook>>? {
         var itemResult: RemoteResult<List<AudioBook>>? = null
         try {
@@ -353,10 +411,12 @@ class LibraryViewModel @Inject constructor(
             // connectivity. In airplane mode the old code attempted syncLibraryItems
             // regardless, leaving the switch spinning on a doomed request until the
             // OkHttp timeout. Skipping the sync lets cached data load instantly.
+            // A live VPN (Tailscale) keeps isOnline true with the server gone,
+            // so the short /ping probe decides before the 30s request does.
             if (shouldSyncOnLibraryLoad(
                     isLocalLibrary = selected?.isLocal == true,
                     isOnline = connectivityMonitor.isOnline.value,
-                )
+                ) && (serverReachable ?: connectivityMonitor.checkServerReachable())
             ) {
                 itemResult = refreshSelectedLibraryItems(
                     libraryId = libraryId,
@@ -530,12 +590,17 @@ class LibraryViewModel @Inject constructor(
     fun refresh() {
         libraryLoadLaunch.launch(viewModelScope) {
             _uiState.update { it.copy(isRefreshing = true) }
-            try {
-                loadLibraries()
-            } finally {
-                updateLibraryLoadStateIfActive {
-                    _uiState.update { it.copy(isRefreshing = false) }
-                }
+            loadLibrariesOwningRefresh()
+        }
+    }
+
+    /** Load, then clear the refresh spinner unless a newer load took over the lane. */
+    private suspend fun loadLibrariesOwningRefresh() {
+        try {
+            loadLibraries()
+        } finally {
+            updateLibraryLoadStateIfActive {
+                _uiState.update { it.copy(isRefreshing = false) }
             }
         }
     }

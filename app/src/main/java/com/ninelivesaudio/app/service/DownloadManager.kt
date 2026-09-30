@@ -18,10 +18,15 @@ import com.ninelivesaudio.app.service.download.DownloadEngine
 import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
+import com.ninelivesaudio.app.service.download.finishInOwnerScope
+import com.ninelivesaudio.app.service.download.pauseKeepsCompletedRow
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.selectNextDownload
+import com.ninelivesaudio.app.service.download.writeAfterEngineStops
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -69,6 +74,13 @@ class DownloadManager @Inject constructor(
      */
     private val slotMutex = Mutex()
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
+
+    /**
+     * Where user pause, cancel and delete actually run. Their callers are screen
+     * coroutines, and leaving the screen between the worker stop and the row
+     * write used to leave the book Downloading with the queue stopped.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private companion object {
         const val WORKER_STOP_TIMEOUT_MS = 10_000L
@@ -386,8 +398,7 @@ class DownloadManager @Inject constructor(
         }
         if (!hasLosingDownload) return
 
-        workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
-        awaitDrainStopped()
+        stopDrainAndAwait()
 
         slotMutex.withLock {
             downloadItemDao.getAll()
@@ -412,6 +423,11 @@ class DownloadManager @Inject constructor(
      * gives up and proceeds, which is the same risk profile as before this
      * function existed.
      */
+    private suspend fun stopDrainAndAwait() {
+        workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
+        awaitDrainStopped()
+    }
+
     private suspend fun awaitDrainStopped() {
         val deadline = System.currentTimeMillis() + WORKER_STOP_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
@@ -450,12 +466,23 @@ class DownloadManager @Inject constructor(
     }
 
     /** Pause a download: mark it Paused; restart the drain if it was the active one. */
-    suspend fun pauseDownload(downloadId: String) {
-        val entity = downloadItemDao.getById(downloadId) ?: return
+    suspend fun pauseDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
+        val entity = downloadItemDao.getById(downloadId) ?: return@finishInOwnerScope
         val wasDownloading = entity.status == DownloadStatus.Downloading.ordinal
-        downloadItemDao.upsert(entity.copy(status = DownloadStatus.Paused.ordinal))
+        writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
+            // Re-read after the stop: the engine's last tick moved the bytes on,
+            // and it may have finished the book in the meantime. A Completed row
+            // only counts once the book itself is marked downloaded, since the
+            // stop can land between those two writes.
+            val latest = downloadItemDao.getById(downloadId) ?: return@writeAfterEngineStops
+            val book = audioBookDao.getById(latest.audioBookId)
+            if (pauseKeepsCompletedRow(latest.status, book?.isDownloaded, book?.localPath)) {
+                return@writeAfterEngineStops
+            }
+            downloadItemDao.upsert(latest.copy(status = DownloadStatus.Paused.ordinal))
+        }
         if (wasDownloading) {
-            // Stop the engine on this book and let the drain continue with the rest.
+            // The engine was stopped above; let the drain continue with the rest.
             enqueueDrain(replace = true)
         }
     }
@@ -489,10 +516,12 @@ class DownloadManager @Inject constructor(
     }
 
     /** Cancel a download and clean up; restart the drain if it was the active one. */
-    suspend fun cancelDownload(downloadId: String) {
+    suspend fun cancelDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
         val entity = downloadItemDao.getById(downloadId)
         val wasDownloading = entity?.status == DownloadStatus.Downloading.ordinal
-        downloadItemDao.deleteById(downloadId)
+        writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
+            downloadItemDao.deleteById(downloadId)
+        }
 
         if (downloadItemDao.getDownloadable().isEmpty()) {
             // Nothing left to download: stop the drain and clear the notification
@@ -500,18 +529,30 @@ class DownloadManager @Inject constructor(
             workManager.cancelUniqueWork(DOWNLOAD_WORK_NAME)
             DownloadNotifications.clearAll(context)
         } else if (wasDownloading) {
-            // More queued: stop the engine on the cancelled book and continue.
+            // More queued: the engine was stopped above, so continue with the rest.
             enqueueDrain(replace = true)
         }
     }
 
     /** Delete a download's files and DB record. */
-    suspend fun deleteDownload(audioBookId: String) {
+    suspend fun deleteDownload(audioBookId: String): Unit = finishInOwnerScope(scope) {
+        val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
+        val wasDownloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal
+        writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
+            deleteDownloadedFilesAndRows(audioBookId, downloadEntity?.id)
+        }
+        if (wasDownloading) {
+            // Restart the drain for whatever else is queued.
+            enqueueDrain(replace = true)
+        }
+    }
+
+    private suspend fun deleteDownloadedFilesAndRows(audioBookId: String, downloadId: String?) {
+        // Read the book only now, after any engine on it has stopped, so a
+        // completion that landed during the stop is the state being undone.
         // Use the actual localPath stored on the audiobook — this matches the path
         // set by the engine (basePath/Author - Title), not basePath/audioBookId.
         val bookEntity = audioBookDao.getById(audioBookId)
-        val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
-        val wasDownloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal
 
         withContext(Dispatchers.IO) {
             val localPath = bookEntity?.localPath
@@ -525,12 +566,8 @@ class DownloadManager @Inject constructor(
             // above, so drop its reference too.
             audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
         }
-        if (downloadEntity != null) {
-            downloadItemDao.deleteById(downloadEntity.id)
-        }
-        if (wasDownloading) {
-            // Stop the engine if it was mid-download on this book.
-            enqueueDrain(replace = true)
+        if (downloadId != null) {
+            downloadItemDao.deleteById(downloadId)
         }
     }
 

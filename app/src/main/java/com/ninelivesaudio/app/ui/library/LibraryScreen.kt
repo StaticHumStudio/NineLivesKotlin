@@ -1155,10 +1155,17 @@ internal fun syncWarningMessage(result: SyncResult, showingSavedBooks: Boolean):
 /**
  * The server dropped, the shelf auto-switched to downloaded books, and there
  * are none. Saved streamed books exist but cannot play, so say that instead
- * of blaming a filter the user never touched.
+ * of blaming a filter the user never touched. Only when no other filter is
+ * narrowing the shelf, or downloads hidden by Hide Finished, a tab, a group
+ * or a search would be reported as missing. The Downloaded tab is the same
+ * filter, so it counts as unfiltered here.
  */
 internal fun isOfflineDownloadedOnlyEmpty(uiState: LibraryViewModel.UiState): Boolean =
     uiState.showDownloadedOnly &&
         uiState.totalBookCount > 0 &&
+        !uiState.hideFinished &&
+        (uiState.selectedTab == LibraryTab.All || uiState.selectedTab == LibraryTab.Downloaded) &&
+        uiState.selectedGroupFilter == null &&
+        uiState.searchQuery.isBlank() &&
         uiState.connectionStatus != com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus.CONNECTED &&
         uiState.connectionStatus != com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus.SYNCING

@@ -36,6 +36,22 @@ class LibraryOfflineEmptyCopyTest {
     }
 
     @Test
+    fun `another filter hiding the downloads keeps the filter copy`() {
+        assertFalse(isOfflineDownloadedOnlyEmpty(state().copy(hideFinished = true)))
+        assertFalse(isOfflineDownloadedOnlyEmpty(state().copy(selectedTab = LibraryTab.InProgress)))
+        assertFalse(isOfflineDownloadedOnlyEmpty(state().copy(selectedTab = LibraryTab.Completed)))
+        assertFalse(isOfflineDownloadedOnlyEmpty(state().copy(selectedGroupFilter = "Dune")))
+        assertFalse(isOfflineDownloadedOnlyEmpty(state().copy(searchQuery = "dune")))
+    }
+
+    @Test
+    fun `the Downloaded tab and plain grouping still say nothing is downloaded`() {
+        assertTrue(isOfflineDownloadedOnlyEmpty(state().copy(selectedTab = LibraryTab.Downloaded)))
+        assertTrue(isOfflineDownloadedOnlyEmpty(state().copy(viewMode = ViewMode.SERIES)))
+        assertTrue(isOfflineDownloadedOnlyEmpty(state().copy(searchQuery = "  ")))
+    }
+
+    @Test
     fun `banner only claims saved books when the shelf shows some`() {
         assertEquals("Last sync failed. Showing saved books.", syncWarningMessage(SyncResult.FAILED, true))
         assertEquals("Last sync failed.", syncWarningMessage(SyncResult.FAILED, false))

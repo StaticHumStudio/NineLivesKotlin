@@ -59,3 +59,15 @@ internal suspend fun <T> finishInOwnerScope(
     owner: CoroutineScope,
     operation: suspend () -> T,
 ): T = owner.async { operation() }.await()
+
+/**
+ * Whether a pause should leave the row alone because the book really finished.
+ *
+ * The engine writes Completed before it marks the book downloaded, so a pause
+ * that cancels it in between leaves a Completed row with no local copy. Only a
+ * book row with [isDownloaded] set and a [localPath] proves the finish. Anything
+ * short of that gets Paused, and resume re-runs the engine (it skips files it
+ * already has) to finish the job.
+ */
+internal fun pauseKeepsCompletedRow(rowStatus: Int, isDownloaded: Int?, localPath: String?): Boolean =
+    rowStatus == DownloadStatus.Completed.ordinal && isDownloaded == 1 && !localPath.isNullOrEmpty()

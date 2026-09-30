@@ -19,6 +19,7 @@ import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import com.ninelivesaudio.app.service.download.finishInOwnerScope
+import com.ninelivesaudio.app.service.download.pauseKeepsCompletedRow
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.selectNextDownload
 import com.ninelivesaudio.app.service.download.writeAfterEngineStops
@@ -470,9 +471,14 @@ class DownloadManager @Inject constructor(
         val wasDownloading = entity.status == DownloadStatus.Downloading.ordinal
         writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
             // Re-read after the stop: the engine's last tick moved the bytes on,
-            // and it may have finished the book in the meantime.
+            // and it may have finished the book in the meantime. A Completed row
+            // only counts once the book itself is marked downloaded, since the
+            // stop can land between those two writes.
             val latest = downloadItemDao.getById(downloadId) ?: return@writeAfterEngineStops
-            if (latest.status == DownloadStatus.Completed.ordinal) return@writeAfterEngineStops
+            val book = audioBookDao.getById(latest.audioBookId)
+            if (pauseKeepsCompletedRow(latest.status, book?.isDownloaded, book?.localPath)) {
+                return@writeAfterEngineStops
+            }
             downloadItemDao.upsert(latest.copy(status = DownloadStatus.Paused.ordinal))
         }
         if (wasDownloading) {

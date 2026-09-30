@@ -105,13 +105,16 @@ internal fun shouldRequeryShelfAfterSync(
  * is a no-op, so an offline cold start with no saved libraries stayed empty
  * after the server returned. An empty cache with nothing shown stays put, or a
  * server with no libraries would reload on every sync record it writes.
+ * Membership is compared as a set: the shown list puts retained libraries
+ * after fetched ones while the cache sorts by display order, and treating
+ * that order difference as a change reloaded on every sync, forever.
  */
 internal fun shouldReloadLibrariesAfterSync(
     selectedLibrary: Library?,
     shownLibraryIds: List<String>,
     cachedLibraryIds: List<String>,
 ): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
-    cachedLibraryIds != shownLibraryIds
+    cachedLibraryIds.toSet() != shownLibraryIds.toSet()
 
 internal fun decideDownloadedOnlyFilter(
     previousStatus: ConnectionStatus,

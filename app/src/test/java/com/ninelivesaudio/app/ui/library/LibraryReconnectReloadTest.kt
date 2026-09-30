@@ -37,4 +37,12 @@ class LibraryReconnectReloadTest {
     fun `a server with no libraries does not reload forever`() {
         assertFalse(shouldReloadLibrariesAfterSync(null, emptyList(), emptyList()))
     }
+
+    @Test
+    fun `the same libraries in a different order only refilters`() {
+        // Retained libraries are shown after fetched ones while the cache sorts
+        // by display order. An order-only difference must not reload, or every
+        // reload's own sync record triggers the next one.
+        assertFalse(shouldReloadLibrariesAfterSync(books, listOf("books", "podcasts"), listOf("podcasts", "books")))
+    }
 }

@@ -26,3 +26,21 @@ fun selectNextDownload(items: List<DownloadItem>): DownloadItem? =
             compareByDescending<DownloadItem> { it.status == DownloadStatus.Downloading }
                 .thenBy { it.startedAt ?: Long.MAX_VALUE }
         )
+
+/**
+ * Run a user's pause, cancel or delete write so the engine cannot undo it.
+ *
+ * DownloadEngine upserts a stale Downloading snapshot on every progress tick
+ * and marks the book downloaded when it finishes. A write that lands while it
+ * is still streaming this book gets clobbered straight back. So when the
+ * engine is on this book, [stopEngine] (cancel plus confirmed termination)
+ * runs first, and only then [write].
+ */
+internal suspend fun <T> writeAfterEngineStops(
+    engineActive: Boolean,
+    stopEngine: suspend () -> Unit,
+    write: suspend () -> T,
+): T {
+    if (engineActive) stopEngine()
+    return write()
+}

@@ -16,8 +16,27 @@ object ChangelogData {
 
     val releases = listOf(
         ChangelogRelease(
-            version = "2.1.4",
+            version = "2.1.5",
             dateLabel = "Current",
+            sections = listOf(
+                ChangelogSection(
+                    header = "Fixed",
+                    entries = listOf(
+                        "Your library catches up by itself when your server comes back.",
+                        "Starting offline shows your saved books instead of a long spinner.",
+                        "Downloaded books start right away when your server is unreachable.",
+                        "Switching books no longer hangs while your server is down.",
+                        "Play right after a download uses the downloaded copy.",
+                        "A deleted download can be downloaded again.",
+                        "Pause, cancel, and delete stick while a book is downloading.",
+                        "The self-signed certificate setting works without a restart.",
+                    ),
+                ),
+            ),
+        ),
+        ChangelogRelease(
+            version = "2.1.4",
+            dateLabel = "September 29, 2026",
             sections = listOf(
                 ChangelogSection(
                     header = "New",

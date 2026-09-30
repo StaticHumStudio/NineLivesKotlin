@@ -78,6 +78,10 @@ Android 11+ (API 30).
 
 ## What's New (Release Notes)
 
+v2.1.5
+
+Bug fixes for spotty servers. When your Audiobookshelf server drops and comes back, your library now catches up on its own. Starting offline shows your saved books fast, and downloaded books play right away even when the server is unreachable. Switching books no longer hangs on a dead server. Download pause, cancel, and delete now stick, a deleted download can be downloaded again, and the self-signed certificate setting works.
+
 v2.1.4
 
 Nine Lives is now free. Point it at a folder of audiobooks or your Audiobookshelf server and start listening. One optional unlock opens every speed, unlimited offline books, and the full sleep timer. Paid-app owners are grandfathered. New: silence skipping.

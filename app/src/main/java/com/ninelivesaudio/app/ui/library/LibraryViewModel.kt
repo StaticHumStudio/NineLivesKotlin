@@ -297,7 +297,10 @@ class LibraryViewModel @Inject constructor(
                                 cachedLibraryIds = cached.map { it.id },
                             )
                         ) {
-                            libraryLoadLaunch.launch(viewModelScope) { loadLibraries() }
+                            // This can replace a manual refresh in the lane, and the
+                            // cancelled refresh never clears its spinner, so this
+                            // load owns that cleanup.
+                            libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
                         } else {
                             applyFilter()
                         }
@@ -580,12 +583,17 @@ class LibraryViewModel @Inject constructor(
     fun refresh() {
         libraryLoadLaunch.launch(viewModelScope) {
             _uiState.update { it.copy(isRefreshing = true) }
-            try {
-                loadLibraries()
-            } finally {
-                updateLibraryLoadStateIfActive {
-                    _uiState.update { it.copy(isRefreshing = false) }
-                }
+            loadLibrariesOwningRefresh()
+        }
+    }
+
+    /** Load, then clear the refresh spinner unless a newer load took over the lane. */
+    private suspend fun loadLibrariesOwningRefresh() {
+        try {
+            loadLibraries()
+        } finally {
+            updateLibraryLoadStateIfActive {
+                _uiState.update { it.copy(isRefreshing = false) }
             }
         }
     }

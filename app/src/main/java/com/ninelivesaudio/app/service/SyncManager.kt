@@ -592,6 +592,19 @@ internal fun terminalProgressPushAllowed(
         connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING)
 
 /**
+ * Run one of a stopped book's final server calls (session sync, session
+ * close) the way its progress push runs: not at all unless [serverLive], and
+ * given up after [timeout]. The next book's load waits on these. Returns null
+ * when skipped or timed out. The call must be cancellable, so bound it inside
+ * any NonCancellable wrapper, not outside.
+ */
+internal suspend fun <T> terminalServerCall(
+    serverLive: Boolean,
+    timeout: kotlin.time.Duration = TERMINAL_PROGRESS_PUSH_TIMEOUT,
+    call: suspend () -> T,
+): T? = if (serverLive) withTimeoutOrNull(timeout) { call() } else null
+
+/**
  * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an
  * active network. The online check is the "internet connection check" that
  * keeps airplane mode from triggering doomed sync attempts.

@@ -2055,7 +2055,7 @@ class PlaybackManager @Inject constructor(
                         try {
                             syncTerminalSession(terminal)
                         } finally {
-                            closeSession(terminal.serverSessionId, terminal.serverListening)
+                            closeSession(terminal.serverSessionId, terminal.serverListening, terminal = true)
                             if (localSession.sessionId != null) {
                                 try {
                                     sessionRepository.updateLocalSession(
@@ -2829,16 +2829,20 @@ class PlaybackManager @Inject constructor(
     private suspend fun syncTerminalSession(snapshot: TerminalPlaybackSnapshot) {
         val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
         val durSec = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
-        if (snapshot.serverSessionId != null) {
+        if (snapshot.serverSessionId != null && terminalServerLive()) {
             try {
                 snapshot.serverListening?.deliver(snapshot.timeListened) { delta ->
-                    progressRepository.syncSessionProgress(
-                        itemId = snapshot.bookId,
-                        sessionId = snapshot.serverSessionId,
-                        currentTime = posSec,
-                        duration = durSec,
-                        timeListened = delta,
-                    )
+                    // Bounded inside deliver, whose own NonCancellable would
+                    // otherwise outlast any timeout placed around it.
+                    terminalServerCall(serverLive = true) {
+                        progressRepository.syncSessionProgress(
+                            itemId = snapshot.bookId,
+                            sessionId = snapshot.serverSessionId,
+                            currentTime = posSec,
+                            duration = durSec,
+                            timeListened = delta,
+                        )
+                    } ?: false
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
@@ -2928,11 +2932,27 @@ class PlaybackManager @Inject constructor(
         }
     }
 
-    private suspend fun closeSession(sessionId: String?, listening: ServerSessionListening? = null) {
+    private fun terminalServerLive(): Boolean = terminalProgressPushAllowed(
+        isOnline = connectivityMonitor.isOnline.value,
+        connectionStatus = connectivityMonitor.connectionStatus.value,
+    )
+
+    private suspend fun closeSession(
+        sessionId: String?,
+        listening: ServerSessionListening? = null,
+        terminal: Boolean = false,
+    ) {
         if (sessionId == null) return
-        try {
-            if (listening != null) listening.close { apiService.closeSession(sessionId) }
+        // A stopped book's close holds up the next load, so it gets the terminal
+        // policy. A skipped or timed out close leaves the server session open
+        // until the server expires it; local state is cleared below either way.
+        val closeRemote: suspend () -> Unit = {
+            if (terminal) terminalServerCall(terminalServerLive()) { apiService.closeSession(sessionId) }
             else apiService.closeSession(sessionId)
+        }
+        try {
+            if (listening != null) listening.close(closeRemote)
+            else closeRemote()
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}

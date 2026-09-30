@@ -559,6 +559,31 @@ internal fun listeningSessionToOpen(
     else -> ListeningSessionKind.NONE
 }
 
+internal enum class LoadSessionOpen { AWAIT, BOUNDED, DEFER }
+
+/** How long a downloaded book's load waits on its server listening session. */
+internal val DOWNLOADED_SESSION_OPEN_TIMEOUT = 5.seconds
+
+/**
+ * How a load opens its server listening session.
+ *
+ * A streaming book waits for it, because its tracks and position feed the
+ * load. A downloaded book plays from disk, so it skips the open while the
+ * server is not reachable and waits at most [DOWNLOADED_SESSION_OPEN_TIMEOUT]
+ * while it is. Either way ensureListeningSessionStarted opens the session in
+ * the background once playback starts. SYNCING counts as reachable, as it
+ * does everywhere else.
+ */
+internal fun loadSessionOpen(
+    usesLocalTracks: Boolean,
+    connectionStatus: ConnectivityMonitor.ConnectionStatus,
+): LoadSessionOpen = when {
+    !usesLocalTracks -> LoadSessionOpen.AWAIT
+    connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING -> LoadSessionOpen.BOUNDED
+    else -> LoadSessionOpen.DEFER
+}
+
 internal enum class PlaybackItemPersistence { KEEP, SAVE, CLEAR }
 
 internal fun playbackItemPersistenceAction(
@@ -1273,7 +1298,13 @@ class PlaybackManager @Inject constructor(
                     hasLocalSession = synchronized(sessionLock) { currentLocalSessionId != null },
                 ) == ListeningSessionKind.SERVER
             ) {
-                openServerListeningSession(book, requestedGeneration, loadRequest)
+                when (loadSessionOpen(remoteAccess.usesLocalTracks(), connectivityMonitor.connectionStatus.value)) {
+                    LoadSessionOpen.AWAIT -> openServerListeningSession(book, requestedGeneration, loadRequest)
+                    LoadSessionOpen.BOUNDED -> withTimeoutOrNull(DOWNLOADED_SESSION_OPEN_TIMEOUT) {
+                        openServerListeningSession(book, requestedGeneration, loadRequest)
+                    }
+                    LoadSessionOpen.DEFER -> Unit
+                }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             }
 

@@ -2,6 +2,8 @@ package com.ninelivesaudio.app.service.download
 
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 
 // ─── WorkManager identifier + queue selection ─────────────────────────────
 //
@@ -44,3 +46,16 @@ internal suspend fun <T> writeAfterEngineStops(
     if (engineActive) stopEngine()
     return write()
 }
+
+/**
+ * Run a user's pause, cancel or delete in [owner] and await it.
+ *
+ * Callers are screen coroutines that die when the user navigates away. Once
+ * the engine has been stopped, the row write and the queue restart must still
+ * happen, or the book sits Downloading with the queue stopped. The caller can
+ * be cancelled and stop waiting, the operation itself carries on.
+ */
+internal suspend fun <T> finishInOwnerScope(
+    owner: CoroutineScope,
+    operation: suspend () -> T,
+): T = owner.async { operation() }.await()

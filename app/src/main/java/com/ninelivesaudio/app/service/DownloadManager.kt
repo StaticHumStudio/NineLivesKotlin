@@ -18,11 +18,14 @@ import com.ninelivesaudio.app.service.download.DownloadEngine
 import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
+import com.ninelivesaudio.app.service.download.finishInOwnerScope
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.selectNextDownload
 import com.ninelivesaudio.app.service.download.writeAfterEngineStops
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -70,6 +73,13 @@ class DownloadManager @Inject constructor(
      */
     private val slotMutex = Mutex()
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
+
+    /**
+     * Where user pause, cancel and delete actually run. Their callers are screen
+     * coroutines, and leaving the screen between the worker stop and the row
+     * write used to leave the book Downloading with the queue stopped.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private companion object {
         const val WORKER_STOP_TIMEOUT_MS = 10_000L
@@ -455,8 +465,8 @@ class DownloadManager @Inject constructor(
     }
 
     /** Pause a download: mark it Paused; restart the drain if it was the active one. */
-    suspend fun pauseDownload(downloadId: String) {
-        val entity = downloadItemDao.getById(downloadId) ?: return
+    suspend fun pauseDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
+        val entity = downloadItemDao.getById(downloadId) ?: return@finishInOwnerScope
         val wasDownloading = entity.status == DownloadStatus.Downloading.ordinal
         writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
             // Re-read after the stop: the engine's last tick moved the bytes on,
@@ -500,7 +510,7 @@ class DownloadManager @Inject constructor(
     }
 
     /** Cancel a download and clean up; restart the drain if it was the active one. */
-    suspend fun cancelDownload(downloadId: String) {
+    suspend fun cancelDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
         val entity = downloadItemDao.getById(downloadId)
         val wasDownloading = entity?.status == DownloadStatus.Downloading.ordinal
         writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
@@ -519,7 +529,7 @@ class DownloadManager @Inject constructor(
     }
 
     /** Delete a download's files and DB record. */
-    suspend fun deleteDownload(audioBookId: String) {
+    suspend fun deleteDownload(audioBookId: String): Unit = finishInOwnerScope(scope) {
         val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
         val wasDownloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal
         writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {

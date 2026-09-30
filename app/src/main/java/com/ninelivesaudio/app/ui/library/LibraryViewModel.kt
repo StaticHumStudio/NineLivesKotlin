@@ -324,13 +324,16 @@ class LibraryViewModel @Inject constructor(
             val serverUrlAtStart = settings.serverUrl
             val isLocalMode = settings.appMode == AppMode.LOCAL
             var libraryResult: RemoteResult<List<Library>>? = null
+            // The item load below reuses this probe so a dead server costs one
+            // 5s wait on a cold start, not two back to back.
+            var serverReachable: Boolean? = null
             val libs = if (isLocalMode) {
                 libraryRepository.getLocalLibraries()
             } else {
                 if (shouldSyncOnLibraryLoad(
                         isLocalLibrary = false,
                         isOnline = connectivityMonitor.isOnline.value,
-                    ) && connectivityMonitor.checkServerReachable()
+                    ) && connectivityMonitor.checkServerReachable().also { serverReachable = it }
                 ) {
                     refreshRemoteLibraryList(
                         readCached = {
@@ -366,7 +369,7 @@ class LibraryViewModel @Inject constructor(
             filterPublication.invalidate()
 
             val itemResult = selected?.let {
-                loadAudioBooks(it.id, persistResult = false)
+                loadAudioBooks(it.id, persistResult = false, serverReachable = serverReachable)
             }
             if (!isLocalMode) {
                 buildShelfSyncReport(libraryResult, selected, itemResult)?.let { report ->
@@ -395,6 +398,7 @@ class LibraryViewModel @Inject constructor(
     private suspend fun loadAudioBooks(
         libraryId: String,
         persistResult: Boolean = true,
+        serverReachable: Boolean? = null,
     ): RemoteResult<List<AudioBook>>? {
         var itemResult: RemoteResult<List<AudioBook>>? = null
         try {
@@ -409,7 +413,7 @@ class LibraryViewModel @Inject constructor(
             if (shouldSyncOnLibraryLoad(
                     isLocalLibrary = selected?.isLocal == true,
                     isOnline = connectivityMonitor.isOnline.value,
-                ) && connectivityMonitor.checkServerReachable()
+                ) && (serverReachable ?: connectivityMonitor.checkServerReachable())
             ) {
                 itemResult = refreshSelectedLibraryItems(
                     libraryId = libraryId,

@@ -80,7 +80,7 @@ Android 11+ (API 30).
 
 v2.1.5
 
-Bug fixes for spotty servers. When your Audiobookshelf server drops and comes back, your library now catches up on its own. Starting offline shows your saved books fast, and downloaded books play right away even when the server is unreachable. Switching books no longer hangs on a dead server. Download pause, cancel, and delete now stick, a deleted download can be downloaded again, and the self-signed certificate setting works.
+Bug fixes for spotty servers. Your library now catches up on its own when your Audiobookshelf server comes back, offline starts show your saved books fast, and downloaded books play right away. Plus fixes for download pause and cancel, re-downloading, and self-signed certificates.
 
 v2.1.4
 

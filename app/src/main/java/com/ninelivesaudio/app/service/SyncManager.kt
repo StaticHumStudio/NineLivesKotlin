@@ -472,7 +472,11 @@ class SyncManager @Inject constructor(
             currentTime = safeCurrentTime,
             isFinished = computedFinished,
             duration = safeDuration,
-            pushToServer = connectivityMonitor.isOnline.value,
+            pushToServer = terminalProgressPushAllowed(
+                isOnline = connectivityMonitor.isOnline.value,
+                connectionStatus = connectivityMonitor.connectionStatus.value,
+            ),
+            pushTimeout = TERMINAL_PROGRESS_PUSH_TIMEOUT,
             onPersisted = onPersisted,
         )
 
@@ -569,6 +573,23 @@ internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,
     newMode: AppMode,
 ): Boolean = previousMode != AppMode.AUDIOBOOKSHELF && newMode == AppMode.AUDIOBOOKSHELF
+
+/** How long a stopped book's final progress push waits on the server. */
+internal val TERMINAL_PROGRESS_PUSH_TIMEOUT = 5.seconds
+
+/**
+ * Whether a stopped book's final progress tries the server now. The next
+ * book's load waits on this push, and a VPN can keep the OS online while the
+ * server is gone, so only a live server gets the attempt. The local write and
+ * its offline queue row land first either way, and the reconnect flush
+ * delivers the row.
+ */
+internal fun terminalProgressPushAllowed(
+    isOnline: Boolean,
+    connectionStatus: ConnectivityMonitor.ConnectionStatus,
+): Boolean = isOnline &&
+    (connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING)
 
 /**
  * Gate for a server sync. Requires an authenticated, non-LOCAL session AND an

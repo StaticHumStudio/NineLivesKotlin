@@ -14,6 +14,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -320,6 +321,7 @@ class ProgressRepository @Inject constructor(
         isFinished: Boolean,
         duration: Double,
         pushToServer: Boolean,
+        pushTimeout: Duration = Duration.INFINITE,
         onPersisted: suspend () -> Unit = {},
     ): Boolean = pendingProgressQueueOwner.withItemLock(itemId) {
         persistProgressAndEnqueueLocked(
@@ -330,12 +332,15 @@ class ProgressRepository @Inject constructor(
             onPersisted = onPersisted,
         )
         val pushed = if (pushToServer && progressCanBeDelivered(isFinished, duration)) {
-            try {
-                apiService.updateProgress(itemId, currentTime, isFinished, duration)
-            } catch (cancellation: kotlinx.coroutines.CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {
-                false
+            // The row queued above delivers it later if this gives up.
+            pushWithin(pushTimeout) {
+                try {
+                    apiService.updateProgress(itemId, currentTime, isFinished, duration)
+                } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    false
+                }
             }
         } else {
             false
@@ -619,6 +624,10 @@ internal fun serverProgressMayReplaceLocal(hasPendingProgress: Boolean): Boolean
  * from their durable source of truth by [legacyProgressSnapshot], so this check
  * only decides the fate of rows with proven atomic provenance.
  */
+/** A push that has not answered within [timeout] counts as not delivered. */
+internal suspend fun pushWithin(timeout: Duration, push: suspend () -> Boolean): Boolean =
+    withTimeoutOrNull(timeout) { push() } ?: false
+
 internal fun queuedRowsAreSuperseded(
     rows: List<PendingProgressEntity>,
     durableProgress: PlaybackProgressEntity?,

@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.entitlement.FreeTier
-import com.ninelivesaudio.app.data.local.entity.LocalBookMembership
+import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.remote.describeFailure
@@ -118,13 +118,13 @@ internal fun shouldReloadLibrariesAfterSync(
     cachedLibraryIds.toSet() != shownLibraryIds.toSet()
 
 /**
- * Which local folders exist and which books each holds, live or archived.
- * Progress stays out, or every position save during playback would
- * re-query the shelf.
+ * Which local folders exist, which books each holds (live or archived), and
+ * what the shelf shows for each. Progress stays out, or every position save
+ * during playback would re-query the shelf.
  */
 internal data class LocalCatalogSnapshot(
     val libraryIds: Set<String>,
-    val books: Set<LocalBookMembership>,
+    val books: Set<LocalCatalogEntry>,
 )
 
 internal enum class LocalCatalogChange { NONE, REFILTER, RELOAD }

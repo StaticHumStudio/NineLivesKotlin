@@ -105,6 +105,26 @@ class LibraryLocalCatalogLiveUpdateTest {
         }
     }
 
+    @Test
+    fun aRescanThatRetitlesABookUpdatesTheOpenShelf() = runBlocking {
+        database.libraryDao().upsert(folder)
+        database.audioBookDao().upsertAll(listOf(book("book-1"), book("book-2")))
+        withLocalMode {
+            val viewModel = openLibrary()
+            awaitState(viewModel, "the two books already on the shelf") {
+                it.selectedLibrary?.id == folder.id && it.filteredBooks.size == 2
+            }
+
+            // Same file, same folder, new tags: only what the shelf shows changes.
+            database.audioBookDao().upsert(book("book-2").copy(title = "Retagged Title"))
+
+            val shown = awaitState(viewModel, "the rescanned title") { state ->
+                state.filteredBooks.any { it.title == "Retagged Title" }
+            }
+            assertEquals(2, shown.filteredBooks.size)
+        }
+    }
+
     private fun openLibrary(): LibraryViewModel {
         val audioBookRepository = AudioBookRepository(
             context = app,

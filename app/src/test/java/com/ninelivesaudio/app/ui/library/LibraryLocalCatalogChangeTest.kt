@@ -1,6 +1,6 @@
 package com.ninelivesaudio.app.ui.library
 
-import com.ninelivesaudio.app.data.local.entity.LocalBookMembership
+import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.Library
@@ -88,6 +88,15 @@ class LibraryLocalCatalogChangeTest {
     }
 
     @Test
+    fun `a rescan that retags a book refilters the shelf`() {
+        val retagged = folderOnly.copy(books = setOf(live("book-1"), live("book-2").copy(title = "Retagged")))
+        assertEquals(
+            LocalCatalogChange.REFILTER,
+            decideLocalCatalogChange(folderWithBooks, retagged, audiobooks, listOf("audiobooks"), isLoadBaseline = false),
+        )
+    }
+
+    @Test
     fun `a second folder being added reloads the library list`() {
         val twoFolders = folderWithBooks.copy(libraryIds = setOf("audiobooks", "podcasts"))
         assertEquals(
@@ -138,7 +147,7 @@ class LibraryLocalCatalogChangeTest {
         assertNull(settingsKeepingPendingPick("server", listOf(audiobooks, server), saved))
     }
 
-    private fun live(id: String) = LocalBookMembership(id = id, libraryId = "audiobooks", isArchived = false)
+    private fun live(id: String) = LocalCatalogEntry(id = id, libraryId = "audiobooks", isArchived = false)
 
-    private fun archived(id: String) = LocalBookMembership(id = id, libraryId = "audiobooks", isArchived = true)
+    private fun archived(id: String) = LocalCatalogEntry(id = id, libraryId = "audiobooks", isArchived = true)
 }

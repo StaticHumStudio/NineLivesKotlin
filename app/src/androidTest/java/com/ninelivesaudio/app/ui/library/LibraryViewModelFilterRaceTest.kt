@@ -12,7 +12,7 @@ import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.LibraryEntity
-import com.ninelivesaudio.app.data.local.entity.LocalBookMembership
+import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -165,7 +165,7 @@ private class DelayedLibraryFilterDao {
             "getFilteredBooks" -> filteredBooks(args)
             "countByLibrary" -> 2
             "getDistinctSeries", "getDistinctAuthors", "getDistinctGenresJson" -> emptyList<String>()
-            "observeLocalCatalog" -> flowOf(emptyList<LocalBookMembership>())
+            "observeLocalCatalog" -> flowOf(emptyList<LocalCatalogEntry>())
             "toString" -> "DelayedLibraryFilterDao"
             "hashCode" -> System.identityHashCode(this)
             "equals" -> args?.singleOrNull() === this

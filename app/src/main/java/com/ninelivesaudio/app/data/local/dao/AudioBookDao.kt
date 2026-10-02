@@ -7,7 +7,7 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
-import com.ninelivesaudio.app.data.local.entity.LocalBookMembership
+import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import kotlinx.coroutines.flow.Flow
@@ -97,12 +97,22 @@ interface AudioBookDao {
     suspend fun getLiveLocalIdsByLibrary(libraryId: String): List<String>
 
     /**
-     * Every LOCAL book's library and archived flag, re-emitted whenever the
-     * table changes. Progress columns stay out so a caller that drops repeats
-     * hears about imports and archives, not position saves.
+     * Every LOCAL book's library, archived flag, and shelf fields, re-emitted
+     * whenever the table changes. Progress columns stay out so a caller that
+     * drops repeats hears about imports, archives, and rescans, not position
+     * saves.
      */
-    @Query("SELECT Id AS id, LibraryId AS libraryId, ArchivedAt IS NOT NULL AS isArchived FROM AudioBooks WHERE IsLocal = 1")
-    fun observeLocalCatalog(): Flow<List<LocalBookMembership>>
+    @Query(
+        """
+        SELECT Id AS id, LibraryId AS libraryId, ArchivedAt IS NOT NULL AS isArchived,
+            Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath,
+            DurationSeconds AS durationSeconds, AddedAt AS addedAt,
+            SeriesName AS seriesName, SeriesSequence AS seriesSequence, GenresJson AS genresJson
+        FROM AudioBooks WHERE IsLocal = 1
+        """
+    )
+    fun observeLocalCatalog(): Flow<List<LocalCatalogEntry>>
 
     /** Ids of the archived (soft-deleted) LOCAL books in a library. */
     @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 1 AND ArchivedAt IS NOT NULL")

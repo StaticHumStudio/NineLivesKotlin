@@ -125,6 +125,26 @@ class LibraryLocalCatalogLiveUpdateTest {
         }
     }
 
+    @Test
+    fun aRescanThatSplitsAChapterUpdatesTheOpenShelf() = runBlocking {
+        val oneChapter = """[{"Id":0,"Start":0.0,"End":600.0,"Title":"01"}]"""
+        val twoChapters = """[{"Id":0,"Start":0.0,"End":300.0,"Title":"01"},""" +
+            """{"Id":1,"Start":300.0,"End":600.0,"Title":"02"}]"""
+        database.libraryDao().upsert(folder)
+        database.audioBookDao().upsertAll(listOf(book("book-1").copy(durationSeconds = 600.0, chaptersJson = oneChapter)))
+        withLocalMode {
+            val viewModel = openLibrary()
+            awaitState(viewModel, "the one-chapter book on the shelf") {
+                it.filteredBooks.singleOrNull()?.chapters?.size == 1
+            }
+
+            // Same file length, new track layout: the card's "Ch 1/N" count changes.
+            database.audioBookDao().upsert(book("book-1").copy(durationSeconds = 600.0, chaptersJson = twoChapters))
+
+            awaitState(viewModel, "the split chapters") { it.filteredBooks.singleOrNull()?.chapters?.size == 2 }
+        }
+    }
+
     private fun openLibrary(): LibraryViewModel {
         val audioBookRepository = AudioBookRepository(
             context = app,

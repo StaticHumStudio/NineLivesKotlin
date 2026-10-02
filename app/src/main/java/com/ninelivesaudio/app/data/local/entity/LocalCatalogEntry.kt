@@ -20,4 +20,8 @@ data class LocalCatalogEntry(
     val seriesName: String? = null,
     val seriesSequence: String? = null,
     val genresJson: String? = null,
+    // The card shows "Ch N/M". The length stands in for the chapter list, which
+    // can be large, so a re-split track layout still changes the entry without
+    // reading every chapter blob on each playback save.
+    val chaptersJsonLength: Int? = null,
 )

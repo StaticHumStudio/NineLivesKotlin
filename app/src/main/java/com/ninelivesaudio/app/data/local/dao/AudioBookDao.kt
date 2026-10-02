@@ -108,7 +108,8 @@ interface AudioBookDao {
             Title AS title, Author AS author, Narrator AS narrator,
             CoverPath AS coverPath, LocalCoverPath AS localCoverPath,
             DurationSeconds AS durationSeconds, AddedAt AS addedAt,
-            SeriesName AS seriesName, SeriesSequence AS seriesSequence, GenresJson AS genresJson
+            SeriesName AS seriesName, SeriesSequence AS seriesSequence, GenresJson AS genresJson,
+            length(ChaptersJson) AS chaptersJsonLength
         FROM AudioBooks WHERE IsLocal = 1
         """
     )

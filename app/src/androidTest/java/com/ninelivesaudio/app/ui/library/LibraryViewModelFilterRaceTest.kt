@@ -1,8 +1,10 @@
 package com.ninelivesaudio.app.ui.library
 
+import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ninelivesaudio.app.NineLivesApp
+import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
@@ -10,6 +12,7 @@ import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.LibraryEntity
+import com.ninelivesaudio.app.data.local.entity.LocalBookMembership
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -25,6 +28,7 @@ import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -96,10 +100,13 @@ class LibraryViewModelFilterRaceTest {
                 selectedLocalLibraryId = FixtureLibraries.alpha.id,
             )
         )
+        // Only a transaction would touch it, and these tests never import.
+        val database = Room.inMemoryDatabaseBuilder(app, AppDatabase::class.java).build()
         try {
-            block(LibraryViewModelFixture(app))
+            block(LibraryViewModelFixture(app, database))
         } finally {
             app.settingsManager.saveSettings(originalSettings)
+            database.close()
         }
     }
 
@@ -108,7 +115,7 @@ class LibraryViewModelFilterRaceTest {
     }
 }
 
-private class LibraryViewModelFixture(app: NineLivesApp) {
+private class LibraryViewModelFixture(app: NineLivesApp, database: AppDatabase) {
     val dao = DelayedLibraryFilterDao()
     private val audioBookRepository = AudioBookRepository(
         context = app,
@@ -117,6 +124,7 @@ private class LibraryViewModelFixture(app: NineLivesApp) {
         localListeningSessionDao = emptyDao(),
         localBookmarkDao = emptyDao(),
         playbackProgressDao = emptyDao(),
+        database = database,
     )
     private val libraryRepository = LibraryRepository(
         libraryDao = localLibraryDao(),
@@ -157,6 +165,7 @@ private class DelayedLibraryFilterDao {
             "getFilteredBooks" -> filteredBooks(args)
             "countByLibrary" -> 2
             "getDistinctSeries", "getDistinctAuthors", "getDistinctGenresJson" -> emptyList<String>()
+            "observeLocalCatalog" -> flowOf(emptyList<LocalBookMembership>())
             "toString" -> "DelayedLibraryFilterDao"
             "hashCode" -> System.identityHashCode(this)
             "equals" -> args?.singleOrNull() === this
@@ -213,16 +222,19 @@ private class DelayedLibraryFilterDao {
 
 private fun localLibraryDao(): LibraryDao = proxy { method, args ->
     when (method.name) {
-        "getLocal" -> listOf(
-            LibraryEntity(id = FixtureLibraries.alpha.id, name = FixtureLibraries.alpha.name, isLocal = 1),
-            LibraryEntity(id = FixtureLibraries.beta.id, name = FixtureLibraries.beta.name, isLocal = 1),
-        )
+        "getLocal" -> fixtureLibraryEntities()
+        "observeLocal" -> flowOf(fixtureLibraryEntities())
         "toString" -> "FixtureLibraryDao"
         "hashCode" -> System.identityHashCode(method)
         "equals" -> args?.singleOrNull() === method
         else -> error("Unexpected LibraryDao call: ${method.name}")
     }
 }
+
+private fun fixtureLibraryEntities() = listOf(
+    LibraryEntity(id = FixtureLibraries.alpha.id, name = FixtureLibraries.alpha.name, isLocal = 1),
+    LibraryEntity(id = FixtureLibraries.beta.id, name = FixtureLibraries.beta.name, isLocal = 1),
+)
 
 private inline fun <reified T> emptyDao(): T = proxy { method, _ ->
     error("Unexpected ${T::class.simpleName} call: ${method.name}")

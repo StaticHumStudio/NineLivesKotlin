@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.entitlement.FreeTier
+import com.ninelivesaudio.app.data.local.entity.LocalBookMembership
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.remote.describeFailure
@@ -115,6 +116,67 @@ internal fun shouldReloadLibrariesAfterSync(
     cachedLibraryIds: List<String>,
 ): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
     cachedLibraryIds.toSet() != shownLibraryIds.toSet()
+
+/**
+ * Which local folders exist and which books each holds, live or archived.
+ * Progress stays out, or every position save during playback would
+ * re-query the shelf.
+ */
+internal data class LocalCatalogSnapshot(
+    val libraryIds: Set<String>,
+    val books: Set<LocalBookMembership>,
+)
+
+internal enum class LocalCatalogChange { NONE, REFILTER, RELOAD }
+
+/**
+ * A folder scan writes its library row and books from Settings, and LOCAL
+ * mode has no sync record to announce them, so a Library opened mid-scan
+ * stayed empty until the tab was re-entered. The ViewModel's very first
+ * snapshot is only a baseline, which is safe because every load waits for
+ * it before reading, so anything written after it arrives as a later
+ * snapshot. A watch that starts later (a switch into LOCAL mode) has no
+ * such guarantee, so its first snapshot is checked like any other. A
+ * changed library list (or libraries with nothing selected) reloads exactly
+ * as a sync does, and any other change re-filters the shelf.
+ */
+internal fun decideLocalCatalogChange(
+    previous: LocalCatalogSnapshot?,
+    current: LocalCatalogSnapshot,
+    selectedLibrary: Library?,
+    shownLibraryIds: List<String>,
+    isLoadBaseline: Boolean,
+): LocalCatalogChange = when {
+    previous == null && isLoadBaseline -> LocalCatalogChange.NONE
+    previous == current -> LocalCatalogChange.NONE
+    shouldReloadLibrariesAfterSync(
+        selectedLibrary = selectedLibrary,
+        shownLibraryIds = shownLibraryIds,
+        cachedLibraryIds = current.libraryIds.toList(),
+    ) -> LocalCatalogChange.RELOAD
+    else -> LocalCatalogChange.REFILTER
+}
+
+/**
+ * The settings a catalog reload saves for a library the user picked on this
+ * screen whose own settings write had not finished. The reload cancels that
+ * write along with the rest of the load lane, and would otherwise resolve
+ * the older saved choice and switch the shelf back. Only an unfinished pick
+ * counts, so a choice saved since (Settings has its own picker) wins.
+ * Null when there is no such pick, it is already saved, or it is gone.
+ */
+internal fun settingsKeepingPendingPick(
+    pickedLibraryId: String?,
+    libraries: List<Library>,
+    settings: AppSettings,
+): AppSettings? {
+    if (pickedLibraryId == null || pickedLibraryId == settings.activeLibraryId) return null
+    val picked = libraries.firstOrNull { it.id == pickedLibraryId } ?: return null
+    return when (settings.appMode) {
+        AppMode.LOCAL -> settings.copy(selectedLocalLibraryId = picked.id).takeIf { picked.isLocal }
+        AppMode.AUDIOBOOKSHELF -> settings.copy(selectedLibraryId = picked.id).takeIf { !picked.isLocal }
+    }
+}
 
 internal fun decideDownloadedOnlyFilter(
     previousStatus: ConnectionStatus,
@@ -241,6 +303,14 @@ class LibraryViewModel @Inject constructor(
     // Keep them in one lane so an older operation cannot finish last.
     private val libraryLoadLaunch = ExclusiveLaunch()
 
+    // Completed by the catalog watch's first snapshot (null outside LOCAL
+    // mode). Loads wait for it, so a scan that writes between a load's reads
+    // and the watch's first query cannot hide inside that baseline.
+    private val localCatalogBaseline = CompletableDeferred<Unit>()
+
+    // A library picked on this screen whose settings write has not finished.
+    private var pendingLibraryPickId: String? = null
+
     init {
         // Observe connectivity and auto-filter to downloaded when offline
         viewModelScope.launch {
@@ -311,16 +381,66 @@ class LibraryViewModel @Inject constructor(
                 }
         }
 
+        // LOCAL mode has no sync record, so watch the local catalog itself.
+        // A folder scan or rescan running in Settings lands here while the
+        // tab is open, not only on the next visit.
+        viewModelScope.launch {
+            var previous: LocalCatalogSnapshot? = null
+            observeLocalCatalogWhileLocal().collect { snapshot ->
+                val state = _uiState.value
+                val change = snapshot?.let {
+                    decideLocalCatalogChange(
+                        previous = previous,
+                        current = it,
+                        selectedLibrary = state.selectedLibrary,
+                        shownLibraryIds = state.libraries.map { library -> library.id },
+                        isLoadBaseline = !localCatalogBaseline.isCompleted,
+                    )
+                }
+                previous = snapshot
+                localCatalogBaseline.complete(Unit)
+                when (change) {
+                    // Same lane cleanup as the sync reload above.
+                    LocalCatalogChange.RELOAD -> libraryLoadLaunch.launch(viewModelScope) {
+                        loadLibrariesOwningRefresh(keepPendingPick = true)
+                    }
+                    LocalCatalogChange.REFILTER -> applyFilter()
+                    LocalCatalogChange.NONE, null -> Unit
+                }
+            }
+        }
+
         // Initial load
         libraryLoadLaunch.launch(viewModelScope) {
             loadLibraries()
         }
     }
 
+    /** The local catalog while in LOCAL mode, and null (no Room watch) otherwise. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun observeLocalCatalogWhileLocal(): Flow<LocalCatalogSnapshot?> =
+        settingsManager.settings
+            .map { it.appMode == AppMode.LOCAL }
+            .distinctUntilChanged()
+            .flatMapLatest { isLocal ->
+                if (!isLocal) {
+                    flowOf(null)
+                } else {
+                    combine(
+                        libraryRepository.observeLocalLibraries()
+                            .map { libraries -> libraries.mapTo(mutableSetOf()) { it.id } },
+                        audioBookRepository.observeLocalCatalog().map { it.toSet() },
+                        ::LocalCatalogSnapshot,
+                    )
+                }
+            }
+            .distinctUntilChanged()
+
     // ─── Loading ──────────────────────────────────────────────────────────
 
-    private suspend fun loadLibraries() {
+    private suspend fun loadLibraries(keepPendingPick: Boolean = false) {
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        localCatalogBaseline.await()
 
         try {
             val settings = settingsManager.currentSettings
@@ -355,6 +475,15 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            val pick = pendingLibraryPickId.takeIf { keepPendingPick }
+            if (settingsKeepingPendingPick(pick, libs, settingsManager.currentSettings) != null) {
+                settingsManager.updateSettings { latest ->
+                    settingsKeepingPendingPick(pick, libs, latest) ?: latest
+                }
+            }
+            // Any pick left here came from a lane this load cancelled. It is
+            // saved above or, for other loads, superseded by what resolves next.
+            pendingLibraryPickId = null
             val selection = persistActiveLibrarySelection(
                 libraries = libs,
                 settings = settingsManager.currentSettings,
@@ -511,6 +640,7 @@ class LibraryViewModel @Inject constructor(
                 selectedLibraryFetchPersisted = false,
             )
         }
+        pendingLibraryPickId = library.id
         libraryLoadLaunch.launch(viewModelScope) {
             // Persist selection so the whole app picks it up
             settingsManager.updateSettings {
@@ -520,6 +650,7 @@ class LibraryViewModel @Inject constructor(
                     it.copy(selectedLibraryId = library.id)
                 }
             }
+            if (pendingLibraryPickId == library.id) pendingLibraryPickId = null
             // Full resync for the newly selected library
             loadAudioBooks(library.id)
             _uiState.update { it.copy(isLoading = false) }
@@ -595,9 +726,9 @@ class LibraryViewModel @Inject constructor(
     }
 
     /** Load, then clear the refresh spinner unless a newer load took over the lane. */
-    private suspend fun loadLibrariesOwningRefresh() {
+    private suspend fun loadLibrariesOwningRefresh(keepPendingPick: Boolean = false) {
         try {
-            loadLibraries()
+            loadLibraries(keepPendingPick)
         } finally {
             updateLibraryLoadStateIfActive {
                 _uiState.update { it.copy(isRefreshing = false) }

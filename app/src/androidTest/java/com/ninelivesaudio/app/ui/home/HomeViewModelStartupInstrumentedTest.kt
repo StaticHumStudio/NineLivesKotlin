@@ -51,7 +51,7 @@ class HomeViewModelStartupInstrumentedTest {
                     selectedLibraryId = FIXTURE_LIBRARY_ID,
                 ),
             )
-            fixtureSettings.saveAuthToken(token = "startup-fixture-token")
+            fixtureSettings.saveAuthToken(token = "startup-fixture-token", serverUrl = FIXTURE_SERVER_URL)
 
             instrumentation.runOnMainSync {
                 viewModel = HomeViewModel(

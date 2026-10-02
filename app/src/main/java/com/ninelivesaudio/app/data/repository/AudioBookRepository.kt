@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
 import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -53,6 +54,10 @@ class AudioBookRepository @Inject constructor(
     /** Observe all local-source audiobooks. */
     fun observeLocalBooks(): Flow<List<AudioBook>> =
         audioBookDao.observeBySource(isLocal = 1).map { entities -> entities.map { it.toDomain() } }
+
+    /** Observe which local books exist, which are archived, and their shelf fields (not progress). */
+    fun observeLocalCatalog(): Flow<List<LocalCatalogEntry>> =
+        audioBookDao.observeLocalCatalog()
 
     /** Observe a single audiobook. */
     fun observeById(id: String): Flow<AudioBook?> =

@@ -96,10 +96,15 @@ fun BottomNavBar(
                 selected = isSelected,
                 onClick = {
                     navController.navigate(item.route) {
+                        // Each tab keeps its screen, scroll, and loaded shelf
+                        // while another tab is open. Without this, leaving the
+                        // Library threw it away and a big library re-downloaded
+                        // on every return.
                         popUpTo(navController.graph.findStartDestination().id) {
-                            inclusive = false
+                            saveState = true
                         }
                         launchSingleTop = true
+                        restoreState = true
                     }
                 },
                 icon = {

@@ -20,6 +20,7 @@ import com.ninelivesaudio.app.service.local.LocalBookFingerprint
 import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
 import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -223,8 +224,14 @@ class AudioBookRepository @Inject constructor(
         mutex = syncLibraryItemsMutex,
         libraryId = libraryId,
         fetchItems = { apiService.getLibraryItems(libraryId) },
-        mergeItems = { remote -> mergeSyncedBooks(remote, audioBookDao::getByIds) },
-        upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
+        // Thousands of books are merged and JSON-encoded here, so keep it off
+        // the main thread the Library calls from.
+        mergeItems = { remote ->
+            withContext(Dispatchers.Default) { mergeSyncedBooks(remote, audioBookDao::getByIds) }
+        },
+        upsertAll = { books ->
+            audioBookDao.upsertAll(withContext(Dispatchers.Default) { books.map { it.toEntity() } })
+        },
         cachedNonDownloadedIds = audioBookDao::getNonDownloadedServerIdsByLibrary,
         deleteByIds = audioBookDao::deleteServerBooksByIds,
         deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },

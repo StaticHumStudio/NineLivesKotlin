@@ -229,6 +229,33 @@ internal suspend fun updateLibraryLoadStateIfActive(update: () -> Unit) {
     if (currentCoroutineContext().isActive) update()
 }
 
+/**
+ * What a shelf load was started for. The tabs keep the Library alive while
+ * another tab is open, so a return only reloads when this changed underneath
+ * it (a server, account, mode, or library switch in Settings).
+ */
+internal data class ShelfIdentity(
+    val appMode: AppMode,
+    val serverUrl: String,
+    val username: String,
+    val activeLibraryId: String?,
+)
+
+internal fun AppSettings.shelfIdentity() =
+    ShelfIdentity(appMode, serverUrl, username, activeLibraryId)
+
+/**
+ * A return to the Library reloads when what it shows no longer matches the
+ * settings, or when it has nothing to show because its last fetch failed, so
+ * the return doubles as a retry.
+ * Nothing loaded yet means the first load is still starting and owns the shelf.
+ */
+internal fun shouldReloadOnLibraryReturn(
+    loadedFor: ShelfIdentity?,
+    current: ShelfIdentity,
+    lastFetchFailed: Boolean,
+): Boolean = loadedFor != null && (loadedFor != current || lastFetchFailed)
+
 // ─── ViewModel ───────────────────────────────────────────────────────────
 
 @HiltViewModel
@@ -293,6 +320,30 @@ class LibraryViewModel @Inject constructor(
     /** Called by LibraryScreen on each composition entry to re-roll whispers. */
     fun incrementWhisperEpoch() {
         _whisperEpoch.update { it + 1 }
+    }
+
+    // The settings the shown shelf was loaded for. See [onScreenEntered].
+    private var shelfLoadedFor: ShelfIdentity? = null
+
+    /**
+     * Called by LibraryScreen each time it enters composition. A tab return
+     * keeps the shelf it already has instead of downloading the library again.
+     */
+    fun onScreenEntered() {
+        val state = _uiState.value
+        // Only an empty failed shelf retries on return. One with saved books
+        // keeps them, and the periodic and reconnect syncs recover it.
+        val lastFetchFailed = state.filteredBooks.isEmpty() &&
+            (state.selectedLibraryFetchResult == SyncResult.FAILED || state.errorMessage != null)
+        if (shouldReloadOnLibraryReturn(
+                loadedFor = shelfLoadedFor,
+                current = settingsManager.currentSettings.shelfIdentity(),
+                lastFetchFailed = lastFetchFailed,
+            )
+        ) {
+            // This can replace a refresh in the lane, so it owns that spinner.
+            libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
+        }
     }
 
     // Search debounce
@@ -439,6 +490,7 @@ class LibraryViewModel @Inject constructor(
     // ─── Loading ──────────────────────────────────────────────────────────
 
     private suspend fun loadLibraries(keepPendingPick: Boolean = false) {
+        shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         localCatalogBaseline.await()
 
@@ -490,6 +542,9 @@ class LibraryViewModel @Inject constructor(
                 updateSettings = settingsManager::updateSettings,
             )
             val selected = selection.library
+            // The selection this load settled on, so a return does not
+            // mistake its own write for a change made in Settings.
+            shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
 
             _uiState.update {
                 it.withLibrarySelection(
@@ -536,6 +591,9 @@ class LibraryViewModel @Inject constructor(
         try {
             val serverUrlAtStart = settingsManager.currentSettings.serverUrl
             val selected = _uiState.value.selectedLibrary
+            // Show the saved shelf before the network. A full fetch of a big
+            // library takes minutes, and the spinner only covers an empty shelf.
+            if (selected?.isLocal != true) applyFilter()?.join()
             // Only hit the network when a remote library is selected AND we have
             // connectivity. In airplane mode the old code attempted syncLibraryItems
             // regardless, leaving the switch spinning on a doomed request until the
@@ -651,6 +709,7 @@ class LibraryViewModel @Inject constructor(
                 }
             }
             if (pendingLibraryPickId == library.id) pendingLibraryPickId = null
+            shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
             // Full resync for the newly selected library
             loadAudioBooks(library.id)
             _uiState.update { it.copy(isLoading = false) }
@@ -873,7 +932,8 @@ class LibraryViewModel @Inject constructor(
         return filterPublication.launch(
             scope = viewModelScope,
             request = snapshot.request,
-            load = { buildFilterResult(snapshot) },
+            // Decoding and sorting thousands of books stays off the main thread.
+            load = { withContext(Dispatchers.Default) { buildFilterResult(snapshot) } },
             onFailure = { e ->
                 _uiState.update { it.copy(errorMessage = "Failed to load audiobooks: ${e.message}") }
             },

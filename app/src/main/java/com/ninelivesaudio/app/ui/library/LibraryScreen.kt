@@ -79,6 +79,7 @@ fun LibraryScreen(
     // (i.e. each time the user navigates to the Library tab).
     LaunchedEffect(Unit) {
         viewModel.incrementWhisperEpoch()
+        viewModel.onScreenEntered()
     }
 
     // Flatten grouped items only when groupedSections or expandedGroups change

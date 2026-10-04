@@ -93,6 +93,51 @@ class ReachabilityCheckGateTest {
     }
 
     @Test
+    fun `a server answer after a failed probe means the next caller probes again`() = runBlocking {
+        var probes = 0
+        var answer = false
+        val gate = ReachabilityCheckGate(nowMs = { 0L }, reuseWindowMs = PROBE_REUSE_WINDOW_MS) {
+            probes += 1
+            answer
+        }
+        val key = ProbeReuseKey(generation = 1, serverUrl = "http://abs")
+        assertFalse(gate.run(key))
+        // A playback push lands inside the reuse window.
+        gate.serverAnswered()
+        answer = true
+        assertTrue("the failure is not shared after the server answered", gate.run(key))
+        assertEquals(2, probes)
+        // A success is still shared.
+        assertTrue(gate.run(key))
+        assertEquals(2, probes)
+    }
+
+    @Test
+    fun `a server answer during a failing probe keeps that failure from being shared`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var probes = 0
+        val gate = ReachabilityCheckGate(nowMs = { 0L }, reuseWindowMs = PROBE_REUSE_WINDOW_MS) {
+            probes += 1
+            if (probes == 1) {
+                entered.complete(Unit)
+                release.await()
+                false
+            } else {
+                true
+            }
+        }
+        val key = ProbeReuseKey(generation = 1, serverUrl = "http://abs")
+        val first = async(start = CoroutineStart.UNDISPATCHED) { gate.run(key) }
+        entered.await()
+        gate.serverAnswered()
+        release.complete(Unit)
+        assertFalse(first.await())
+        assertTrue(gate.run(key))
+        assertEquals(2, probes)
+    }
+
+    @Test
     fun `a clock reading before the finish does not share`() {
         assertFalse(canReuseProbe("k", "k", finishedAtMs = 5_000L, nowMs = 4_000L, windowMs = PROBE_REUSE_WINDOW_MS))
         assertTrue(canReuseProbe("k", "k", finishedAtMs = 5_000L, nowMs = 5_000L, windowMs = PROBE_REUSE_WINDOW_MS))

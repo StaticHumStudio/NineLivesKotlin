@@ -421,6 +421,10 @@ class ConnectivityMonitor @Inject constructor(
      * so there is no counterpart: only a probe marks the server unreachable.
      */
     fun reportServerAnswered() {
+        // Even when already marked reachable: a probe that failed just
+        // before must not answer the next caller (the reconnect listener's
+        // check) with "unreachable" after the server just proved otherwise.
+        reachabilityCheckGate.serverAnswered()
         if (!serverAnswerMarksReachable(_isOnline.value, _isServerReachable.value)) return
         _isServerReachable.value = true
         updateConnectionStatus()
@@ -686,25 +690,41 @@ internal fun canReuseProbe(
 /**
  * Runs reachability checks one at a time. A caller whose [run] key matches
  * a check that finished under [reuseWindowMs] ago (including one it waited
- * on) gets that answer instead of a new /ping.
+ * on) gets that answer instead of a new /ping. A failed answer stops being
+ * shared once [serverAnswered] reports a real request that succeeded, even
+ * one that landed while that probe was still running.
  */
 internal class ReachabilityCheckGate(
     private val nowMs: () -> Long = { 0L },
     private val reuseWindowMs: Long = 0L,
     private val check: suspend () -> Boolean,
 ) {
-    private class Finished(val key: Any?, val atMs: Long, val reachable: Boolean)
+    private class Finished(val key: Any?, val atMs: Long, val reachable: Boolean, val answers: Long)
 
     private val mutex = Mutex()
     private var last: Finished? = null // guarded by mutex
 
+    // Counts successful server requests reported through serverAnswered.
+    private val answers = AtomicLong(0L)
+
+    /** A real request to the server just succeeded. No suspension, no lock. */
+    fun serverAnswered() {
+        answers.incrementAndGet()
+    }
+
     suspend fun run(key: Any? = null): Boolean = mutex.withLock {
         val previous = last
-        if (previous != null && canReuseProbe(previous.key, key, previous.atMs, nowMs(), reuseWindowMs)) {
+        if (previous != null &&
+            (previous.reachable || previous.answers == answers.get()) &&
+            canReuseProbe(previous.key, key, previous.atMs, nowMs(), reuseWindowMs)
+        ) {
             return@withLock previous.reachable
         }
+        // Read before the probe, so an answer that lands mid-probe still
+        // keeps a failure from being shared.
+        val answersAtStart = answers.get()
         val reachable = check()
-        last = Finished(key, nowMs(), reachable)
+        last = Finished(key, nowMs(), reachable, answersAtStart)
         reachable
     }
 }

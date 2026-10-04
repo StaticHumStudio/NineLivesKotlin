@@ -21,9 +21,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -332,11 +335,6 @@ class NightwatchDossierViewModel @Inject constructor(
                     return@launch
                 }
                 val allSessions = history.sessions
-                val scopedBooks = settings.activeLibraryId?.let { libraryId ->
-                    audioBookRepository.getByLibraryAndSource(libraryId, isLocalMode)
-                }.orEmpty()
-                val allBooks = dossierBooksInActiveScope(scopedBooks, settings)
-                val bookMap = allBooks.associateBy { it.id }
 
                 // Time period window, clamped by entitlement.
                 //
@@ -356,115 +354,130 @@ class NightwatchDossierViewModel @Inject constructor(
                 }
                 val cutoffMillis = period.cutoffMillis()
                 val endMillis = period.endMillis()
-                val recentSessions = allSessions
-                    .filter { it.startedAt in cutoffMillis..endMillis }
-                    .let { dossierSessionsInActiveScope(it, bookMap.keys) }
+                val windowSessions = allSessions.filter { it.startedAt in cutoffMillis..endMillis }
 
-                // Sanitize session durations: cap timeListening at wall-clock span
-                val sanitizedSessions = recentSessions.map { session ->
-                    session.copy(timeListening = sanitizeListeningTime(session))
-                }
+                // Only the books this window listened to, looked up by id and
+                // decoded off the main thread. Everything below is a lookup by
+                // a session's book id, so the rest of the library never loads.
+                val bookMap = loadDossierBooks(
+                    sessions = windowSessions,
+                    settings = settings,
+                    fetchByIds = audioBookRepository::getByIdsInLibraryAndSource,
+                )
+                val allBooks = bookMap.values
 
-                // Honor the "include archived in stats" toggle: when off, drop
-                // sessions for archived (LOCAL soft-deleted) books from every
-                // total below. When on, excludedBookIds is empty (a no-op).
-                val archivedBookIds = allBooks.filter { it.isArchived }.map { it.id }.toSet()
-                val includeArchived = settingsManager.currentSettings.includeArchivedInStats
-                val allowedBookIds = statsBookIds(bookMap.keys, archivedBookIds, includeArchived)
-                val excludedBookIds = bookMap.keys - allowedBookIds
+                // The aggregation walks every session and book, so it runs on
+                // Default too. Publishing from there is safe, StateFlow updates
+                // are thread safe.
+                withContext(Dispatchers.Default) {
+                    val recentSessions = dossierSessionsInActiveScope(windowSessions, bookMap.keys)
 
-                // Filter noise: sessions under 60 seconds
-                val minThreshold = 60.seconds
-                val aboveThreshold = sanitizedSessions.filter { it.timeListening >= minThreshold }
-                val noiseSessions = sanitizedSessions.size - aboveThreshold.size
-                val validSessions = aboveThreshold.filterNot { it.libraryItemId in excludedBookIds }
+                    // Sanitize session durations: cap timeListening at wall-clock span
+                    val sanitizedSessions = recentSessions.map { session ->
+                        session.copy(timeListening = sanitizeListeningTime(session))
+                    }
 
-                // Aggregate
-                val totalTime = validSessions.fold(Duration.ZERO) { acc, s -> acc + s.timeListening }
-                val sessionsByBook = validSessions.groupBy { it.libraryItemId }
+                    // Honor the "include archived in stats" toggle: when off, drop
+                    // sessions for archived (LOCAL soft-deleted) books from every
+                    // total below. When on, excludedBookIds is empty (a no-op).
+                    val archivedBookIds = allBooks.filter { it.isArchived }.map { it.id }.toSet()
+                    val includeArchived = settingsManager.currentSettings.includeArchivedInStats
+                    val allowedBookIds = statsBookIds(bookMap.keys, archivedBookIds, includeArchived)
+                    val excludedBookIds = bookMap.keys - allowedBookIds
 
-                // Per-book stats
-                val bookStats = sessionsByBook.mapNotNull { (bookId, sessions) ->
-                    val book = bookMap[bookId]
-                    val bookTime = sessions.fold(Duration.ZERO) { acc, s -> acc + s.timeListening }
-                    // Skip books with less than 2 minutes total
-                    if (bookTime < 120.seconds) return@mapNotNull null
+                    // Filter noise: sessions under 60 seconds
+                    val minThreshold = 60.seconds
+                    val aboveThreshold = sanitizedSessions.filter { it.timeListening >= minThreshold }
+                    val noiseSessions = sanitizedSessions.size - aboveThreshold.size
+                    val validSessions = aboveThreshold.filterNot { it.libraryItemId in excludedBookIds }
 
-                    val title = book?.title
-                        ?: sessions.firstOrNull()?.displayTitle
-                        ?: "Unknown Title"
+                    // Aggregate
+                    val totalTime = validSessions.fold(Duration.ZERO) { acc, s -> acc + s.timeListening }
+                    val sessionsByBook = validSessions.groupBy { it.libraryItemId }
 
-                    BookStat(
-                        bookId = bookId,
-                        title = title,
-                        author = book?.author ?: "Unknown",
-                        narrator = book?.narrator,
-                        listeningTime = bookTime,
-                        sessionCount = sessions.size,
-                        progress = book?.progressPercent ?: 0.0,
-                        chaptersTotal = book?.chapters?.size ?: 0,
-                        currentChapter = (book?.getCurrentChapterIndex() ?: -1) + 1,
-                        isFinished = book?.isFinished ?: false,
-                        coverUrl = book?.effectiveCoverPath,
-                        whisper = book?.let { generateBookWhisper(it, bookTime) },
-                    )
-                }.sortedByDescending { it.listeningTime }
+                    // Per-book stats
+                    val bookStats = sessionsByBook.mapNotNull { (bookId, sessions) ->
+                        val book = bookMap[bookId]
+                        val bookTime = sessions.fold(Duration.ZERO) { acc, s -> acc + s.timeListening }
+                        // Skip books with less than 2 minutes total
+                        if (bookTime < 120.seconds) return@mapNotNull null
 
-                // Narrator stats
-                val narratorStats = buildNarratorStats(bookStats, totalTime)
+                        val title = book?.title
+                            ?: sessions.firstOrNull()?.displayTitle
+                            ?: "Unknown Title"
 
-                // Genre stats
-                val genreStats = buildGenreStats(bookStats, bookMap, totalTime)
+                        BookStat(
+                            bookId = bookId,
+                            title = title,
+                            author = book?.author ?: "Unknown",
+                            narrator = book?.narrator,
+                            listeningTime = bookTime,
+                            sessionCount = sessions.size,
+                            progress = book?.progressPercent ?: 0.0,
+                            chaptersTotal = book?.chapters?.size ?: 0,
+                            currentChapter = (book?.getCurrentChapterIndex() ?: -1) + 1,
+                            isFinished = book?.isFinished ?: false,
+                            coverUrl = book?.effectiveCoverPath,
+                            whisper = book?.let { generateBookWhisper(it, bookTime) },
+                        )
+                    }.sortedByDescending { it.listeningTime }
 
-                // Author stats
-                val authorStats = buildAuthorStats(bookStats)
+                    // Narrator stats
+                    val narratorStats = buildNarratorStats(bookStats, totalTime)
 
-                // Derived stats
-                val booksFinished = bookStats.count { it.isFinished }
-                val dailyAverage = if (totalTime > Duration.ZERO)
-                    (totalTime.inWholeSeconds / period.dayCount()).seconds else Duration.ZERO
-                val bestDayResult = findBestSpecificDay(validSessions)
+                    // Genre stats
+                    val genreStats = buildGenreStats(bookStats, bookMap, totalTime)
 
-                // Temporal patterns
-                val (hourly, peakHour) = buildTemporalStats(validSessions)
-                val peakDay = findPeakDay(validSessions)
+                    // Author stats
+                    val authorStats = buildAuthorStats(bookStats)
 
-                // Generate contextual whispers
-                val headerWhisper = generateHeaderWhisper(totalTime, validSessions.size)
-                val overviewWhisper = generateOverviewWhisper(totalTime, bookStats.size)
-                val narratorWhisper = generateNarratorWhisper(narratorStats)
-                val authorWhisper = generateAuthorWhisper(authorStats)
-                val genreWhisper = generateGenreWhisper(genreStats)
-                val temporalWhisper = generateTemporalWhisper(peakHour, peakDay)
+                    // Derived stats
+                    val booksFinished = bookStats.count { it.isFinished }
+                    val dailyAverage = if (totalTime > Duration.ZERO)
+                        (totalTime.inWholeSeconds / period.dayCount()).seconds else Duration.ZERO
+                    val bestDayResult = findBestSpecificDay(validSessions)
 
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        isConnected = true,
-                        error = null,
-                        historyWarning = history.warning,
-                        totalListeningTime = totalTime,
-                        totalSessions = validSessions.size,
-                        filteredNoiseSessions = noiseSessions,
-                        uniqueBooks = bookStats.size,
-                        bookStats = bookStats,
-                        narratorStats = narratorStats,
-                        authorStats = authorStats,
-                        genreStats = genreStats,
-                        booksFinished = booksFinished,
-                        dailyAverage = dailyAverage,
-                        bestDay = bestDayResult?.first,
-                        bestDayTime = bestDayResult?.second ?: Duration.ZERO,
-                        hourlyDistribution = hourly,
-                        peakHour = peakHour,
-                        peakDayOfWeek = peakDay,
-                        headerWhisper = headerWhisper,
-                        overviewWhisper = overviewWhisper,
-                        narratorWhisper = narratorWhisper,
-                        authorWhisper = authorWhisper,
-                        genreWhisper = genreWhisper,
-                        temporalWhisper = temporalWhisper,
-                    )
+                    // Temporal patterns
+                    val (hourly, peakHour) = buildTemporalStats(validSessions)
+                    val peakDay = findPeakDay(validSessions)
+
+                    // Generate contextual whispers
+                    val headerWhisper = generateHeaderWhisper(totalTime, validSessions.size)
+                    val overviewWhisper = generateOverviewWhisper(totalTime, bookStats.size)
+                    val narratorWhisper = generateNarratorWhisper(narratorStats)
+                    val authorWhisper = generateAuthorWhisper(authorStats)
+                    val genreWhisper = generateGenreWhisper(genreStats)
+                    val temporalWhisper = generateTemporalWhisper(peakHour, peakDay)
+
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            isConnected = true,
+                            error = null,
+                            historyWarning = history.warning,
+                            totalListeningTime = totalTime,
+                            totalSessions = validSessions.size,
+                            filteredNoiseSessions = noiseSessions,
+                            uniqueBooks = bookStats.size,
+                            bookStats = bookStats,
+                            narratorStats = narratorStats,
+                            authorStats = authorStats,
+                            genreStats = genreStats,
+                            booksFinished = booksFinished,
+                            dailyAverage = dailyAverage,
+                            bestDay = bestDayResult?.first,
+                            bestDayTime = bestDayResult?.second ?: Duration.ZERO,
+                            hourlyDistribution = hourly,
+                            peakHour = peakHour,
+                            peakDayOfWeek = peakDay,
+                            headerWhisper = headerWhisper,
+                            overviewWhisper = overviewWhisper,
+                            narratorWhisper = narratorWhisper,
+                            authorWhisper = authorWhisper,
+                            genreWhisper = genreWhisper,
+                            temporalWhisper = temporalWhisper,
+                        )
+                    }
                 }
             } catch (e: CancellationException) {
                 // A newer period switch cancelled this stale load. Rethrow so it
@@ -825,6 +838,24 @@ internal fun dossierBooksInActiveScope(
     books: List<AudioBook>,
     settings: AppSettings,
 ): List<AudioBook> = books.filter { it.isInActiveLibrary(settings) }
+
+/**
+ * The books a Dossier report needs: the ones [sessions] listened to, in the
+ * active library and source, keyed by id. Never reads the whole library, and
+ * runs on [dispatcher] so decoding the rows stays off the main thread.
+ */
+internal suspend fun loadDossierBooks(
+    sessions: List<ListeningSession>,
+    settings: AppSettings,
+    fetchByIds: suspend (libraryId: String, isLocal: Boolean, ids: List<String>) -> List<AudioBook>,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
+): Map<String, AudioBook> = withContext(dispatcher) {
+    val libraryId = settings.activeLibraryId ?: return@withContext emptyMap()
+    val ids = sessions.map { it.libraryItemId }.distinct()
+    if (ids.isEmpty()) return@withContext emptyMap()
+    val isLocal = settings.appMode == AppMode.LOCAL
+    dossierBooksInActiveScope(fetchByIds(libraryId, isLocal, ids), settings).associateBy { it.id }
+}
 
 internal fun dossierSessionsInActiveScope(
     sessions: List<ListeningSession>,

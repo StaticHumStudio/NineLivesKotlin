@@ -164,6 +164,16 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
     suspend fun updateCoverPath(id: String, coverPath: String)
 
+    // ─── Readers outside the Library shelf ───────────────────────────────
+    //
+    // Screens and services that only need a handful of books ask for those
+    // books, not the whole library. Each query here is bounded by an id list,
+    // a LIMIT, or a small projection.
+
+    /** Up to 500 books by id, kept to one library and source (the Dossier's listened books). */
+    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND Id IN (:ids)")
+    suspend fun getByIdsInLibraryAndSource(libraryId: String, isLocal: Int, ids: List<String>): List<AudioBookEntity>
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 

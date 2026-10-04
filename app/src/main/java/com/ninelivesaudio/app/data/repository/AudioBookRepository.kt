@@ -677,6 +677,21 @@ class AudioBookRepository @Inject constructor(
     suspend fun deleteAll() {
         audioBookDao.deleteAll()
     }
+
+    // ─── Readers outside the Library shelf ───────────────────────────────
+
+    /**
+     * The books among [ids] that belong to one library and source, looked up
+     * 500 ids at a time. Ids that are missing or belong elsewhere are left out.
+     */
+    suspend fun getByIdsInLibraryAndSource(
+        libraryId: String,
+        isLocal: Boolean,
+        ids: Collection<String>,
+    ): List<AudioBook> =
+        fetchByIdChunks(ids.distinct()) { chunk ->
+            audioBookDao.getByIdsInLibraryAndSource(libraryId, if (isLocal) 1 else 0, chunk)
+        }.map { it.toDomain() }
 }
 
 private const val MAXIMUM_AUDIOBOOK_LOOKUP_BIND_COUNT = 500

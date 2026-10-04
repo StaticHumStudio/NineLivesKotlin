@@ -20,6 +20,7 @@ import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
+import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PersistedSyncOutcome
@@ -985,8 +986,10 @@ class LibraryViewModel @Inject constructor(
         )
         if (!filterPublication.isCurrent(snapshot.request)) return null
         val accessibleLocalIds = localFolderAccess.accessibleLibraryIds(snapshot.libraries)
+        // A newer filter cancels this one. The long loops below check for
+        // that, so two big builds never run side by side on fast chip taps.
         val books = storedBooks
-            .map { reconcileLocalBookAccess(it, accessibleLocalIds).book }
+            .mapCooperatively { reconcileLocalBookAccess(it, accessibleLocalIds).book }
             .filterNot {
                 !it.isDownloaded &&
                     (snapshot.selectedTab == LibraryTab.Downloaded || snapshot.showDownloadedOnly)
@@ -1003,7 +1006,9 @@ class LibraryViewModel @Inject constructor(
         val effectiveViewMode = FreeTier.effectiveViewMode(snapshot.viewMode, isUnlocked)
 
         // Sort and group in-memory (complex logic stays in Kotlin)
+        currentCoroutineContext().ensureActive()
         val sortedBooks = sortBooks(books, effectiveSort)
+        currentCoroutineContext().ensureActive()
         val groupedSections = buildGroupedSections(
             books = sortedBooks,
             viewMode = effectiveViewMode,

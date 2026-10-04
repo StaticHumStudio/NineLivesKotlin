@@ -20,6 +20,7 @@ import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.service.shelfProgress
 import com.ninelivesaudio.app.service.local.LocalBookFingerprint
@@ -218,7 +219,7 @@ class AudioBookRepository @Inject constructor(
         val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args.toTypedArray()))
         // Shelf books carry no description, audio files, or tags. They are
         // for showing and navigating, never for saving back. See toShelfBook.
-        return results.map { it.toShelfBook() }
+        return results.mapCooperatively { it.toShelfBook() }
     }
 
     /** Count all audiobooks in a library. */

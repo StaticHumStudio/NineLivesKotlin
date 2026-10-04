@@ -295,6 +295,10 @@ class NightwatchDossierViewModel @Inject constructor(
 
     private var loadJob: Job? = null
 
+    // Bumped by every load, read only on the main thread. A load publishes
+    // only while it is still the newest one.
+    private var loadGeneration = 0L
+
     fun onPeriodChanged(period: DossierPeriod) {
         // Clamped on the way in as well as in the load, so a locked period
         // never lands in state even briefly. The load-side clamp is the one
@@ -309,6 +313,7 @@ class NightwatchDossierViewModel @Inject constructor(
         // Cancel any in-flight load so rapid period switches cannot let a slower
         // earlier load finish last and overwrite the newest selection with stale data.
         loadJob?.cancel()
+        val generation = ++loadGeneration
         loadJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
 
@@ -367,9 +372,15 @@ class NightwatchDossierViewModel @Inject constructor(
                 val allBooks = bookMap.values
 
                 // The aggregation walks every session and book, so it runs on
-                // Default too. Publishing from there is safe, StateFlow updates
-                // are thread safe.
-                withContext(Dispatchers.Default) {
+                // Default too. It publishes back on the main thread, and only if
+                // no newer load has started. Cancelling does not stop CPU work
+                // already running, so a superseded load used to finish its
+                // totals and write them over the newer report.
+                publishIfStillCurrent(
+                    dispatcher = Dispatchers.Default,
+                    isCurrent = { generation == loadGeneration },
+                    publish = { apply -> _uiState.update(apply) },
+                ) {
                     val recentSessions = dossierSessionsInActiveScope(windowSessions, bookMap.keys)
 
                     // Sanitize session durations: cap timeListening at wall-clock span
@@ -449,8 +460,8 @@ class NightwatchDossierViewModel @Inject constructor(
                     val genreWhisper = generateGenreWhisper(genreStats)
                     val temporalWhisper = generateTemporalWhisper(peakHour, peakDay)
 
-                    _uiState.update {
-                        it.copy(
+                    val report: (DossierState) -> DossierState = { state ->
+                        state.copy(
                             isLoading = false,
                             isConnected = true,
                             error = null,
@@ -478,6 +489,7 @@ class NightwatchDossierViewModel @Inject constructor(
                             temporalWhisper = temporalWhisper,
                         )
                     }
+                    report
                 }
             } catch (e: CancellationException) {
                 // A newer period switch cancelled this stale load. Rethrow so it
@@ -485,11 +497,13 @@ class NightwatchDossierViewModel @Inject constructor(
                 // cancelled load would clobber the state the newer load is building.
                 throw e
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        error = "Failed to compile the dossier: ${e.message}",
-                    )
+                if (generation == loadGeneration) {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = "Failed to compile the dossier: ${e.message}",
+                        )
+                    }
                 }
             }
         }
@@ -855,6 +869,22 @@ internal suspend fun loadDossierBooks(
     if (ids.isEmpty()) return@withContext emptyMap()
     val isLocal = settings.appMode == AppMode.LOCAL
     dossierBooksInActiveScope(fetchByIds(libraryId, isLocal, ids), settings).associateBy { it.id }
+}
+
+/**
+ * Run [compute] on [dispatcher], then hand its result to [publish] back on
+ * the caller's context, but only while [isCurrent] still says this load is
+ * the newest one. Coming back to the caller also rethrows a cancellation that
+ * landed while [compute] ran, so a cancelled load never reaches [publish].
+ */
+internal suspend fun <T> publishIfStillCurrent(
+    dispatcher: CoroutineDispatcher,
+    isCurrent: () -> Boolean,
+    publish: (T) -> Unit,
+    compute: () -> T,
+) {
+    val result = withContext(dispatcher) { compute() }
+    if (isCurrent()) publish(result)
 }
 
 internal fun dossierSessionsInActiveScope(

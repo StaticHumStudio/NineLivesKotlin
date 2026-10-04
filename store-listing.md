@@ -80,7 +80,7 @@ Android 11+ (API 30).
 
 v2.1.6
 
-Built for big libraries. The Library opens instantly with your saved books, coming back to it downloads nothing, and sync only fetches what changed while the app is open. Big refreshes wait for Wi-Fi. Also: your library catches up when your server returns, offline starts are fast, cancelled downloads clean up, downloads keep their chapters, and covers survive switching between home and VPN addresses.
+Built for big libraries. The Library opens right away with your saved books, coming back to it downloads nothing, and sync usually fetches only what changed while the app is open. Automatic big refreshes wait for Wi-Fi. Also: your library catches up when your server returns, offline starts are fast, cancelled downloads clean up, downloads keep their chapters, and covers survive switching between home and VPN addresses.
 
 v2.1.4
 

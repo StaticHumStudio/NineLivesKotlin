@@ -1085,5 +1085,6 @@ internal fun buildLibrarySql(
         append(" AND (ab.Title LIKE ? OR ab.Author LIKE ? OR ab.SeriesName LIKE ? OR ab.Narrator LIKE ?)")
     }
 
-    append(" ORDER BY ab.Title")
+    // No ORDER BY: every caller sorts in Kotlin (the Library's sortBooks, the
+    // Auto browse lists), so sorting here too was paid twice.
 }

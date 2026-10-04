@@ -1291,6 +1291,11 @@ internal fun shouldSyncOnLibraryLoad(isLocalLibrary: Boolean, isOnline: Boolean)
 
 // ─── Grouping helpers (internal for testability) ──────────────────────────
 
+/**
+ * Groups shelf books. [books] must already be in [sortMode] order (the shelf
+ * sorts once before grouping), and each group keeps that order, so groups are
+ * not sorted again.
+ */
 internal fun buildGroupedSections(
     books: List<AudioBook>,
     viewMode: ViewMode,
@@ -1299,17 +1304,16 @@ internal fun buildGroupedSections(
     if (viewMode == ViewMode.ALL) return emptyList()
 
     // Genre view uses multi-placement: a book appears in every genre group it belongs to.
-    val grouped = mutableMapOf<String, MutableList<AudioBook>>()
+    val grouped = linkedMapOf<String, MutableList<AudioBook>>()
     books.forEach { book ->
         val keys = groupingKeysForBook(book, viewMode)
         keys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }
 
     return grouped.entries
-        .map { (key, values) ->
-            GroupedSection(key = key, title = key, books = sortBooks(values, sortMode))
-        }
+        .map { (key, values) -> SectionSortEntry(GroupedSection(key = key, title = key, books = values)) }
         .sortedWith(groupedSectionComparator(sortMode))
+        .map { it.section }
 }
 
 internal fun flattenGroupedItems(
@@ -1345,16 +1349,21 @@ private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<Strin
     ViewMode.ALL -> emptyList()
 }
 
-private fun groupedSectionComparator(sortMode: SortMode): Comparator<GroupedSection> {
-    val alphaAsc = compareBy<GroupedSection> { it.title.lowercase() }
+/** A section with its lowercased title worked out once, not on every compare. */
+private class SectionSortEntry(val section: GroupedSection) {
+    val titleKey: String = section.title.lowercase()
+}
+
+private fun groupedSectionComparator(sortMode: SortMode): Comparator<SectionSortEntry> {
+    val alphaAsc = compareBy<SectionSortEntry> { it.titleKey }
     return when (sortMode) {
         SortMode.TITLE_ZA, SortMode.AUTHOR_ZA -> alphaAsc.reversed()
         SortMode.TITLE_AZ, SortMode.AUTHOR_AZ -> alphaAsc
         SortMode.PROGRESS_LOW, SortMode.DURATION_SHORT ->
-            compareBy<GroupedSection> { it.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MAX_VALUE }
+            compareBy<SectionSortEntry> { it.section.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MAX_VALUE }
                 .then(alphaAsc)
         else ->
-            compareByDescending<GroupedSection> { it.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MIN_VALUE }
+            compareByDescending<SectionSortEntry> { it.section.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MIN_VALUE }
                 .then(alphaAsc)
     }
 }
@@ -1368,29 +1377,41 @@ private fun sortSignal(book: AudioBook, sortMode: SortMode): Long = when (sortMo
     SortMode.TITLE_AZ, SortMode.TITLE_ZA, SortMode.AUTHOR_AZ, SortMode.AUTHOR_ZA -> 0L
 }
 
+/**
+ * A book with its sort keys worked out once. Lowercasing inside a comparator
+ * ran about 1.5 million times per sort on a 50,000 book shelf.
+ */
+private class BookSortEntry(val book: AudioBook, needsAuthor: Boolean) {
+    val titleKey: String = book.title.lowercase()
+    val authorKey: String = if (needsAuthor) book.author.lowercase() else ""
+}
+
+/**
+ * The shelf order. The query has no ORDER BY, since this sorts every time, so
+ * every mode ends on the raw title (the order the query used to return) and
+ * then the id, and the same shelf always comes out the same way.
+ */
 internal fun sortBooks(books: List<AudioBook>, sortMode: SortMode): List<AudioBook> {
-    val sequence = books.asSequence()
-    return when (sortMode) {
-        SortMode.RECENTLY_ADDED -> sequence.sortedWith(
-            compareByDescending<AudioBook> { it.addedAt ?: Long.MIN_VALUE }
-                .thenBy { it.title.lowercase() }
-        )
-        SortMode.TITLE_AZ -> sequence.sortedBy { it.title.lowercase() }
-        SortMode.TITLE_ZA -> sequence.sortedByDescending { it.title.lowercase() }
-        SortMode.AUTHOR_AZ -> sequence.sortedWith(compareBy({ it.author.lowercase() }, { it.title.lowercase() }))
-        SortMode.AUTHOR_ZA -> sequence.sortedWith(compareByDescending<AudioBook> { it.author.lowercase() }.thenByDescending { it.title.lowercase() })
-        SortMode.PROGRESS_HIGH -> sequence.sortedByDescending { it.progressPercent }
-        SortMode.PROGRESS_LOW -> sequence.sortedBy { it.progressPercent }
-        SortMode.DURATION_LONG -> sequence.sortedByDescending { it.duration.inWholeSeconds }
-        SortMode.DURATION_SHORT -> sequence.sortedBy { it.duration.inWholeSeconds }
-        SortMode.RECENTLY_PLAYED -> sequence.sortedWith(
-            // Treat books with no playback history as oldest via Long.MIN_VALUE fallback.
-            compareByDescending<AudioBook> { it.lastPlayedAt ?: Long.MIN_VALUE }
-                .thenBy { it.title.lowercase() }
-        )
-        SortMode.UNPLAYED_FIRST -> sequence.sortedWith(
-            compareBy<AudioBook> { if (it.hasProgress) 1 else 0 }
-                .thenBy { it.title.lowercase() }
-        )
-    }.toList()
+    val needsAuthor = sortMode == SortMode.AUTHOR_AZ || sortMode == SortMode.AUTHOR_ZA
+    val entries = books.map { BookSortEntry(it, needsAuthor) }
+    val primary: Comparator<BookSortEntry> = when (sortMode) {
+        SortMode.RECENTLY_ADDED ->
+            compareByDescending<BookSortEntry> { it.book.addedAt ?: Long.MIN_VALUE }.thenBy { it.titleKey }
+        SortMode.TITLE_AZ -> compareBy { it.titleKey }
+        SortMode.TITLE_ZA -> compareByDescending { it.titleKey }
+        SortMode.AUTHOR_AZ -> compareBy<BookSortEntry> { it.authorKey }.thenBy { it.titleKey }
+        SortMode.AUTHOR_ZA -> compareByDescending<BookSortEntry> { it.authorKey }.thenByDescending { it.titleKey }
+        SortMode.PROGRESS_HIGH -> compareByDescending { it.book.progressPercent }
+        SortMode.PROGRESS_LOW -> compareBy { it.book.progressPercent }
+        SortMode.DURATION_LONG -> compareByDescending { it.book.duration.inWholeSeconds }
+        SortMode.DURATION_SHORT -> compareBy { it.book.duration.inWholeSeconds }
+        // Treat books with no playback history as oldest via Long.MIN_VALUE fallback.
+        SortMode.RECENTLY_PLAYED ->
+            compareByDescending<BookSortEntry> { it.book.lastPlayedAt ?: Long.MIN_VALUE }.thenBy { it.titleKey }
+        SortMode.UNPLAYED_FIRST ->
+            compareBy<BookSortEntry> { if (it.book.hasProgress) 1 else 0 }.thenBy { it.titleKey }
+    }
+    return entries
+        .sortedWith(primary.thenBy { it.book.title }.thenBy { it.book.id })
+        .map { it.book }
 }

@@ -357,6 +357,25 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
+        // A server library renamed on the next sync shows its new name here
+        // without a restart (#81). Only names of libraries already shown are
+        // refreshed: which libraries appear and which is selected stay with
+        // loadLibraries().
+        viewModelScope.launch {
+            libraryRepository.observeAudiobookshelf().collect { cached ->
+                _uiState.update { state ->
+                    val libraries = withCachedLibraryNames(state.libraries, cached)
+                    if (libraries == state.libraries) return@update state
+                    state.copy(
+                        libraries = libraries,
+                        selectedLibrary = state.selectedLibrary?.let { selected ->
+                            libraries.firstOrNull { it.id == selected.id } ?: selected
+                        },
+                    )
+                }
+            }
+        }
+
         // Observe local libraries
         viewModelScope.launch {
             libraryRepository.observeLocalLibraries().collect { locals ->
@@ -1549,6 +1568,16 @@ class SettingsViewModel @Inject constructor(
  * selector is still useful and requires no network). INVALID means the token was
  * rejected and the user was logged out, so there is nothing to load.
  */
+/** [shown] with each library's name taken from [cached] where the ids match. */
+internal fun withCachedLibraryNames(shown: List<Library>, cached: List<Library>): List<Library> {
+    if (shown.isEmpty() || cached.isEmpty()) return shown
+    val names = cached.associate { it.id to it.name }
+    return shown.map { library ->
+        val name = names[library.id]
+        if (name == null || name == library.name) library else library.copy(name = name)
+    }
+}
+
 internal fun shouldLoadCachedLibrariesAfterValidation(result: TokenValidationResult): Boolean =
     result != TokenValidationResult.INVALID
 

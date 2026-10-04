@@ -44,6 +44,7 @@ class DownloadEngine @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val api: AudiobookshelfApi,
     private val settingsManager: SettingsManager,
+    private val ownership: DownloadOwnership,
 ) {
     companion object {
         private const val TAG = "DownloadEngine"
@@ -55,17 +56,43 @@ class DownloadEngine @Inject constructor(
      * progress to Room throughout and invokes [onProgress] for UI liveliness.
      * Returns the terminal [DownloadItem] (Completed / Failed / Paused); the
      * caller owns any completion/failure event emission.
+     *
+     * Returns null without touching anything when the row is gone or no longer
+     * Queued or Downloading by the time the engine claims it. The claim and the
+     * completion go through [DownloadOwnership], see the rule there.
      */
     suspend fun download(
         item: DownloadItem,
         audioBook: AudioBook,
         onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
+    ): DownloadItem? {
+        // The row as it is now, not as the drain read it before waiting its turn.
+        val bytesOnRecord = downloadItemDao.getById(item.id)?.downloadedBytes ?: item.downloadedBytes
+        val downloadDir = getDownloadPath(audioBook, startedWriting = bytesOnRecord > 0)
+        val claimed = ownership.claim(
+            downloadId = item.id,
+            audioBookId = audioBook.id,
+            folder = downloadDir,
+            readRow = { downloadItemDao.getById(item.id)?.toDomain() },
+            writeRow = { downloadItemDao.upsert(it.toEntity()) },
+        ) ?: return null
+        return try {
+            downloadInto(downloadDir, claimed, audioBook, onProgress)
+        } finally {
+            ownership.release()
+        }
+    }
+
+    private suspend fun downloadInto(
+        downloadDir: File,
+        item: DownloadItem,
+        audioBook: AudioBook,
+        onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
     ): DownloadItem {
-        var download = item.copy(status = DownloadStatus.Downloading)
-        downloadItemDao.upsert(download.toEntity())
+        // Already written as Downloading by the claim.
+        var download = item
 
         // Create download directory
-        val downloadDir = getDownloadPath(audioBook)
         downloadDir.mkdirs()
 
         // Get full book details if audio files are missing
@@ -95,7 +122,7 @@ class DownloadEngine @Inject constructor(
         // Track order comes from the server-reported index, not response order,
         // and leaf names are resolved once so sanitization collisions stay distinct.
         val orderedFiles = book.audioFiles.sortedBy { it.index }
-        val fileNames = resolveDownloadFileNames(orderedFiles)
+        val fileNames = downloadedFileNames(book.audioFiles)
 
         // Download each audio file
         for (i in orderedFiles.indices) {
@@ -218,34 +245,41 @@ class DownloadEngine @Inject constructor(
             }
         }
 
+        // Persist the cover next to the audio so it renders offline. Best-effort:
+        // a cover failure must never fail an otherwise-complete download. A
+        // network call, so it runs before the completion commit, not inside it.
+        val localCoverUri = persistCover(book, downloadDir)
+
         // All files downloaded successfully
         download = download.copy(
             status = DownloadStatus.Completed,
             downloadedBytes = maxOf(downloadedBytes, totalBytes),
             completedAt = System.currentTimeMillis(),
         )
-        downloadItemDao.upsert(download.toEntity())
-
-        // Persist the cover next to the audio so it renders offline. Best-effort:
-        // a cover failure must never fail an otherwise-complete download.
-        val localCoverUri = persistCover(book, downloadDir)
-
-        // Mark the book downloaded and keep the track list and chapters that were
-        // just downloaded. List-synced rows hold an empty manifest, and offline
-        // playback falls back to sorting files by name without one.
-        val bookEntity = audioBookDao.getById(audioBook.id)
-        if (bookEntity != null) {
-            audioBookDao.upsert(
-                completedDownloadBook(
-                    row = bookEntity.toDomain(),
-                    downloaded = book,
-                    localPath = downloadDir.absolutePath,
-                    localCoverUri = localCoverUri,
-                ).toEntity()
-            )
+        val completed = download
+        // The row turns Completed and the book gets its local copy in one step,
+        // so a delete never sees one without the other. Mark the book downloaded
+        // and keep the track list and chapters that were just downloaded.
+        // List-synced rows hold an empty manifest, and offline playback falls
+        // back to sorting files by name without one.
+        val committed = ownership.commitCompletion(
+            rowExists = { downloadItemDao.getById(completed.id) != null },
+        ) {
+            downloadItemDao.upsert(completed.toEntity())
+            val bookEntity = audioBookDao.getById(audioBook.id)
+            if (bookEntity != null) {
+                audioBookDao.upsert(
+                    completedDownloadBook(
+                        row = bookEntity.toDomain(),
+                        downloaded = book,
+                        localPath = downloadDir.absolutePath,
+                        localCoverUri = localCoverUri,
+                    ).toEntity()
+                )
+            }
         }
-
-        return download
+        // Cancelled or deleted while finishing: nothing was written back.
+        return if (committed) completed else completed.copy(status = DownloadStatus.Cancelled)
     }
 
     /**
@@ -297,26 +331,34 @@ class DownloadEngine @Inject constructor(
 
     // ─── File Paths ──────────────────────────────────────────────────────────
 
-    /** Get download directory for an audiobook. */
-    private fun getDownloadPath(audioBook: AudioBook): File {
-        val basePath = getBasePath()
-        val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
-        return File(basePath, folderName)
-    }
+    /** Get download directory for an audiobook. See [bookDownloadFolder]. */
+    private fun getDownloadPath(audioBook: AudioBook, startedWriting: Boolean): File =
+        bookDownloadFolder(getBasePath(), audioBook, startedWriting)
 
     /**
      * Where [audioBook]'s download folder is under the current settings, for
-     * cancel cleanup. Resolves exactly like [getDownloadPath] but creates
+     * delete and cancel. Resolves exactly like [getDownloadPath] but creates
      * nothing.
      */
-    internal fun downloadLocationFor(audioBook: AudioBook): DownloadLocation {
+    internal fun downloadLocationFor(audioBook: AudioBook, startedWriting: Boolean): DownloadLocation {
         val (root, appOwned) = resolveDownloadRoot(
             configuredPath = settingsManager.currentSettings.downloadPath,
             defaultRoot = defaultBasePath(),
         )
-        val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
-        return DownloadLocation(root = root, folder = File(root, folderName), rootIsAppOwned = appOwned)
+        val folder = bookDownloadFolder(root, audioBook, startedWriting)
+        return DownloadLocation(root = root, folder = folder, rootIsAppOwned = appOwned)
     }
+
+    /**
+     * Where a finished download's stored [localPath] sits, for delete. Null when
+     * the path is not one the engine could have written. See [deleteLocationFor].
+     */
+    internal fun storedDownloadLocation(localPath: String): DownloadLocation? =
+        deleteLocationFor(
+            storedPath = localPath,
+            configuredPath = settingsManager.currentSettings.downloadPath,
+            defaultRoot = defaultBasePath(),
+        )
 
     /** Base storage directory for all downloads. */
     private fun getBasePath(): File {

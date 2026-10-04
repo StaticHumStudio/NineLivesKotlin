@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
@@ -70,6 +71,16 @@ interface AudioBookDao {
     /** Every stored localPath except [excludeId]'s, for the shared-folder check on cancel. */
     @Query("SELECT LocalPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != ''")
     suspend fun getLocalPathsExcept(excludeId: String): List<String>
+
+    /**
+     * Ids of every other book stored at a file path (not a content URI), for
+     * the shared-folder check on delete. Only those rows need their track lists.
+     */
+    @Query(
+        "SELECT Id FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != '' " +
+            "AND LocalPath NOT LIKE 'content:%'"
+    )
+    suspend fun getFilePathBookIdsExcept(excludeId: String): List<String>
 
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     fun observeById(id: String): Flow<AudioBookEntity?>
@@ -208,8 +219,9 @@ interface AudioBookDao {
     suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
 
     /**
-     * One page of Android Auto search hits in one library and source: title or
-     * author contains [pattern], an escaped LIKE pattern (backslash escapes).
+     * One page of Android Auto search hits in one library and source: the
+     * folded search column (title, author, series, narrator) contains
+     * [pattern], a folded and escaped LIKE pattern (backslash escapes).
      */
     @Query(
         """
@@ -217,7 +229,7 @@ interface AudioBookDao {
             CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
         FROM AudioBooks
         WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
-            AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+            AND SearchText LIKE :pattern ESCAPE '\'
         ORDER BY Title COLLATE NOCASE, Id
         LIMIT :limit OFFSET :offset
         """
@@ -230,7 +242,7 @@ interface AudioBookDao {
         SELECT COUNT(*) FROM (
             SELECT 1 FROM AudioBooks
             WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
-                AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+                AND SearchText LIKE :pattern ESCAPE '\'
             LIMIT :cap
         )
         """
@@ -335,7 +347,14 @@ interface AudioBookDao {
     /**
      * Dynamic filtered shelf query, built by AudioBookRepository.getFilteredBooks().
      * Light rows only (see [ShelfBookRow]), never `ab.*`.
+     *
+     * One transaction, so the whole read is one snapshot. A big shelf spans
+     * several cursor windows, and each window outside a transaction is read
+     * afresh: a sync page saved in between (REPLACE gives a re-saved book a
+     * new rowid, the end of this unordered read) came back twice, with
+     * another book missing, and the grouped list crashed on the repeat.
      */
+    @Transaction
     @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
     suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<ShelfBookRow>
 

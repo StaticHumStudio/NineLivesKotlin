@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.data.local.migration
 
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.ninelivesaudio.app.data.local.bookSearchText
 
 /**
  * Room migration definitions.
@@ -106,6 +107,56 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
     }
 }
 
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Folded title, author, series and narrator, so search ignores
+        // accents and case (issue #61). Filled here for every book already
+        // cached, so an upgraded library searches right away with no resync.
+        db.execSQL("ALTER TABLE AudioBooks ADD COLUMN SearchText TEXT NOT NULL DEFAULT ''")
+        backfillSearchText(db)
+    }
+}
+
+/** Rows read per backfill page, so a huge library never sits in memory whole. */
+internal const val SEARCH_BACKFILL_PAGE_SIZE = 500
+
+/**
+ * Fills AudioBooks.SearchText for every row, a page at a time in rowid order.
+ * Each page is read in full and its cursor closed before any row is written,
+ * so the read never sees its own table change under it. SQLite has no accent
+ * folding of its own, so the values come from [bookSearchText], the same
+ * function every later write uses. Runs inside the migration's transaction.
+ */
+internal fun backfillSearchText(db: SupportSQLiteDatabase) {
+    val update = db.compileStatement("UPDATE AudioBooks SET SearchText = ? WHERE rowid = ?")
+    try {
+        var after = Long.MIN_VALUE
+        while (true) {
+            val page = ArrayList<Pair<Long, String>>(SEARCH_BACKFILL_PAGE_SIZE)
+            db.query(
+                "SELECT rowid, Id, Title, Author, SeriesName, Narrator FROM AudioBooks " +
+                    "WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                arrayOf<Any?>(after, SEARCH_BACKFILL_PAGE_SIZE),
+            ).use { rows ->
+                while (rows.moveToNext()) {
+                    page += rows.getLong(0) to
+                        bookSearchText(rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5))
+                }
+            }
+            for ((rowId, text) in page) {
+                update.bindString(1, text)
+                update.bindLong(2, rowId)
+                update.executeUpdateDelete()
+                update.clearBindings()
+            }
+            if (page.size < SEARCH_BACKFILL_PAGE_SIZE) break
+            after = page.last().first
+        }
+    } finally {
+        update.close()
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -119,4 +170,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_6_7,
     MIGRATION_7_8,
     MIGRATION_8_9,
+    MIGRATION_9_10,
 )

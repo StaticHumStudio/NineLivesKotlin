@@ -12,6 +12,7 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.download.isWaitingForWifi
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -40,7 +41,21 @@ class DownloadsViewModel @Inject constructor(
         val isLocalMode: Boolean = false,
         /** Why the last Resume or Retry did not start, or null. */
         val notice: String? = null,
-    )
+        /** The "Download on Wi-Fi only" setting. */
+        val wifiOnly: Boolean = true,
+        /** Whether the current network may cost money. Unknown counts as metered. */
+        val onMeteredNetwork: Boolean = true,
+        /** Downloads the user already sent over mobile data. */
+        val meteredOverrides: Set<String> = emptySet(),
+    ) {
+        /** True when Wi-Fi only is what holds [download] back right now. */
+        fun waitingForWifi(download: DownloadItem): Boolean = isWaitingForWifi(
+            status = download.status,
+            wifiOnly = wifiOnly,
+            metered = onMeteredNetwork,
+            overridden = download.id in meteredOverrides,
+        )
+    }
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -140,7 +155,24 @@ class DownloadsViewModel @Inject constructor(
         // are unavailable in LOCAL mode.
         viewModelScope.launch {
             settingsManager.settings.collect { settings ->
-                _uiState.update { it.copy(isLocalMode = settings.appMode == AppMode.LOCAL) }
+                _uiState.update {
+                    it.copy(
+                        isLocalMode = settings.appMode == AppMode.LOCAL,
+                        wifiOnly = settings.downloadOnWifiOnly,
+                    )
+                }
+            }
+        }
+
+        // What decides whether a download is waiting for Wi-Fi rather than stuck.
+        viewModelScope.launch {
+            connectivityMonitor.isMetered.collect { metered ->
+                _uiState.update { it.copy(onMeteredNetwork = metered) }
+            }
+        }
+        viewModelScope.launch {
+            downloadManager.meteredOverrides.collect { ids ->
+                _uiState.update { it.copy(meteredOverrides = ids) }
             }
         }
     }
@@ -160,6 +192,13 @@ class DownloadsViewModel @Inject constructor(
         }
     }
 
+    /** Start a download waiting for Wi-Fi over mobile data, without changing the setting. */
+    fun startOnMobileData(downloadId: String) {
+        viewModelScope.launch {
+            downloadManager.startOnMobileData(downloadId)
+        }
+    }
+
     fun dismissNotice() {
         _uiState.update { it.copy(notice = null) }
     }
@@ -172,7 +211,9 @@ class DownloadsViewModel @Inject constructor(
 
     fun deleteDownload(audioBookId: String) {
         viewModelScope.launch {
-            downloadManager.deleteDownload(audioBookId)
+            if (!downloadManager.deleteDownload(audioBookId)) {
+                _uiState.update { it.copy(notice = DELETE_REFUSED_NOTICE) }
+            }
         }
     }
 
@@ -183,6 +224,11 @@ class DownloadsViewModel @Inject constructor(
         }
     }
 }
+
+/** What a delete says when it kept the files because they might not be only this book's. */
+internal const val DELETE_REFUSED_NOTICE =
+    "Couldn't safely remove this book's files, so it's still downloaded. " +
+        "Another download may share its folder, or the download folder changed since."
 
 /**
  * A Retry the free slot refuses has to say so. It used to requeue anyway and

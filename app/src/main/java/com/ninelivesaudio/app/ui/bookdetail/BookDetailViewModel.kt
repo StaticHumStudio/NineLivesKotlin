@@ -22,7 +22,9 @@ import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.RemoteMediaAccessDecision
 import com.ninelivesaudio.app.service.remoteMediaAccessDecision
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.download.WifiOnlyCopy
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
+import com.ninelivesaudio.app.ui.downloads.DELETE_REFUSED_NOTICE
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -412,8 +414,14 @@ class BookDetailViewModel @Inject constructor(
                 // Clear any previous notice. Leaving a stale "free keeps one
                 // book" warning up after a retry that WORKED, or after the user
                 // unlocked and came back, would be its own small lie.
-                is DownloadManager.QueueResult.Queued ->
-                    _uiState.update { it.copy(downloadNotice = null, downloadNoticeOffersUnlock = false) }
+                // A book held for Wi-Fi says so, or the Queued button just
+                // sits there on mobile data looking broken.
+                is DownloadManager.QueueResult.Queued -> _uiState.update {
+                    it.copy(
+                        downloadNotice = if (result.waitingForWifi) WifiOnlyCopy.QUEUED_NOTICE else null,
+                        downloadNoticeOffersUnlock = false,
+                    )
+                }
 
                 is DownloadManager.QueueResult.BlockedByFreeSlot -> {
                     // The free tier holds one offline book. Say so, out loud,
@@ -466,7 +474,10 @@ class BookDetailViewModel @Inject constructor(
 
     fun deleteDownload() {
         viewModelScope.launch {
-            downloadManager.deleteDownload(bookId)
+            if (!downloadManager.deleteDownload(bookId)) {
+                _uiState.update { it.copy(downloadNotice = DELETE_REFUSED_NOTICE) }
+                return@launch
+            }
             _uiState.update {
                 it.copy(
                     isDownloaded = false,

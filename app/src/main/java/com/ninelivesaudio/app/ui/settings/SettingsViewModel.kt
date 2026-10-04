@@ -29,6 +29,7 @@ import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
+import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
@@ -188,6 +189,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsManager: SettingsManager,
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val downloadManager: DownloadManager,
     private val audioBookDao: AudioBookDao,
     private val libraryDao: LibraryDao,
     private val libraryRepository: LibraryRepository,
@@ -272,6 +274,9 @@ class SettingsViewModel @Inject constructor(
         val sleepTimerRewindSeconds: Int = 15,
         val includeArchivedInStats: Boolean = true,
 
+        // Downloads
+        val downloadOnWifiOnly: Boolean = true,
+
         // Feedback Report
         val reportType: ReportType = ReportType.BUG,
         val includeLogsInReport: Boolean = false,
@@ -299,6 +304,10 @@ class SettingsViewModel @Inject constructor(
     data class PendingSweep(val type: SweepType, val count: Int)
 
     private val _uiState = MutableStateFlow(UiState())
+
+    /** The server libraries Room last emitted, for names only (#81). */
+    @Volatile
+    private var latestCachedLibraries: List<Library> = emptyList()
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
     private val authUiGeneration = AuthUiGenerationCoordinator()
     private val authUiOperationMutex = Mutex()
@@ -347,6 +356,28 @@ class SettingsViewModel @Inject constructor(
                         eqBandGains = gains,
                         eqBandFrequencies = playbackManager.getEqBandFrequencies(),
                         eqBandRange = playbackManager.getEqBandRange(),
+                    )
+                }
+            }
+        }
+
+        // A server library renamed on the next sync shows its new name here
+        // without a restart (#81). Only names of libraries already shown are
+        // refreshed: which libraries appear and which is selected stay with
+        // loadLibraries().
+        viewModelScope.launch {
+            libraryRepository.observeAudiobookshelf().collect { cached ->
+                // Set before the update so a loadLibraries() that publishes
+                // after this point still carries these names.
+                latestCachedLibraries = cached
+                _uiState.update { state ->
+                    val libraries = withCachedLibraryNames(state.libraries, cached)
+                    if (libraries == state.libraries) return@update state
+                    state.copy(
+                        libraries = libraries,
+                        selectedLibrary = state.selectedLibrary?.let { selected ->
+                            libraries.firstOrNull { it.id == selected.id } ?: selected
+                        },
                     )
                 }
             }
@@ -425,6 +456,7 @@ class SettingsViewModel @Inject constructor(
                 sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
                 sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
                 includeArchivedInStats = settings.includeArchivedInStats,
+                downloadOnWifiOnly = settings.downloadOnWifiOnly,
                 themeMode = settings.themeMode,
             )
         }
@@ -846,6 +878,19 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(sleepTimerMotionEnabled = enabled) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(sleepTimerMotionEnabled = enabled) }
+        }
+    }
+
+    /**
+     * Saves the setting, then applies it to downloads already queued: turning
+     * it off starts a queue that was waiting for Wi-Fi, turning it on stops a
+     * book downloading over mobile data unless the user sent it that way.
+     */
+    fun setDownloadOnWifiOnly(enabled: Boolean) {
+        _uiState.update { it.copy(downloadOnWifiOnly = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(downloadOnWifiOnly = enabled) }
+            downloadManager.onWifiOnlyChanged()
         }
     }
 
@@ -1494,9 +1539,12 @@ class SettingsViewModel @Inject constructor(
             }
 
             _uiState.update {
+                // A rename the collector saw while this load ran wins over the
+                // older snapshot this load started from (#81).
+                val named = withCachedLibraryNames(libs, latestCachedLibraries)
                 it.copy(
-                    libraries = libs,
-                    selectedLibrary = selected,
+                    libraries = named,
+                    selectedLibrary = selected?.let { s -> named.firstOrNull { l -> l.id == s.id } ?: s },
                 )
             }
         } catch (_: Exception) {
@@ -1530,6 +1578,16 @@ class SettingsViewModel @Inject constructor(
  * selector is still useful and requires no network). INVALID means the token was
  * rejected and the user was logged out, so there is nothing to load.
  */
+/** [shown] with each library's name taken from [cached] where the ids match. */
+internal fun withCachedLibraryNames(shown: List<Library>, cached: List<Library>): List<Library> {
+    if (shown.isEmpty() || cached.isEmpty()) return shown
+    val names = cached.associate { it.id to it.name }
+    return shown.map { library ->
+        val name = names[library.id]
+        if (name == null || name == library.name) library else library.copy(name = name)
+    }
+}
+
 internal fun shouldLoadCachedLibrariesAfterValidation(result: TokenValidationResult): Boolean =
     result != TokenValidationResult.INVALID
 

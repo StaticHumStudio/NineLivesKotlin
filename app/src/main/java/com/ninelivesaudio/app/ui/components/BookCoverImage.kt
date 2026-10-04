@@ -1,19 +1,24 @@
 package com.ninelivesaudio.app.ui.components
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
-import coil.compose.SubcomposeAsyncImage
-import coil.compose.SubcomposeAsyncImageContent
+import coil.compose.AsyncImage
 import java.net.URI
 
 /**
  * Displays an audiobook cover image, falling back to a vintage worn-book
  * placeholder when no cover URL is available OR when the image fails to load.
  *
- * Uses SubcomposeAsyncImage so that broken/missing server URLs also
- * show the vintage placeholder instead of a blank rectangle.
+ * Uses AsyncImage with the placeholder composed underneath it, so the
+ * placeholder shows while the cover loads and stays if the server URL is
+ * broken, and a long list of these does not subcompose a slot per row.
  *
  * [thumbnailWidthPx] asks the server for a smaller cover. Long lists of small
  * rows pass it, while book detail and the player leave it null and get the
@@ -34,30 +39,26 @@ fun BookCoverImage(
     val seed = bookId?.hashCode() ?: title?.hashCode() ?: 0
 
     if (!coverUrl.isNullOrEmpty()) {
-        SubcomposeAsyncImage(
-            model = imageModel
-                ?: thumbnailWidthPx?.let { thumbnailCoverUrl(coverUrl, it) }
-                ?: coverUrl,
-            contentDescription = contentDescription,
-            modifier = modifier,
-            contentScale = contentScale,
-            alignment = alignment,
-            loading = {
+        // Keyed on the URL, so a recycled row that now shows another book
+        // starts from its placeholder again.
+        var loaded by remember(coverUrl, thumbnailWidthPx) { mutableStateOf(false) }
+        Box(modifier = modifier, propagateMinConstraints = true) {
+            if (!loaded) {
                 VintageBookPlaceholder(
                     title = title,
                     seed = seed,
                 )
-            },
-            error = {
-                VintageBookPlaceholder(
-                    title = title,
-                    seed = seed,
-                )
-            },
-            success = {
-                SubcomposeAsyncImageContent()
-            },
-        )
+            }
+            AsyncImage(
+                model = imageModel
+                    ?: thumbnailWidthPx?.let { thumbnailCoverUrl(coverUrl, it) }
+                    ?: coverUrl,
+                contentDescription = contentDescription,
+                contentScale = contentScale,
+                alignment = alignment,
+                onSuccess = { loaded = true },
+            )
+        }
     } else {
         VintageBookPlaceholder(
             modifier = modifier,

@@ -175,13 +175,23 @@ internal suspend fun insertOwnedPendingProgress(
     }
 }
 
-internal suspend fun acknowledgePendingFallbackOnSuccess(
-    deliver: suspend () -> Boolean,
+/**
+ * Deliver a session save and acknowledge its queued row only once the server
+ * holds everything the row does. The session sync carries the position and
+ * listening time but no finished flag, so a finished save also pushes the
+ * flag itself, after the sync so the flag is the last word. If either call
+ * fails the row stays queued and the reconnect flush delivers it. Returns
+ * whether the session sync landed, which is what acknowledges listening time.
+ */
+internal suspend fun deliverSessionProgress(
+    isFinished: Boolean,
+    syncSession: suspend () -> Boolean,
+    pushFinished: suspend () -> Boolean,
     acknowledge: suspend () -> Unit,
 ): Boolean {
-    val delivered = deliver()
-    if (delivered) acknowledge()
-    return delivered
+    val synced = syncSession()
+    if (synced && (!isFinished || pushFinished())) acknowledge()
+    return synced
 }
 
 @Singleton
@@ -365,8 +375,9 @@ class ProgressRepository @Inject constructor(
             duration = duration,
             onPersisted = onPersisted,
         )
-        acknowledgePendingFallbackOnSuccess(
-            deliver = {
+        deliverSessionProgress(
+            isFinished = isFinished,
+            syncSession = {
                 try {
                     apiService.syncSessionProgress(
                         sessionId = sessionId,
@@ -374,6 +385,15 @@ class ProgressRepository @Inject constructor(
                         duration = duration,
                         timeListened = timeListened,
                     )
+                } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    false
+                }
+            },
+            pushFinished = {
+                try {
+                    apiService.updateProgress(itemId, currentTime, true, duration)
                 } catch (cancellation: kotlinx.coroutines.CancellationException) {
                     throw cancellation
                 } catch (_: Exception) {

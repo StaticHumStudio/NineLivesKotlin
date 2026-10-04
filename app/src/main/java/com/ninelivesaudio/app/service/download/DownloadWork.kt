@@ -4,6 +4,8 @@ import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 // ─── WorkManager identifier + queue selection ─────────────────────────────
 //
@@ -30,21 +32,29 @@ fun selectNextDownload(items: List<DownloadItem>): DownloadItem? =
         )
 
 /**
- * Run a user's pause, cancel or delete write so the engine cannot undo it.
+ * Run the engine with [lock] held, bracketed by [onStart] and [onStop].
  *
- * DownloadEngine upserts a stale Downloading snapshot on every progress tick
- * and marks the book downloaded when it finishes. A write that lands while it
- * is still streaming this book gets clobbered straight back. So when the
- * engine is on this book, [stopEngine] (cancel plus confirmed termination)
- * runs first, and only then [write].
+ * WorkManager marks a cancelled drain finished as soon as the cancel is
+ * recorded, and the stop wait gives up after ten seconds, but a read stuck on
+ * a stalled server only unwinds at the 60 second read timeout. Its cleanup
+ * then deletes the book's `.part` file, the one a replacement drain may be
+ * writing by then. Holding one process-wide lock across the whole run, cleanup
+ * included, means a replacement engine cannot start until the old one has
+ * actually exited. [onStart] runs only once the lock is held, so whatever it
+ * records names the engine that is really running.
  */
-internal suspend fun <T> writeAfterEngineStops(
-    engineActive: Boolean,
-    stopEngine: suspend () -> Unit,
-    write: suspend () -> T,
-): T {
-    if (engineActive) stopEngine()
-    return write()
+internal suspend fun <T> runEngineExclusively(
+    lock: Mutex,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    block: suspend () -> T,
+): T = lock.withLock {
+    onStart()
+    try {
+        block()
+    } finally {
+        onStop()
+    }
 }
 
 /**

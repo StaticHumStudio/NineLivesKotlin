@@ -79,6 +79,17 @@ sealed class LibraryListItem {
     ) : LibraryListItem()
 }
 
+/**
+ * The grouped list's LazyColumn key for this row. A row's key carries the
+ * group key's length, so a group "Smith-Jones" with book "x" and a group
+ * "Smith" with book "Jones-x" can never run together into one key.
+ */
+internal val LibraryListItem.listKey: String
+    get() = when (this) {
+        is LibraryListItem.GroupHeader -> "header-$groupKey"
+        is LibraryListItem.BookRow -> "book-${groupKey.length}-$groupKey-${book.id}"
+    }
+
 data class GroupedSection(
     val key: String,
     val title: String,
@@ -117,13 +128,26 @@ internal fun shouldRequeryShelfAfterSync(
  * Membership is compared as a set: the shown list puts retained libraries
  * after fetched ones while the cache sorts by display order, and treating
  * that order difference as a change reloaded on every sync, forever.
+ * A rename keeps the id, so [librariesRenamed] reports it separately.
  */
 internal fun shouldReloadLibrariesAfterSync(
     selectedLibrary: Library?,
     shownLibraryIds: List<String>,
     cachedLibraryIds: List<String>,
+    librariesRenamed: Boolean = false,
 ): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
-    cachedLibraryIds.toSet() != shownLibraryIds.toSet()
+    cachedLibraryIds.toSet() != shownLibraryIds.toSet() ||
+    librariesRenamed
+
+/**
+ * Whether a library shown under one name is saved under another. Only ids
+ * present in both lists count, since added and removed libraries are the id
+ * comparison's job, and order never matters.
+ */
+internal fun librariesRenamed(shown: List<Library>, cached: List<Library>): Boolean {
+    val cachedNames = cached.associate { it.id to it.name }
+    return shown.any { library -> cachedNames[library.id]?.let { it != library.name } == true }
+}
 
 internal enum class AfterProgressPull { REFILTER, RELOAD_LIBRARIES }
 
@@ -139,8 +163,9 @@ internal fun afterProgressPull(
     selectedLibrary: Library?,
     shownLibraryIds: List<String>,
     cachedLibraryIds: List<String>,
+    librariesRenamed: Boolean = false,
 ): AfterProgressPull =
-    if (shouldReloadLibrariesAfterSync(selectedLibrary, shownLibraryIds, cachedLibraryIds)) {
+    if (shouldReloadLibrariesAfterSync(selectedLibrary, shownLibraryIds, cachedLibraryIds, librariesRenamed)) {
         AfterProgressPull.RELOAD_LIBRARIES
     } else {
         AfterProgressPull.REFILTER
@@ -493,6 +518,7 @@ class LibraryViewModel @Inject constructor(
                                 selectedLibrary = state.selectedLibrary,
                                 shownLibraryIds = state.libraries.map { it.id },
                                 cachedLibraryIds = cached.map { it.id },
+                                librariesRenamed = librariesRenamed(state.libraries, cached),
                             )
                         ) {
                             // This can replace a manual refresh in the lane, and the
@@ -519,7 +545,13 @@ class LibraryViewModel @Inject constructor(
                         settings = settingsManager.currentSettings,
                         cached = libraryRepository.getAudiobookshelf(),
                     )
-                    when (afterProgressPull(state.selectedLibrary, state.libraries.map { it.id }, cached.map { it.id })) {
+                    val pull = afterProgressPull(
+                        selectedLibrary = state.selectedLibrary,
+                        shownLibraryIds = state.libraries.map { it.id },
+                        cachedLibraryIds = cached.map { it.id },
+                        librariesRenamed = librariesRenamed(state.libraries, cached),
+                    )
+                    when (pull) {
                         AfterProgressPull.RELOAD_LIBRARIES ->
                             libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
                         AfterProgressPull.REFILTER -> applyFilter()
@@ -1374,7 +1406,9 @@ internal suspend fun arrangeShelf(
     val sort = FreeTier.effectiveSort(storedSort, isUnlocked)
     val viewMode = FreeTier.effectiveViewMode(storedViewMode, isUnlocked)
     currentCoroutineContext().ensureActive()
-    val sorted = sortBooks(books, sort)
+    // One row per book, whatever the read returned. A book twice is two list
+    // rows with one key, and the list crashes on the second.
+    val sorted = sortBooks(withoutRepeatedIds(books), sort)
     currentCoroutineContext().ensureActive()
     return ArrangedShelf(
         books = sorted,
@@ -1386,7 +1420,8 @@ internal suspend fun arrangeShelf(
 /**
  * Groups shelf books. [books] must already be in [sortMode] order (the shelf
  * sorts once before grouping), and each group keeps that order, so groups are
- * not sorted again.
+ * not sorted again. The one exception is a series in Series view, which reads
+ * in [seriesReadingOrder].
  */
 internal fun buildGroupedSections(
     books: List<AudioBook>,
@@ -1396,16 +1431,67 @@ internal fun buildGroupedSections(
     if (viewMode == ViewMode.ALL) return emptyList()
 
     // Genre view uses multi-placement: a book appears in every genre group it belongs to.
+    // A group's key is its name with runs of spaces made one ("John  Smith" is
+    // "John Smith"). Capitals stay distinct, so "Saga" and "SAGA" remain two
+    // series, and the key never depends on which book sorts first. A book is in
+    // each group at most once.
     val grouped = linkedMapOf<String, MutableList<AudioBook>>()
+    val bookKeys = LinkedHashSet<String>()
     books.forEach { book ->
-        val keys = groupingKeysForBook(book, viewMode)
-        keys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
+        bookKeys.clear()
+        groupingKeysForBook(book, viewMode).forEach { name ->
+            val spelling = collapseSpaces(name)
+            if (spelling.isNotEmpty()) bookKeys += spelling
+        }
+        bookKeys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }
 
-    return grouped.entries
+    val sections = grouped.entries
         .map { (key, values) -> SectionSortEntry(GroupedSection(key = key, title = key, books = values)) }
         .sortedWith(groupedSectionComparator(sortMode))
         .map { it.section }
+    if (viewMode != ViewMode.SERIES) return sections
+
+    // Only now, after the groups are ordered by their books in shelf order,
+    // does each series switch to reading order. A Recently Added shelf still
+    // lists the series with the newest book first. Books with no series are
+    // not a series, so they keep the shelf order.
+    return sections.map { section ->
+        if (section.key == UNKNOWN_SERIES_GROUP) section
+        else section.copy(books = seriesReadingOrder(section.books))
+    }
+}
+
+/**
+ * A series' books in reading order (issue #63): by sequence, compared as
+ * numbers, so 2 comes before 10 and 1.5 sits between 1 and 2. A book with no
+ * sequence, or one that is not a plain number, goes last. Ties go by title,
+ * and books that still tie keep the order they came in.
+ */
+internal fun seriesReadingOrder(books: List<AudioBook>): List<AudioBook> {
+    if (books.size < 2) return books
+    return books
+        .map { SeriesOrderEntry(it) }
+        .sortedWith(compareBy<SeriesOrderEntry, Double?>(nullsLast()) { it.sequence }.thenBy { it.titleKey })
+        .map { it.book }
+}
+
+private val PLAIN_SEQUENCE_NUMBER = Regex("""\d+(?:[.,]\d+)?""")
+
+/**
+ * A series sequence as a number: "10", "1.5", or "1,5" as some tags write
+ * it. Null for anything else ("Book 3", "1-3", blank), which sorts last.
+ */
+internal fun seriesSequenceNumber(sequence: String?): Double? {
+    val text = sequence?.trim() ?: return null
+    if (!PLAIN_SEQUENCE_NUMBER.matches(text)) return null
+    return text.replace(',', '.').toDoubleOrNull()
+}
+
+/** A book with its reading order keys worked out once, not on every compare. */
+private class SeriesOrderEntry(val book: AudioBook) {
+    val sequence: Double? = seriesSequenceNumber(book.seriesSequence)
+    val titleKey: String = book.title.lowercase()
 }
 
 /** Grouped views start collapsed when they have more groups than this. */
@@ -1433,15 +1519,22 @@ internal fun toggledGroupChoices(
 /**
  * Headers and rows for a grouped view. A group the user expanded or collapsed
  * by hand ([choices]) stays that way, any other follows [groupsStartExpanded].
+ *
+ * Every row has its own [listKey]: a repeat (which the groups should never
+ * hold) is dropped and the first kept, so a stray one cannot crash the list.
  */
 internal fun flattenGroupedItems(
     groupedSections: List<GroupedSection>,
     choices: Map<String, Boolean>,
 ): List<LibraryListItem> = buildList {
     val startExpanded = groupsStartExpanded(groupedSections.size)
+    val usedKeys = HashSet<String>()
+    fun addOnce(item: LibraryListItem) {
+        if (usedKeys.add(item.listKey)) add(item)
+    }
     groupedSections.forEach { section ->
         val expanded = choices[section.key] ?: startExpanded
-        add(
+        addOnce(
             LibraryListItem.GroupHeader(
                 groupKey = section.key,
                 title = section.title,
@@ -1450,14 +1543,34 @@ internal fun flattenGroupedItems(
             )
         )
         if (expanded) {
-            section.books.forEach { add(LibraryListItem.BookRow(groupKey = section.key, book = it)) }
+            section.books.forEach { addOnce(LibraryListItem.BookRow(groupKey = section.key, book = it)) }
+        }
+    }
+}
+
+/** [books] with each id once, the first kept, in order. */
+internal fun withoutRepeatedIds(books: List<AudioBook>): List<AudioBook> {
+    val seen = HashSet<String>(books.size * 2)
+    return books.filter { seen.add(it.id) }
+}
+
+/** [name] trimmed, with each run of spaces inside it made one space. */
+private fun collapseSpaces(name: String): String {
+    val trimmed = name.trim()
+    return buildString(trimmed.length) {
+        var lastWasSpace = false
+        for (c in trimmed) {
+            val isSpace = c.isWhitespace()
+            if (!isSpace) append(c) else if (!lastWasSpace) append(' ')
+            lastWasSpace = isSpace
         }
     }
 }
 
 private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<String> = when (viewMode) {
     ViewMode.SERIES -> listOf(book.seriesName?.takeIf { it.isNotBlank() } ?: UNKNOWN_SERIES_GROUP)
-    ViewMode.AUTHOR -> listOf(book.author.takeIf { it.isNotBlank() } ?: UNKNOWN_AUTHOR_GROUP)
+    // Multi-placement too: a co-authored book appears under each author.
+    ViewMode.AUTHOR -> authorGroupNames(book).ifEmpty { listOf(UNKNOWN_AUTHOR_GROUP) }
     ViewMode.GENRE -> book.genres
         .asSequence()
         .map { it.trim() }
@@ -1467,6 +1580,42 @@ private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<Strin
         .ifEmpty { listOf(UNKNOWN_GENRE_GROUP) }
     ViewMode.ALL -> emptyList()
 }
+
+/**
+ * The authors a book is listed under in Author view (issue #64). The book
+ * itself keeps its full author line for display. Audiobookshelf's library
+ * list sends a co-authored book's authors as one string joined with ", ", so
+ * a server book is split there ([splitServerAuthorNames]). A local book's
+ * author comes from its tags or folder, where "Tolkien, J.R.R." is one
+ * person written last name first, so it stays whole. Empty for no author.
+ */
+internal fun authorGroupNames(book: AudioBook): List<String> {
+    val author = book.author.trim()
+    if (author.isEmpty()) return emptyList()
+    return if (book.isLocal) listOf(author) else splitServerAuthorNames(author)
+}
+
+/**
+ * The names in an Audiobookshelf author line, which joins its authors with
+ * ", ". The library list sends nothing more structured, so a piece that is
+ * only a name suffix ("Jr.", "III", "PhD") is put back on the name before it:
+ * "Martin Luther King, Jr., Coretta Scott King" is two people, not three.
+ */
+internal fun splitServerAuthorNames(authorName: String): List<String> {
+    val names = ArrayList<String>()
+    for (piece in authorName.split(", ")) {
+        val name = piece.trim()
+        if (name.isEmpty()) continue
+        if (names.isNotEmpty() && isNameSuffix(name)) names[names.lastIndex] = "${names.last()}, $name"
+        else names += name
+    }
+    return names.distinct()
+}
+
+/** Name suffixes that follow a comma inside one author's name. */
+private val NAME_SUFFIXES = setOf("jr", "sr", "ii", "iii", "iv", "phd", "ph.d", "md", "m.d", "esq", "inc", "llc", "ltd")
+
+private fun isNameSuffix(piece: String): Boolean = piece.lowercase().removeSuffix(".") in NAME_SUFFIXES
 
 /** A section with its lowercased title worked out once, not on every compare. */
 private class SectionSortEntry(val section: GroupedSection) {

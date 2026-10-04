@@ -12,6 +12,9 @@ data class AppSettings(
     val selectedLibraryId: String? = null, // persisted library selection
     val selectedLocalLibraryId: String? = null, // persisted local library selection
     val downloadPath: String = "",
+    // Book downloads wait for an unmetered network. On by default, and settings
+    // saved before this existed decode to the default, so upgrades get it too.
+    val downloadOnWifiOnly: Boolean = true,
     val autoDownloadCovers: Boolean = true,
     val playbackSpeed: Double = 1.0,
     val autoSyncProgress: Boolean = true,

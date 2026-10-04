@@ -48,6 +48,13 @@ class DownloadSlotStore @Inject constructor(
             cache.downloadsPaused = value
         }
 
+    /** Downloads sent over mobile data. See [EntitlementCachePrefs.meteredOverrideDownloadIds]. */
+    var meteredOverrides: Set<String>
+        get() = cache.meteredOverrideDownloadIds
+        set(value) {
+            cache.meteredOverrideDownloadIds = value
+        }
+
     var persistedWinner: String?
         get() = cache.slotWinnerAudioBookId
         set(value) {

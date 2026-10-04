@@ -154,6 +154,25 @@ class AppSettingsTest {
     }
 
     @Test
+    fun `downloads wait for Wi-Fi by default`() {
+        assertTrue(AppSettings().downloadOnWifiOnly)
+    }
+
+    @Test
+    fun `an upgrade from settings saved before Wi-Fi only gets it on`() {
+        val legacy = """{"appMode":"AUDIOBOOKSHELF","serverUrl":"https://example.com","downloadPath":"/x"}"""
+        val decoded = json.decodeFromString<AppSettings>(legacy)
+
+        assertTrue(decoded.downloadOnWifiOnly)
+    }
+
+    @Test
+    fun `turning Wi-Fi only off survives a round trip`() {
+        val decoded = json.decodeFromString<AppSettings>(json.encodeToString(AppSettings(downloadOnWifiOnly = false)))
+        assertFalse(decoded.downloadOnWifiOnly)
+    }
+
+    @Test
     fun `orphan book is rejected when no active library is selected`() {
         val settings = AppSettings(
             appMode = AppMode.LOCAL,

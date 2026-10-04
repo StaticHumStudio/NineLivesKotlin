@@ -71,6 +71,16 @@ interface AudioBookDao {
     @Query("SELECT LocalPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != ''")
     suspend fun getLocalPathsExcept(excludeId: String): List<String>
 
+    /**
+     * Ids of every other book stored at a file path (not a content URI), for
+     * the shared-folder check on delete. Only those rows need their track lists.
+     */
+    @Query(
+        "SELECT Id FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != '' " +
+            "AND LocalPath NOT LIKE 'content:%'"
+    )
+    suspend fun getFilePathBookIdsExcept(excludeId: String): List<String>
+
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     fun observeById(id: String): Flow<AudioBookEntity?>
 

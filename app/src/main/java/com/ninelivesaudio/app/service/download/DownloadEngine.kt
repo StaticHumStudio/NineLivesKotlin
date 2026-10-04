@@ -95,7 +95,7 @@ class DownloadEngine @Inject constructor(
         // Track order comes from the server-reported index, not response order,
         // and leaf names are resolved once so sanitization collisions stay distinct.
         val orderedFiles = book.audioFiles.sortedBy { it.index }
-        val fileNames = resolveDownloadFileNames(orderedFiles)
+        val fileNames = downloadedFileNames(book.audioFiles)
 
         // Download each audio file
         for (i in orderedFiles.indices) {
@@ -317,6 +317,17 @@ class DownloadEngine @Inject constructor(
         val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
         return DownloadLocation(root = root, folder = File(root, folderName), rootIsAppOwned = appOwned)
     }
+
+    /**
+     * Where a finished download's stored [localPath] sits, for delete. Null when
+     * the path is not one the engine could have written. See [deleteLocationFor].
+     */
+    internal fun storedDownloadLocation(localPath: String): DownloadLocation? =
+        deleteLocationFor(
+            storedPath = localPath,
+            configuredPath = settingsManager.currentSettings.downloadPath,
+            defaultRoot = defaultBasePath(),
+        )
 
     /** Base storage directory for all downloads. */
     private fun getBasePath(): File {

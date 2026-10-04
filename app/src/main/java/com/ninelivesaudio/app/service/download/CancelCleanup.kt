@@ -139,19 +139,9 @@ internal fun decideCancelCleanup(
     if (!location.rootIsAppOwned) return CancelCleanupDecision.Keep(CancelKeepReason.USER_FOLDER)
     if (bookIsDownloaded) return CancelCleanupDecision.Keep(CancelKeepReason.BOOK_DOWNLOADED)
 
-    val root = canonicalOrNull(location.root)
-        ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
-    val folderPath = location.folder.toPath()
-    if (Files.isSymbolicLink(folderPath)) {
-        return CancelCleanupDecision.Keep(CancelKeepReason.OUTSIDE_ROOT)
-    }
-    val folder = canonicalOrNull(location.folder)
-        ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
-    if (folder == root || folder.parentFile != root) {
-        return CancelCleanupDecision.Keep(CancelKeepReason.OUTSIDE_ROOT)
-    }
-    if (!Files.isDirectory(folder.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-        return CancelCleanupDecision.Keep(CancelKeepReason.NO_FOLDER)
+    val folder = when (val contained = containedFolder(location)) {
+        is Containment.Inside -> contained.folder
+        is Containment.Refused -> return CancelCleanupDecision.Keep(contained.reason)
     }
 
     for (raw in otherBookPaths) {
@@ -168,14 +158,8 @@ internal fun decideCancelCleanup(
         if (otherCanonical == folder) return CancelCleanupDecision.Keep(CancelKeepReason.SHARED)
     }
 
-    val children = try {
-        // DirectoryStream, not Files.list(...).toList(): Stream.toList needs API 34.
-        Files.newDirectoryStream(folder.toPath()).use { stream -> stream.toList() }
-    } catch (_: IOException) {
-        return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
-    } catch (_: SecurityException) {
-        return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
-    }
+    val children = listChildren(folder)
+        ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
     if (children.any { !Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }) {
         return CancelCleanupDecision.Keep(CancelKeepReason.UNEXPECTED_CONTENTS)
     }
@@ -271,4 +255,159 @@ private fun pathsOverlap(a: File, b: File): Boolean {
     val pa = a.toPath()
     val pb = b.toPath()
     return pa == pb || pa.startsWith(pb) || pb.startsWith(pa)
+}
+
+// ─── Deleting a finished download (#49) ───────────────────────────────────
+
+/** Another book whose stored localPath may be this folder, and the files it owns there. */
+internal data class FolderSharer(
+    val path: String,
+    /** The leaf names its track list resolves to, or null when it has no track list. */
+    val fileNames: List<String>?,
+)
+
+/**
+ * Where a downloaded book's stored localPath sits, for [deleteDownloadFiles].
+ *
+ * The stored path wins over today's folder name, since the title can change
+ * after the download. A folder straight inside the app's own storage counts as
+ * app owned even when another root is configured now, so a book downloaded
+ * before a path change can still be deleted. Anything else is judged against
+ * the configured root, the same way the engine picks it. Null for a blank
+ * path or a content URI, which the engine never writes.
+ */
+internal fun deleteLocationFor(storedPath: String, configuredPath: String, defaultRoot: File): DownloadLocation? {
+    val folder = bookPathAsFile(storedPath) ?: return null
+    val parent = canonicalOrNull(folder)?.parentFile
+    if (parent != null && parent == canonicalOrNull(defaultRoot)) {
+        return DownloadLocation(root = defaultRoot, folder = folder, rootIsAppOwned = true)
+    }
+    val (root, appOwned) = resolveDownloadRoot(configuredPath, defaultRoot)
+    return DownloadLocation(root = root, folder = folder, rootIsAppOwned = appOwned)
+}
+
+/**
+ * Decide what deleting a downloaded book may remove from [location], then
+ * remove it. Uses the same rules as cancel cleanup and never recurses.
+ *
+ * Kept whole when:
+ * - the root is a user-picked download folder,
+ * - the folder is not a real direct child of the root (a symlink, the root
+ *   itself, `..`, or anything that resolves elsewhere),
+ * - the folder does not exist,
+ * - a [sharers] path sits above or inside the folder, or will not resolve,
+ * - a [sharers] entry is this exact folder but has no track list, so its
+ *   files cannot be told apart from this book's,
+ * - an [otherDownloadFolders] entry (where a live download row writes) is the
+ *   folder.
+ *
+ * When another downloaded book shares this exact folder (two editions with the
+ * same author and title), only [ownFileNames] that no sharer also claims go,
+ * with their `.part` leftovers. The cover stays for the other book. When
+ * nobody shares it and it holds only plain files, every file goes and then the
+ * folder. A subfolder or link inside is never followed, so with one present
+ * only this book's own files and its cover go.
+ */
+internal fun deleteDownloadFiles(
+    location: DownloadLocation,
+    ownFileNames: List<String>,
+    sharers: List<FolderSharer>,
+    otherDownloadFolders: List<File>,
+): CancelCleanupDecision {
+    val decision = decideDownloadDelete(location, ownFileNames, sharers, otherDownloadFolders)
+    if (decision is CancelCleanupDecision.Delete) applyCancelCleanup(decision)
+    return decision
+}
+
+private fun decideDownloadDelete(
+    location: DownloadLocation,
+    ownFileNames: List<String>,
+    sharers: List<FolderSharer>,
+    otherDownloadFolders: List<File>,
+): CancelCleanupDecision {
+    if (!location.rootIsAppOwned) return CancelCleanupDecision.Keep(CancelKeepReason.USER_FOLDER)
+
+    val folder = when (val contained = containedFolder(location)) {
+        is Containment.Inside -> contained.folder
+        is Containment.Refused -> return CancelCleanupDecision.Keep(contained.reason)
+    }
+
+    // Other books stored at exactly this folder. One above or inside it means
+    // the layout is not ours to judge, so everything stays.
+    val sameFolder = mutableListOf<FolderSharer>()
+    for (sharer in sharers) {
+        val other = bookPathAsFile(sharer.path) ?: continue
+        val otherCanonical = canonicalOrNull(other)
+            ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
+        if (otherCanonical == folder) {
+            sameFolder += sharer
+        } else if (pathsOverlap(folder, otherCanonical)) {
+            return CancelCleanupDecision.Keep(CancelKeepReason.SHARED)
+        }
+    }
+    for (other in otherDownloadFolders) {
+        val otherCanonical = canonicalOrNull(other)
+            ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
+        if (otherCanonical == folder) return CancelCleanupDecision.Keep(CancelKeepReason.SHARED)
+    }
+    if (sameFolder.any { it.fileNames == null }) {
+        return CancelCleanupDecision.Keep(CancelKeepReason.SHARED)
+    }
+
+    val children = listChildren(folder)
+        ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
+    val plainFiles = children.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.map(Path::toFile)
+
+    if (sameFolder.isEmpty() && plainFiles.size == children.size) {
+        return CancelCleanupDecision.Delete(folder, plainFiles)
+    }
+
+    val claimedByOthers = sameFolder.flatMapTo(HashSet()) { it.fileNames.orEmpty() }
+    val own = ownFileNames.filterNot { it in claimedByOthers }
+    val targets = buildSet {
+        own.forEach { add(it); add("$it.part") }
+        if (sameFolder.isEmpty()) add(COVER_FILE_NAME)
+    }
+    return CancelCleanupDecision.Delete(folder, plainFiles.filter { it.name in targets })
+}
+
+/** The cover the engine saves next to the audio. */
+private const val COVER_FILE_NAME = "cover.jpg"
+
+private sealed interface Containment {
+    data class Inside(val folder: File) : Containment
+    data class Refused(val reason: CancelKeepReason) : Containment
+}
+
+/**
+ * The canonical book folder when it is a real directory sitting directly in
+ * the canonical root. A symlink, the root itself, `..`, a deeper folder, or
+ * anything that resolves elsewhere is refused. Shared by cancel and delete so
+ * both stay inside the same fence.
+ */
+private fun containedFolder(location: DownloadLocation): Containment {
+    val root = canonicalOrNull(location.root)
+        ?: return Containment.Refused(CancelKeepReason.UNRESOLVABLE)
+    if (Files.isSymbolicLink(location.folder.toPath())) {
+        return Containment.Refused(CancelKeepReason.OUTSIDE_ROOT)
+    }
+    val folder = canonicalOrNull(location.folder)
+        ?: return Containment.Refused(CancelKeepReason.UNRESOLVABLE)
+    if (folder == root || folder.parentFile != root) {
+        return Containment.Refused(CancelKeepReason.OUTSIDE_ROOT)
+    }
+    if (!Files.isDirectory(folder.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+        return Containment.Refused(CancelKeepReason.NO_FOLDER)
+    }
+    return Containment.Inside(folder)
+}
+
+/** Everything directly inside [folder], or null when it cannot be listed. */
+private fun listChildren(folder: File): List<Path>? = try {
+    // DirectoryStream, not Files.list(...).toList(): Stream.toList needs API 34.
+    Files.newDirectoryStream(folder.toPath()).use { stream -> stream.toList() }
+} catch (_: IOException) {
+    null
+} catch (_: SecurityException) {
+    null
 }

@@ -19,6 +19,9 @@ import com.ninelivesaudio.app.service.download.applyCancelCleanup
 import com.ninelivesaudio.app.service.download.cancelCleanupStillClear
 import com.ninelivesaudio.app.service.download.cancelMayTouchFiles
 import com.ninelivesaudio.app.service.download.decideCancelCleanup
+import com.ninelivesaudio.app.service.download.deleteDownloadFiles
+import com.ninelivesaudio.app.service.download.downloadedFileNames
+import com.ninelivesaudio.app.service.download.FolderSharer
 import com.ninelivesaudio.app.service.download.DownloadEngine
 import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
@@ -44,7 +47,6 @@ import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -662,10 +664,18 @@ class DownloadManager @Inject constructor(
 
     /** Delete a download's files and DB record. */
     suspend fun deleteDownload(audioBookId: String): Unit = finishInOwnerScope(scope) {
-        val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
-        val wasDownloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal
-        writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
-            deleteDownloadedFilesAndRows(audioBookId, downloadEntity?.id)
+        // Held through the file deletion like cancel, so no resume or drain
+        // start lands on this book while its files are being judged.
+        val wasDownloading = rowMutex.withLock {
+            val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
+            // The drain can pick a Queued row at any moment, so the engine
+            // already being on the book counts as downloading too.
+            val downloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal ||
+                engineBookId == audioBookId
+            writeAfterEngineStops(downloading, { stopDrainAndAwait() }) {
+                deleteDownloadedFilesAndRows(audioBookId, downloadEntity?.id)
+            }
+            downloading
         }
         if (wasDownloading) {
             // Restart the drain for whatever else is queued.
@@ -680,20 +690,65 @@ class DownloadManager @Inject constructor(
         // set by the engine (basePath/Author - Title), not basePath/audioBookId.
         val bookEntity = audioBookDao.getById(audioBookId)
 
-        withContext(Dispatchers.IO) {
-            val localPath = bookEntity?.localPath
-            if (!localPath.isNullOrEmpty()) {
-                File(localPath).deleteRecursively()
-            }
+        val localPath = bookEntity?.localPath
+        if (!localPath.isNullOrEmpty()) {
+            removeDownloadedFiles(bookEntity.toDomain(), localPath)
         }
 
         if (bookEntity != null) {
-            // The cover.jpg lived inside localPath and was removed by deleteRecursively
-            // above, so drop its reference too.
+            // The cover.jpg either went with the folder or belongs to another
+            // edition now, so this book stops pointing at it either way.
             audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
         }
         if (downloadId != null) {
             downloadItemDao.deleteById(downloadId)
+        }
+    }
+
+    /**
+     * Delete [book]'s downloaded files from [localPath] and nothing else (#49).
+     *
+     * Two editions with the same author and title share one folder, so the
+     * other books stored there come along with their track lists, and only this
+     * book's own files go. The rules live in [deleteDownloadFiles], which shares
+     * cancel cleanup's fences: never outside the download root, never in a
+     * user-picked folder, never recursive. Best effort: a failure here leaves
+     * files behind but never fails the delete.
+     */
+    private suspend fun removeDownloadedFiles(book: AudioBook, localPath: String) {
+        try {
+            val location = engine.storedDownloadLocation(localPath) ?: return
+            val sharers = lookUpInChunks(audioBookDao.getFilePathBookIdsExcept(book.id)) { audioBookDao.getByIds(it) }
+                .map { it.toDomain() }
+                .map { other ->
+                    FolderSharer(
+                        path = other.localPath.orEmpty(),
+                        fileNames = other.audioFiles.takeIf { it.isNotEmpty() }?.let(::downloadedFileNames),
+                    )
+                }
+            // Unfinished downloads of other books, and where each would write.
+            // Their track lists are not known yet, so sharing a folder with one
+            // keeps everything.
+            val liveOtherBookIds = downloadItemDao.getAll()
+                .filter { it.audioBookId != book.id && it.status != DownloadStatus.Completed.ordinal }
+                .map { it.audioBookId }
+                .distinct()
+            val otherFolders = lookUpInChunks(liveOtherBookIds) { audioBookDao.getByIds(it) }
+                .map { engine.downloadLocationFor(it.toDomain()).folder }
+
+            val decision = withContext(Dispatchers.IO) {
+                deleteDownloadFiles(location, downloadedFileNames(book.audioFiles), sharers, otherFolders)
+            }
+            when (decision) {
+                is CancelCleanupDecision.Keep ->
+                    android.util.Log.d("DownloadManager", "delete kept files: ${decision.reason}")
+                is CancelCleanupDecision.Delete ->
+                    android.util.Log.d("DownloadManager", "delete removed ${decision.files.size} files")
+            }
+        } catch (cancellation: kotlinx.coroutines.CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            android.util.Log.w("DownloadManager", "delete left files: ${e.message}")
         }
     }
 

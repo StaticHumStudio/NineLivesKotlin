@@ -40,6 +40,13 @@ internal fun downloadFolderName(author: String, title: String, fallbackId: Strin
     return sanitizeDownloadFileName(raw).ifBlank { fallbackId }
 }
 
+/**
+ * The leaf names a book's tracks get on disk, in the engine's order. Delete
+ * uses the same list to tell this book's files from another edition's.
+ */
+internal fun downloadedFileNames(files: List<AudioFile>): List<String> =
+    resolveDownloadFileNames(files.sortedBy { it.index })
+
 /** Stable on-disk leaf names, disambiguating only sanitization collisions. */
 internal fun resolveDownloadFileNames(files: List<AudioFile>): List<String> {
     val baseNames = files.mapIndexed { index, file ->

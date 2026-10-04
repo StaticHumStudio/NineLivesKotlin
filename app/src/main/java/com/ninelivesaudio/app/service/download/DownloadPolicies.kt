@@ -30,14 +30,66 @@ internal fun sanitizeDownloadFileName(name: String): String =
         .take(MAX_FILE_NAME_LENGTH)
 
 /**
- * Folder name for a downloaded book: "Author - Title" when a real author is
- * known, otherwise just the title, falling back to the book id when both are
- * blank. Sanitized for the filesystem.
+ * The folder name downloads used before #49: "Author - Title" when a real
+ * author is known, otherwise just the title, falling back to the book id when
+ * both are blank. Sanitized for the filesystem. Two editions with the same
+ * author and title got the same folder, so only a download that started under
+ * this name still uses it (see [bookDownloadFolder]).
  */
-internal fun downloadFolderName(author: String, title: String, fallbackId: String): String {
+internal fun downloadFolderName(author: String, title: String, fallbackId: String): String =
+    sanitizeDownloadFileName(authorTitle(author, title)).ifBlank { fallbackId }
+
+private fun authorTitle(author: String, title: String): String {
     val realAuthor = author.takeIf { it.isNotBlank() && it != "Unknown Author" }
-    val raw = if (realAuthor != null) "$realAuthor - $title" else title
-    return sanitizeDownloadFileName(raw).ifBlank { fallbackId }
+    return if (realAuthor != null) "$realAuthor - $title" else title
+}
+
+/** Characters of the item id a download folder's name ends with. */
+private const val SHORT_ITEM_ID_LENGTH = 8
+
+/** UTF-8 bytes a download folder's name may use. Android filesystems cap a name at 255. */
+internal const val MAX_FOLDER_NAME_BYTES = 200
+
+/**
+ * The tail of an ABS item id, letters and digits only. ABS ids end in random
+ * characters (a UUID, or `li_` plus random letters), so eight of them tell two
+ * editions of one title apart. An id with no letters or digits uses its hash.
+ */
+internal fun shortItemId(itemId: String): String =
+    itemId.filter { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }
+        .takeLast(SHORT_ITEM_ID_LENGTH)
+        .ifEmpty { Integer.toHexString(itemId.hashCode()) }
+
+/**
+ * Folder name for a new download: "Author - Title [id]". The title comes
+ * first so other apps show it readably, and the item id keeps two editions out
+ * of each other's folder (#49). The title is cut so the whole name fits
+ * [MAX_FOLDER_NAME_BYTES], and the id always survives.
+ */
+internal fun itemDownloadFolderName(author: String, title: String, itemId: String): String {
+    val suffix = "[${shortItemId(itemId)}]"
+    val room = MAX_FOLDER_NAME_BYTES - suffix.length - 1
+    val base = takeUtf8Bytes(sanitizeDownloadFileName(authorTitle(author, title)), room).trimEnd()
+    return if (base.isEmpty()) suffix else "$base $suffix"
+}
+
+/** The longest start of [text] that fits [maxBytes] of UTF-8, never splitting a character. */
+private fun takeUtf8Bytes(text: String, maxBytes: Int): String {
+    var bytes = 0
+    var end = 0
+    while (end < text.length) {
+        val codePoint = text.codePointAt(end)
+        val size = when {
+            codePoint < 0x80 -> 1
+            codePoint < 0x800 -> 2
+            codePoint < 0x10000 -> 3
+            else -> 4
+        }
+        if (bytes + size > maxBytes) break
+        bytes += size
+        end += Character.charCount(codePoint)
+    }
+    return text.substring(0, end)
 }
 
 /**

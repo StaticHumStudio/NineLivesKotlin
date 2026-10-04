@@ -211,7 +211,9 @@ class DownloadsViewModel @Inject constructor(
 
     fun deleteDownload(audioBookId: String) {
         viewModelScope.launch {
-            downloadManager.deleteDownload(audioBookId)
+            if (!downloadManager.deleteDownload(audioBookId)) {
+                _uiState.update { it.copy(notice = DELETE_REFUSED_NOTICE) }
+            }
         }
     }
 
@@ -222,6 +224,11 @@ class DownloadsViewModel @Inject constructor(
         }
     }
 }
+
+/** What a delete says when it kept the files because they might not be only this book's. */
+internal const val DELETE_REFUSED_NOTICE =
+    "Couldn't safely remove this book's files, so it's still downloaded. " +
+        "Another download may share its folder, or the download folder changed since."
 
 /**
  * A Retry the free slot refuses has to say so. It used to requeue anyway and

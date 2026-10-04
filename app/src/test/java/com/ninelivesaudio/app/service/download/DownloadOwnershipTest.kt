@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -33,7 +34,11 @@ class DownloadOwnershipTest {
 
     private fun track(name: String, index: Int = 0) = AudioFile(id = name, ino = name, index = index, filename = name)
 
-    /** Room and the path rules, in memory. Every book folder is "Author - Title" under [root]. */
+    /**
+     * Room and the path rules, in memory, with the engine's real folder rule.
+     * The races here play out in shared "Author - Title" folders left by
+     * downloads that started before each book got its own folder (#49).
+     */
     private class FakeReads(val root: File) : FolderReads {
         val books = mutableMapOf<String, AudioBook>()
         val rows = mutableMapOf<String, DownloadItem>()
@@ -50,9 +55,10 @@ class DownloadOwnershipTest {
         }
         override suspend fun localPathsExcept(audioBookId: String) =
             books.values.filter { it.id != audioBookId }.mapNotNull { it.localPath?.takeIf(String::isNotEmpty) }
-        override suspend fun downloadRows() = rows.values.map { DownloadOwnerRow(it.audioBookId, it.status.ordinal) }
-        override fun plannedLocation(book: AudioBook) =
-            DownloadLocation(root, File(root, downloadFolderName(book.author, book.title, book.id)), true)
+        override suspend fun downloadRows() =
+            rows.values.map { DownloadOwnerRow(it.audioBookId, it.status.ordinal, it.downloadedBytes) }
+        override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
+            DownloadLocation(root, bookDownloadFolder(root, book, startedWriting), true)
         override fun storedLocation(localPath: String) = deleteLocationFor(localPath, "", root)
     }
 
@@ -135,7 +141,7 @@ class DownloadOwnershipTest {
 
         ownership.noEngineOn("A") {
             reads.rows.remove("dA")
-            removeCancelledPartialFiles(reads, ownership, "A")
+            removeCancelledPartialFiles(reads, ownership, "A", startedWriting = true)
         }
 
         assertTrue("B's in-progress track went with A's cancel", File(shared, "b-01.mp3.part").exists())
@@ -247,7 +253,7 @@ class DownloadOwnershipTest {
         // A read stuck on a stalled server: the stop gives up, the engine stays.
         ownership.actOnceEngineIsOff("A", rowIsDownloading = { true }, stopEngine = { false }) {
             reads.rows.remove("dA")
-            removeCancelledPartialFiles(reads, ownership, "A")
+            removeCancelledPartialFiles(reads, ownership, "A", startedWriting = true)
         }
 
         assertTrue(File(dir, "02.mp3.part").exists())
@@ -283,7 +289,7 @@ class DownloadOwnershipTest {
 
         ownership.noEngineOn("A") {
             reads.rows.remove("dA")
-            removeCancelledPartialFiles(reads, ownership, "A")
+            removeCancelledPartialFiles(reads, ownership, "A", startedWriting = true)
         }
 
         assertFalse(dir.exists())
@@ -347,5 +353,147 @@ class DownloadOwnershipTest {
         assertNull(ownership.claimFor(reads, "dD", File(root, "D")))
         assertEquals(DownloadStatus.Paused, reads.rows.getValue("dP").status)
         assertNull(ownership.engineClaim)
+    }
+
+    // ─── Each download in its own folder (#49) ───────────────────────────────
+
+    private val editionA = AudioBook(id = "li_editionaaa1", title = "Moby-Dick", author = "Herman Melville")
+    private val editionB = AudioBook(id = "li_editionbbb2", title = "Moby-Dick", author = "Herman Melville")
+    private val legacyName = "Herman Melville - Moby-Dick"
+
+    @Test
+    fun `a new download never lands in another edition's cancelled partial folder`() {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        // A cancelled partial of edition A, left in the old shared folder.
+        folder(root, legacyName, "01.mp3", "02.mp3.part")
+
+        val target = bookDownloadFolder(root, editionB, startedWriting = false)
+
+        assertNotEquals(File(root, legacyName), target)
+        assertFalse("B would reuse A's partial track", File(target, "01.mp3").exists())
+    }
+
+    @Test
+    fun `two editions download side by side into separate folders`() {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val a = bookDownloadFolder(root, editionA, startedWriting = false)
+        val b = bookDownloadFolder(root, editionB, startedWriting = false)
+
+        assertNotEquals(a, b)
+        assertEquals(root, a.parentFile)
+        assertEquals(root, b.parentFile)
+    }
+
+    @Test
+    fun `a download started before its own folder existed resumes in its old folder`() {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val old = folder(root, legacyName, "01.mp3")
+
+        assertEquals(old, bookDownloadFolder(root, editionA, startedWriting = true))
+    }
+
+    @Test
+    fun `a started download that already wrote into its own folder stays there`() {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        folder(root, legacyName, "01.mp3")
+        val own = folder(root, itemDownloadFolderName(editionA.author, editionA.title, editionA.id), "01.mp3")
+
+        assertEquals(own, bookDownloadFolder(root, editionA, startedWriting = true))
+    }
+
+    @Test
+    fun `a started download with no old folder gets its own`() {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val target = bookDownloadFolder(root, editionA, startedWriting = true)
+        assertEquals(itemDownloadFolderName(editionA.author, editionA.title, editionA.id), target.name)
+    }
+
+    @Test
+    fun `deleting one edition while the other downloads removes all of the first one's files`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        val aDir = bookDownloadFolder(root, editionA, startedWriting = false)
+        folder(root, aDir.name, "01.mp3", "cover.jpg")
+        val a = editionA.copy(isDownloaded = true, localPath = aDir.absolutePath, audioFiles = listOf(track("01.mp3")))
+        reads.books[a.id] = a
+        reads.books[editionB.id] = editionB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = editionB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        val bDir = bookDownloadFolder(root, editionB, startedWriting = false)
+        assertNotNull(ownership.claimFor(reads, "dB", bDir))
+        folder(root, bDir.name, "01.mp3.part")
+
+        ownership.noEngineOn(a.id) { removeDownloadedBookFiles(reads, ownership, a, aDir.absolutePath) }
+
+        assertFalse("A's files were left behind", aDir.exists())
+        assertTrue(File(bDir, "01.mp3.part").exists())
+    }
+
+    @Test
+    fun `deleting an old shared-folder download while a new edition is queued removes it`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        val old = folder(root, legacyName, "01.mp3", "cover.jpg")
+        val a = editionA.copy(isDownloaded = true, localPath = old.absolutePath, audioFiles = listOf(track("01.mp3")))
+        reads.books[a.id] = a
+        reads.books[editionB.id] = editionB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = editionB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(a.id) { removeDownloadedBookFiles(reads, ownership, a, old.absolutePath) }
+
+        assertFalse("A's old folder was kept for a download that will never write there", old.exists())
+    }
+
+    @Test
+    fun `an old paused download still keeps its shared folder safe from the other edition's delete`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        val old = folder(root, legacyName, "a1.mp3", "b1.mp3", "b2.mp3.part")
+        val a = editionA.copy(isDownloaded = true, localPath = old.absolutePath, audioFiles = listOf(track("a1.mp3")))
+        reads.books[a.id] = a
+        reads.books[editionB.id] = editionB
+        reads.rows["dB"] = DownloadItem(
+            id = "dB", audioBookId = editionB.id, status = DownloadStatus.Paused, downloadedBytes = 3,
+        )
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(a.id) { removeDownloadedBookFiles(reads, ownership, a, old.absolutePath) }
+
+        assertTrue("B's finished track went with A's delete", File(old, "b1.mp3").exists())
+        assertTrue(File(old, "b2.mp3.part").exists())
+    }
+
+    @Test
+    fun `cancelling a new download cleans its own folder and leaves the old shared one alone`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        // An old cancelled partial nobody tracks any more, from before the upgrade.
+        val old = folder(root, legacyName, "01.mp3")
+        val own = folder(root, itemDownloadFolderName(editionB.author, editionB.title, editionB.id), "01.mp3", "02.mp3.part")
+        reads.books[editionB.id] = editionB
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(editionB.id) {
+            removeCancelledPartialFiles(reads, ownership, editionB.id, startedWriting = true)
+        }
+
+        assertFalse(own.exists())
+        assertTrue(File(old, "01.mp3").exists())
+    }
+
+    @Test
+    fun `cancelling an old paused download cleans its old folder`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        val old = folder(root, legacyName, "01.mp3", "02.mp3.part")
+        reads.books[editionA.id] = editionA
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(editionA.id) {
+            removeCancelledPartialFiles(reads, ownership, editionA.id, startedWriting = true)
+        }
+
+        assertFalse(old.exists())
     }
 }

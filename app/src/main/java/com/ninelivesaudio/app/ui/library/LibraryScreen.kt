@@ -34,7 +34,10 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.onClick as onClickAction
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -342,6 +345,9 @@ internal fun RefreshableEmptyLibraryContent(
 
 // ─── Relic Search Bar ────────────────────────────────────────────────────
 
+/** What TalkBack calls the search box. */
+internal const val SEARCH_FIELD_LABEL = "Search the library"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RelicSearchBar(
@@ -358,6 +364,9 @@ private fun RelicSearchBar(
         modifier = modifier
             .fillMaxWidth()
             .height(48.dp)
+            // The hint inside the box changes with the copy mode, so give
+            // TalkBack one steady name for the field.
+            .semantics { contentDescription = SEARCH_FIELD_LABEL }
             .shadow(
                 elevation = if (isFocused) 6.dp else 2.dp,
                 shape = RoundedCornerShape(12.dp),
@@ -772,6 +781,28 @@ internal fun GroupHeaderRow(
 
 // ─── Archive Book List Item ──────────────────────────────────────────────
 
+/**
+ * What TalkBack reads for a Library row, as one sentence: the title once, then
+ * the author, whether it is archived, how far along it is in words, and whether
+ * it is on the device. The row's pieces (cover, ring, dots, percent text) are
+ * hidden from TalkBack so none of them repeat it.
+ */
+internal fun bookRowDescription(book: AudioBook): String = buildList {
+    add(book.title)
+    if (book.author.isNotBlank()) add("by ${book.author}")
+    if (book.isArchived) add("archived")
+    if (book.isFinished) {
+        add("finished")
+    } else if (book.hasProgress) {
+        add("${book.progressPercent.toInt()} percent listened")
+        if (book.chapters.isNotEmpty()) {
+            val chapterIdx = book.getCurrentChapterIndex()
+            if (chapterIdx >= 0) add("chapter ${chapterIdx + 1} of ${book.chapters.size}")
+        }
+    }
+    if (book.isDownloaded) add("downloaded")
+}.joinToString(", ")
+
 @Composable
 private fun ArchiveBookListItem(
     book: AudioBook,
@@ -793,10 +824,16 @@ private fun ArchiveBookListItem(
         if (showWhisper) BookWhisperCatalog.getWhisper(book, whisperEpoch) else null
     }
 
+    val description = remember(book) { bookRowDescription(book) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = description
+                onClickAction { onClick(); true }
+            },
     ) {
         Row(
             modifier = Modifier
@@ -822,7 +859,8 @@ private fun ArchiveBookListItem(
                 ) {
                     BookCoverImage(
                         coverUrl = book.effectiveCoverPath,
-                        contentDescription = book.title,
+                        // The row's description already names the book.
+                        contentDescription = null,
                         modifier = Modifier.fillMaxSize(),
                         title = book.title,
                         bookId = book.id,

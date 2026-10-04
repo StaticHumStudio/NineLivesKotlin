@@ -52,6 +52,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.ThemeMode
+import com.ninelivesaudio.app.service.download.WifiOnlyCopy
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.components.LabeledSwitchRow
@@ -686,6 +687,15 @@ fun SettingsScreen(
             // ═════════════════════════════════════════════════════════════
             if (uiState.appMode == AppMode.AUDIOBOOKSHELF) {
             SettingsGroup(title = "Data") {
+                ArchivePreferenceRow(
+                    title = WifiOnlyCopy.SETTING_TITLE,
+                    subtitle = WifiOnlyCopy.SETTING_SUBTITLE,
+                    checked = uiState.downloadOnWifiOnly,
+                    onCheckedChange = viewModel::setDownloadOnWifiOnly,
+                )
+
+                HorizontalDivider(color = NineLivesTheme.colors.archiveVoidElevated, thickness = 1.dp)
+
                 Button(
                     onClick = viewModel::syncNow,
                     modifier = Modifier.fillMaxWidth(),

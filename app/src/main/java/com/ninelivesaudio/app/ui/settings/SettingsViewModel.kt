@@ -29,6 +29,7 @@ import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.domain.model.ThemeMode
 import com.ninelivesaudio.app.service.ConnectivityMonitor
+import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
@@ -188,6 +189,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsManager: SettingsManager,
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val downloadManager: DownloadManager,
     private val audioBookDao: AudioBookDao,
     private val libraryDao: LibraryDao,
     private val libraryRepository: LibraryRepository,
@@ -271,6 +273,9 @@ class SettingsViewModel @Inject constructor(
         val sleepTimerShakeResetEnabled: Boolean = true,
         val sleepTimerRewindSeconds: Int = 15,
         val includeArchivedInStats: Boolean = true,
+
+        // Downloads
+        val downloadOnWifiOnly: Boolean = true,
 
         // Feedback Report
         val reportType: ReportType = ReportType.BUG,
@@ -425,6 +430,7 @@ class SettingsViewModel @Inject constructor(
                 sleepTimerShakeResetEnabled = settings.sleepTimerShakeResetEnabled,
                 sleepTimerRewindSeconds = settings.sleepTimerRewindSeconds,
                 includeArchivedInStats = settings.includeArchivedInStats,
+                downloadOnWifiOnly = settings.downloadOnWifiOnly,
                 themeMode = settings.themeMode,
             )
         }
@@ -846,6 +852,19 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(sleepTimerMotionEnabled = enabled) }
         viewModelScope.launch {
             settingsManager.updateSettings { it.copy(sleepTimerMotionEnabled = enabled) }
+        }
+    }
+
+    /**
+     * Saves the setting, then applies it to downloads already queued: turning
+     * it off starts a queue that was waiting for Wi-Fi, turning it on stops a
+     * book downloading over mobile data unless the user sent it that way.
+     */
+    fun setDownloadOnWifiOnly(enabled: Boolean) {
+        _uiState.update { it.copy(downloadOnWifiOnly = enabled) }
+        viewModelScope.launch {
+            settingsManager.updateSettings { it.copy(downloadOnWifiOnly = enabled) }
+            downloadManager.onWifiOnlyChanged()
         }
     }
 

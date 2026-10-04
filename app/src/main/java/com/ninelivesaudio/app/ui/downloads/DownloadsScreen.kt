@@ -25,6 +25,7 @@ import com.ninelivesaudio.app.ui.components.BookCoverImage
 import com.ninelivesaudio.app.ui.components.THUMBNAIL_COVER_WIDTH_PX
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
+import com.ninelivesaudio.app.service.download.WifiOnlyCopy
 
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.copy.unhinged.CopyEngine
@@ -88,6 +89,8 @@ fun DownloadsScreen(
                     ) { item ->
                         ActiveDownloadCard(
                             item = item,
+                            waitingForWifi = uiState.waitingForWifi(item.download),
+                            onUseMobileData = { viewModel.startOnMobileData(item.download.id) },
                             onPause = { viewModel.pauseDownload(item.download.id) },
                             onResume = { viewModel.resumeDownload(item.download.id) },
                             onCancel = { viewModel.cancelDownload(item.download.id) },
@@ -146,6 +149,8 @@ private fun SectionHeader(title: String) {
 @Composable
 private fun ActiveDownloadCard(
     item: DownloadsViewModel.DownloadUiItem,
+    waitingForWifi: Boolean,
+    onUseMobileData: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onCancel: () -> Unit,
@@ -199,12 +204,15 @@ private fun ActiveDownloadCard(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // Status badge
-                        val (statusText, statusColor) = when (download.status) {
-                            DownloadStatus.Queued -> "Queued" to NineLivesTheme.colors.archiveTextMuted
-                            DownloadStatus.Downloading -> "Downloading" to NineLivesTheme.colors.goldFilament
-                            DownloadStatus.Paused -> "Paused" to NineLivesTheme.colors.archiveWarning
-                            DownloadStatus.Failed -> "Failed" to NineLivesTheme.colors.archiveError
+                        // Status badge. Waiting for Wi-Fi reads as its own state:
+                        // without it a book interrupted by losing Wi-Fi sat on
+                        // "Downloading" with a bar that never moved.
+                        val (statusText, statusColor) = when {
+                            waitingForWifi -> WifiOnlyCopy.WAITING_STATUS to NineLivesTheme.colors.archiveWarning
+                            download.status == DownloadStatus.Queued -> "Queued" to NineLivesTheme.colors.archiveTextMuted
+                            download.status == DownloadStatus.Downloading -> "Downloading" to NineLivesTheme.colors.goldFilament
+                            download.status == DownloadStatus.Paused -> "Paused" to NineLivesTheme.colors.archiveWarning
+                            download.status == DownloadStatus.Failed -> "Failed" to NineLivesTheme.colors.archiveError
                             else -> "" to NineLivesTheme.colors.archiveTextMuted
                         }
                         Text(
@@ -311,6 +319,28 @@ private fun ActiveDownloadCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = NineLivesTheme.colors.archiveTextMuted,
                         fontSize = 10.sp,
+                    )
+                }
+            }
+
+            // One book over mobile data, now. The setting stays as it is.
+            if (waitingForWifi) {
+                TextButton(
+                    onClick = onUseMobileData,
+                    modifier = Modifier.align(Alignment.End),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.SignalCellularAlt,
+                        contentDescription = null,
+                        tint = NineLivesTheme.colors.goldFilament,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = WifiOnlyCopy.USE_MOBILE_DATA,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NineLivesTheme.colors.goldFilament,
                     )
                 }
             }

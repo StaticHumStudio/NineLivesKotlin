@@ -32,7 +32,12 @@ internal class MeBookmarksCache(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val mutex = Mutex()
-    @Volatile private var invalidations = 0L
+
+    // Guards the fields below. [invalidate] takes it without waiting on
+    // [mutex], and the staleness check and the store happen inside one hold of
+    // it, so a list fetched before a bookmark change can never be kept after it.
+    private val lock = Any()
+    private var invalidations = 0L
     private var cachedKey: String? = null
     private var cachedAtMs = 0L
     private var cached: List<Bookmark>? = null
@@ -41,24 +46,30 @@ internal class MeBookmarksCache(
         sessionKey: String,
         fetch: suspend () -> RemoteResult<List<Bookmark>>,
     ): RemoteResult<List<Bookmark>> = mutex.withLock {
-        val hit = cached
-        if (hit != null && cachedKey == sessionKey && now() - cachedAtMs < ttlMs) {
-            return@withLock RemoteResult.Ok(hit)
+        val startedAt = synchronized(lock) {
+            val hit = cached
+            if (hit != null && cachedKey == sessionKey && now() - cachedAtMs < ttlMs) {
+                return@withLock RemoteResult.Ok(hit)
+            }
+            invalidations
         }
-        val startedAt = invalidations
         val result = fetch()
         // A bookmark added or removed while this fetch was in flight makes the
         // answer stale, so it is handed back once but not kept.
-        if (result is RemoteResult.Ok && startedAt == invalidations) {
-            cachedKey = sessionKey
-            cachedAtMs = now()
-            cached = result.value
+        if (result is RemoteResult.Ok) {
+            synchronized(lock) {
+                if (startedAt == invalidations) {
+                    cachedKey = sessionKey
+                    cachedAtMs = now()
+                    cached = result.value
+                }
+            }
         }
         result
     }
 
     /** Drops the cached list, after a bookmark is added or removed. */
-    fun invalidate() {
+    fun invalidate() = synchronized(lock) {
         invalidations++
         cached = null
     }

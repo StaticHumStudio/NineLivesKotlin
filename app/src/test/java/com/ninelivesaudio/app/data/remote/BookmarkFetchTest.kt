@@ -83,6 +83,28 @@ class BookmarkFetchTest {
     }
 
     @Test
+    fun `a change landing between the staleness check and the store is not cached`() = runBlocking {
+        // The store reads the clock right after the staleness check passes.
+        // A bookmark change from another thread lands at exactly that moment.
+        lateinit var racing: MeBookmarksCache
+        var change: Thread? = null
+        racing = MeBookmarksCache(ttlMs = 1_000L, now = {
+            if (change == null) {
+                change = Thread { racing.invalidate() }.also {
+                    it.start()
+                    it.join(300L)
+                }
+            }
+            clock
+        })
+        loadItemBookmarks("book-a", "s1", racing, { ItemBookmarksOutcome.Unsupported }, ::allFromMe)
+        assertTrue(change != null)
+        change?.join()
+        loadItemBookmarks("book-a", "s1", racing, { ItemBookmarksOutcome.Unsupported }, ::allFromMe)
+        assertEquals(2, meCalls)
+    }
+
+    @Test
     fun `a failed per-book call is a failure, not an empty list`() = runBlocking {
         val result = load("book-a", item = ItemBookmarksOutcome.Failed("HTTP 500 loading bookmarks"))
         assertEquals(RemoteResult.Failed("HTTP 500 loading bookmarks"), result)

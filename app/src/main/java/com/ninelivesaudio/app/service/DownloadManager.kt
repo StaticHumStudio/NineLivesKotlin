@@ -38,6 +38,9 @@ import com.ninelivesaudio.app.service.download.mayDownloadOnDrain
 import com.ninelivesaudio.app.service.download.overrideRestartsDrain
 import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
 import com.ninelivesaudio.app.service.download.writeAfterEngineStops
+import com.ninelivesaudio.app.service.download.runEngineExclusively
+import com.ninelivesaudio.app.service.download.unfinishedDownloadOwners
+import com.ninelivesaudio.app.service.download.DownloadOwnerRow
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -182,17 +185,27 @@ class DownloadManager @Inject constructor(
     @Volatile
     private var engineDownloadId: String? = null
 
-    /** Called by [DownloadQueueWorker] right before it runs the engine on a book. */
-    fun onEngineStarted(audioBookId: String, downloadId: String) {
-        engineBookId = audioBookId
-        engineDownloadId = downloadId
-    }
+    /** Held across every engine run, cleanup included. See [runEngineExclusively]. */
+    private val engineLock = Mutex()
 
-    /** Called by [DownloadQueueWorker] from a finally once the engine returns or throws. */
-    fun onEngineStopped() {
-        engineBookId = null
-        engineDownloadId = null
-    }
+    /**
+     * Run [block] (the engine on [downloadId]) once no other engine run is
+     * still unwinding, recording the book for cancel cleanup and the Wi-Fi
+     * rule while it runs. Called by [DownloadQueueWorker].
+     */
+    suspend fun <T> runEngine(audioBookId: String, downloadId: String, block: suspend () -> T): T =
+        runEngineExclusively(
+            lock = engineLock,
+            onStart = {
+                engineBookId = audioBookId
+                engineDownloadId = downloadId
+            },
+            onStop = {
+                engineBookId = null
+                engineDownloadId = null
+            },
+            block = block,
+        )
 
     // ─── Wi-Fi only (#79) ────────────────────────────────────────────────────
 
@@ -866,15 +879,25 @@ class DownloadManager @Inject constructor(
                         fileNames = other.audioFiles.takeIf { it.isNotEmpty() }?.let(::downloadedFileNames),
                     )
                 }
-            // Unfinished downloads of other books, and where each would write.
-            // Their track lists are not known yet, so sharing a folder with one
-            // keeps everything.
-            val liveOtherBookIds = downloadItemDao.getAll()
-                .filter { it.audioBookId != book.id && it.status != DownloadStatus.Completed.ordinal }
-                .map { it.audioBookId }
+            // Other books that may still be writing, and where each would write.
+            // Their track lists are not settled yet, so sharing a folder with
+            // one keeps everything. That includes a Completed row whose book has
+            // no saved local copy yet (the engine is still on the cover) and the
+            // book the engine is on, row or not.
+            val rows = downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status) }
+            val candidateIds = (rows.map { it.audioBookId } + listOfNotNull(engineBookId))
+                .filter { it != book.id }
                 .distinct()
-            val otherFolders = lookUpInChunks(liveOtherBookIds) { audioBookDao.getByIds(it) }
-                .map { engine.downloadLocationFor(it.toDomain()).folder }
+            val candidates = lookUpInChunks(candidateIds) { audioBookDao.getByIds(it) }.associateBy { it.id }
+            val withLocalCopy = candidates.values
+                .filter { it.isDownloaded == 1 && !it.localPath.isNullOrEmpty() }
+                .mapTo(HashSet()) { it.id }
+            val otherFolders = unfinishedDownloadOwners(rows, withLocalCopy, book.id, engineBookId)
+                // No book row means nothing the engine could be writing for it.
+                .mapNotNull { candidates[it] }
+                .map { engine.downloadLocationFor(it.toDomain()).folder } +
+                // The folder the engine really writes to, in case the title moved.
+                listOfNotNull(engine.activeDownloadDir.takeIf { engineBookId != book.id })
 
             val decision = withContext(Dispatchers.IO) {
                 deleteDownloadFiles(location, downloadedFileNames(book.audioFiles), sharers, otherFolders)

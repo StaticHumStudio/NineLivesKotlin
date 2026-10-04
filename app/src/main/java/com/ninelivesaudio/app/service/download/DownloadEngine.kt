@@ -56,7 +56,31 @@ class DownloadEngine @Inject constructor(
      * Returns the terminal [DownloadItem] (Completed / Failed / Paused); the
      * caller owns any completion/failure event emission.
      */
+    /**
+     * The folder the running download writes to, from the moment it is picked
+     * until the book row holds its localPath. Delete treats it as taken. Engine
+     * runs are serialized (see [runEngineExclusively]), so one slot is enough.
+     */
+    @Volatile
+    internal var activeDownloadDir: File? = null
+        private set
+
     suspend fun download(
+        item: DownloadItem,
+        audioBook: AudioBook,
+        onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
+    ): DownloadItem {
+        val downloadDir = getDownloadPath(audioBook)
+        activeDownloadDir = downloadDir
+        return try {
+            downloadInto(downloadDir, item, audioBook, onProgress)
+        } finally {
+            activeDownloadDir = null
+        }
+    }
+
+    private suspend fun downloadInto(
+        downloadDir: File,
         item: DownloadItem,
         audioBook: AudioBook,
         onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
@@ -65,7 +89,6 @@ class DownloadEngine @Inject constructor(
         downloadItemDao.upsert(download.toEntity())
 
         // Create download directory
-        val downloadDir = getDownloadPath(audioBook)
         downloadDir.mkdirs()
 
         // Get full book details if audio files are missing

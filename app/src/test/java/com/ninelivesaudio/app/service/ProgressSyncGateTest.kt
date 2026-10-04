@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -207,6 +208,45 @@ class PlaybackProgressOwnerTest {
         releaseTerminal.complete(Unit)
         terminal.join()
         bookB.join()
+    }
+
+    @Test
+    fun `a delayed pause save cannot overwrite a newer paused seek`() = runBlocking {
+        val owner = PlaybackProgressOwner()
+        var saved: Duration? = null
+
+        // Paused at 100 s. The pause save is queued but has not reached the lock.
+        val pauseToken = owner.snapshotToken("book-a")
+        // A seek to 50 s while still paused, and its save lands first.
+        owner.launchPausedSeekSave(this, "book-a") { saved = 50.seconds }.join()
+        // The delayed pause save finally runs.
+        owner.syncSnapshot(pauseToken) { saved = 100.seconds }
+
+        assertEquals(50.seconds, saved)
+    }
+
+    @Test
+    fun `a pause save already writing finishes before the paused seek saves`() = runBlocking {
+        val owner = PlaybackProgressOwner()
+        val writes = mutableListOf<Duration>()
+        val pauseEntered = CompletableDeferred<Unit>()
+        val releasePause = CompletableDeferred<Unit>()
+
+        val pauseToken = owner.snapshotToken("book-a")
+        val pause = launch {
+            owner.syncSnapshot(pauseToken) {
+                pauseEntered.complete(Unit)
+                releasePause.await()
+                writes += 100.seconds
+            }
+        }
+        pauseEntered.await()
+        val seek = owner.launchPausedSeekSave(this, "book-a") { writes += 50.seconds }
+        releasePause.complete(Unit)
+        pause.join()
+        seek.join()
+
+        assertEquals(listOf(100.seconds, 50.seconds), writes)
     }
 }
 

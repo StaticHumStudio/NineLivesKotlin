@@ -312,6 +312,27 @@ internal class PlaybackProgressOwner {
     }
 }
 
+/**
+ * Save a seek made while paused. A pause save still waiting for the book's
+ * lock captured the position from before this seek, so it is dropped first,
+ * on the caller's thread, before this save is queued. Otherwise a delayed
+ * pause save could land after this one and put the old position back.
+ */
+internal fun PlaybackProgressOwner.launchPausedSeekSave(
+    scope: CoroutineScope,
+    bookId: String,
+    save: suspend () -> Unit,
+): Job {
+    invalidateSnapshots(bookId)
+    return scope.launch {
+        try {
+            report(bookId) { save() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {}
+    }
+}
+
 internal suspend fun PlaybackProgressOwner.resolveAndSavePlaybackPosition(
     bookId: String,
     candidate: Duration,
@@ -2662,20 +2683,14 @@ class PlaybackManager @Inject constructor(
         if (player.mediaItemCount == 0) return
         val position = getCurrentPosition()
         val duration = _duration.value
-        scope.launch {
-            try {
-                playbackProgressOwner.report(book.id) {
-                    syncManager.reportPlaybackPosition(
-                        itemId = book.id,
-                        currentTime = position.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        duration = duration.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        isFinished = false,
-                        force = true,
-                    )
-                }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {}
+        playbackProgressOwner.launchPausedSeekSave(scope, book.id) {
+            syncManager.reportPlaybackPosition(
+                itemId = book.id,
+                currentTime = position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                duration = duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                isFinished = false,
+                force = true,
+            )
         }
     }
 

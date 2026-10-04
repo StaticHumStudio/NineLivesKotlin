@@ -16,6 +16,7 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.download.CancelCleanupDecision
 import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
 import com.ninelivesaudio.app.service.download.applyCancelCleanup
+import com.ninelivesaudio.app.service.download.cancelCleanupStillClear
 import com.ninelivesaudio.app.service.download.cancelMayTouchFiles
 import com.ninelivesaudio.app.service.download.decideCancelCleanup
 import com.ninelivesaudio.app.service.download.DownloadEngine
@@ -77,6 +78,21 @@ class DownloadManager @Inject constructor(
      * first, the fetch runs outside the lock, and promotion re-takes it.
      */
     private val slotMutex = Mutex()
+
+    /**
+     * Keeps cancel cleanup from racing anything that brings a download back.
+     *
+     * Cancel holds it from the row read through the engine stop, the row delete,
+     * the ownership snapshot and the file deletion. Resume holds it across its
+     * read, its write and the drain start. Promotion in [queueDownload] holds it
+     * for the write that makes a row pickable, and every drain start goes through
+     * [enqueueDrain], which takes it too. Without it a resume could read a
+     * Paused row, lose the race to cancel, write the row back and start the
+     * engine, and cleanup would then delete files the resumed engine reuses.
+     *
+     * Lock order: this one first, [slotMutex] inside it, never the reverse.
+     */
+    private val rowMutex = Mutex()
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
 
     /**
@@ -133,6 +149,23 @@ class DownloadManager @Inject constructor(
     /** Called by [DownloadQueueWorker] from a finally, on every exit path. */
     fun onDrainStopped() {
         drainRunning = false
+    }
+
+    /**
+     * The book the engine is streaming right now in this process, or null.
+     * Cancel cleanup checks it one last time before deleting anything.
+     */
+    @Volatile
+    private var engineBookId: String? = null
+
+    /** Called by [DownloadQueueWorker] right before it runs the engine on a book. */
+    fun onEngineStarted(audioBookId: String) {
+        engineBookId = audioBookId
+    }
+
+    /** Called by [DownloadQueueWorker] from a finally once the engine returns or throws. */
+    fun onEngineStopped() {
+        engineBookId = null
     }
 
     /**
@@ -297,23 +330,25 @@ class DownloadManager @Inject constructor(
             // entitlement drop resolved a different winner, or a stranded-claim
             // sweep cleaned it up. A blind upsert would resurrect it and put the
             // free tier over its cap.
-            val promoted = slotMutex.withLock {
-                val existing = downloadItemDao.getById(downloadId)
-                val rowStillOurs = existing?.status == DownloadStatus.Preparing.ordinal
-                // Status alone is not sufficient. An entitlement drop during the
-                // fetch can resolve a DIFFERENT winner while this row sits untouched
-                // in Preparing, and promoting it then would put a free install over
-                // its cap with the row looking perfectly legitimate.
-                val stillTheWinner = slotStore.canClaim(audioBook.id)
+            val promoted = rowMutex.withLock {
+                slotMutex.withLock {
+                    val existing = downloadItemDao.getById(downloadId)
+                    val rowStillOurs = existing?.status == DownloadStatus.Preparing.ordinal
+                    // Status alone is not sufficient. An entitlement drop during the
+                    // fetch can resolve a DIFFERENT winner while this row sits untouched
+                    // in Preparing, and promoting it then would put a free install over
+                    // its cap with the row looking perfectly legitimate.
+                    val stillTheWinner = slotStore.canClaim(audioBook.id)
 
-                if (!rowStillOurs || !stillTheWinner) {
-                    // Failed promotion deletes its own row rather than leaving an
-                    // orphan occupying the slot forever.
-                    if (existing != null) downloadItemDao.deleteById(downloadId)
-                    return@withLock false
+                    if (!rowStillOurs || !stillTheWinner) {
+                        // Failed promotion deletes its own row rather than leaving an
+                        // orphan occupying the slot forever.
+                        if (existing != null) downloadItemDao.deleteById(downloadId)
+                        return@withLock false
+                    }
+                    downloadItemDao.upsert(downloadItem.toEntity())
+                    true
                 }
-                downloadItemDao.upsert(downloadItem.toEntity())
-                true
             }
             claimSettled = true
             if (!promoted) return QueueResult.BlockedByFreeSlot(slotStore.persistedWinner)
@@ -495,13 +530,17 @@ class DownloadManager @Inject constructor(
 
     /** Resume a paused/failed download by re-queuing it and ensuring the drain runs. */
     suspend fun resumeDownload(downloadId: String) {
-        val entity = downloadItemDao.getById(downloadId) ?: return
-        val item = entity.toDomain()
-        if (item.status != DownloadStatus.Paused && item.status != DownloadStatus.Failed) return
+        // One critical section from the read to the drain start, so a cancel
+        // either sees the Queued row or deletes it before this reads it.
+        rowMutex.withLock {
+            val entity = downloadItemDao.getById(downloadId) ?: return
+            val item = entity.toDomain()
+            if (item.status != DownloadStatus.Paused && item.status != DownloadStatus.Failed) return
 
-        // Reset to Queued. The engine skips already-finished files on re-run.
-        downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
-        if (!downloadsPaused) enqueueDrain(replace = false)
+            // Reset to Queued. The engine skips already-finished files on re-run.
+            downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
+            if (!downloadsPaused) enqueueDrainHoldingRowLock(replace = false)
+        }
     }
 
     /** Pause the whole download queue: stop the drain and show a Resume notification. */
@@ -515,7 +554,7 @@ class DownloadManager @Inject constructor(
     }
 
     /** Resume the whole download queue. */
-    fun resumeQueue() {
+    suspend fun resumeQueue() {
         downloadsPaused = false
         DownloadNotifications.clearPaused(context)
         enqueueDrain(replace = false)
@@ -523,15 +562,21 @@ class DownloadManager @Inject constructor(
 
     /** Cancel a download and clean up; restart the drain if it was the active one. */
     suspend fun cancelDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
-        val entity = downloadItemDao.getById(downloadId)
-        val wasDownloading = entity?.status == DownloadStatus.Downloading.ordinal
-        var stopConfirmed = false
-        writeAfterEngineStops(wasDownloading, { stopConfirmed = stopDrainAndAwait() }) {
-            downloadItemDao.deleteById(downloadId)
-            // Still before any drain restart below, so nothing is writing here.
-            if (entity != null && cancelMayTouchFiles(entity.status, wasDownloading, stopConfirmed)) {
-                removeCancelledPartialFiles(entity.audioBookId)
+        // Held from the read to the last deleted file. Resume, promotion and
+        // every drain start wait here, so nothing can bring this book's row
+        // back or start the engine on it while its files are being judged.
+        val wasDownloading = rowMutex.withLock {
+            val entity = downloadItemDao.getById(downloadId)
+            val downloading = entity?.status == DownloadStatus.Downloading.ordinal
+            var stopConfirmed = false
+            writeAfterEngineStops(downloading, { stopConfirmed = stopDrainAndAwait() }) {
+                downloadItemDao.deleteById(downloadId)
+                // Still before any drain restart below, so nothing is writing here.
+                if (entity != null && cancelMayTouchFiles(entity.status, downloading, stopConfirmed)) {
+                    removeCancelledPartialFiles(entity.audioBookId)
+                }
             }
+            downloading
         }
 
         if (downloadItemDao.getDownloadable().isEmpty()) {
@@ -549,9 +594,12 @@ class DownloadManager @Inject constructor(
      * Delete the partial folder a cancelled download left behind (#51).
      *
      * Runs only once the engine is known to be off this book, and after this
-     * book's row is gone. The rules live in [decideCancelCleanup] and keep the
-     * files on any doubt, including when another book or download points at the
-     * same folder (#49). Best effort: a failure here never fails the cancel.
+     * book's row is gone, with [rowMutex] held by the caller. The rules live in
+     * [decideCancelCleanup] and keep the files on any doubt, including when
+     * another book or download points at the same folder (#49). Right before
+     * deleting, [cancelCleanupStillClear] checks again that no row for the book
+     * or folder came back and the engine is not on the book. Best effort: a
+     * failure here never fails the cancel.
      */
     private suspend fun removeCancelledPartialFiles(audioBookId: String) {
         try {
@@ -560,19 +608,29 @@ class DownloadManager @Inject constructor(
             val otherBookPaths = audioBookDao.getLocalPathsExcept(audioBookId)
             // Every download row still around, this book's included if it was
             // queued again, mapped to the folder it would write to.
-            val otherRows = downloadItemDao.getAll()
-            val otherBooks = audioBookDao.getByIds(otherRows.map { it.audioBookId }.distinct())
-            val otherFolders = otherBooks.map { engine.downloadLocationFor(it.toDomain()).folder }
+            suspend fun liveRows() = downloadItemDao.getAll().map { it.audioBookId }.distinct()
+            suspend fun foldersOf(bookIds: List<String>) =
+                audioBookDao.getByIds(bookIds).map { engine.downloadLocationFor(it.toDomain()).folder }
+            val otherFolders = foldersOf(liveRows())
             val bookIsDownloaded = bookEntity.isDownloaded == 1 || !bookEntity.localPath.isNullOrEmpty()
 
-            withContext(Dispatchers.IO) {
-                when (val decision = decideCancelCleanup(location, bookIsDownloaded, otherBookPaths, otherFolders)) {
-                    is CancelCleanupDecision.Keep ->
-                        android.util.Log.d("DownloadManager", "cancel cleanup kept files: ${decision.reason}")
-                    is CancelCleanupDecision.Delete -> {
-                        val count = applyCancelCleanup(decision)
-                        android.util.Log.d("DownloadManager", "cancel cleanup removed $count files")
+            val decision = withContext(Dispatchers.IO) {
+                decideCancelCleanup(location, bookIsDownloaded, otherBookPaths, otherFolders)
+            }
+            when (decision) {
+                is CancelCleanupDecision.Keep ->
+                    android.util.Log.d("DownloadManager", "cancel cleanup kept files: ${decision.reason}")
+                is CancelCleanupDecision.Delete -> {
+                    val rowBookIds = liveRows()
+                    val clear = withContext(Dispatchers.IO) {
+                        cancelCleanupStillClear(audioBookId, decision.folder, rowBookIds, foldersOf(rowBookIds), engineBookId)
                     }
+                    if (!clear) {
+                        android.util.Log.d("DownloadManager", "cancel cleanup kept files: a row or the engine came back")
+                        return
+                    }
+                    val count = withContext(Dispatchers.IO) { applyCancelCleanup(decision) }
+                    android.util.Log.d("DownloadManager", "cancel cleanup removed $count files")
                 }
             }
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
@@ -661,8 +719,15 @@ class DownloadManager @Inject constructor(
      * [replace] = true (REPLACE): used when pausing/cancelling the active book.
      * It cancels the running drain (stopping the engine on the current book) and
      * starts a fresh drain that skips the now paused/removed item and continues.
+     *
+     * Takes [rowMutex], so no drain starts while a cancel is judging files.
      */
-    private fun enqueueDrain(replace: Boolean) {
+    private suspend fun enqueueDrain(replace: Boolean) {
+        rowMutex.withLock { enqueueDrainHoldingRowLock(replace) }
+    }
+
+    /** [enqueueDrain] for a caller that already holds [rowMutex]. */
+    private fun enqueueDrainHoldingRowLock(replace: Boolean) {
         // One gate for every automatic restart. pauseDownload, cancelDownload
         // and deleteDownload all restart the drain on their own, and none of
         // them knew about a queue-level pause, so any of them would silently

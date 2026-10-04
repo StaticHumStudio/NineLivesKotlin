@@ -184,6 +184,26 @@ internal fun decideCancelCleanup(
 }
 
 /**
+ * The last look before a [CancelCleanupDecision.Delete] runs: true only when
+ * no download row exists for [audioBookId], none would write to [folder], and
+ * the engine is not on the book ([engineBookId]). [liveRowBookIds] and
+ * [liveRowFolders] are read fresh right before the delete. A folder that will
+ * not resolve counts as a match, so any doubt keeps the files.
+ */
+internal fun cancelCleanupStillClear(
+    audioBookId: String,
+    folder: File,
+    liveRowBookIds: List<String>,
+    liveRowFolders: List<File>,
+    engineBookId: String?,
+): Boolean {
+    if (engineBookId == audioBookId) return false
+    if (audioBookId in liveRowBookIds) return false
+    val target = canonicalOrNull(folder) ?: return false
+    return liveRowFolders.none { other -> canonicalOrNull(other)?.let { it == target } ?: true }
+}
+
+/**
  * Carry out a [CancelCleanupDecision.Delete]. Deletes each listed path without
  * following links, then the folder only if it is empty by then. Never recurses.
  * Returns how many files went.

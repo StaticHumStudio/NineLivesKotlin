@@ -272,6 +272,46 @@ class CancelCleanupTest {
         assertFalse(cancelMayTouchFiles(DownloadStatus.Completed.ordinal, wasDownloading = false, stopConfirmed = false))
     }
 
+    // ─── Last look before deleting ───────────────────────────────────────────
+
+    @Test
+    fun `cleanup goes ahead only when no row and no engine came back for the book`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3.part")
+        val elsewhere = File(root, "Other Author - Other Book")
+        val book = "moby"
+
+        assertTrue(cancelCleanupStillClear(book, folder, listOf("other"), listOf(elsewhere), engineBookId = "other"))
+        assertTrue(cancelCleanupStillClear(book, folder, emptyList(), emptyList(), engineBookId = null))
+    }
+
+    @Test
+    fun `a resumed row for the book keeps its files`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3.part")
+
+        // Resume wrote the row back between the snapshot and the delete.
+        assertFalse(cancelCleanupStillClear("moby", folder, listOf("moby"), listOf(folder), engineBookId = null))
+    }
+
+    @Test
+    fun `another row writing to the same folder keeps its files`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3.part")
+
+        assertFalse(
+            cancelCleanupStillClear("moby", folder, listOf("twin"), listOf(File(root, folder.name)), engineBookId = null),
+        )
+    }
+
+    @Test
+    fun `the engine running on the book keeps its files`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3.part")
+
+        assertFalse(cancelCleanupStillClear("moby", folder, emptyList(), emptyList(), engineBookId = "moby"))
+    }
+
     // ─── Root resolution ─────────────────────────────────────────────────────
 
     @Test

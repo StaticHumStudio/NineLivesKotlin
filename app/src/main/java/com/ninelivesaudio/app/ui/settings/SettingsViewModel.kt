@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.data.remote.TokenValidationResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
@@ -365,6 +366,16 @@ class SettingsViewModel @Inject constructor(
                             .toSet() - localFolderAccess.accessibleLibraryIds(locals),
                     )
                 }
+            }
+        }
+
+        // Follow the saved library selection. The tabs keep this screen alive
+        // while another tab is open, and the Library tab can pick a different
+        // library meanwhile. Without this, Settings kept showing the old one
+        // and the local cleanup actions targeted it.
+        viewModelScope.launch {
+            settingsManager.settings.collect { settings ->
+                _uiState.update { it.withSavedSelections(settings) }
             }
         }
 
@@ -1854,6 +1865,21 @@ internal fun buildScanOutcome(
         errorMessage = warning?.let { withArchiveHint(it, scanResult.archiveFileCount) },
     )
 }
+
+/**
+ * Points both library selectors at the libraries [settings] has saved, so a
+ * pick made on another tab shows here and the local cleanup actions target
+ * it. A saved id this screen does not know yet (a list still loading, or a
+ * selection just cleared) leaves the current pick alone, and the list
+ * observers resolve it when they next emit.
+ */
+internal fun SettingsViewModel.UiState.withSavedSelections(
+    settings: AppSettings,
+): SettingsViewModel.UiState = copy(
+    selectedLibrary = libraries.firstOrNull { it.id == settings.selectedLibraryId } ?: selectedLibrary,
+    selectedLocalLibrary = localLibraries.firstOrNull { it.id == settings.selectedLocalLibraryId }
+        ?: selectedLocalLibrary,
+)
 
 /**
  * How the app-wide folder scan shows in Settings (#57). Running clears the

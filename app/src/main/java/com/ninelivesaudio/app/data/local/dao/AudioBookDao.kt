@@ -250,11 +250,19 @@ interface AudioBookDao {
     @Query("DELETE FROM AudioBooks WHERE IsLocal = 0")
     suspend fun deleteAudiobookshelf()
 
+    // ─── Recently played ─────────────────────────────────────────────────
+    //
+    // These start from PlaybackProgress and walk it newest first through
+    // idx_playback_progress_updated, looking each book up by id. CROSS JOIN
+    // pins that order. Left to itself SQLite started from the library index
+    // instead and read every book in the library, and Home reruns this on
+    // every playback progress write (every 500 ms while listening).
+
     /** Nine Lives — recently played books with their last-played timestamp. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -264,8 +272,8 @@ interface AudioBookDao {
     /** Nine Lives — observable version for reactive UI. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -275,8 +283,8 @@ interface AudioBookDao {
     /** Nine Lives — recently played books filtered by library. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -286,8 +294,8 @@ interface AudioBookDao {
     /** Android Auto variant applies source scope before LIMIT. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -301,8 +309,8 @@ interface AudioBookDao {
     /** Nine Lives — observable recently played books filtered by library. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -353,8 +361,8 @@ interface AudioBookDao {
 
     @Query("""
         SELECT COUNT(DISTINCT ab.Id)
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
     """)
     suspend fun countRecentlyPlayedByLibrary(libraryId: String, isLocal: Int): Int

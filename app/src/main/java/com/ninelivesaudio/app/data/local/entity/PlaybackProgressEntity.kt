@@ -2,9 +2,14 @@ package com.ninelivesaudio.app.data.local.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "PlaybackProgress")
+@Entity(
+    tableName = "PlaybackProgress",
+    // Lets the recently played queries read newest first and stop at LIMIT.
+    indices = [Index(value = ["UpdatedAt"], name = "idx_playback_progress_updated")],
+)
 data class PlaybackProgressEntity(
     @PrimaryKey
     @ColumnInfo(name = "AudioBookId")

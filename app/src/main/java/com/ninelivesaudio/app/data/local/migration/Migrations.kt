@@ -98,6 +98,14 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Index only, no data changes. The recently played queries walk
+        // PlaybackProgress newest first instead of reading the whole library.
+        db.execSQL("CREATE INDEX IF NOT EXISTS `idx_playback_progress_updated` ON `PlaybackProgress` (`UpdatedAt`)")
+    }
+}
+
 /**
  * All migrations to register with Room, in order.
  * Add new migrations here as they are created.
@@ -110,4 +118,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_5_6,
     MIGRATION_6_7,
     MIGRATION_7_8,
+    MIGRATION_8_9,
 )

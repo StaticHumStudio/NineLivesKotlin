@@ -9,6 +9,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.imageLoaderHttpClient
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.entitlement.BillingManager
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
@@ -207,13 +208,15 @@ class NineLivesApp : Application(), ImageLoaderFactory {
     }
 
     /**
-     * Coil image loader for the whole app. Reuses the authenticated OkHttpClient
-     * so server covers carry the auth token, and adds a persistent disk cache so
-     * covers fetched once survive offline instead of relying on Coil's defaults.
+     * Coil image loader for the whole app. Builds on the authenticated
+     * OkHttpClient so server covers carry the auth token, with its own request
+     * dispatcher so a burst of covers never queues API calls (see
+     * [imageLoaderHttpClient]). Adds a persistent disk cache so covers fetched
+     * once survive offline instead of relying on Coil's defaults.
      */
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
-            .okHttpClient { okHttpClient }
+            .okHttpClient { imageLoaderHttpClient(okHttpClient) }
             .crossfade(true)
             .diskCache {
                 DiskCache.Builder()

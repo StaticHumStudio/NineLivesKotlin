@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.data.repository
 
 import com.ninelivesaudio.app.data.remote.LibraryHead
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LibrarySyncWatermark
 import org.junit.Assert.assertEquals
@@ -182,14 +183,23 @@ class LibrarySyncPlannerTest {
         val tally = FullSyncTally()
         tally.add(listOf(AudioBook(id = "a", addedAt = 3L), AudioBook(id = "b", addedAt = 9L)))
         tally.add(listOf(AudioBook(id = "b", addedAt = 9L), AudioBook(id = "c", addedAt = 5L)))
-        val w = watermarkAfterFullSync(key, "lib", tally, nowMs = 42L)!!
+        val w = watermarkAfterFullSync(key, "lib", tally, RemoteResult.Ok(3), nowMs = 42L)!!
         assertEquals(3, w.itemCount)
         assertEquals("b", w.newestItemId)
         assertEquals(9L, w.newestAddedAt)
         assertEquals(42L, w.lastFullSyncAtMs)
 
         val missing = FullSyncTally().apply { add(listOf(AudioBook(id = "x", addedAt = null))) }
-        assertNull(watermarkAfterFullSync(key, "lib", missing, nowMs = 42L))
+        assertNull(watermarkAfterFullSync(key, "lib", missing, RemoteResult.Ok(1), nowMs = 42L))
+    }
+
+    @Test
+    fun `a full download that stops short forgets the watermark so the next check downloads again`() {
+        val tally = FullSyncTally().apply { add(listOf(AudioBook(id = "a", addedAt = 3L))) }
+        assertNull(watermarkAfterFullSync(key, "lib", tally, RemoteResult.Partial(1, "page 2: HTTP 500"), nowMs = 42L))
+        assertNull(watermarkAfterFullSync(key, "lib", tally, RemoteResult.Failed("timeout"), nowMs = 42L))
+        // With no watermark the next check cannot answer "nothing new".
+        assertTrue(decideLibraryChange(null, head(), localServerRowCount = 100) is LibraryChange.Full)
     }
 
     @Test

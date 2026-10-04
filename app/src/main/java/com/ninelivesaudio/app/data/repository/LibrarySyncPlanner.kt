@@ -246,16 +246,23 @@ internal class FullSyncTally {
 }
 
 /**
- * The watermark a complete full download leaves. Null when any book lacks an
- * added date: without it the next check could not compare, so the library
- * stays on full downloads instead of trusting a guess.
+ * The watermark a full download leaves, null meaning the stored one must be
+ * forgotten. Only a complete ([RemoteResult.Ok]) download earns one. One that
+ * stopped short may have saved new books the old watermark does not count
+ * and left server edits unapplied, so keeping the old watermark would let the
+ * next check find "nothing new" and report the failed refresh as recovered.
+ * Also null when any book lacks an added date: without it the next check
+ * could not compare, so the library stays on full downloads instead of
+ * trusting a guess.
  */
 internal fun watermarkAfterFullSync(
     key: SyncAccountKey,
     libraryId: String,
     tally: FullSyncTally,
+    result: RemoteResult<*>,
     nowMs: Long,
 ): LibrarySyncWatermark? {
+    if (result !is RemoteResult.Ok) return null
     if (tally.missingAddedAt) return null
     return LibrarySyncWatermark(
         serverUrl = key.serverUrl,

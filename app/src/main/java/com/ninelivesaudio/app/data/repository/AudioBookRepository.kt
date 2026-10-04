@@ -397,11 +397,11 @@ class AudioBookRepository @Inject constructor(
                 _booksSaved.tryEmit(libraryId)
             },
         )
+        val watermark = watermarkAfterFullSync(key, libraryId, tally, result, System.currentTimeMillis())
+        if (watermark != null) watermarkStore.put(watermark) else watermarkStore.remove(key, libraryId)
         if (result is RemoteResult.Ok) {
             fullSyncFailures.remove(libraryId)
             _deferredFullSyncs.update { it - libraryId }
-            val watermark = watermarkAfterFullSync(key, libraryId, tally, System.currentTimeMillis())
-            if (watermark != null) watermarkStore.put(watermark) else watermarkStore.remove(key, libraryId)
         } else {
             fullSyncFailures.compute(libraryId) { _, previous ->
                 FullSyncFailures(count = (previous?.count ?: 0) + 1, lastFailureAtMs = monotonicNowMs())

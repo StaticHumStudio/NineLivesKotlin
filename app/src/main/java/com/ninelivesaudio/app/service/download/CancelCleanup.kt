@@ -118,6 +118,12 @@ internal enum class CancelKeepReason {
      * files by, so none of them can be told from the user's own.
      */
     NO_TRACK_LIST,
+
+    /**
+     * A delete was allowed but one of this book's files would not go (storage
+     * turned read only, a permission changed), so the record stays with them.
+     */
+    REMOVE_FAILED,
 }
 
 internal sealed interface CancelCleanupDecision {
@@ -324,8 +330,12 @@ internal fun deleteDownloadFiles(
     otherDownloadFolders: List<File>,
 ): CancelCleanupDecision {
     val decision = decideDownloadDelete(location, ownFileNames, sharers, otherDownloadFolders)
-    if (decision is CancelCleanupDecision.Delete) applyCancelCleanup(decision)
-    return decision
+    if (decision !is CancelCleanupDecision.Delete) return decision
+    applyCancelCleanup(decision)
+    // A file that is still there after the delete keeps the book's record, so
+    // its audio never sits on disk with nothing pointing at it.
+    val left = decision.files.any { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+    return if (left) CancelCleanupDecision.Keep(CancelKeepReason.REMOVE_FAILED) else decision
 }
 
 /**

@@ -77,6 +77,23 @@ class DownloadDeleteTest {
     }
 
     @Test
+    fun `a file that will not delete keeps the book's record`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3", "02.mp3")
+        // A read-only folder: its files cannot be unlinked.
+        folder.setWritable(false)
+        try {
+            val decision = delete(root, folder, ownFileNames = listOf("01.mp3", "02.mp3"))
+
+            assertEquals(CancelCleanupDecision.Keep(CancelKeepReason.REMOVE_FAILED), decision)
+            assertTrue(deleteKeepsLocalCopy(decision))
+            assertTrue(File(folder, "01.mp3").exists())
+        } finally {
+            folder.setWritable(true)
+        }
+    }
+
+    @Test
     fun `a sharer stored as a file uri with a trailing slash still counts`() {
         val root = root()
         val folder = bookFolder(root, "01.mp3")

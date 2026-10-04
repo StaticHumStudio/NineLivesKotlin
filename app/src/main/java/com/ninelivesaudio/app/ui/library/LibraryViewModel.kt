@@ -117,13 +117,26 @@ internal fun shouldRequeryShelfAfterSync(
  * Membership is compared as a set: the shown list puts retained libraries
  * after fetched ones while the cache sorts by display order, and treating
  * that order difference as a change reloaded on every sync, forever.
+ * A rename keeps the id, so [librariesRenamed] reports it separately.
  */
 internal fun shouldReloadLibrariesAfterSync(
     selectedLibrary: Library?,
     shownLibraryIds: List<String>,
     cachedLibraryIds: List<String>,
+    librariesRenamed: Boolean = false,
 ): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
-    cachedLibraryIds.toSet() != shownLibraryIds.toSet()
+    cachedLibraryIds.toSet() != shownLibraryIds.toSet() ||
+    librariesRenamed
+
+/**
+ * Whether a library shown under one name is saved under another. Only ids
+ * present in both lists count, since added and removed libraries are the id
+ * comparison's job, and order never matters.
+ */
+internal fun librariesRenamed(shown: List<Library>, cached: List<Library>): Boolean {
+    val cachedNames = cached.associate { it.id to it.name }
+    return shown.any { library -> cachedNames[library.id]?.let { it != library.name } == true }
+}
 
 internal enum class AfterProgressPull { REFILTER, RELOAD_LIBRARIES }
 
@@ -139,8 +152,9 @@ internal fun afterProgressPull(
     selectedLibrary: Library?,
     shownLibraryIds: List<String>,
     cachedLibraryIds: List<String>,
+    librariesRenamed: Boolean = false,
 ): AfterProgressPull =
-    if (shouldReloadLibrariesAfterSync(selectedLibrary, shownLibraryIds, cachedLibraryIds)) {
+    if (shouldReloadLibrariesAfterSync(selectedLibrary, shownLibraryIds, cachedLibraryIds, librariesRenamed)) {
         AfterProgressPull.RELOAD_LIBRARIES
     } else {
         AfterProgressPull.REFILTER
@@ -493,6 +507,7 @@ class LibraryViewModel @Inject constructor(
                                 selectedLibrary = state.selectedLibrary,
                                 shownLibraryIds = state.libraries.map { it.id },
                                 cachedLibraryIds = cached.map { it.id },
+                                librariesRenamed = librariesRenamed(state.libraries, cached),
                             )
                         ) {
                             // This can replace a manual refresh in the lane, and the
@@ -519,7 +534,13 @@ class LibraryViewModel @Inject constructor(
                         settings = settingsManager.currentSettings,
                         cached = libraryRepository.getAudiobookshelf(),
                     )
-                    when (afterProgressPull(state.selectedLibrary, state.libraries.map { it.id }, cached.map { it.id })) {
+                    val pull = afterProgressPull(
+                        selectedLibrary = state.selectedLibrary,
+                        shownLibraryIds = state.libraries.map { it.id },
+                        cachedLibraryIds = cached.map { it.id },
+                        librariesRenamed = librariesRenamed(state.libraries, cached),
+                    )
+                    when (pull) {
                         AfterProgressPull.RELOAD_LIBRARIES ->
                             libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
                         AfterProgressPull.REFILTER -> applyFilter()

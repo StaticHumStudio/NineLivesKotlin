@@ -24,8 +24,8 @@ object ChangelogData {
                     entries = listOf(
                         "Big libraries open right away with your saved books and refresh quietly behind them.",
                         "Coming back to the Library no longer downloads it again.",
-                        "Sync usually fetches only what changed, and only while the app is open.",
-                        "Automatic big refreshes wait for Wi-Fi.",
+                        "Sync fetches changes instead of your whole library, and stops checking when the app is closed.",
+                        "Automatic big refreshes wait for Wi-Fi once your library is saved.",
                         "Big Series and Author views start collapsed.",
                         "Home, Dossier, and Android Auto stay quick with thousands of books.",
                         "Playback saves your place every 10 seconds, easier on the battery.",

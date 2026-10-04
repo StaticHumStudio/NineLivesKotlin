@@ -333,11 +333,17 @@ class LibraryViewModel @Inject constructor(
      */
     fun onScreenEntered() {
         val state = _uiState.value
-        // Only a failed library with nothing saved retries on return. A saved
-        // shelf, even one filtered to nothing, keeps its books, and the
+        // Only a shelf with nothing saved retries on return: no library came
+        // back at all, or the selected one failed with no books cached. A
+        // saved shelf, even one filtered to nothing, keeps its books, and the
         // periodic and reconnect syncs recover it.
-        val lastFetchFailed = state.totalBookCount == 0 &&
-            (state.selectedLibraryFetchResult == SyncResult.FAILED || state.errorMessage != null)
+        val lastFetchFailed = state.selectedLibrary == null || (
+            state.totalBookCount == 0 && (
+                state.selectedLibraryFetchResult == SyncResult.FAILED ||
+                    state.lastSyncResult == SyncResult.FAILED ||
+                    state.errorMessage != null
+                )
+            )
         if (shouldReloadOnLibraryReturn(
                 loadedFor = shelfLoadedFor,
                 current = settingsManager.currentSettings.shelfIdentity(),

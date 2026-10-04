@@ -255,7 +255,9 @@ fun LibraryScreen(
                                         )
                                     }
                                 }
-                            if (uiState.viewMode == ViewMode.ALL) {
+                            // The mode in effect, not the stored choice: a grouped view
+                            // whose unlock was lost shows the flat shelf.
+                            if (uiState.effectiveViewMode == ViewMode.ALL) {
                                 // Flat list in ALL mode
                                 itemsIndexed(
                                     items = uiState.filteredBooks,

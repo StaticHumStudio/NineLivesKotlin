@@ -306,7 +306,11 @@ class LibraryViewModel @Inject constructor(
         val selectedLibrary: Library? = null,
         val filteredBooks: List<AudioBook> = emptyList(),
         val searchQuery: String = "",
+        // The user's chosen view. The shelf shows [effectiveViewMode], which
+        // is this clamped to ALL when grouping is locked, so a lost unlock
+        // shows the flat shelf instead of empty groups.
         val viewMode: ViewMode = ViewMode.ALL,
+        val effectiveViewMode: ViewMode = ViewMode.ALL,
         val sortMode: SortMode = SortMode.RECENTLY_PLAYED,
         // No picker sets or applies these yet. The distinct-groups query that
         // filled availableGroups ran on every grouped refilter (Genre view
@@ -954,6 +958,7 @@ class LibraryViewModel @Inject constructor(
 
     private data class FilterResult(
         val books: List<AudioBook>,
+        val effectiveViewMode: ViewMode,
         val groupedSections: List<GroupedSection>,
         val totalBookCount: Int,
     )
@@ -990,24 +995,11 @@ class LibraryViewModel @Inject constructor(
                     (snapshot.selectedTab == LibraryTab.Downloaded || snapshot.showDownloadedOnly)
             }
 
-        // Clamped at the point of consumption, not just in the UI. Gating the
-        // chips stops a free user CHOOSING a premium sort, but says nothing
-        // about one already selected before a downgrade, which would otherwise
-        // keep running behind a greyed control.
-        //
-        // The stored choice in uiState is left alone, so unlocking restores it.
-        val isUnlocked = entitlements.current.isUnlocked
-        val effectiveSort = FreeTier.effectiveSort(snapshot.sortMode, isUnlocked)
-        val effectiveViewMode = FreeTier.effectiveViewMode(snapshot.viewMode, isUnlocked)
-
-        // Sort and group in-memory (complex logic stays in Kotlin)
-        currentCoroutineContext().ensureActive()
-        val sortedBooks = sortBooks(books, effectiveSort)
-        currentCoroutineContext().ensureActive()
-        val groupedSections = buildGroupedSections(
-            books = sortedBooks,
-            viewMode = effectiveViewMode,
-            sortMode = effectiveSort,
+        val shelf = arrangeShelf(
+            books = books,
+            storedSort = snapshot.sortMode,
+            storedViewMode = snapshot.viewMode,
+            isUnlocked = entitlements.current.isUnlocked,
         )
 
         // Get total count from DB (not from filtered set)
@@ -1015,8 +1007,9 @@ class LibraryViewModel @Inject constructor(
         if (!filterPublication.isCurrent(snapshot.request)) return null
 
         return FilterResult(
-            books = sortedBooks,
-            groupedSections = groupedSections,
+            books = shelf.books,
+            effectiveViewMode = shelf.viewMode,
+            groupedSections = shelf.sections,
             totalBookCount = totalCount,
         )
     }
@@ -1030,6 +1023,7 @@ class LibraryViewModel @Inject constructor(
                 .apply { addAll(groupKeys - previousKeys) }
             it.copy(
                 filteredBooks = result.books,
+                effectiveViewMode = result.effectiveViewMode,
                 groupedSections = result.groupedSections,
                 expandedGroups = expandedGroups,
                 totalBookCount = result.totalBookCount,
@@ -1283,6 +1277,39 @@ internal fun shouldSyncOnLibraryLoad(isLocalLibrary: Boolean, isOnline: Boolean)
     !isLocalLibrary && isOnline
 
 // ─── Grouping helpers (internal for testability) ──────────────────────────
+
+/** The shelf as shown: sorted books, the view mode in effect, and its groups. */
+internal data class ArrangedShelf(
+    val books: List<AudioBook>,
+    val viewMode: ViewMode,
+    val sections: List<GroupedSection>,
+)
+
+/**
+ * Sorts and groups the filtered books. Sort and view mode are clamped here,
+ * at the point of use, not just in the UI. Gating the chips stops a free user
+ * CHOOSING a premium mode, but says nothing about one already selected before
+ * a downgrade, which would otherwise keep running behind a greyed control.
+ * The stored choice is left alone, so unlocking restores it, and the screen
+ * lays out by [ArrangedShelf.viewMode], never the stored one.
+ */
+internal suspend fun arrangeShelf(
+    books: List<AudioBook>,
+    storedSort: SortMode,
+    storedViewMode: ViewMode,
+    isUnlocked: Boolean,
+): ArrangedShelf {
+    val sort = FreeTier.effectiveSort(storedSort, isUnlocked)
+    val viewMode = FreeTier.effectiveViewMode(storedViewMode, isUnlocked)
+    currentCoroutineContext().ensureActive()
+    val sorted = sortBooks(books, sort)
+    currentCoroutineContext().ensureActive()
+    return ArrangedShelf(
+        books = sorted,
+        viewMode = viewMode,
+        sections = buildGroupedSections(books = sorted, viewMode = viewMode, sortMode = sort),
+    )
+}
 
 /**
  * Groups shelf books. [books] must already be in [sortMode] order (the shelf

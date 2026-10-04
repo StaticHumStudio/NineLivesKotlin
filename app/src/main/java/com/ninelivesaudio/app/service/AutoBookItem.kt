@@ -1,6 +1,6 @@
 package com.ninelivesaudio.app.service
 
-import com.ninelivesaudio.app.data.local.containsLikePattern
+import com.ninelivesaudio.app.data.local.searchTextLikePattern
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
@@ -86,12 +86,13 @@ internal suspend fun <T> autoBrowsePage(
 internal const val AUTO_SEARCH_RESULT_CAP = 100
 
 /**
- * [query] as a LIKE "contains" pattern escaped by [containsLikePattern], so
- * `%`, `_` and `\` match themselves. Null for a blank query, which searches
+ * [query] as a LIKE "contains" pattern for the folded search column, made by
+ * [searchTextLikePattern], so accents and case never cause a miss and `%`,
+ * `_` and `\` match themselves. Null for a blank query, which searches
  * nothing.
  */
 internal fun autoSearchPattern(query: String): String? =
-    query.trim().takeIf { it.isNotEmpty() }?.let(::containsLikePattern)
+    query.trim().takeIf { it.isNotEmpty() }?.let(::searchTextLikePattern)
 
 /**
  * One page of Auto search hits in the active library and source, never past

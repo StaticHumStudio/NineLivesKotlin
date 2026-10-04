@@ -1,7 +1,7 @@
 package com.ninelivesaudio.app.ui.library
 
 import com.ninelivesaudio.app.domain.model.AudioBook
-import java.text.Normalizer
+import com.ninelivesaudio.app.domain.util.foldForSearch
 import kotlin.math.ceil
 
 /** Where digits, symbols and anything outside A to Z are filed. */
@@ -61,9 +61,9 @@ private val ASCII_LABELS = Array(26) { ('A' + it).toString() }
 
 /**
  * The letter a title or name is filed under, matching how the shelf sorts it
- * (on its first character, so "The Hobbit" is under T). Accents are dropped,
- * so "Émile" is under E. Digits, symbols, other alphabets and blanks share
- * the number sign.
+ * (on its first character, so "The Hobbit" is under T). Accents are dropped
+ * by [foldForSearch], so "Émile" is under E and "Øystein" under O. Digits,
+ * symbols, other alphabets and blanks share the number sign.
  */
 internal fun letterLabelFor(text: String): String {
     var i = 0
@@ -74,12 +74,9 @@ internal fun letterLabelFor(text: String): String {
         c in 'A'..'Z' -> ASCII_LABELS[c - 'A']
         c in 'a'..'z' -> ASCII_LABELS[c - 'a']
         c.isLetter() -> {
-            val base = Normalizer.normalize(c.toString(), Normalizer.Form.NFD)[0]
-            when (base) {
-                in 'A'..'Z' -> ASCII_LABELS[base - 'A']
-                in 'a'..'z' -> ASCII_LABELS[base - 'a']
-                else -> NUMBER_SIGN_LABEL
-            }
+            // Filed the way search folds it, so the rail and search agree.
+            val base = foldForSearch(c.toString()).firstOrNull()
+            if (base != null && base in 'a'..'z') ASCII_LABELS[base - 'a'] else NUMBER_SIGN_LABEL
         }
         else -> NUMBER_SIGN_LABEL
     }

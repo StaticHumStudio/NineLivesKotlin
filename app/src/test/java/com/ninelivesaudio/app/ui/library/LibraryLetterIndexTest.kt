@@ -56,6 +56,13 @@ class LibraryLetterIndexTest {
     }
 
     @Test
+    fun `the rail files a letter the way search folds it`() {
+        assertEquals("O", letterLabelFor("Øystein"))
+        assertEquals("L", letterLabelFor("Łódź"))
+        assertEquals("A", letterLabelFor("Æsir"))
+    }
+
+    @Test
     fun `a letter outside the Latin alphabet falls under the number sign`() {
         assertEquals("#", letterLabelFor("日本語"))
         assertEquals("#", letterLabelFor("Привет"))

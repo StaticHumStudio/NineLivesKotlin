@@ -89,6 +89,12 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // The exported Room schemas, so MigrationTestHelper can build a database
+    // at any old version in instrumented migration tests.
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
 }
 
 ksp {
@@ -282,6 +288,7 @@ dependencies {
     testImplementation(libs.androidx.work.testing)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.room.testing)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)

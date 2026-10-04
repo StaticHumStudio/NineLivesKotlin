@@ -102,6 +102,33 @@ class ShelfProjectionInstrumentedTest {
         assertEquals(setOf("pct", "num"), shelfSearch("100"))
     }
 
+    @Test
+    fun searchIgnoresAccentsAndCaseInEveryField() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsertAll(
+            listOf(
+                book("emile", "Émile"),
+                book("dune", "DUNE"),
+                book("by-author", "Other").copy(author = "Jo Nesbø"),
+                book("by-narrator", "Another").copy(narrator = "Zoë Wanamaker"),
+                book("plain", "Nothing Here"),
+            )
+        )
+
+        suspend fun shelfSearch(query: String) = dao.getFilteredBooks(
+            SimpleSQLiteQuery(
+                buildLibrarySql(tab = 0, hideFinished = false, downloadedOnly = false, hasSearch = true),
+                buildLibrarySqlArgs(LIBRARY, query),
+            )
+        ).map { it.id }.toSet()
+
+        assertEquals(setOf("emile"), shelfSearch("Emile"))
+        assertEquals(setOf("emile"), shelfSearch("ÉMILE"))
+        assertEquals(setOf("dune"), shelfSearch("dune"))
+        assertEquals(setOf("by-author"), shelfSearch("nesbo"))
+        assertEquals(setOf("by-narrator"), shelfSearch("zoe"))
+    }
+
     private fun book(
         id: String,
         title: String,

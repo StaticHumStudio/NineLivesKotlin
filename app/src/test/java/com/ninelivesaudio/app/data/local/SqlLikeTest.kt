@@ -19,21 +19,27 @@ class SqlLikeTest {
     }
 
     @Test
-    fun `every searched column declares the escape character`() {
+    fun `the search reads the folded search column and declares the escape character`() {
         val sql = buildLibrarySql(tab = 0, hideFinished = false, downloadedOnly = false, hasSearch = true)
         val likes = Regex("LIKE \\?").findAll(sql).count()
-        val escaped = Regex("LIKE \\? ESCAPE '\\\\'").findAll(sql).count()
-        assertEquals(4, likes)
+        val escaped = Regex("ab\\.SearchText LIKE \\? ESCAPE '\\\\'").findAll(sql).count()
+        assertEquals(1, likes)
         assertEquals(likes, escaped)
     }
 
     @Test
-    fun `the search binds escaped patterns, one per column`() {
-        val pattern = "%50\\% off\\_sale%"
+    fun `the search binds one escaped pattern`() {
         assertArrayEquals(
-            arrayOf<Any>("lib", pattern, pattern, pattern, pattern),
+            arrayOf<Any>("lib", "%50\\% off\\_sale%"),
             buildLibrarySqlArgs("lib", "50% off_sale"),
         )
         assertArrayEquals(arrayOf<Any>("lib"), buildLibrarySqlArgs("lib", "  "))
+    }
+
+    @Test
+    fun `the search pattern is folded the way the column is`() {
+        assertArrayEquals(arrayOf<Any>("lib", "%emile%"), buildLibrarySqlArgs("lib", "Émile"))
+        assertArrayEquals(arrayOf<Any>("lib", "%dune%"), buildLibrarySqlArgs("lib", "DUNE"))
+        assertArrayEquals(arrayOf<Any>("lib", "%nesbo\\_%"), buildLibrarySqlArgs("lib", "Nesbø_"))
     }
 }

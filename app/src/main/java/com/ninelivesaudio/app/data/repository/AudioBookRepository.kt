@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
 import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
@@ -692,6 +693,14 @@ class AudioBookRepository @Inject constructor(
         fetchByIdChunks(ids.distinct()) { chunk ->
             audioBookDao.getByIdsInLibraryAndSource(libraryId, if (isLocal) 1 else 0, chunk)
         }.map { it.toDomain() }
+
+    /** One page of Android Auto's Library list, A to Z, light rows. */
+    suspend fun getAutoBrowsePage(libraryId: String, isLocal: Boolean, limit: Int, offset: Int): List<AutoBrowseRow> =
+        audioBookDao.getAutoBrowsePage(libraryId, if (isLocal) 1 else 0, limit, offset)
+
+    /** One page of Android Auto's Downloaded list, A to Z, light rows. */
+    suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Boolean, limit: Int, offset: Int): List<AutoBrowseRow> =
+        audioBookDao.getAutoDownloadedPage(libraryId, if (isLocal) 1 else 0, limit, offset)
 }
 
 private const val MAXIMUM_AUDIOBOOK_LOOKUP_BIND_COUNT = 500

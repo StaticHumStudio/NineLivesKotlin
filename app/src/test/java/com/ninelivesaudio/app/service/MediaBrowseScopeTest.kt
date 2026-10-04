@@ -55,23 +55,20 @@ class MediaBrowseScopeTest {
     }
 
     @Test
-    fun `downloaded shelf stays inside the selected server library`() {
+    fun `downloaded shelf stays inside the selected server library`() = runBlocking {
         val settings = AppSettings(
             appMode = AppMode.AUDIOBOOKSHELF,
             selectedLibraryId = "server-active",
+            selectedLocalLibraryId = "local",
         )
-        val books = listOf(
-            AudioBook(id = "active", libraryId = "server-active", isDownloaded = true),
-            AudioBook(id = "other", libraryId = "server-other", isDownloaded = true),
-            AudioBook(id = "stream-only", libraryId = "server-active", isDownloaded = false),
-            AudioBook(id = "local", libraryId = "local", isLocal = true, isDownloaded = true),
-            AudioBook(id = "archived", libraryId = "server-active", isDownloaded = true, archivedAt = 1L),
-        )
+        var asked: Pair<String, Boolean>? = null
 
-        assertEquals(
-            listOf("active"),
-            downloadedBooksForAuto(books, settings).map { it.id },
-        )
+        autoBrowsePage(settings, page = 0, pageSize = 50) { libraryId, isLocal, _, _ ->
+            asked = libraryId to isLocal
+            emptyList<String>()
+        }
+
+        assertEquals("server-active" to false, asked)
     }
 
     @Test

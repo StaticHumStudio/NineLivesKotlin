@@ -147,32 +147,20 @@ class MediaBrowseTree @Inject constructor(
                             .map { (book, _) -> book }
                     },
                 )
-                    .map(::bookToMediaItem)
+                    .map { bookToMediaItem(it.toAutoBookItem()) }
             }
 
-            parentId == DOWNLOADED_ID -> {
-                val libraryId = settings.activeLibraryId ?: return emptyList()
-                downloadedBooksForAuto(
-                    audioBookRepository.getFilteredBooks(libraryId, downloadedOnly = true),
-                    settings,
-                )
-                    .sortedBy { it.title.lowercase() }
-                    .drop(page * pageSize)
-                    .take(pageSize)
-                    .map(::bookToMediaItem)
-            }
+            // Library and Downloaded read one page from SQL, A to Z, light
+            // rows only. Sorting and paging the whole library in memory cost
+            // seconds and about 100 MB per page at 50k books, and repeated on
+            // every artwork notify.
+            parentId == DOWNLOADED_ID ->
+                autoBrowsePage(settings, page, pageSize, audioBookRepository::getAutoDownloadedPage)
+                    .map { bookToMediaItem(it.toAutoBookItem()) }
 
-            parentId == LIBRARY_ID -> {
-                val libraryId = settings.activeLibraryId ?: return emptyList()
-                browseBooksForAuto(
-                    audioBookRepository.getFilteredBooks(libraryId),
-                    settings,
-                )
-                    .sortedBy { it.title.lowercase() }
-                    .drop(page * pageSize)
-                    .take(pageSize)
-                    .map(::bookToMediaItem)
-            }
+            parentId == LIBRARY_ID ->
+                autoBrowsePage(settings, page, pageSize, audioBookRepository::getAutoBrowsePage)
+                    .map { bookToMediaItem(it.toAutoBookItem()) }
 
             else -> emptyList()
         }
@@ -217,7 +205,7 @@ class MediaBrowseTree @Inject constructor(
                 // playable Auto item (e.g. from a stale queued media id).
                 audioBookRepository.getById(bookId)
                     ?.takeIf { browseBooksForAuto(listOf(it), settings).isNotEmpty() }
-                    ?.let(::bookToMediaItem)
+                    ?.let { bookToMediaItem(it.toAutoBookItem()) }
             }
 
             else -> null
@@ -230,7 +218,7 @@ class MediaBrowseTree @Inject constructor(
         val settings = resolveActiveScope()
         if (!canBrowseAuto(settings, apiService.isAuthenticated)) return emptyList()
         return browseBooksForAuto(audioBookRepository.search(query), settings)
-            .map(::bookToMediaItem)
+            .map { bookToMediaItem(it.toAutoBookItem()) }
     }
 
     /** Extract the original AudioBook ID from a media ID like "book_{id}". */
@@ -263,7 +251,7 @@ class MediaBrowseTree @Inject constructor(
     // ─── Builders ──────────────────────────────────────────────────────
 
     @OptIn(UnstableApi::class)
-    private fun bookToMediaItem(book: AudioBook): MediaItem {
+    private fun bookToMediaItem(book: AutoBookItem): MediaItem {
         val metadataBuilder = MediaMetadata.Builder()
             .setTitle(book.title)
             .setArtist(book.author)
@@ -276,8 +264,8 @@ class MediaBrowseTree @Inject constructor(
             metadataBuilder.setComposer(book.narrator)
         }
 
-        if (book.genres.isNotEmpty()) {
-            metadataBuilder.setGenre(book.genres.first())
+        if (!book.genre.isNullOrEmpty()) {
+            metadataBuilder.setGenre(book.genre)
         }
 
         // Never set artworkUri to the ABS server URL (or a local file://
@@ -323,7 +311,7 @@ class MediaBrowseTree @Inject constructor(
      * flicker. Never throws — a fetch failure just leaves the row without
      * art.
      */
-    private fun scheduleArtworkFetch(book: AudioBook) {
+    private fun scheduleArtworkFetch(book: AutoBookItem) {
         val bookId = book.id
         // The epoch gate is checked and set synchronously, BEFORE ever
         // launching a coroutine, so a book that already had an attempt this
@@ -385,7 +373,7 @@ class MediaBrowseTree @Inject constructor(
      * cover) source directly; falls back to the authenticated remote fetch
      * for a server cover. Returns null on any failure.
      */
-    private fun fetchArtworkBytes(book: AudioBook): ByteArray? {
+    private fun fetchArtworkBytes(book: AutoBookItem): ByteArray? {
         val source = book.localCoverPath ?: book.coverPath ?: return null
         val uri = runCatching { Uri.parse(source) }.getOrNull() ?: return null
         // A factory, not an already-open stream: ArtworkCodec may need to
@@ -661,11 +649,6 @@ internal fun browseBooksForAuto(
 ): List<AudioBook> = books.filter { book ->
     !book.isArchived && book.isInActiveLibrary(settings)
 }
-
-internal fun downloadedBooksForAuto(
-    books: List<AudioBook>,
-    settings: AppSettings,
-): List<AudioBook> = browseBooksForAuto(books, settings).filter { it.isDownloaded }
 
 internal suspend fun recentBooksForAuto(
     settings: AppSettings,

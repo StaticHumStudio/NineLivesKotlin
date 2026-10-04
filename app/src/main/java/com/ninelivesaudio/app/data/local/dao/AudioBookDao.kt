@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
 import com.ninelivesaudio.app.data.local.entity.BookProgressState
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
@@ -173,6 +174,36 @@ interface AudioBookDao {
     /** Up to 500 books by id, kept to one library and source (the Dossier's listened books). */
     @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND Id IN (:ids)")
     suspend fun getByIdsInLibraryAndSource(libraryId: String, isLocal: Int, ids: List<String>): List<AudioBookEntity>
+
+    /**
+     * One page of Android Auto's Library list: live books in one library and
+     * source, A to Z, light columns only. Id breaks title ties so pages never
+     * overlap or skip.
+     */
+    @Query(
+        """
+        SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
+        FROM AudioBooks
+        WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
+        ORDER BY Title COLLATE NOCASE, Id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun getAutoBrowsePage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /** Same as [getAutoBrowsePage], downloaded books only. */
+    @Query(
+        """
+        SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
+        FROM AudioBooks
+        WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL AND IsDownloaded = 1
+        ORDER BY Title COLLATE NOCASE, Id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
 
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()

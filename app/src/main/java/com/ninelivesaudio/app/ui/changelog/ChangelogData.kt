@@ -16,8 +16,41 @@ object ChangelogData {
 
     val releases = listOf(
         ChangelogRelease(
-            version = "2.1.6",
+            version = "2.1.7",
             dateLabel = "Current",
+            sections = listOf(
+                ChangelogSection(
+                    header = "New",
+                    entries = listOf(
+                        "Search finds books whatever their accents or capitals.",
+                        "A letter rail jumps through long lists sorted by title or author.",
+                        "Download on Wi-Fi only, on by default, with a Use mobile data button for one book.",
+                    ),
+                ),
+                ChangelogSection(
+                    header = "Improved",
+                    entries = listOf(
+                        "Books in a series list in reading order.",
+                        "Co-written server books show under each author.",
+                        "TalkBack reads each Library book as one sentence.",
+                        "New downloads get their own folder, so two editions never share files.",
+                        "Long chapter lists and the Dossier's Show all open fast.",
+                    ),
+                ),
+                ChangelogSection(
+                    header = "Fixed",
+                    entries = listOf(
+                        "Deleting a download never takes another book's files.",
+                        "Pausing in the last second of a book keeps it finished.",
+                        "A renamed server library shows its new name in Settings.",
+                        "The grouped Library no longer crashes during a sync.",
+                    ),
+                ),
+            ),
+        ),
+        ChangelogRelease(
+            version = "2.1.6",
+            dateLabel = "October 4, 2026",
             sections = listOf(
                 ChangelogSection(
                     header = "Improved",

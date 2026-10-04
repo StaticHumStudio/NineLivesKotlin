@@ -327,13 +327,16 @@ class LibraryViewModel @Inject constructor(
 
     /**
      * Called by LibraryScreen each time it enters composition. A tab return
-     * keeps the shelf it already has instead of downloading the library again.
+     * keeps the shelf it already has instead of downloading the library again,
+     * and re-reads it from Room so progress played elsewhere and a cache
+     * cleared in Settings show up. Room changes outside a sync are not watched.
      */
     fun onScreenEntered() {
         val state = _uiState.value
-        // Only an empty failed shelf retries on return. One with saved books
-        // keeps them, and the periodic and reconnect syncs recover it.
-        val lastFetchFailed = state.filteredBooks.isEmpty() &&
+        // Only a failed library with nothing saved retries on return. A saved
+        // shelf, even one filtered to nothing, keeps its books, and the
+        // periodic and reconnect syncs recover it.
+        val lastFetchFailed = state.totalBookCount == 0 &&
             (state.selectedLibraryFetchResult == SyncResult.FAILED || state.errorMessage != null)
         if (shouldReloadOnLibraryReturn(
                 loadedFor = shelfLoadedFor,
@@ -343,6 +346,8 @@ class LibraryViewModel @Inject constructor(
         ) {
             // This can replace a refresh in the lane, so it owns that spinner.
             libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
+        } else if (shelfLoadedFor != null && !state.isLoading) {
+            applyFilter()
         }
     }
 

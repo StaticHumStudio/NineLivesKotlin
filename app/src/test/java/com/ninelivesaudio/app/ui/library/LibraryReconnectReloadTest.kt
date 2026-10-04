@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.ui.library
 
 import com.ninelivesaudio.app.domain.model.Library
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -26,6 +27,20 @@ class LibraryReconnectReloadTest {
     fun `a changed library list reloads the list`() {
         assertTrue(shouldReloadLibrariesAfterSync(books, listOf("books"), listOf("books", "podcasts")))
         assertTrue(shouldReloadLibrariesAfterSync(books, listOf("books", "podcasts"), listOf("books")))
+    }
+
+    @Test
+    fun `a progress pull from a check that held its record back still reloads a changed library list`() {
+        // The check pruned "books" from the saved list but wrote no record,
+        // because another library's full download waits for Wi-Fi.
+        assertEquals(
+            AfterProgressPull.RELOAD_LIBRARIES,
+            afterProgressPull(books, shownLibraryIds = listOf("books", "podcasts"), cachedLibraryIds = listOf("podcasts")),
+        )
+        assertEquals(
+            AfterProgressPull.REFILTER,
+            afterProgressPull(books, shownLibraryIds = listOf("books", "podcasts"), cachedLibraryIds = listOf("podcasts", "books")),
+        )
     }
 
     @Test

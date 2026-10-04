@@ -122,6 +122,27 @@ internal fun shouldReloadLibrariesAfterSync(
 ): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
     cachedLibraryIds.toSet() != shownLibraryIds.toSet()
 
+internal enum class AfterProgressPull { REFILTER, RELOAD_LIBRARIES }
+
+/**
+ * What the Library does when a check pulled progress. A check that put one
+ * library's full download off writes no sync record, yet it already saved
+ * the library list it fetched (one library removed, say), and later checks
+ * compare against that saved list and never report the change again. So the
+ * shown list is compared with the saved one here as well, not only when a
+ * record lands.
+ */
+internal fun afterProgressPull(
+    selectedLibrary: Library?,
+    shownLibraryIds: List<String>,
+    cachedLibraryIds: List<String>,
+): AfterProgressPull =
+    if (shouldReloadLibrariesAfterSync(selectedLibrary, shownLibraryIds, cachedLibraryIds)) {
+        AfterProgressPull.RELOAD_LIBRARIES
+    } else {
+        AfterProgressPull.REFILTER
+    }
+
 /**
  * Which local folders exist, which books each holds (live or archived), and
  * what the shelf shows for each. Progress stays out, or every position save
@@ -449,13 +470,25 @@ class LibraryViewModel @Inject constructor(
                 }
         }
 
-        // A check that found the book list unchanged writes no sync record,
-        // so the collector above never sees it. Re-read the saved shelf so
-        // progress pulled from the server shows while the tab is open.
+        // A check that found the book list unchanged, or put a download off,
+        // writes no sync record, so the collector above never sees it.
+        // Re-read the saved shelf so progress pulled from the server shows
+        // while the tab is open, and reload the libraries if the check saved
+        // a changed list (see afterProgressPull).
         viewModelScope.launch {
             syncManager.progressPulled.collect {
                 val state = _uiState.value
-                if (shelfLoadedFor != null && !state.isLoading && !state.isLocalMode) applyFilter()
+                if (shelfLoadedFor != null && !state.isLoading && !state.isLocalMode) {
+                    val cached = visibleCachedLibraries(
+                        settings = settingsManager.currentSettings,
+                        cached = libraryRepository.getAudiobookshelf(),
+                    )
+                    when (afterProgressPull(state.selectedLibrary, state.libraries.map { it.id }, cached.map { it.id })) {
+                        AfterProgressPull.RELOAD_LIBRARIES ->
+                            libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
+                        AfterProgressPull.REFILTER -> applyFilter()
+                    }
+                }
             }
         }
 

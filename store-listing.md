@@ -78,9 +78,9 @@ Android 11+ (API 30).
 
 ## What's New (Release Notes)
 
-v2.1.6
+v2.1.7
 
-Built for big libraries. The Library opens right away with your saved books, coming back to it doesn't download it again, and sync fetches changes instead of your whole library. Automatic big refreshes wait for Wi-Fi once your library is saved. Also: your library catches up when your server returns, offline starts are fast, cancelled downloads clean up, downloads keep their chapters, and covers survive switching between home and VPN addresses.
+Built for big libraries. The Library opens right away with your saved books, and sync fetches changes instead of your whole library. New: search ignores accents and capitals, series list in reading order, co-written server books show under each author, a letter rail for long lists, and a Download on Wi-Fi only setting. Also: your library catches up when your server returns, offline starts are fast, deleting a download never touches another book's files, and finished books stay finished.
 
 v2.1.4
 

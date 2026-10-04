@@ -399,7 +399,7 @@ class SettingsViewModel @Inject constructor(
         val settings = settingsManager.currentSettings
 
         _uiState.update { state ->
-            val configuredHost = extractHost(settings.serverUrl)
+            val configuredHost = extractServerHost(settings.serverUrl)
             state.copy(
                 appMode = settings.appMode,
                 serverUrl = settings.serverUrl,
@@ -738,12 +738,14 @@ class SettingsViewModel @Inject constructor(
 
     // ─── User Actions ─────────────────────────────────────────────────────
 
+    // The server URL and username fields keep exactly what was typed. Trimming
+    // here ate every space as it was typed, so "john smith" could not be
+    // entered. Connect trims both ends instead (see [trimmedForConnect]).
     fun onServerUrlChanged(value: String) {
-        val serverUrl = value.trim()
-        val host = extractHost(serverUrl)
+        val host = extractServerHost(value)
         _uiState.update {
             it.copy(
-                serverUrl = serverUrl,
+                serverUrl = value,
                 errorMessage = null,
                 trustedFingerprintHost = host,
                 hasTrustedFingerprint = host?.let { configuredHost ->
@@ -754,7 +756,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onUsernameChanged(value: String) {
-        _uiState.update { it.copy(username = value.trim(), errorMessage = null) }
+        _uiState.update { it.copy(username = value, errorMessage = null) }
     }
 
     fun onPasswordChanged(value: String) {
@@ -870,7 +872,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun connect() {
-        val state = _uiState.value
+        val state = _uiState.value.trimmedForConnect()
 
         if (state.serverUrl.isBlank()) {
             _uiState.update { it.copy(errorMessage = "Please enter a server URL") }
@@ -917,7 +919,7 @@ class SettingsViewModel @Inject constructor(
             // captured before launch can be stale if the user edited the URL,
             // username, or token between tapping Connect and this point, which
             // would otherwise log in to (and persist) the wrong server.
-            val s = _uiState.value
+            val s = _uiState.value.trimmedForConnect()
 
             try {
                 val passwordOutcome = if (s.useApiToken) {
@@ -1454,15 +1456,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private fun extractHost(serverUrl: String): String? {
-        if (serverUrl.isBlank()) return null
-        return try {
-            URI(serverUrl).host?.lowercase()
-        } catch (_: Exception) {
-            null
-        }
-    }
-
     // ─── Library Selection ──────────────────────────────────────────────
 
     private suspend fun loadLibraries() {
@@ -1745,6 +1738,28 @@ internal fun sessionIdentityForOutcome(
     storedServerUrl to storedUsername
 } else {
     typedServerUrl to typedUsername
+}
+
+/**
+ * The fields Connect sends: the typed server URL and username with stray spaces
+ * cut from both ends. Spaces inside a username stay. The password is sent as
+ * typed, since a space can be part of it.
+ */
+internal fun SettingsViewModel.UiState.trimmedForConnect(): SettingsViewModel.UiState =
+    copy(serverUrl = serverUrl.trim(), username = username.trim())
+
+/**
+ * The host a trusted certificate fingerprint belongs to, from the server URL as
+ * typed. Leading or trailing spaces in the field do not change the host.
+ */
+internal fun extractServerHost(serverUrl: String): String? {
+    val trimmed = serverUrl.trim()
+    if (trimmed.isEmpty()) return null
+    return try {
+        URI(trimmed).host?.lowercase()
+    } catch (_: Exception) {
+        null
+    }
 }
 
 internal enum class PasswordLoginOutcome {

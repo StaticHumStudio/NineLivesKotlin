@@ -1138,25 +1138,6 @@ class ApiService @Inject constructor(
         )
     }
 
-    /**
-     * Parses the ABS combined seriesName field (e.g. "Dungeon Crawler Carl #7") into a
-     * (name, sequence) pair. The non-expanded library items endpoint returns this single
-     * concatenated string instead of the structured series array that the expanded endpoint
-     * provides. Supported formats:
-     *   "Series Name #7"    → ("Series Name", "7")
-     *   "Series Name #1.5"  → ("Series Name", "1.5")
-     *   "Series Name"       → ("Series Name", null)
-     */
-    private fun parseSeriesNameField(seriesName: String): Pair<String?, String?> {
-        val trimmed = seriesName.trim()
-        val hashMatch = Regex("""^(.+?)\s*#([\d.]+)\s*$""").find(trimmed)
-        return if (hashMatch != null) {
-            hashMatch.groupValues[1].trim() to hashMatch.groupValues[2]
-        } else {
-            trimmed to null
-        }
-    }
-
     private fun normalizeProgress(value: Double): Double {
         val nonNegative = value.coerceAtLeast(0.0)
         return if (nonNegative > 1.0) {

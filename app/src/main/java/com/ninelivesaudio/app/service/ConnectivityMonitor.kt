@@ -185,10 +185,19 @@ class ConnectivityMonitor @Inject constructor(
         } catch (_: Exception) {
             null
         }
-        val activeHasInternet = active?.let { hasInternet(it) } == true
+        val activeCaps = active?.let { capabilitiesOf(it) }
+        val activeHasInternet =
+            activeCaps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         // The default network is known too, so its replayed onAvailable at
-        // registration does not count as a new network.
-        if (active != null && activeHasInternet) knownNetworks[active] = true
+        // registration does not count as a new network. Only when the
+        // callbacks can also report it lost, though: they never see a VPN.
+        if (active != null && defaultNetworkIsRemembered(
+                hasInternet = activeHasInternet,
+                isVpn = activeCaps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == false,
+            )
+        ) {
+            knownNetworks[active] = true
+        }
         val online = networkStateSaysOnline(
             defaultHasInternet = activeHasInternet,
             knownNetworksHaveInternet = knownNetworks.values,
@@ -202,11 +211,10 @@ class ConnectivityMonitor @Inject constructor(
         wasOnline to online
     }
 
-    private fun hasInternet(network: Network): Boolean = try {
+    private fun capabilitiesOf(network: Network): NetworkCapabilities? = try {
         connectivityManager.getNetworkCapabilities(network)
-            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
     } catch (_: Exception) {
-        false
+        null
     }
 
     /**
@@ -713,6 +721,18 @@ internal fun networkStateSaysOnline(
     defaultHasInternet: Boolean,
     knownNetworksHaveInternet: Collection<Boolean>,
 ): Boolean = defaultHasInternet || knownNetworksHaveInternet.any { it }
+
+/**
+ * Whether the OS default network goes into the known networks list. Only a
+ * network the callbacks can also report lost belongs there, and the callback
+ * request leaves out VPNs (NetworkRequest.Builder adds NOT_VPN by default).
+ * A Tailscale default used to be remembered, so after the VPN went away and
+ * then Wi-Fi and cell dropped, its stale entry kept the app "online" with no
+ * network at all. A connected VPN still counts while it is the default: the
+ * default network is read live on every re-evaluation.
+ */
+internal fun defaultNetworkIsRemembered(hasInternet: Boolean, isVpn: Boolean): Boolean =
+    hasInternet && !isVpn
 
 /** Minimum background time before a foreground entry re-probes a server that was answering. */
 internal const val FOREGROUND_REPROBE_AFTER_MS = 5_000L

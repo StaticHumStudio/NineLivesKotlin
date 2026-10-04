@@ -30,6 +30,28 @@ class ForegroundNetworkRecoveryTest {
     }
 
     @Test
+    fun `a VPN that went away does not keep the app online after every real network drops`() {
+        // The callbacks never report a VPN, so they can never report it lost.
+        val known = mutableMapOf<String, Boolean>()
+        known["wifi"] = true // onAvailable
+        // Tailscale is the OS default while it runs.
+        if (defaultNetworkIsRemembered(hasInternet = true, isVpn = true)) known["tailscale"] = true
+        assertTrue(
+            "a connected VPN default still counts",
+            networkStateSaysOnline(defaultHasInternet = true, knownNetworksHaveInternet = known.values),
+        )
+        // The VPN disconnects (no callback), then Wi-Fi drops (onLost).
+        known.remove("wifi")
+        assertFalse(networkStateSaysOnline(defaultHasInternet = false, knownNetworksHaveInternet = known.values))
+    }
+
+    @Test
+    fun `a real default network is remembered`() {
+        assertTrue(defaultNetworkIsRemembered(hasInternet = true, isVpn = false))
+        assertFalse(defaultNetworkIsRemembered(hasInternet = false, isVpn = false))
+    }
+
+    @Test
     fun `a foreground entry that finds the network again probes at once`() {
         // The stuck case: stale offline flag, the re-read finds Wi-Fi.
         assertTrue(foregroundEntryProbes(wasOnline = false, isOnline = true, isServerReachable = false, backgroundForMs = 70_000L))

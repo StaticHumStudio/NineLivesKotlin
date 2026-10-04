@@ -191,6 +191,34 @@ class SyncMergeTest {
     }
 
     @Test
+    fun `a later refresh keeps a completion imported at position zero`() = kotlinx.coroutines.runBlocking {
+        // First sync: the pull saved "done" finished at zero, so the new row
+        // lands finished. Pull to refresh lists it again with the list's
+        // unfinished defaults, and now the row exists so the merge runs.
+        val listed = AudioBook(id = "done", duration = 500.seconds)
+        val first = mergeSyncedBooksLean(
+            remote = listOf(listed),
+            getMergeStates = { emptyList() },
+            getFullRows = { emptyList() },
+            getProgressRows = { listOf(PlaybackProgressEntity(audioBookId = "done", positionSeconds = 0.0, isFinished = 1)) },
+        ).single()
+        val cached = first.toEntity()
+
+        val refreshed = mergeSyncedBooksLean(
+            remote = listOf(listed),
+            getMergeStates = { listOf(cached.toSyncMergeState()) },
+            getFullRows = { listOf(cached) },
+            getProgressRows = { error("a cached book does not read pulled progress") },
+        ).single()
+
+        assertTrue(refreshed.isFinished)
+        assertEquals(1.0, refreshed.progress, 0.0001)
+        // Progress 1.0 alone counts as done too.
+        val doneByProgress = mergeSyncedBook(listed, localEntity(isDownloaded = 0, progress = 1.0))
+        assertEquals(1.0, doneByProgress.progress, 0.0001)
+    }
+
+    @Test
     fun `the lean merge matches the whole-row merge`() {
         val local = localEntity(currentTimeSeconds = 90.0, progress = 0.4, isFinished = 0, archivedAt = 7L)
         val remote = AudioBook(

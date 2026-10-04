@@ -976,10 +976,19 @@ internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: 
         )
     } else remote
 
-    // Preserve local progress if it's ahead of the server (offline playback).
+    // Preserve local progress if it's ahead of the server (offline playback),
+    // or if it is a completion the server copy does not carry. The library
+    // list holds no listening progress, so its copy always reads unfinished
+    // at zero, and a book the progress pull marked finished at position zero
+    // (finished on the server without a saved place) has no time to be
+    // ahead with. Comparing times alone wiped that completion on the next
+    // refresh. Only the progress pull, which reads the server's own record,
+    // may mark a book unfinished again.
     val localTime = local.currentTimeSeconds
     val remoteTime = withDownload.currentTime.inWholeMilliseconds / 1000.0
-    val merged = if (localTime > remoteTime) {
+    val localDone = local.isFinished == 1 || local.progress >= 1.0
+    val remoteDone = withDownload.isFinished || withDownload.progress >= 1.0
+    val merged = if (localTime > remoteTime || (localDone && !remoteDone)) {
         withDownload.copy(
             currentTime = localTime.seconds,
             progress = local.progress,

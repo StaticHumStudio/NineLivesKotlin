@@ -81,8 +81,10 @@ class SyncManager @Inject constructor(
     @Volatile private var lastCheckAtMs: Long? = null
 
     // A foreground entry or timer check found the app not ready (offline)
-    // and ran nothing. Cleared by the next check that runs.
-    @Volatile private var missedCheckWhileNotReady = false
+    // and ran nothing. Cleared by the next check that runs. A flow so the
+    // server-return listener sees it even when it is set after the status
+    // already turned Connected.
+    private val missedCheckWhileNotReady = MutableStateFlow(false)
 
     // Set from the process lifecycle (NineLivesApp). The timer only runs
     // while this is true.
@@ -190,22 +192,22 @@ class SyncManager @Inject constructor(
             // after a failure waits out the repository's backoff.
             // SYNCING counts as live so a sync's own status flip is not an edge.
             launch {
-                combine(
-                    connectivityMonitor.connectionStatus,
-                    settingsManager.settings,
-                ) { status, settings -> isServerSessionLive(status, settings.appMode) }
-                    .distinctUntilChanged()
-                    .collect { live ->
-                        if (live && shouldCheckOnServerReturn(
-                                inForeground = appInForeground.value,
-                                checkDue = isCheckDue(lastCheckAtMs, monotonicNowMs()),
-                                missedCheckWhileNotReady = missedCheckWhileNotReady,
-                                lastResult = settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
-                            )
-                        ) {
-                            checkNow()
-                        }
-                    }
+                runServerReturnChecks(
+                    serverLive = combine(
+                        connectivityMonitor.connectionStatus,
+                        settingsManager.settings,
+                    ) { status, settings -> isServerSessionLive(status, settings.appMode) },
+                    missedCheckWhileNotReady = missedCheckWhileNotReady,
+                    shouldCheck = { missed ->
+                        shouldCheckOnServerReturn(
+                            inForeground = appInForeground.value,
+                            checkDue = isCheckDue(lastCheckAtMs, monotonicNowMs()),
+                            missedCheckWhileNotReady = missed,
+                            lastResult = settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
+                        )
+                    },
+                    check = { checkNow() },
+                )
             }
 
             launch {
@@ -250,7 +252,7 @@ class SyncManager @Inject constructor(
         if (isCheckDue(lastCheckAtMs, monotonicNowMs())) {
             // Offline on entry (the network still coming back) runs nothing.
             // The server-return listener above runs the check once connected.
-            if (checkNow().attempt == SyncAttempt.SKIPPED_NOT_READY) missedCheckWhileNotReady = true
+            if (checkNow().attempt == SyncAttempt.SKIPPED_NOT_READY) missedCheckWhileNotReady.value = true
         }
         // Retry the offline queue too. The rising-edge flush only fires once
         // per reconnect, so a push that failed right after reconnect would
@@ -306,7 +308,7 @@ class SyncManager @Inject constructor(
                 _isSyncing.value = false
                 connectivityMonitor.setSyncing(false)
                 lastCheckAtMs = monotonicNowMs()
-                missedCheckWhileNotReady = false
+                missedCheckWhileNotReady.value = false
             },
             // Progress sync FIRST — this populates the home screen grid
             // immediately. Library sync runs after (heavier, fetches all
@@ -787,6 +789,25 @@ internal fun shouldCheckOnServerReturn(
     lastResult: SyncResult?,
 ): Boolean = inForeground && checkDue &&
     (missedCheckWhileNotReady || shouldResyncOnServerReturn(lastResult))
+
+/**
+ * The server-return listener. Runs [check] when the server turns live and
+ * [shouldCheck] agrees, and again when a skipped entry check sets the missed
+ * flag while the server is already live. The flag used to be read only on the
+ * live edge, so an entry check that read offline, then lost the race to the
+ * Connected status, set it with no edge left to consume it, and the shelf
+ * waited for the next timer.
+ */
+internal suspend fun runServerReturnChecks(
+    serverLive: Flow<Boolean>,
+    missedCheckWhileNotReady: Flow<Boolean>,
+    shouldCheck: (missed: Boolean) -> Boolean,
+    check: suspend () -> Unit,
+) {
+    combine(serverLive, missedCheckWhileNotReady) { live, missed -> live to missed }
+        .distinctUntilChanged()
+        .collect { (live, missed) -> if (live && shouldCheck(missed)) check() }
+}
 
 internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,

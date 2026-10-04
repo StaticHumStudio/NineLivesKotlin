@@ -320,9 +320,11 @@ class AudioBookRepository @Inject constructor(
             val merged = mergeForSave(books)
             // Added books are saved even when the counts disagree below: they
             // are real, and the full download that follows prunes, not this.
-            // Never into a cache another account has taken over meanwhile.
+            // Never into a cache another account has taken over meanwhile:
+            // the account check and the save are one step no sign-in splits.
+            val entities = withContext(Dispatchers.Default) { merged.map { it.toEntity() } }
             val saved = withContext(NonCancellable) {
-                isCurrent(identity).also { current -> if (current) saveMerged(merged) }
+                watermarkStore.runIfCurrent(identity) { audioBookDao.upsertAll(entities) }
             }
             if (!saved) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
             _booksSaved.tryEmit(libraryId)
@@ -391,7 +393,7 @@ class AudioBookRepository @Inject constructor(
                 tally.add(books)
                 _booksSaved.tryEmit(libraryId)
             },
-            isCurrent = { isCurrent(identity) },
+            writeIfCurrent = { write -> watermarkStore.runIfCurrent(identity, write) },
         )
         // Another account signed in mid-download. Nothing more was written,
         // and this account's watermark and failure count stay as they were.
@@ -783,10 +785,12 @@ internal suspend fun pruneServerLibraryTo(
  * caller is cancelled in between. A Partial or Failed fetch keeps the pages
  * it saved and prunes nothing.
  *
- * [isCurrent] says whether the account the pass runs for is still signed in.
- * Each save and the prune ask it first, and once it says no the pass stops,
- * writes nothing more, and fails with [SYNC_ACCOUNT_CHANGED]: the cache now
- * belongs to someone else, whose own sync fills and prunes it.
+ * [writeIfCurrent] runs a write only while the account the pass runs for is
+ * still signed in, checking and writing as one step that no sign-in can
+ * split (see [LibrarySyncWatermarkStore.runIfCurrent]). Each save and the
+ * prune go through it, and once it refuses the pass stops, writes nothing
+ * more, and fails with [SYNC_ACCOUNT_CHANGED]: the cache now belongs to
+ * someone else, whose own sync fills and prunes it.
  */
 internal suspend fun runLibraryItemSyncPass(
     libraryId: String,
@@ -797,14 +801,14 @@ internal suspend fun runLibraryItemSyncPass(
     deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
     onPageSaved: suspend (List<AudioBook>) -> Unit = {},
-    isCurrent: suspend () -> Boolean = { true },
+    writeIfCurrent: suspend (write: suspend () -> Unit) -> Boolean = { write -> write(); true },
 ): RemoteResult<Int> {
     val keptIds = HashSet<String>()
     val result = try {
         fetchPages { page ->
             val merged = mergeItems(page)
             val saved = withContext(NonCancellable) {
-                isCurrent().also { current -> if (current && merged.isNotEmpty()) upsertAll(merged) }
+                writeIfCurrent { if (merged.isNotEmpty()) upsertAll(merged) }
             }
             // Thrown to stop the download: the rest is for an account that
             // is no longer signed in.
@@ -817,19 +821,20 @@ internal suspend fun runLibraryItemSyncPass(
     }
     // A streaming fetch turns a throw in onPage into a short result, so
     // look again rather than trusting the catch above alone.
-    if (!isCurrent()) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
+    if (!writeIfCurrent {}) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
     if (result is RemoteResult.Ok) {
+        // The read of cached ids and every delete run inside one gated
+        // step, so a sign-in waits for the whole prune rather than slipping
+        // in between the read and a delete.
         val pruned = withContext(NonCancellable) {
-            isCurrent().also { current ->
-                if (current) {
-                    pruneServerLibraryTo(
-                        keptIds = keptIds,
-                        libraryId = libraryId,
-                        cachedNonDownloadedIds = cachedNonDownloadedIds,
-                        deleteByIds = deleteByIds,
-                        deleteAllServerBooks = deleteAllServerBooks,
-                    )
-                }
+            writeIfCurrent {
+                pruneServerLibraryTo(
+                    keptIds = keptIds,
+                    libraryId = libraryId,
+                    cachedNonDownloadedIds = cachedNonDownloadedIds,
+                    deleteByIds = deleteByIds,
+                    deleteAllServerBooks = deleteAllServerBooks,
+                )
             }
         }
         if (!pruned) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)

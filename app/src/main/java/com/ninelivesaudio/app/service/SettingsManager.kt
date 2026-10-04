@@ -393,6 +393,26 @@ class SettingsManager @Inject constructor(
         true
     }
 
+    /**
+     * Runs [block] with the stored auth token while holding [authTokenMutex],
+     * so no sign-in, sign-out, or token swap can land until it returns. A
+     * library sync checks its account and writes the cache inside one of
+     * these, which keeps a sync that outlives its sign-in from writing or
+     * pruning once the next account's token exists. [block] must not call
+     * anything here that takes the same lock (it is not reentrant).
+     */
+    internal suspend fun <T> withAuthTokenLocked(block: suspend (token: String?) -> T): T =
+        authTokenMutex.withLock {
+            val token = try {
+                withContext(Dispatchers.IO) { encryptedPrefs.getString(KEY_AUTH_TOKEN, null) }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+            block(token)
+        }
+
     suspend fun markChangelogVersionSeen(version: String) {
         if (currentSettings.lastSeenChangelogVersion == version) return
         updateSettings { settings ->

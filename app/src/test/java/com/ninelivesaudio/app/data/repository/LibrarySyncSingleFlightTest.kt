@@ -12,7 +12,9 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -186,12 +188,58 @@ class LibrarySyncSingleFlightTest {
             cachedNonDownloadedIds = { cache.toList() },
             deleteByIds = { _, ids -> cache.removeAll(ids) },
             deleteAllServerBooks = { cache.clear() },
-            isCurrent = { signedIn == "alice" },
+            writeIfCurrent = { write -> if (signedIn == "alice") { write(); true } else false },
         )
         assertEquals(RemoteResult.Failed(SYNC_ACCOUNT_CHANGED), result)
         // Page one landed before the switch. Nothing after it, and bob's
         // book was not pruned by alice's catalog.
         assertEquals(listOf("bob-book", "alice-1"), cache)
+    }
+
+    @Test
+    fun `a sign-in waits for a prune already past its account check`() = runBlocking {
+        // Alice's prune passes the account check, then suspends reading the
+        // cached ids. Bob signs in and his sync saves a book. When alice
+        // resumes, her prune must not delete it: the sign-in has to wait
+        // for the whole prune, not just for the check in front of it.
+        val authLock = Mutex()
+        var signedIn = "alice"
+        val cache = mutableListOf("shared", "alice-gone")
+        val pruneReading = CompletableDeferred<Unit>()
+        val releasePrune = CompletableDeferred<Unit>()
+        val gate: suspend (suspend () -> Unit) -> Boolean = { write ->
+            authLock.withLock { if (signedIn == "alice") { write(); true } else false }
+        }
+        val alice = async {
+            runLibraryItemSyncPass(
+                libraryId = "lib",
+                fetchPages = { onPage ->
+                    onPage(listOf(AudioBook(id = "shared")))
+                    RemoteResult.Ok(1)
+                },
+                mergeItems = { it },
+                upsertAll = { books -> books.forEach { if (it.id !in cache) cache += it.id } },
+                cachedNonDownloadedIds = {
+                    pruneReading.complete(Unit)
+                    releasePrune.await()
+                    cache.toList()
+                },
+                deleteByIds = { _, ids -> cache.removeAll(ids) },
+                deleteAllServerBooks = { cache.clear() },
+                writeIfCurrent = gate,
+            )
+        }
+        pruneReading.await()
+        val bob = launch {
+            authLock.withLock { signedIn = "bob" }
+            cache += "bob-book"
+        }
+        // Give bob every chance to get in while alice is suspended.
+        withTimeoutOrNull(300) { bob.join() }
+        releasePrune.complete(Unit)
+        assertEquals(RemoteResult.Ok(1), alice.await())
+        bob.join()
+        assertEquals(listOf("shared", "bob-book"), cache)
     }
 
     @Test

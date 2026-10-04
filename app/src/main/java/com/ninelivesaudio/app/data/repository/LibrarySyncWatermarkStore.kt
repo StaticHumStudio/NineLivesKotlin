@@ -39,6 +39,26 @@ class LibrarySyncWatermarkStore @Inject constructor(
         return LibrarySyncIdentity(currentAccount(), token?.hashCode() ?: 0)
     }
 
+    /**
+     * Runs [write] only if [identity] is still the signed-in one, and holds
+     * the auth token lock while it runs. Checking first and writing after
+     * left a gap: the sync could pass the check, suspend inside a DAO call,
+     * and resume after the next account signed in and synced, then prune
+     * that account's books. Under the lock a sign-in, sign-out, or token
+     * swap waits for the write, and a write that comes after one sees it.
+     * Returns whether [write] ran. [write] must not touch the settings
+     * document (put and remove take the same lock).
+     */
+    internal suspend fun runIfCurrent(identity: LibrarySyncIdentity, write: suspend () -> Unit): Boolean =
+        settingsManager.withAuthTokenLocked { token ->
+            if (LibrarySyncIdentity(currentAccount(), token?.hashCode() ?: 0) != identity) {
+                false
+            } else {
+                write()
+                true
+            }
+        }
+
     internal fun get(key: SyncAccountKey, libraryId: String): LibrarySyncWatermark? =
         settingsManager.currentSettings.librarySyncWatermarks.watermarkFor(key, libraryId)
 

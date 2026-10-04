@@ -49,13 +49,21 @@ interface AudiobookshelfApi {
     @GET("api/libraries")
     suspend fun getLibraries(): Response<LibrariesResponse>
 
-    /** Get paginated library items. */
+    /**
+     * Get paginated library items. [sort] and [desc] are left off the URL
+     * when null, which keeps the full download's request exactly as it was.
+     * `sort=addedAt` is honoured by every Audiobookshelf 2.x server (the
+     * SQL-backed list since 2.4 maps it to the item's createdAt column, the
+     * older in-memory list sorts by the item's addedAt field).
+     */
     @GET("api/libraries/{libraryId}/items")
     suspend fun getLibraryItems(
         @Path("libraryId") libraryId: String,
         @Query("limit") limit: Int = 100,
         @Query("page") page: Int = 0,
         @Query("minified") minified: Int = 0,
+        @Query("sort") sort: String? = null,
+        @Query("desc") desc: Int? = null,
     ): Response<LibraryItemsResponse>
 
     // ─── Items ───────────────────────────────────────────────────────────

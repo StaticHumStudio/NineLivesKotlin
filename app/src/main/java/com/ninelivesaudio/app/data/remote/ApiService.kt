@@ -168,6 +168,7 @@ class ApiService @Inject constructor(
         // any real library, so a normal shelf never reaches it.
         private const val LIBRARY_ITEMS_PAGE_CAP = 1000
         private const val LISTENING_SESSIONS_PAGE_SIZE = 50
+        private const val SORT_ADDED_AT = "addedAt"
         private const val LISTENING_SESSIONS_ITEM_PAGE_CAP = 3
         private const val LISTENING_SESSIONS_ALL_PAGE_CAP = 20
     }
@@ -705,6 +706,134 @@ class ApiService @Inject constructor(
                 PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
             }
         }
+
+    /**
+     * Every item in a library, paginated, handed to [onPage] a page at a time
+     * so the caller can save each page as it lands instead of holding the
+     * whole shelf in memory. Returns the count of distinct books delivered.
+     *
+     * A page that fails part-way through yields [RemoteResult.Partial] (or
+     * Failed with nothing delivered), and so does a page that merely comes
+     * back empty or short while the server's own reported total says more
+     * exist; [runPaginatedFetchStreaming] decides that (issue #14, PR #30
+     * review, finding B). Only reaching the reported total is a genuine Ok.
+     *
+     * Sorted oldest-added first: a book added during a multi-minute download
+     * lands at the end instead of pushing every later page down by one row,
+     * which used to repeat one book and skip another. Rows repeated anyway
+     * (a removal mid-download shifts the other way) are dropped by id, and
+     * the count check then reports the run short rather than complete. ABS
+     * indexes (libraryId, mediaType, createdAt), so the order is cheap.
+     * A failed page gets [PAGE_RETRY_DELAYS_MS] more tries before the run
+     * stops short.
+     */
+    internal suspend fun streamLibraryItems(
+        libraryId: String,
+        limit: Int = 100,
+        onPage: suspend (List<AudioBook>) -> Unit,
+    ): RemoteResult<Int> =
+        withContext(Dispatchers.IO) {
+            runPaginatedFetchStreaming(
+                limit = limit,
+                maxPages = LIBRARY_ITEMS_PAGE_CAP,
+                onPageFailure = { page, e -> Log.w(TAG, "streamLibraryItems($libraryId) failed at page $page", e) },
+                itemKey = { it.id },
+                onPage = onPage,
+            ) { page ->
+                fetchPageWithRetry {
+                    val response = api.getLibraryItems(
+                        libraryId = libraryId,
+                        limit = limit,
+                        page = page,
+                        sort = SORT_ADDED_AT,
+                        desc = 0,
+                    )
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "streamLibraryItems($libraryId): HTTP ${response.code()} at page $page")
+                        return@fetchPageWithRetry PageOutcome.Stopped(
+                            "page $page: HTTP ${response.code()}",
+                            retryable = isRetryableHttpStatus(response.code()),
+                        )
+                    }
+
+                    val body = response.body()
+                    if (body == null) {
+                        Log.w(TAG, "streamLibraryItems($libraryId): no body at page $page")
+                        return@fetchPageWithRetry PageOutcome.Stopped("page $page: empty body", retryable = true)
+                    }
+
+                    PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
+                }
+            }
+        }
+
+    /**
+     * The library's book count and its most recently added book, in one tiny
+     * request (one minified item). Used to ask "anything new since the last
+     * sync?" without downloading the shelf. A missing total next to a
+     * non-empty page is reported as a failure, because a zero total would
+     * otherwise read as "the library emptied".
+     */
+    internal suspend fun getLibraryHead(libraryId: String): RemoteResult<LibraryHead> =
+        withContext(Dispatchers.IO) {
+            remoteResultCatching(onFailure = { e -> Log.w(TAG, "getLibraryHead($libraryId) failed", e) }) {
+                val response = api.getLibraryItems(
+                    libraryId = libraryId,
+                    limit = 1,
+                    page = 0,
+                    minified = 1,
+                    sort = SORT_ADDED_AT,
+                    desc = 1,
+                )
+                if (!response.isSuccessful) return@remoteResultCatching RemoteResult.Failed("head: HTTP ${response.code()}")
+                val body = response.body() ?: return@remoteResultCatching RemoteResult.Failed("head: empty body")
+                val newest = body.results.firstOrNull()
+                if (newest != null && body.total <= 0) {
+                    return@remoteResultCatching RemoteResult.Failed("head: no book count reported")
+                }
+                RemoteResult.Ok(LibraryHead(total = body.total, newestItemId = newest?.id, newestAddedAt = newest?.addedAt))
+            }
+        }
+
+    /**
+     * Books added at or after [cutoff], newest first, mapped exactly as the
+     * full download maps them. Pages stop at the first older book; see
+     * [runIncrementalFetch] for when this gives up instead.
+     */
+    internal suspend fun getLibraryItemsAddedSince(
+        libraryId: String,
+        cutoff: Long,
+        pageSize: Int,
+        maxPages: Int,
+    ): RemoteResult<IncrementalFetch<AudioBook>> = withContext(Dispatchers.IO) {
+        runIncrementalFetch(
+            pageSize = pageSize,
+            maxPages = maxPages,
+            cutoff = cutoff,
+            addedAt = { it.addedAt },
+            itemKey = { it.id },
+            onPageFailure = { page, e -> Log.w(TAG, "getLibraryItemsAddedSince($libraryId) failed at page $page", e) },
+        ) { page ->
+            fetchPageWithRetry {
+                val response = api.getLibraryItems(
+                    libraryId = libraryId,
+                    limit = pageSize,
+                    page = page,
+                    minified = 0,
+                    sort = SORT_ADDED_AT,
+                    desc = 1,
+                )
+                if (!response.isSuccessful) {
+                    return@fetchPageWithRetry PageOutcome.Stopped(
+                        "HTTP ${response.code()}",
+                        retryable = isRetryableHttpStatus(response.code()),
+                    )
+                }
+                val body = response.body() ?: return@fetchPageWithRetry PageOutcome.Stopped("empty body", retryable = true)
+                PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
+            }
+        }
+    }
 
     // ─── Single Item ─────────────────────────────────────────────────────
 

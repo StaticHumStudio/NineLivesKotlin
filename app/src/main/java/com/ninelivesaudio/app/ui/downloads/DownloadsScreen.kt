@@ -252,7 +252,7 @@ private fun ActiveDownloadCard(
                         ) {
                             Icon(
                                 Icons.Outlined.PlayArrow,
-                                contentDescription = "Resume",
+                                contentDescription = if (download.status == DownloadStatus.Failed) "Retry" else "Resume",
                                 tint = NineLivesTheme.colors.goldFilament,
                                 modifier = Modifier.size(20.dp),
                             )

@@ -79,6 +79,17 @@ sealed class LibraryListItem {
     ) : LibraryListItem()
 }
 
+/**
+ * The grouped list's LazyColumn key for this row. A row's key carries the
+ * group key's length, so a group "Smith-Jones" with book "x" and a group
+ * "Smith" with book "Jones-x" can never run together into one key.
+ */
+internal val LibraryListItem.listKey: String
+    get() = when (this) {
+        is LibraryListItem.GroupHeader -> "header-$groupKey"
+        is LibraryListItem.BookRow -> "book-${groupKey.length}-$groupKey-${book.id}"
+    }
+
 data class GroupedSection(
     val key: String,
     val title: String,
@@ -1395,7 +1406,9 @@ internal suspend fun arrangeShelf(
     val sort = FreeTier.effectiveSort(storedSort, isUnlocked)
     val viewMode = FreeTier.effectiveViewMode(storedViewMode, isUnlocked)
     currentCoroutineContext().ensureActive()
-    val sorted = sortBooks(books, sort)
+    // One row per book, whatever the read returned. A book twice is two list
+    // rows with one key, and the list crashes on the second.
+    val sorted = sortBooks(withoutRepeatedIds(books), sort)
     currentCoroutineContext().ensureActive()
     return ArrangedShelf(
         books = sorted,
@@ -1418,10 +1431,19 @@ internal fun buildGroupedSections(
     if (viewMode == ViewMode.ALL) return emptyList()
 
     // Genre view uses multi-placement: a book appears in every genre group it belongs to.
+    // Names that differ only in capitals or spacing ("John Smith", "john  smith")
+    // are one group, named by the first spelling seen. So no two groups share
+    // a key, and a book is in each group at most once.
     val grouped = linkedMapOf<String, MutableList<AudioBook>>()
+    val keyByFoldedName = HashMap<String, String>()
+    val bookKeys = LinkedHashSet<String>()
     books.forEach { book ->
-        val keys = groupingKeysForBook(book, viewMode)
-        keys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
+        bookKeys.clear()
+        groupingKeysForBook(book, viewMode).forEach { name ->
+            val spelling = collapseSpaces(name)
+            if (spelling.isNotEmpty()) bookKeys += keyByFoldedName.getOrPut(spelling.lowercase()) { spelling }
+        }
+        bookKeys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }
 
     val sections = grouped.entries
@@ -1497,15 +1519,22 @@ internal fun toggledGroupChoices(
 /**
  * Headers and rows for a grouped view. A group the user expanded or collapsed
  * by hand ([choices]) stays that way, any other follows [groupsStartExpanded].
+ *
+ * Every row has its own [listKey]: a repeat (which the groups should never
+ * hold) is dropped and the first kept, so a stray one cannot crash the list.
  */
 internal fun flattenGroupedItems(
     groupedSections: List<GroupedSection>,
     choices: Map<String, Boolean>,
 ): List<LibraryListItem> = buildList {
     val startExpanded = groupsStartExpanded(groupedSections.size)
+    val usedKeys = HashSet<String>()
+    fun addOnce(item: LibraryListItem) {
+        if (usedKeys.add(item.listKey)) add(item)
+    }
     groupedSections.forEach { section ->
         val expanded = choices[section.key] ?: startExpanded
-        add(
+        addOnce(
             LibraryListItem.GroupHeader(
                 groupKey = section.key,
                 title = section.title,
@@ -1514,7 +1543,26 @@ internal fun flattenGroupedItems(
             )
         )
         if (expanded) {
-            section.books.forEach { add(LibraryListItem.BookRow(groupKey = section.key, book = it)) }
+            section.books.forEach { addOnce(LibraryListItem.BookRow(groupKey = section.key, book = it)) }
+        }
+    }
+}
+
+/** [books] with each id once, the first kept, in order. */
+internal fun withoutRepeatedIds(books: List<AudioBook>): List<AudioBook> {
+    val seen = HashSet<String>(books.size * 2)
+    return books.filter { seen.add(it.id) }
+}
+
+/** [name] trimmed, with each run of spaces inside it made one space. */
+private fun collapseSpaces(name: String): String {
+    val trimmed = name.trim()
+    return buildString(trimmed.length) {
+        var lastWasSpace = false
+        for (c in trimmed) {
+            val isSpace = c.isWhitespace()
+            if (!isSpace) append(c) else if (!lastWasSpace) append(' ')
+            lastWasSpace = isSpace
         }
     }
 }

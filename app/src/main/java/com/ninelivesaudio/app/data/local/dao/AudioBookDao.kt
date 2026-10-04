@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
@@ -346,7 +347,14 @@ interface AudioBookDao {
     /**
      * Dynamic filtered shelf query, built by AudioBookRepository.getFilteredBooks().
      * Light rows only (see [ShelfBookRow]), never `ab.*`.
+     *
+     * One transaction, so the whole read is one snapshot. A big shelf spans
+     * several cursor windows, and each window outside a transaction is read
+     * afresh: a sync page saved in between (REPLACE gives a re-saved book a
+     * new rowid, the end of this unordered read) came back twice, with
+     * another book missing, and the grouped list crashed on the repeat.
      */
+    @Transaction
     @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
     suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<ShelfBookRow>
 

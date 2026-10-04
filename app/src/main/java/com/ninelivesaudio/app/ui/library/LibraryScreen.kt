@@ -313,12 +313,7 @@ fun LibraryScreen(
                                     // Grouped expandable list in SERIES / AUTHOR / GENRE modes
                                     itemsIndexed(
                                         items = uiState.groupedListItems,
-                                        key = { _, item ->
-                                            when (item) {
-                                                is LibraryListItem.GroupHeader -> "header-${item.groupKey}"
-                                                is LibraryListItem.BookRow -> "book-${item.groupKey}-${item.book.id}"
-                                            }
-                                        },
+                                        key = { _, item -> item.listKey },
                                     ) { index, item ->
                                         when (item) {
                                             is LibraryListItem.GroupHeader -> GroupHeaderRow(

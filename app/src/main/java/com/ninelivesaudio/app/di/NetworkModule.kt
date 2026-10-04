@@ -5,6 +5,7 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
 import com.ninelivesaudio.app.data.remote.AuthInterceptor
 import com.ninelivesaudio.app.data.remote.DynamicBaseUrlInterceptor
+import com.ninelivesaudio.app.data.remote.ServerCoverUrlInterceptor
 import com.ninelivesaudio.app.data.remote.SelfSignedCertTrustManager.configureSelfSignedCerts
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.Module
@@ -42,6 +43,9 @@ object NetworkModule {
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .addInterceptor(dynamicBaseUrlInterceptor)
+            // After the base URL step, before auth: a cover stored with an old
+            // server address goes to the current one and gets its token.
+            .addInterceptor(ServerCoverUrlInterceptor { settingsManager.currentSettings.serverUrl })
             .addNetworkInterceptor(authInterceptor)
 
         // Only log HTTP requests in debug builds to prevent token/URL leakage in production

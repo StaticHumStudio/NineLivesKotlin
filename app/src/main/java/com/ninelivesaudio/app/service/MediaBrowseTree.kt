@@ -14,6 +14,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.ui.components.thumbnailCoverUrl
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -147,32 +148,20 @@ class MediaBrowseTree @Inject constructor(
                             .map { (book, _) -> book }
                     },
                 )
-                    .map(::bookToMediaItem)
+                    .map { bookToMediaItem(it.toAutoBookItem()) }
             }
 
-            parentId == DOWNLOADED_ID -> {
-                val libraryId = settings.activeLibraryId ?: return emptyList()
-                downloadedBooksForAuto(
-                    audioBookRepository.getFilteredBooks(libraryId, downloadedOnly = true),
-                    settings,
-                )
-                    .sortedBy { it.title.lowercase() }
-                    .drop(page * pageSize)
-                    .take(pageSize)
-                    .map(::bookToMediaItem)
-            }
+            // Library and Downloaded read one page from SQL, A to Z, light
+            // rows only. Sorting and paging the whole library in memory cost
+            // seconds and about 100 MB per page at 50k books, and repeated on
+            // every artwork notify.
+            parentId == DOWNLOADED_ID ->
+                autoBrowsePage(settings, page, pageSize, audioBookRepository::getAutoDownloadedPage)
+                    .map { bookToMediaItem(it.toAutoBookItem()) }
 
-            parentId == LIBRARY_ID -> {
-                val libraryId = settings.activeLibraryId ?: return emptyList()
-                browseBooksForAuto(
-                    audioBookRepository.getFilteredBooks(libraryId),
-                    settings,
-                )
-                    .sortedBy { it.title.lowercase() }
-                    .drop(page * pageSize)
-                    .take(pageSize)
-                    .map(::bookToMediaItem)
-            }
+            parentId == LIBRARY_ID ->
+                autoBrowsePage(settings, page, pageSize, audioBookRepository::getAutoBrowsePage)
+                    .map { bookToMediaItem(it.toAutoBookItem()) }
 
             else -> emptyList()
         }
@@ -217,20 +206,36 @@ class MediaBrowseTree @Inject constructor(
                 // playable Auto item (e.g. from a stale queued media id).
                 audioBookRepository.getById(bookId)
                     ?.takeIf { browseBooksForAuto(listOf(it), settings).isNotEmpty() }
-                    ?.let(::bookToMediaItem)
+                    ?.let { bookToMediaItem(it.toAutoBookItem()) }
             }
 
             else -> null
         }
     }
 
-    /** Search books by title/author. */
-    suspend fun search(query: String): List<MediaItem> {
+    /**
+     * How many books match [query] by title or author in the active library
+     * and source, at most [AUTO_SEARCH_RESULT_CAP]. Counts in SQL, so no rows
+     * are built and no covers are fetched.
+     */
+    suspend fun searchCount(query: String): Int {
+        apiService.awaitAuthReady()
+        val settings = resolveActiveScope()
+        if (!canBrowseAuto(settings, apiService.isAuthenticated)) return 0
+        return autoSearchCount(settings, query, audioBookRepository::countAutoSearch)
+    }
+
+    /**
+     * One page of search hits, read from SQL. Rows and cover fetches happen
+     * for this page only. A blank query finds nothing rather than the whole
+     * library.
+     */
+    suspend fun search(query: String, page: Int, pageSize: Int): List<MediaItem> {
         apiService.awaitAuthReady()
         val settings = resolveActiveScope()
         if (!canBrowseAuto(settings, apiService.isAuthenticated)) return emptyList()
-        return browseBooksForAuto(audioBookRepository.search(query), settings)
-            .map(::bookToMediaItem)
+        return autoSearchPage(settings, query, page, pageSize, audioBookRepository::searchAutoPage)
+            .map { bookToMediaItem(it.toAutoBookItem()) }
     }
 
     /** Extract the original AudioBook ID from a media ID like "book_{id}". */
@@ -263,7 +268,7 @@ class MediaBrowseTree @Inject constructor(
     // ─── Builders ──────────────────────────────────────────────────────
 
     @OptIn(UnstableApi::class)
-    private fun bookToMediaItem(book: AudioBook): MediaItem {
+    private fun bookToMediaItem(book: AutoBookItem): MediaItem {
         val metadataBuilder = MediaMetadata.Builder()
             .setTitle(book.title)
             .setArtist(book.author)
@@ -276,8 +281,8 @@ class MediaBrowseTree @Inject constructor(
             metadataBuilder.setComposer(book.narrator)
         }
 
-        if (book.genres.isNotEmpty()) {
-            metadataBuilder.setGenre(book.genres.first())
+        if (!book.genre.isNullOrEmpty()) {
+            metadataBuilder.setGenre(book.genre)
         }
 
         // Never set artworkUri to the ABS server URL (or a local file://
@@ -323,7 +328,7 @@ class MediaBrowseTree @Inject constructor(
      * flicker. Never throws — a fetch failure just leaves the row without
      * art.
      */
-    private fun scheduleArtworkFetch(book: AudioBook) {
+    private fun scheduleArtworkFetch(book: AutoBookItem) {
         val bookId = book.id
         // The epoch gate is checked and set synchronously, BEFORE ever
         // launching a coroutine, so a book that already had an attempt this
@@ -385,7 +390,7 @@ class MediaBrowseTree @Inject constructor(
      * cover) source directly; falls back to the authenticated remote fetch
      * for a server cover. Returns null on any failure.
      */
-    private fun fetchArtworkBytes(book: AudioBook): ByteArray? {
+    private fun fetchArtworkBytes(book: AutoBookItem): ByteArray? {
         val source = book.localCoverPath ?: book.coverPath ?: return null
         val uri = runCatching { Uri.parse(source) }.getOrNull() ?: return null
         // A factory, not an already-open stream: ArtworkCodec may need to
@@ -411,7 +416,7 @@ class MediaBrowseTree @Inject constructor(
             }
         }
 
-        val remoteUrl = book.coverPath?.takeIf { it.startsWith("http") } ?: return null
+        val remoteUrl = autoArtworkRemoteUrl(book.coverPath, ARTWORK_MAX_DIMENSION) ?: return null
         // A factory rather than a single execute(): ArtworkCodec may need to
         // re-issue the request on a rare bounds-mark overrun (see its kdoc).
         val remoteOpener = {
@@ -594,12 +599,12 @@ internal class ArtworkFetchBurstTracker {
  * syncNow() bails on the reachability probe, so the epoch stops clearing for
  * the whole drive.
  *
- * [MAX_EPOCH_AGE_MS] deliberately mirrors SyncManager.DEFAULT_SYNC_INTERVAL_MS.
- * In ABS mode syncCompleted is already effectively a 5-minute heartbeat (it
- * emits on every sync pass that clears the pre-checks, whether or not
- * anything actually changed), and that is the configuration verified clean on
- * a real head unit. So the floor does not invent a new traffic profile, it
- * gives LOCAL and offline modes the one that was already proven.
+ * [MAX_EPOCH_AGE_MS] keeps the 5-minute cadence the old background sync
+ * timer gave syncCompleted, the configuration verified clean on a real head
+ * unit. That timer now runs only while the phone app is in the foreground
+ * (every 15 minutes), and a car session usually has the phone screen off, so
+ * this floor is now what keeps the epoch moving in every mode, not just LOCAL
+ * and offline.
  */
 internal class ArtworkFetchEpoch(
     private val nowMs: () -> Long = System::currentTimeMillis,
@@ -655,17 +660,20 @@ internal class ArtworkFetchEpoch(
     }
 }
 
+/**
+ * The server cover address an Auto row fetches, asking for [widthPx] wide.
+ * Without a width Audiobookshelf sends the original, often several MB, only
+ * for it to be shrunk to browse size here. Null for anything not http(s).
+ */
+internal fun autoArtworkRemoteUrl(coverPath: String?, widthPx: Int): String? =
+    coverPath?.takeIf { it.startsWith("http") }?.let { thumbnailCoverUrl(it, widthPx) }
+
 internal fun browseBooksForAuto(
     books: List<AudioBook>,
     settings: AppSettings,
 ): List<AudioBook> = books.filter { book ->
     !book.isArchived && book.isInActiveLibrary(settings)
 }
-
-internal fun downloadedBooksForAuto(
-    books: List<AudioBook>,
-    settings: AppSettings,
-): List<AudioBook> = browseBooksForAuto(books, settings).filter { it.isDownloaded }
 
 internal suspend fun recentBooksForAuto(
     settings: AppSettings,

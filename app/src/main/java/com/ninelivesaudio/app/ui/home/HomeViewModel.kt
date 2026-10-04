@@ -64,6 +64,12 @@ class HomeViewModel @Inject constructor(
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val isLocalMode: Boolean = false,
         val hasAuthToken: Boolean? = null,
+        /**
+         * Whether the active library holds any books at all, so an empty Home
+         * can tell "nothing played yet" apart from "nothing imported" (#59).
+         * Only looked up while Home has nothing to show.
+         */
+        val libraryHasBooks: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -124,10 +130,12 @@ class HomeViewModel @Inject constructor(
                 .collectLatest { (settings, hasAuthToken) ->
                     val libraryId = settings.activeLibraryId
                     if (libraryId != null && canShowHomeBooks(settings, hasAuthToken)) {
+                        // The recent-books flow re-emits on any AudioBooks change, so
+                        // a folder import refreshes the book count along with it.
                         audioBookDao.observeRecentlyPlayedByLibrary(libraryId, 9)
-                            .collect { results -> processRecentlyPlayed(results) }
+                            .collect { results -> processRecentlyPlayed(results, libraryId) }
                     } else {
-                        processRecentlyPlayed(emptyList())
+                        processRecentlyPlayed(emptyList(), libraryId = null)
                     }
                 }
         }
@@ -139,17 +147,18 @@ class HomeViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = true) }
             try {
                 val libraryId = settingsManager.currentSettings.activeLibraryId
-                val results = if (
-                    libraryId != null && canShowHomeBooks(
+                val visibleLibraryId = libraryId?.takeIf {
+                    canShowHomeBooks(
                         settingsManager.currentSettings,
                         settingsManager.hasAuthToken.value,
                     )
-                ) {
-                    audioBookDao.getRecentlyPlayedByLibrary(libraryId, 9)
+                }
+                val results = if (visibleLibraryId != null) {
+                    audioBookDao.getRecentlyPlayedByLibrary(visibleLibraryId, 9)
                 } else {
                     emptyList()
                 }
-                processRecentlyPlayed(results)
+                processRecentlyPlayed(results, visibleLibraryId)
             } catch (e: Exception) {
                 _uiState.update { it.copy(showEmptyState = true) }
             } finally {
@@ -174,7 +183,9 @@ class HomeViewModel @Inject constructor(
                     settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF
                 },
                 refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
-                syncNow = syncManager::syncNow,
+                // A reconnect asks each library what changed rather than
+                // downloading them all again. Sync Now still does the full pass.
+                syncNow = { syncManager.checkNow() },
             )
         }
     }
@@ -188,7 +199,7 @@ class HomeViewModel @Inject constructor(
         // Future: unlock hidden lore, achievement, or atmospheric event.
     }
 
-    private suspend fun processRecentlyPlayed(results: List<RecentlyPlayedResult>) {
+    private suspend fun processRecentlyPlayed(results: List<RecentlyPlayedResult>, libraryId: String?) {
         val settings = settingsManager.currentSettings
         val accessibleLocalIds = if (settings.appMode == AppMode.LOCAL) {
             settings.activeLibraryId
@@ -235,10 +246,19 @@ class HomeViewModel @Inject constructor(
         val totalSeconds = results.sumOf { it.audioBook.currentTimeSeconds }
         val totalText = formatListeningTime(totalSeconds)
 
+        // Counted only when Home is empty. A failed count reads as no books,
+        // which is the copy Home showed before this check existed.
+        val libraryHasBooks = if (lives.isEmpty() && libraryId != null) {
+            runCatching { audioBookDao.countByLibrary(libraryId) > 0 }.getOrDefault(false)
+        } else {
+            lives.isNotEmpty()
+        }
+
         _uiState.update {
             it.copy(
                 lives = lives,
                 showEmptyState = lives.isEmpty(),
+                libraryHasBooks = libraryHasBooks,
                 totalListeningTimeText = totalText,
                 totalListeningSeconds = totalSeconds,
             )
@@ -329,6 +349,69 @@ internal fun canShowHomeBooks(
     AppMode.AUDIOBOOKSHELF ->
         hasAuthToken && settings.serverUrl.isNotBlank() && settings.selectedLibraryId != null
     AppMode.LOCAL -> settings.selectedLocalLibraryId != null
+}
+
+/** Which empty Home to show (#59). */
+internal enum class HomeEmptyKind {
+    /** Local mode, nothing imported: send them to Settings to add a folder. */
+    LOCAL_NO_BOOKS,
+
+    /** Local mode, books imported but none played: send them to the Library. */
+    LOCAL_UNPLAYED,
+
+    /** Server mode, empty library: the original server copy. */
+    SERVER_NO_BOOKS,
+
+    /** Server mode, books synced but none played: send them to the Library. */
+    SERVER_UNPLAYED,
+}
+
+internal fun homeEmptyKind(isLocalMode: Boolean, libraryHasBooks: Boolean): HomeEmptyKind = when {
+    isLocalMode && libraryHasBooks -> HomeEmptyKind.LOCAL_UNPLAYED
+    isLocalMode -> HomeEmptyKind.LOCAL_NO_BOOKS
+    libraryHasBooks -> HomeEmptyKind.SERVER_UNPLAYED
+    else -> HomeEmptyKind.SERVER_NO_BOOKS
+}
+
+internal enum class HomeEmptyAction { OPEN_SETTINGS, OPEN_LIBRARY }
+
+/**
+ * Fixed copy for an empty Home. [body] is null where the screen picks a
+ * copy-mode flavor instead (the empty server library keeps its Ritual and
+ * Unhinged lines).
+ */
+internal data class HomeEmptyCopy(
+    val subtitle: String,
+    val body: String?,
+    val button: String,
+    val action: HomeEmptyAction,
+)
+
+internal fun homeEmptyCopy(kind: HomeEmptyKind): HomeEmptyCopy = when (kind) {
+    HomeEmptyKind.LOCAL_NO_BOOKS -> HomeEmptyCopy(
+        subtitle = "No local audio yet",
+        body = "Add a folder of audiobooks in Settings to begin",
+        button = "Open Settings",
+        action = HomeEmptyAction.OPEN_SETTINGS,
+    )
+    HomeEmptyKind.LOCAL_UNPLAYED -> HomeEmptyCopy(
+        subtitle = "Your books are here, untouched",
+        body = "Pick one in the Library and the first life begins",
+        button = "Open Library",
+        action = HomeEmptyAction.OPEN_LIBRARY,
+    )
+    HomeEmptyKind.SERVER_NO_BOOKS -> HomeEmptyCopy(
+        subtitle = "The Archive stands empty",
+        body = null,
+        button = "Enter The Archive",
+        action = HomeEmptyAction.OPEN_LIBRARY,
+    )
+    HomeEmptyKind.SERVER_UNPLAYED -> HomeEmptyCopy(
+        subtitle = "The Archive is full and untouched",
+        body = "Pick one in the Library and the first life begins",
+        button = "Enter The Archive",
+        action = HomeEmptyAction.OPEN_LIBRARY,
+    )
 }
 
 internal fun isHomeReconnectAvailable(

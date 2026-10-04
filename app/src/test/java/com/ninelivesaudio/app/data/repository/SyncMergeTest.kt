@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.data.repository
 
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.AudioFile
@@ -130,6 +131,103 @@ class SyncMergeTest {
 
         assertEquals(remote.audioFiles, merged.audioFiles)
         assertEquals(remote.chapters, merged.chapters)
+    }
+
+    @Test
+    fun `the lean merge reads whole rows only for downloaded books missing tracks`() = kotlinx.coroutines.runBlocking {
+        val downloaded = downloadedDetailedBook().toEntity()
+        val plain = localEntity(isDownloaded = 0, localPath = null, localCoverPath = null, currentTimeSeconds = 50.0, progress = 0.5)
+            .copy(id = "2")
+        val fullRowLookups = mutableListOf<List<String>>()
+
+        val merged = mergeSyncedBooksLean(
+            remote = listOf(
+                AudioBook(id = "1", title = "Server title"),
+                AudioBook(id = "2", title = "Other"),
+                AudioBook(id = "3", title = "New"),
+            ),
+            getMergeStates = { ids -> listOf(downloaded, plain).filter { it.id in ids }.map { it.toSyncMergeState() } },
+            getFullRows = { ids -> fullRowLookups += ids; listOf(downloaded).filter { it.id in ids } },
+            getProgressRows = { emptyList() },
+        )
+
+        assertEquals(listOf(listOf("1")), fullRowLookups)
+        assertEquals(downloadedDetailedBook().audioFiles, merged[0].audioFiles)
+        assertEquals(downloadedDetailedBook().chapters, merged[0].chapters)
+        assertTrue(merged[0].isDownloaded)
+        assertEquals(50.0, merged[1].currentTime.inWholeMilliseconds / 1000.0, 0.0001)
+        assertEquals(AudioBook(id = "3", title = "New"), merged[2])
+    }
+
+    @Test
+    fun `a book new to the cache takes the progress the pull already saved for it`() = kotlinx.coroutines.runBlocking {
+        // The library list carries no progress. The pull fetched only 12
+        // unknown books one by one, and saved rows for these two anyway.
+        val progressLookups = mutableListOf<List<String>>()
+        val merged = mergeSyncedBooksLean(
+            remote = listOf(
+                AudioBook(id = "listening", duration = 1000.seconds),
+                AudioBook(id = "done", duration = 500.seconds),
+                AudioBook(id = "untouched", duration = 300.seconds),
+            ),
+            getMergeStates = { emptyList() },
+            getFullRows = { emptyList() },
+            getProgressRows = { ids ->
+                progressLookups += ids
+                listOf(
+                    PlaybackProgressEntity(audioBookId = "listening", positionSeconds = 250.0),
+                    PlaybackProgressEntity(audioBookId = "done", positionSeconds = 0.0, isFinished = 1),
+                ).filter { it.audioBookId in ids }
+            },
+        )
+
+        assertEquals(listOf(listOf("listening", "done", "untouched")), progressLookups)
+        assertEquals(250.0, merged[0].currentTime.inWholeMilliseconds / 1000.0, 0.0001)
+        assertEquals(0.25, merged[0].progress, 0.0001)
+        assertFalse(merged[0].isFinished)
+        assertTrue(merged[1].isFinished)
+        assertEquals(1.0, merged[1].progress, 0.0001)
+        assertEquals(AudioBook(id = "untouched", duration = 300.seconds), merged[2])
+    }
+
+    @Test
+    fun `a later refresh keeps a completion imported at position zero`() = kotlinx.coroutines.runBlocking {
+        // First sync: the pull saved "done" finished at zero, so the new row
+        // lands finished. Pull to refresh lists it again with the list's
+        // unfinished defaults, and now the row exists so the merge runs.
+        val listed = AudioBook(id = "done", duration = 500.seconds)
+        val first = mergeSyncedBooksLean(
+            remote = listOf(listed),
+            getMergeStates = { emptyList() },
+            getFullRows = { emptyList() },
+            getProgressRows = { listOf(PlaybackProgressEntity(audioBookId = "done", positionSeconds = 0.0, isFinished = 1)) },
+        ).single()
+        val cached = first.toEntity()
+
+        val refreshed = mergeSyncedBooksLean(
+            remote = listOf(listed),
+            getMergeStates = { listOf(cached.toSyncMergeState()) },
+            getFullRows = { listOf(cached) },
+            getProgressRows = { error("a cached book does not read pulled progress") },
+        ).single()
+
+        assertTrue(refreshed.isFinished)
+        assertEquals(1.0, refreshed.progress, 0.0001)
+        // Progress 1.0 alone counts as done too.
+        val doneByProgress = mergeSyncedBook(listed, localEntity(isDownloaded = 0, progress = 1.0))
+        assertEquals(1.0, doneByProgress.progress, 0.0001)
+    }
+
+    @Test
+    fun `the lean merge matches the whole-row merge`() {
+        val local = localEntity(currentTimeSeconds = 90.0, progress = 0.4, isFinished = 0, archivedAt = 7L)
+        val remote = AudioBook(
+            id = "1",
+            title = "Server",
+            audioFiles = listOf(AudioFile(id = "a", index = 0, filename = "a.mp3")),
+            chapters = listOf(Chapter(id = 1, start = 0.0, end = 5.0, title = "One")),
+        )
+        assertEquals(mergeSyncedBook(remote, local), mergeSyncedBook(remote, local.toSyncMergeState(), detail = null))
     }
 
     private fun downloadedDetailedBook() = AudioBook(

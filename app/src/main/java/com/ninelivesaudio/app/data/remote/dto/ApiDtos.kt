@@ -225,6 +225,12 @@ data class ApiBookmark(
     val createdAt: Long = 0,
 )
 
+/** GET /api/me/bookmarks/{itemId} */
+@Serializable
+data class ApiItemBookmarksResponse(
+    val bookmarks: List<ApiBookmark> = emptyList(),
+)
+
 // ─── Bookmark Request ────────────────────────────────────────────────────
 
 @Serializable

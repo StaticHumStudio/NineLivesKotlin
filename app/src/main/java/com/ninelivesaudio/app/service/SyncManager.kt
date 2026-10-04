@@ -2,14 +2,21 @@ package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.data.remote.ApiService
 
+import android.os.SystemClock
 import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
+import com.ninelivesaudio.app.data.local.entity.BookProgressState
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.data.repository.itemCountResult
+import com.ninelivesaudio.app.data.repository.wroteBooks
+import com.ninelivesaudio.app.data.repository.LibraryRefreshOutcome
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
@@ -27,14 +34,24 @@ private const val TAG = "SyncManager"
 private const val MIN_POSITION_SYNC_INTERVAL_MS = 30_000L
 private const val MIN_POSITION_DELTA = 2.0
 private const val MIN_PROGRESS_DELTA = 0.01
+private const val PROGRESS_LOOKUP_CHUNK = 500
+
+/** A full sync of every library, or the change check that does the least work needed. */
+internal enum class SyncMode { FULL, CHECK }
 
 /**
- * Manages periodic synchronization with the Audiobookshelf server.
+ * Manages synchronization with the Audiobookshelf server.
  *
  * Responsibilities:
- * - Periodic sync of libraries and audiobooks from server
- * - Progress sync (pull from server, push offline queue)
- * - Offline queue flushing on reconnect
+ * - A check while the app is in the foreground: on every foreground entry
+ *   (debounced, see [delayBeforeEntryCheck]) and every 15 minutes after.
+ *   A check pulls progress, flushes the offline queue, and asks each
+ *   library whether anything changed ([SyncMode.CHECK]). Nothing runs on a
+ *   timer in the background. Background playback pushes its own progress
+ *   ([reportPlaybackPosition], [flushPlaybackProgress]) and the offline
+ *   queue still flushes on reconnect.
+ * - A full sync of every library on sign-in, a mode switch back to the
+ *   server, and Settings' Sync Now ([SyncMode.FULL])
  * - Throttled position reporting during playback
  *
  * Port of C# SyncService.cs.
@@ -48,11 +65,8 @@ class SyncManager @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
+    private val playbackProgressDao: PlaybackProgressDao,
 ) {
-    companion object {
-        private const val INITIAL_DELAY_MS = 500L             // 0.5s — populate home screen fast
-        private const val DEFAULT_SYNC_INTERVAL_MS = 300_000L // 5 minutes
-    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lifecycleOwner = SyncLifecycleOwner(scope)
@@ -62,7 +76,22 @@ class SyncManager @Inject constructor(
     // Sync state
     @Volatile private var activeItemId: String? = null
 
+    // When a sync last ran (any mode, monotonic clock), for the foreground
+    // debounce. In memory on purpose: a cold start should always check.
+    @Volatile private var lastCheckAtMs: Long? = null
+
+    // A foreground entry or timer check found the app not ready (offline)
+    // and ran nothing. Cleared by the next check that runs. A flow so the
+    // server-return listener sees it even when it is set after the status
+    // already turned Connected.
+    private val missedCheckWhileNotReady = MutableStateFlow(false)
+
+    // Set from the process lifecycle (NineLivesApp). The timer only runs
+    // while this is true.
+    private val appInForeground = MutableStateFlow(false)
+
     private val playbackThrottleOwner = PlaybackThrottleOwner()
+    private val localPositionCadence = LocalPositionWriteCadence()
 
     // ─── Events ──────────────────────────────────────────────────────────────
 
@@ -85,29 +114,55 @@ class SyncManager @Inject constructor(
     private val _syncCompleted = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
     val syncCompleted: SharedFlow<Unit> = _syncCompleted.asSharedFlow()
 
+    /**
+     * A check pulled progress. A check that found the book list unchanged
+     * writes no [LastSyncRecord], so a screen that re-reads its shelf on new
+     * records listens here instead to pick up the progress it just pulled.
+     */
+    private val _progressPulled = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
+    val progressPulled: SharedFlow<Unit> = _progressPulled.asSharedFlow()
+
     // ─── Lifecycle ───────────────────────────────────────────────────────────
 
     /**
-     * Start the periodic sync timer.
+     * The app came to the foreground (true) or left it (false). Called from
+     * the process lifecycle, so it reflects every activity together, not one
+     * screen. Leaving stops the timer at once.
+     */
+    fun setAppForeground(inForeground: Boolean) {
+        appInForeground.value = inForeground
+    }
+
+    /**
+     * Start the foreground check timer and the reconnect listeners.
      * Call this once when the app is initialized and authenticated.
      */
     fun start() {
         lifecycleOwner.restart {
+            // The foreground timer. collectLatest cancels the loop the moment
+            // the app leaves the foreground, so nothing polls in the background.
             launch {
-                // Fast first sync
-                delay(INITIAL_DELAY_MS)
-                syncNow()
-
-                // Periodic sync
-                while (isActive) {
-                    delay(DEFAULT_SYNC_INTERVAL_MS)
-                    syncNow()
-                    // Also retry the offline queue here. The rising-edge flush only
-                    // fires once per reconnect, so a push that failed right after
-                    // reconnect would otherwise sit queued until the next full
-                    // disconnect/reconnect cycle.
-                    flushOfflineQueue()
+                appInForeground.collectLatest { inForeground ->
+                    if (!inForeground) return@collectLatest
+                    delay(delayBeforeEntryCheck(lastCheckAtMs, monotonicNowMs()))
+                    runForegroundCheck()
+                    while (isActive) {
+                        delay(FOREGROUND_CHECK_INTERVAL_MS)
+                        runForegroundCheck()
+                    }
                 }
+            }
+
+            // A full download a check put off on a metered network runs as
+            // soon as the foreground app is on an unmetered one.
+            launch {
+                combine(
+                    appInForeground,
+                    connectivityMonitor.isMetered,
+                    audioBookRepository.deferredFullSyncs,
+                ) { inForeground, metered, deferred -> inForeground && !metered && deferred.isNotEmpty() }
+                    .distinctUntilChanged()
+                    .collect { ready -> if (ready) checkNow() }
             }
 
             // Flush offline queue on the rising edge of (connected AND not LOCAL).
@@ -127,25 +182,32 @@ class SyncManager @Inject constructor(
                     }
             }
 
-            // Resync when the server comes back after a failed or partial sync.
+            // Check when the server comes back after a failed or partial sync.
             // The flush above only pushes queued progress, so without this the
             // library and its "Last sync failed" banner stayed stale until a
-            // manual Retry or the next periodic tick (up to 5 minutes).
+            // manual Retry or the next check. Foreground only, under the same
+            // two-minute debounce as every other check, and a check (not a
+            // full download): a flapping server used to restart the whole
+            // download on every return. A full download a check still needs
+            // after a failure waits out the repository's backoff.
             // SYNCING counts as live so a sync's own status flip is not an edge.
             launch {
-                combine(
-                    connectivityMonitor.connectionStatus,
-                    settingsManager.settings,
-                ) { status, settings -> isServerSessionLive(status, settings.appMode) }
-                    .distinctUntilChanged()
-                    .collect { live ->
-                        if (live && shouldResyncOnServerReturn(
-                                settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
-                            )
-                        ) {
-                            syncNow()
-                        }
-                    }
+                runServerReturnChecks(
+                    serverLive = combine(
+                        connectivityMonitor.connectionStatus,
+                        settingsManager.settings,
+                    ) { status, settings -> isServerSessionLive(status, settings.appMode) },
+                    missedCheckWhileNotReady = missedCheckWhileNotReady,
+                    shouldCheck = { missed ->
+                        shouldCheckOnServerReturn(
+                            inForeground = appInForeground.value,
+                            checkDue = isCheckDue(lastCheckAtMs, monotonicNowMs()),
+                            missedCheckWhileNotReady = missed,
+                            lastResult = settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
+                        )
+                    },
+                    check = { checkNow() },
+                )
             }
 
             launch {
@@ -163,7 +225,7 @@ class SyncManager @Inject constructor(
                         if (oldMode != null && shouldReconnectForModeTransition(oldMode, newMode)) {
                             performModeSwitchReconnect(
                                 refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
-                                syncNow = { syncNow() },
+                                syncNow = { syncNow(SyncMode.FULL) },
                             )
                         }
                     }
@@ -179,38 +241,57 @@ class SyncManager @Inject constructor(
     // ─── Sync Operations ─────────────────────────────────────────────────────
 
     /**
-     * Execute a full sync: libraries + audiobooks + progress.
-     * Thread-safe via Mutex.
+     * Whether a change check is due under the shared two-minute debounce. The
+     * Library reads this so opening it right after the entry check (a cold
+     * start) does not send its own check again.
+     */
+    internal fun isCheckDueNow(): Boolean = isCheckDue(lastCheckAtMs, monotonicNowMs())
+
+    /** A timer tick or foreground entry: a check, unless one just ran, then the offline queue. */
+    private suspend fun runForegroundCheck() {
+        if (isCheckDue(lastCheckAtMs, monotonicNowMs())) {
+            // Offline on entry (the network still coming back) runs nothing.
+            // The server-return listener above runs the check once connected.
+            if (checkNow().attempt == SyncAttempt.SKIPPED_NOT_READY) missedCheckWhileNotReady.value = true
+        }
+        // Retry the offline queue too. The rising-edge flush only fires once
+        // per reconnect, so a push that failed right after reconnect would
+        // otherwise sit queued until the next full disconnect/reconnect cycle.
+        flushOfflineQueue()
+    }
+
+    /** Run a [SyncMode.CHECK] now: progress, then each library's change check. */
+    internal suspend fun checkNow(): SyncNowResult = syncNow(SyncMode.CHECK)
+
+    /**
+     * Execute a sync: progress, the library list, then each book library's
+     * items, fully ([SyncMode.FULL], the default) or through the change
+     * check ([SyncMode.CHECK]). Thread-safe via Mutex.
      *
      * Returns the [SyncNowResult] this attempt actually produced. Callers
      * that report the outcome to the user (Settings' manual "Sync Now") must
      * render [SyncNowResult.record] directly rather than rereading
-     * [SettingsManager.currentSettings] afterward — a concurrent periodic
-     * sync can write its own outcome in the gap between this attempt
-     * finishing and a reread, and the reread would then report THAT
-     * attempt's result instead of this one's. A [SyncAttempt.SKIPPED] result
-     * means nothing ran at all: [SyncNowResult.record] is null and must not
-     * be read as this call's outcome either.
+     * [SettingsManager.currentSettings] afterward — a concurrent sync can
+     * write its own outcome in the gap between this attempt finishing and a
+     * reread, and the reread would then report THAT attempt's result instead
+     * of this one's. A [SyncAttempt.SKIPPED_NOT_READY] or
+     * [SyncAttempt.SKIPPED_BUSY] result means nothing ran at all, and
+     * [SyncAttempt.CHECKED_NOTHING_TO_RECORD] means a check ran and found
+     * nothing worth a new record: [SyncNowResult.record] is null for all three
+     * and must not be read as this call's outcome.
      *
      * The actual control flow (gate, reachability probe, mutex, persist) is
      * [runSyncAttempt] — extracted so its invariants are pinned directly by
      * tests instead of through a stand-in helper this method could quietly
      * stop calling.
      */
-    internal suspend fun syncNow(): SyncNowResult {
+    internal suspend fun syncNow(mode: SyncMode = SyncMode.FULL): SyncNowResult {
         val serverUrlAtStart = settingsManager.currentSettings.serverUrl
+        var tally = CheckTally()
+        var recordSkipped = false
 
-        return runSyncAttempt(
-            // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a
-            // network. Evaluated fresh every call — the post-probe recheck
-            // below must see a mode switch or sign-out that landed mid-probe.
-            isSyncReady = {
-                shouldRunSync(
-                    isOnline = connectivityMonitor.isOnline.value,
-                    isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
-                    hasAuth = hasAuthToken(),
-                )
-            },
+        val result = runSyncAttempt(
+            isSyncReady = { isSyncReady() },
             // Actually reach the server before committing to a sync. A live
             // VPN interface (e.g. Tailscale) keeps isOnline=true with no real
             // connectivity, so without this probe the sync fires and hangs
@@ -226,32 +307,75 @@ class SyncManager @Inject constructor(
             onLockReleasing = {
                 _isSyncing.value = false
                 connectivityMonitor.setSyncing(false)
+                lastCheckAtMs = monotonicNowMs()
+                missedCheckWhileNotReady.value = false
             },
             // Progress sync FIRST — this populates the home screen grid
             // immediately. Library sync runs after (heavier, fetches all
             // book metadata).
             runSyncWork = {
                 syncProgress()
-                fetchLibrarySyncReport(
-                    fetchLibraries = libraryRepository::syncFromServer,
-                    // syncLibraryItems already preserves local download state.
-                    fetchItems = { library -> audioBookRepository.syncLibraryItems(library.id) },
-                )
+                when (mode) {
+                    SyncMode.FULL -> fetchLibrarySyncReportFromCounts(
+                        fetchLibraries = libraryRepository::syncFromServer,
+                        fetchItemCounts = { library ->
+                            if (!isSyncedLibrary(library)) RemoteResult.Ok(0)
+                            else audioBookRepository.syncLibraryItems(library.id)
+                        },
+                    )
+                    SyncMode.CHECK -> {
+                        val cachedLibraries = libraryRepository.getAudiobookshelf()
+                        fetchLibrarySyncReportFromCounts(
+                            fetchLibraries = {
+                                libraryRepository.syncFromServer().also { fetched ->
+                                    if (fetched is RemoteResult.Ok && libraryListChanged(cachedLibraries, fetched.value)) {
+                                        tally = tally.copy(libraryListChanged = true)
+                                    }
+                                }
+                            },
+                            fetchItemCounts = { library ->
+                                if (!isSyncedLibrary(library)) {
+                                    RemoteResult.Ok(0)
+                                } else {
+                                    val outcome = audioBookRepository.refreshLibraryItemsIfChanged(
+                                        libraryId = library.id,
+                                        isMetered = connectivityMonitor.refreshIsMetered(),
+                                    )
+                                    tally = tally.copy(
+                                        anyDeferred = tally.anyDeferred || outcome is LibraryRefreshOutcome.Deferred,
+                                        wroteBooks = tally.wroteBooks || outcome.wroteBooks,
+                                    )
+                                    // A deferral is no verdict. Report the cached
+                                    // shelf so it neither fails nor counts as zero.
+                                    outcome.itemCountResult()
+                                        ?: RemoteResult.Ok(audioBookRepository.countByLibrary(library.id))
+                                }
+                            },
+                        )
+                    }
+                }
             },
             persistOutcome = { report ->
-                persistSyncOutcome(
-                    report = report,
-                    completedAtMs = System.currentTimeMillis(),
-                    serverUrlAtStart = serverUrlAtStart,
-                    isEligibleSession = { settings ->
-                        settings.appMode == AppMode.AUDIOBOOKSHELF
-                    },
-                    updateSettingsIfAuthenticated = settingsManager::updateSettingsIfAuthenticated,
-                ).also { outcome ->
-                    if (!outcome.persisted) {
-                        Log.e(TAG, "syncNow: failed to persist sync outcome")
-                    }
+                val previousResult = settingsManager.currentSettings.lastSyncForCurrentServer()?.result
+                if (mode == SyncMode.CHECK && !shouldPersistCheckReport(report.result, tally, previousResult)) {
+                    recordSkipped = true
                     _syncCompleted.tryEmit(Unit)
+                    PersistedSyncOutcome(recorded = false, persisted = true, record = null)
+                } else {
+                    persistSyncOutcome(
+                        report = report,
+                        completedAtMs = System.currentTimeMillis(),
+                        serverUrlAtStart = serverUrlAtStart,
+                        isEligibleSession = { settings ->
+                            settings.appMode == AppMode.AUDIOBOOKSHELF
+                        },
+                        updateSettingsIfAuthenticated = settingsManager::updateSettingsIfAuthenticated,
+                    ).also { outcome ->
+                        if (!outcome.persisted) {
+                            Log.e(TAG, "syncNow: failed to persist sync outcome")
+                        }
+                        _syncCompleted.tryEmit(Unit)
+                    }
                 }
             },
             // A failed probe still has to be recorded. Returning silently
@@ -274,11 +398,41 @@ class SyncManager @Inject constructor(
                 }
             },
         )
+        if (result.attempt == SyncAttempt.RAN || result.attempt == SyncAttempt.DISCARDED_SERVER_CHANGED) {
+            // Progress was pulled even when the book list said nothing new.
+            _progressPulled.tryEmit(Unit)
+        }
+        return if (recordSkipped && result.attempt == SyncAttempt.DISCARDED_SERVER_CHANGED) {
+            SyncNowResult(SyncAttempt.CHECKED_NOTHING_TO_RECORD, null)
+        } else {
+            result
+        }
     }
+
+    private fun monotonicNowMs(): Long = SystemClock.elapsedRealtime()
+
+    /**
+     * Cheap pre-check: authenticated, non-LOCAL, and the OS reports a
+     * network. Evaluated fresh every call, so a recheck after the probe sees
+     * a mode switch or sign-out that landed mid-probe.
+     */
+    private suspend fun isSyncReady(): Boolean = shouldRunSync(
+        isOnline = connectivityMonitor.isOnline.value,
+        isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+        hasAuth = hasAuthToken(),
+    )
 
     /**
      * Sync progress from the server.
      * Server is source of truth (except for actively playing items).
+     *
+     * Local state is read in batches up front, a record that already matches
+     * it is skipped, and an import updates only the book's progress columns.
+     * Books the cache has never seen are looked up one by one only for the
+     * most recently listened few (see [unknownBooksToFetch]). The library
+     * sync brings the rest, and their progress rows import either way, so
+     * the sync shelves those books with that progress (see
+     * [com.ninelivesaudio.app.data.repository.withPulledProgress]).
      */
     private suspend fun syncProgress() {
         try {
@@ -286,17 +440,33 @@ class SyncManager @Inject constructor(
             val serverProgressList = progressRepository.fetchAllProgressFromServer()
             if (serverProgressList.isEmpty()) return
 
+            val ids = serverProgressList.map { it.libraryItemId }.distinct()
+            val books = HashMap<String, BookProgressState>()
+            val rows = HashMap<String, PlaybackProgressEntity>()
+            for (chunk in ids.chunked(PROGRESS_LOOKUP_CHUNK)) {
+                audioBookDao.getProgressStates(chunk).associateByTo(books) { it.id }
+                playbackProgressDao.getByAudioBookIds(chunk).associateByTo(rows) { it.audioBookId }
+            }
+            val fetchIndividually = unknownBooksToFetch(serverProgressList, books.keys)
+
             for (progress in serverProgressList) {
                 // Active playback and queued local writes own progress. In
                 // particular, never compare server and phone wall clocks to
                 // decide whether an unsent offline write survives.
                 try {
-                    var book = audioBookDao.getById(progress.libraryItemId)
-                    if (book == null) {
-                        val remoteBook = audioBookRepository.fetchFromServer(progress.libraryItemId)
+                    val itemId = progress.libraryItemId
+                    var book = books[itemId]
+                    if (book == null && itemId in fetchIndividually) {
+                        val remoteBook = audioBookRepository.fetchFromServer(itemId)
                         if (remoteBook != null) {
                             audioBookDao.upsert(remoteBook.toEntity())
-                            book = audioBookDao.getById(progress.libraryItemId)
+                            book = BookProgressState(
+                                id = itemId,
+                                currentTimeSeconds = remoteBook.currentTime.inWholeMilliseconds / 1000.0,
+                                progress = remoteBook.progress,
+                                isFinished = if (remoteBook.isFinished) 1 else 0,
+                                durationSeconds = remoteBook.duration.inWholeMilliseconds / 1000.0,
+                            ).also { books[itemId] = it }
                         }
                     }
 
@@ -311,35 +481,47 @@ class SyncManager @Inject constructor(
                     }
 
                     val updatedAtStr = progress.lastUpdate?.toIso8601()
+                    if (serverProgressIsAlreadyLocal(
+                            positionSeconds = positionSeconds,
+                            progress = progress.progress,
+                            isFinished = progress.isFinished,
+                            updatedAt = updatedAtStr,
+                            localRow = rows[itemId],
+                            localBook = book,
+                        )
+                    ) continue
 
                     // The repository checks the queue while holding the same
                     // per-book ownership used by enqueue and flush. A pending
                     // local write wins regardless of server clock skew.
-                    val imported = progressRepository.importServerProgressIfNoPending(
+                    val bookKnown = book != null
+                    progressRepository.importServerProgressIfNoPending(
                         PlaybackProgressEntity(
-                            audioBookId = progress.libraryItemId,
+                            audioBookId = itemId,
                             positionSeconds = positionSeconds,
                             isFinished = if (progress.isFinished) 1 else 0,
                             updatedAt = updatedAtStr,
                         ),
                         importToken = importToken,
                         onImported = {
-                            if (book != null) {
-                                audioBookDao.upsert(
-                                    book.copy(
-                                        currentTimeSeconds = positionSeconds,
-                                        progress = progress.progress,
-                                        isFinished = if (progress.isFinished) 1 else 0,
-                                    )
+                            if (bookKnown) {
+                                audioBookDao.updateProgress(
+                                    id = itemId,
+                                    currentTimeSeconds = positionSeconds,
+                                    progress = progress.progress,
+                                    isFinished = if (progress.isFinished) 1 else 0,
                                 )
                             }
                         },
                     )
-                    if (!imported) continue
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     // Continue with next item
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // Non-fatal
         }
@@ -368,20 +550,26 @@ class SyncManager @Inject constructor(
         }
 
     /**
-     * Report playback position with throttling.
-     * Always saves locally. Only pushes to server if throttle conditions are met.
+     * Report a playback position sampled by the player's 500 ms poll.
+     *
+     * Saves locally at most every [LOCAL_POSITION_WRITE_INTERVAL_MS], or at
+     * once when [force] is set (a seek, a chapter change, the first sample of
+     * a play, the app leaving the foreground, teardown), when the book is
+     * finished, or when the server push is due. Pause and stop save through
+     * their own terminal paths. A crash loses at most about 10 seconds, which
+     * the resume rewind covers. The server push keeps its own throttle
+     * ([shouldPushPlaybackPosition]) and only goes out with a local save.
      */
     suspend fun reportPlaybackPosition(
         itemId: String,
         currentTime: Double,
         duration: Double,
         isFinished: Boolean,
+        force: Boolean = false,
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
-        // Only auto-mark as finished if position is within 1 second of the end.
-        // Exact >= comparison can fire prematurely during seeks near the end.
-        val computedFinished = isFinished || (safeDuration > 0.0 && safeDuration - safeCurrentTime < 1.0)
+        val computedFinished = isFinished || positionCountsAsFinished(safeCurrentTime, safeDuration)
         val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL
         val now = System.currentTimeMillis()
         val shouldSync = !isLocalMode && shouldPushPlaybackPosition(
@@ -392,25 +580,34 @@ class SyncManager @Inject constructor(
             now = now,
         )
 
+        val nowMonotonic = monotonicNowMs()
+        val cadence = localPositionCadence.snapshot(itemId)
+        val pushToServer = shouldSync && connectivityMonitor.isOnline.value
+        if (
+            !shouldWriteLocalPosition(
+                cadence = cadence,
+                nowMs = nowMonotonic,
+                force = force,
+                isFinished = computedFinished,
+                pushToServer = pushToServer,
+            )
+        ) return
+
+        // Only the progress columns. The old full-row REPLACE rewrote the
+        // book's description and blobs twice a second.
         val updateShelf: suspend () -> Unit = {
-            readAndWriteShelfProgressIfCurrent(
-                isCurrent = { true },
-                read = { audioBookDao.getById(itemId) },
-                write = { book ->
-                    if (book != null) {
-                        audioBookDao.upsert(
-                            book.copy(
-                                currentTimeSeconds = safeCurrentTime,
-                                progress = shelfProgress(
-                                    currentTime = safeCurrentTime,
-                                    duration = safeDuration,
-                                    isFinished = computedFinished,
-                                    existingProgress = book.progress,
-                                ),
-                                isFinished = if (computedFinished) 1 else 0,
-                            ),
-                        )
-                    }
+            writeShelfProgressColumns(
+                currentTime = safeCurrentTime,
+                duration = safeDuration,
+                isFinished = computedFinished,
+                readExistingProgress = { audioBookDao.getById(itemId)?.progress ?: 0.0 },
+                update = { time, progress, finished ->
+                    audioBookDao.updateProgress(
+                        id = itemId,
+                        currentTimeSeconds = time,
+                        progress = progress,
+                        isFinished = finished,
+                    )
                 },
             )
         }
@@ -429,13 +626,21 @@ class SyncManager @Inject constructor(
                 currentTime = safeCurrentTime,
                 isFinished = computedFinished,
                 duration = safeDuration,
-                pushToServer = shouldSync && connectivityMonitor.isOnline.value,
+                pushToServer = pushToServer,
                 onPersisted = updateShelf,
             )
         }
+        localPositionCadence.recordWrite(
+            itemId = itemId,
+            atMs = nowMonotonic,
+            pushFailed = pushToServer && !pushed,
+        )
 
         if (pushed) {
             playbackThrottleOwner.recordSuccess(itemId, safeCurrentTime, now)
+            // Nothing pings in the background, so a push that lands is what
+            // tells a background session the server is back.
+            connectivityMonitor.reportServerAnswered()
         }
     }
 
@@ -569,6 +774,41 @@ internal fun isServerSessionLive(
 internal fun shouldResyncOnServerReturn(lastResult: SyncResult?): Boolean =
     lastResult != null && lastResult != SyncResult.SUCCESS
 
+/**
+ * Whether the server coming back (status turning Connected) runs a check:
+ * foreground only, under the two-minute debounce, and only when the last
+ * attempt did not fully succeed or a foreground check was skipped because
+ * the app was offline at the time. The second case is the app coming back
+ * from the background reading "Offline" for a moment: its entry check ran
+ * nothing, and without this the shelf waited 15 minutes for the next timer.
+ */
+internal fun shouldCheckOnServerReturn(
+    inForeground: Boolean,
+    checkDue: Boolean,
+    missedCheckWhileNotReady: Boolean,
+    lastResult: SyncResult?,
+): Boolean = inForeground && checkDue &&
+    (missedCheckWhileNotReady || shouldResyncOnServerReturn(lastResult))
+
+/**
+ * The server-return listener. Runs [check] when the server turns live and
+ * [shouldCheck] agrees, and again when a skipped entry check sets the missed
+ * flag while the server is already live. The flag used to be read only on the
+ * live edge, so an entry check that read offline, then lost the race to the
+ * Connected status, set it with no edge left to consume it, and the shelf
+ * waited for the next timer.
+ */
+internal suspend fun runServerReturnChecks(
+    serverLive: Flow<Boolean>,
+    missedCheckWhileNotReady: Flow<Boolean>,
+    shouldCheck: (missed: Boolean) -> Boolean,
+    check: suspend () -> Unit,
+) {
+    combine(serverLive, missedCheckWhileNotReady) { live, missed -> live to missed }
+        .distinctUntilChanged()
+        .collect { (live, missed) -> if (live && shouldCheck(missed)) check() }
+}
+
 internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,
     newMode: AppMode,
@@ -628,6 +868,14 @@ internal enum class SyncAttempt {
 
     /** Another sync already held the mutex. */
     SKIPPED_BUSY,
+
+    /**
+     * A check ran (progress pulled, every library asked) and found nothing
+     * that called for a new record: the book lists matched, or a full
+     * download is waiting for an unmetered network. The record already
+     * stored is not this attempt's result.
+     */
+    CHECKED_NOTHING_TO_RECORD,
 
     /** A sync actually ran (including the reachability-probe-failure path, which records FAILED). */
     RAN,
@@ -767,6 +1015,79 @@ internal suspend fun runSyncAttempt(
     }
 }
 
+/** How often the 500 ms playback poll saves the position locally. */
+internal const val LOCAL_POSITION_WRITE_INTERVAL_MS = 10_000L
+
+internal data class LocalPositionCadenceSnapshot(
+    /** Monotonic time of the last local save, null before the first one. */
+    val lastWriteAtMs: Long? = null,
+    /** The server push that went out with the last save failed. */
+    val lastPushFailed: Boolean = false,
+)
+
+internal class LocalPositionWriteCadence {
+    private val lock = Any()
+    private val states = mutableMapOf<String, LocalPositionCadenceSnapshot>()
+
+    fun snapshot(itemId: String): LocalPositionCadenceSnapshot = synchronized(lock) {
+        states[itemId] ?: LocalPositionCadenceSnapshot()
+    }
+
+    fun recordWrite(itemId: String, atMs: Long, pushFailed: Boolean) {
+        synchronized(lock) {
+            states[itemId] = LocalPositionCadenceSnapshot(atMs, pushFailed)
+        }
+    }
+}
+
+/**
+ * Whether a polled position is saved locally now.
+ *
+ * Saves on [force], a finished book, a due server push, the first sample, or
+ * once [LOCAL_POSITION_WRITE_INTERVAL_MS] has passed. A due push skips the
+ * wait only when the previous push landed: the push throttle stays due
+ * until a push succeeds, so a server refusing connections would otherwise
+ * bring back a save (and a failed request) every 500 ms. After a failure
+ * the retry rides the 10 second save.
+ */
+internal fun shouldWriteLocalPosition(
+    cadence: LocalPositionCadenceSnapshot,
+    nowMs: Long,
+    force: Boolean,
+    isFinished: Boolean,
+    pushToServer: Boolean,
+): Boolean {
+    if (force || isFinished) return true
+    val lastWriteAt = cadence.lastWriteAtMs ?: return true
+    if (pushToServer && !cadence.lastPushFailed) return true
+    return nowMs - lastWriteAt >= LOCAL_POSITION_WRITE_INTERVAL_MS || nowMs < lastWriteAt
+}
+
+/**
+ * Write a playback position into the shelf row's progress columns only.
+ * Reads the stored progress only when the duration is unknown and the old
+ * value has to stand.
+ */
+internal suspend fun writeShelfProgressColumns(
+    currentTime: Double,
+    duration: Double,
+    isFinished: Boolean,
+    readExistingProgress: suspend () -> Double,
+    update: suspend (currentTime: Double, progress: Double, isFinished: Int) -> Unit,
+) {
+    val existingProgress = if (!isFinished && duration <= 0.0) readExistingProgress() else 0.0
+    update(
+        currentTime,
+        shelfProgress(
+            currentTime = currentTime,
+            duration = duration,
+            isFinished = isFinished,
+            existingProgress = existingProgress,
+        ),
+        if (isFinished) 1 else 0,
+    )
+}
+
 internal data class PlaybackThrottleSnapshot(
     val lastSyncedTime: Double = 0.0,
     val lastSyncTimestamp: Long = 0L,
@@ -826,4 +1147,15 @@ internal suspend fun <T> readAndWriteShelfProgressIfCurrent(
     if (!isCurrent()) return false
     write(current)
     return true
+}
+
+/**
+ * A saved position within 1 second of the end counts as finished. Exact >=
+ * comparison can fire prematurely during seeks near the end. Every local
+ * position save uses this one rule, so a later save of the same position
+ * never marks the book unfinished again.
+ */
+internal fun positionCountsAsFinished(currentTimeSec: Double, durationSec: Double): Boolean {
+    val safeDuration = durationSec.coerceAtLeast(0.0)
+    return safeDuration > 0.0 && safeDuration - currentTimeSec.coerceAtLeast(0.0) < 1.0
 }

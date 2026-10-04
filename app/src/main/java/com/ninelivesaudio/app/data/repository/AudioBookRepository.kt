@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.ninelivesaudio.app.data.local.AppDatabase
+import com.ninelivesaudio.app.data.local.containsLikePattern
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -11,22 +12,39 @@ import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
 import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
+import com.ninelivesaudio.app.data.local.entity.SHELF_BOOK_COLUMNS
+import com.ninelivesaudio.app.data.local.entity.SyncMergeState
+import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.domain.util.toEpochMillis
+import com.ninelivesaudio.app.service.shelfProgress
 import com.ninelivesaudio.app.service.local.LocalBookFingerprint
 import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
 import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.seconds
@@ -40,8 +58,38 @@ class AudioBookRepository @Inject constructor(
     private val localBookmarkDao: LocalBookmarkDao,
     private val playbackProgressDao: PlaybackProgressDao,
     private val database: AppDatabase,
+    private val watermarkStore: LibrarySyncWatermarkStore,
 ) {
-    private val syncLibraryItemsMutex = Mutex()
+    // Library syncs run here, not in whoever asked, so a caller that leaves
+    // (the Library tab closing, a newer load replacing an older one) stops
+    // waiting without throwing away a download someone else is sharing.
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncFlights = LibrarySyncSingleFlight<LibraryRefreshOutcome>(syncScope)
+
+    // One lock per library and signed-in account (the same key as the
+    // flights). Fetch, save, and prune for a library happen under its lock,
+    // so an older response can never land after a newer complete one pruned.
+    // Other libraries no longer wait behind a big one's download, and a new
+    // account never waits behind (or shares) the previous account's sync,
+    // whose writes stop once it notices the switch.
+    private val libraryLocks = ConcurrentHashMap<String, Mutex>()
+    private fun lockFor(flightKey: String): Mutex = libraryLocks.computeIfAbsent(flightKey) { Mutex() }
+
+    private suspend fun isCurrent(identity: LibrarySyncIdentity): Boolean =
+        watermarkStore.currentSyncIdentity() == identity
+
+    // Background full downloads that keep failing wait before trying again.
+    private val fullSyncFailures = ConcurrentHashMap<String, FullSyncFailures>()
+
+    private val _booksSaved = MutableSharedFlow<String>(extraBufferCapacity = 16)
+
+    /** A library id, each time a sync saves books for it (every page of a full download). */
+    val booksSaved: SharedFlow<String> = _booksSaved.asSharedFlow()
+
+    private val _deferredFullSyncs = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Libraries whose full download is waiting for an unmetered network. */
+    val deferredFullSyncs: StateFlow<Set<String>> = _deferredFullSyncs.asStateFlow()
 
     /** Observe all audiobooks (reactive). */
     fun observeAll(): Flow<List<AudioBook>> =
@@ -62,10 +110,6 @@ class AudioBookRepository @Inject constructor(
     /** Observe a single audiobook. */
     fun observeById(id: String): Flow<AudioBook?> =
         audioBookDao.observeById(id).map { it?.toDomain() }
-
-    /** Get all audiobooks from local DB (one-shot). */
-    suspend fun getAll(): List<AudioBook> =
-        audioBookDao.getAll().map { it.toDomain() }
 
     /** Get audiobooks by library (one-shot). */
     suspend fun getByLibrary(libraryId: String): List<AudioBook> =
@@ -90,13 +134,6 @@ class AudioBookRepository @Inject constructor(
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =
         audioBookDao.getById(id)?.toDomain()
-
-    /** Search audiobooks by title or author. */
-    suspend fun search(query: String): List<AudioBook> {
-        val normalized = query.trim()
-        if (normalized.isEmpty()) return getAll()
-        return audioBookDao.search(normalized).map { it.toDomain() }
-    }
 
     /** Get recently played audiobooks for Nine Lives home screen. */
     suspend fun getRecentlyPlayed(limit: Int = 9): List<Pair<AudioBook, Long>> =
@@ -145,6 +182,9 @@ class AudioBookRepository @Inject constructor(
      * Get filtered books for a library, pushing WHERE clauses to SQL.
      * Eliminates the need to hold all books in memory for filtering.
      *
+     * Returns light shelf books: description, audio files, and tags are
+     * empty. Never pass one to [save] or [saveAll], read the book by id.
+     *
      * @param tab 0=All, 1=InProgress, 2=Completed, 3=Downloaded
      * @param hideFinished whether to exclude finished books
      * @param downloadedOnly whether to show only downloaded books
@@ -158,19 +198,12 @@ class AudioBookRepository @Inject constructor(
         searchQuery: String = "",
     ): List<AudioBook> {
         val sql = buildLibrarySql(tab, hideFinished, downloadedOnly, searchQuery.isNotBlank())
+        val args = buildLibrarySqlArgs(libraryId, searchQuery)
 
-        val args = mutableListOf<Any>(libraryId)
-        if (searchQuery.isNotBlank()) {
-            val pattern = "%${searchQuery}%"
-            args.addAll(listOf(pattern, pattern, pattern, pattern))
-        }
-
-        val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args.toTypedArray()))
-        return results.map { result ->
-            result.audioBook.toDomain().copy(
-                lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
-            )
-        }
+        val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args))
+        // Shelf books carry no description, audio files, or tags. They are
+        // for showing and navigating, never for saving back. See toShelfBook.
+        return results.mapCooperatively { it.toShelfBook() }
     }
 
     /** Count all audiobooks in a library. */
@@ -186,57 +219,234 @@ class AudioBookRepository @Inject constructor(
     suspend fun countRecentlyPlayedForAuto(libraryId: String, isLocal: Boolean): Int =
         audioBookDao.countRecentlyPlayedByLibrary(libraryId, if (isLocal) 1 else 0)
 
-    /** Get distinct series names for a library. */
-    suspend fun getDistinctSeries(libraryId: String): List<String> =
-        audioBookDao.getDistinctSeries(libraryId)
-
-    /** Get distinct authors for a library. */
-    suspend fun getDistinctAuthors(libraryId: String): List<String> =
-        audioBookDao.getDistinctAuthors(libraryId)
-
-    /** Get distinct genres for a library (parsed from JSON arrays). */
-    suspend fun getDistinctGenres(libraryId: String): List<String> {
-        val jsonStrings = audioBookDao.getDistinctGenresJson(libraryId)
-        return jsonStrings
-            .flatMap { json ->
-                try {
-                    Json.decodeFromString<List<String>>(json)
-                } catch (_: Exception) {
-                    emptyList()
-                }
-            }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .sorted()
+    /**
+     * Download every item in a library and save it, a page at a time. This is
+     * the full sync: sign-in, a server or account switch, a switch back from
+     * Local mode, an explicit refresh (pull to refresh, Retry, Sync Now), and
+     * the fallback whenever a change check cannot be trusted. It never waits
+     * for an unmetered network or a failure backoff.
+     *
+     * A partial fetch still saves what it got: some of the shelf beats none
+     * of it, and the caller keeps the failure reason for the bug report. A
+     * complete (Ok) fetch is authoritative for this library, including a
+     * confirmed-empty one, so the cache is pruned to match it exactly. See
+     * [pruneServerLibraryTo]. A sync already running for this library is
+     * shared, not repeated (see [LibrarySyncSingleFlight]).
+     *
+     * Returns how many books the fetch saved.
+     */
+    suspend fun syncLibraryItems(libraryId: String): RemoteResult<Int> {
+        val identity = watermarkStore.currentSyncIdentity()
+        val flightKey = identity.flightKey(libraryId)
+        return syncFlights.run(flightKey, LibrarySyncKind.FULL) {
+            lockFor(flightKey).withLock { runFullSyncLocked(libraryId, identity) }
+        }.itemCountResult() ?: RemoteResult.Failed("sync did not run")
     }
 
-    /**
-     * Fetch all items for a library from server and save to local DB. A
-     * partial fetch still saves what it got: some of the shelf beats none of
-     * it, and the caller keeps the failure reason for the bug report.
-     *
-     * A complete (Ok) fetch, by contrast, is authoritative for this library
-     * — including a confirmed-empty one, so the cache is reconciled to match
-     * it exactly rather than just upserted-into. See [reconcileServerLibrary].
-     */
-    suspend fun syncLibraryItems(libraryId: String): RemoteResult<List<AudioBook>> = runSerializedLibraryItemSync(
-        mutex = syncLibraryItemsMutex,
-        libraryId = libraryId,
-        fetchItems = { apiService.getLibraryItems(libraryId) },
-        mergeItems = { remote -> mergeSyncedBooks(remote, audioBookDao::getByIds) },
-        upsertAll = { books -> audioBookDao.upsertAll(books.map { it.toEntity() }) },
-        cachedNonDownloadedIds = audioBookDao::getNonDownloadedServerIdsByLibrary,
-        deleteByIds = audioBookDao::deleteServerBooksByIds,
-        deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },
-    )
+    /** Whether this library has any server books cached, so a shelf exists to show. */
+    internal suspend fun hasServerBooks(libraryId: String): Boolean =
+        audioBookDao.countServerBooksByLibrary(libraryId) > 0
 
     /**
-     * Applies an authoritative library-list removal through the same mutex as
-     * item sync. A list response cannot prune this library while an older item
-     * response is still in flight and about to upsert its stale books.
+     * The background check for one library: ask the server whether anything
+     * was added or removed since the last good sync (one tiny request), and
+     * do the least work that brings the shelf back in line. Nothing new means
+     * nothing fetched and nothing written. Added books are fetched on their
+     * own. Removals, doubt, a first sync, or a day-old last full download
+     * fall back to the full download, which waits for an unmetered network
+     * when [isMetered] and a cached shelf exists. See [planLibrarySync].
+     */
+    internal suspend fun refreshLibraryItemsIfChanged(libraryId: String, isMetered: Boolean): LibraryRefreshOutcome {
+        val identity = watermarkStore.currentSyncIdentity()
+        val flightKey = identity.flightKey(libraryId)
+        return syncFlights.run(flightKey, LibrarySyncKind.CHECK) {
+            lockFor(flightKey).withLock { runCheckLocked(libraryId, identity, isMetered) }
+        }
+    }
+
+    private suspend fun runCheckLocked(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        isMetered: Boolean,
+    ): LibraryRefreshOutcome {
+        if (!isCurrent(identity)) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
+        val key = identity.account
+        val watermark = watermarkStore.get(key, libraryId)
+        val localCount = audioBookDao.countServerBooksByLibrary(libraryId)
+        val hasCachedRows = localCount > 0
+        val change = if (watermark == null) {
+            LibraryChange.Full("no earlier sync of this library")
+        } else {
+            when (val head = apiService.getLibraryHead(libraryId)) {
+                is RemoteResult.Ok -> decideLibraryChange(watermark, head.value, localCount)
+                is RemoteResult.Partial -> return LibraryRefreshOutcome.CheckFailed(head.reason)
+                is RemoteResult.Failed -> return LibraryRefreshOutcome.CheckFailed(head.reason)
+            }
+        }
+        val plan = planLibrarySync(
+            change = change,
+            isStale = watermark?.let { isWatermarkStale(it, System.currentTimeMillis()) } ?: false,
+            isMetered = isMetered,
+            hasCachedRows = hasCachedRows,
+        )
+        val reason = (change as? LibraryChange.Full)?.reason ?: "last full download is over a day old"
+        return when (plan) {
+            LibrarySyncPlan.SKIP -> LibraryRefreshOutcome.Unchanged(watermark?.itemCount ?: localCount)
+            LibrarySyncPlan.DEFER_FULL -> deferUntilUnmetered(libraryId, reason)
+            LibrarySyncPlan.FULL -> runBackgroundFullLocked(libraryId, identity, reason)
+            LibrarySyncPlan.INCREMENTAL ->
+                runIncrementalLocked(libraryId, identity, watermark!!, isMetered, hasCachedRows)
+        }
+    }
+
+    private suspend fun runIncrementalLocked(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        watermark: com.ninelivesaudio.app.domain.model.LibrarySyncWatermark,
+        isMetered: Boolean,
+        hasCachedRows: Boolean,
+    ): LibraryRefreshOutcome {
+        val fetched = apiService.getLibraryItemsAddedSince(
+            libraryId = libraryId,
+            cutoff = incrementalCutoff(watermark),
+            pageSize = INCREMENTAL_PAGE_SIZE,
+            maxPages = INCREMENTAL_MAX_PAGES,
+        )
+        val key = identity.account
+        val value = (fetched as? RemoteResult.Ok)?.value
+            ?: return fallBackToFullLocked(libraryId, identity, (fetched as? RemoteResult.Failed)?.reason ?: "added-since fetch failed", isMetered, hasCachedRows)
+        val books = value.items
+        val alreadyCached = fetchByIdChunks(books.map { it.id }) { ids ->
+            audioBookDao.getServerIdsInLibrary(libraryId, ids)
+        }.toHashSet()
+        val newBookCount = newBooksSinceWatermark(watermark, books, alreadyCached)
+        if (books.isNotEmpty()) {
+            val merged = mergeForSave(books)
+            // Added books are saved even when the counts disagree below: they
+            // are real, and the full download that follows prunes, not this.
+            // Never into a cache another account has taken over meanwhile:
+            // the account check and the save are one step no sign-in splits.
+            val entities = withContext(Dispatchers.Default) { merged.map { it.toEntity() } }
+            val saved = withContext(NonCancellable) {
+                watermarkStore.runIfCurrent(identity) { audioBookDao.upsertAll(entities) }
+            }
+            if (!saved) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
+            _booksSaved.tryEmit(libraryId)
+        }
+        if (newBookCount == null || !incrementalCountsAgree(watermark.itemCount, newBookCount, value.total)) {
+            // The books just saved are not in the watermark's count, so it no
+            // longer describes the cache. Forgetting it keeps every later
+            // check on the full download until one completes.
+            watermarkStore.remove(key, libraryId)
+            return fallBackToFullLocked(
+                libraryId,
+                identity,
+                if (newBookCount == null) {
+                    "cannot tell which books near the newest one are new"
+                } else {
+                    "server has ${value.total} books, expected ${watermark.itemCount} + $newBookCount new"
+                },
+                isMetered,
+                hasCachedRows,
+            )
+        }
+        watermarkStore.put(watermarkAfterIncremental(watermark, books, value.total, System.currentTimeMillis()))
+        return LibraryRefreshOutcome.Incremental(newBookCount = newBookCount, itemCount = value.total)
+    }
+
+    private suspend fun fallBackToFullLocked(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        reason: String,
+        isMetered: Boolean,
+        hasCachedRows: Boolean,
+    ): LibraryRefreshOutcome =
+        if (shouldDeferFullSync(isMetered, explicit = false, hasCachedRows)) {
+            deferUntilUnmetered(libraryId, reason)
+        } else {
+            runBackgroundFullLocked(libraryId, identity, reason)
+        }
+
+    private suspend fun runBackgroundFullLocked(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        reason: String,
+    ): LibraryRefreshOutcome {
+        if (isFullSyncBackedOff(fullSyncFailures[libraryId], monotonicNowMs())) {
+            return LibraryRefreshOutcome.Deferred("$reason (waiting after failed downloads)", untilUnmetered = false)
+        }
+        return runFullSyncLocked(libraryId, identity)
+    }
+
+    private fun deferUntilUnmetered(libraryId: String, reason: String): LibraryRefreshOutcome {
+        _deferredFullSyncs.update { it + libraryId }
+        return LibraryRefreshOutcome.Deferred(reason, untilUnmetered = true)
+    }
+
+    private suspend fun runFullSyncLocked(libraryId: String, identity: LibrarySyncIdentity): LibraryRefreshOutcome {
+        // A check that got here is now a full download: let a full refresh
+        // asked for meanwhile share it rather than queue a second one.
+        syncFlights.upgradeToFull(identity.flightKey(libraryId))
+        val key = identity.account
+        val tally = FullSyncTally()
+        val result = runLibraryItemSyncPass(
+            libraryId = libraryId,
+            fetchPages = { onPage -> apiService.streamLibraryItems(libraryId, onPage = onPage) },
+            mergeItems = ::mergeForSave,
+            upsertAll = ::saveMerged,
+            cachedNonDownloadedIds = audioBookDao::getNonDownloadedServerIdsByLibrary,
+            deleteByIds = audioBookDao::deleteServerBooksByIds,
+            deleteAllServerBooks = { id -> audioBookDao.deleteServerBooksByLibrary(id) },
+            onPageSaved = { books ->
+                tally.add(books)
+                _booksSaved.tryEmit(libraryId)
+            },
+            writeIfCurrent = { write -> watermarkStore.runIfCurrent(identity, write) },
+        )
+        // Another account signed in mid-download. Nothing more was written,
+        // and this account's watermark and failure count stay as they were.
+        if (result is RemoteResult.Failed && result.reason == SYNC_ACCOUNT_CHANGED) {
+            return LibraryRefreshOutcome.Full(result)
+        }
+        val watermark = watermarkAfterFullSync(key, libraryId, tally, result, System.currentTimeMillis())
+        if (watermark != null) watermarkStore.put(watermark) else watermarkStore.remove(key, libraryId)
+        if (result is RemoteResult.Ok) {
+            fullSyncFailures.remove(libraryId)
+            _deferredFullSyncs.update { it - libraryId }
+        } else {
+            fullSyncFailures.compute(libraryId) { _, previous ->
+                FullSyncFailures(count = (previous?.count ?: 0) + 1, lastFailureAtMs = monotonicNowMs())
+            }
+        }
+        return LibraryRefreshOutcome.Full(result)
+    }
+
+    // Thousands of books are merged and JSON-encoded here, so keep it off the
+    // main thread the Library calls from.
+    private suspend fun mergeForSave(remote: List<AudioBook>): List<AudioBook> =
+        withContext(Dispatchers.Default) {
+            mergeSyncedBooksLean(
+                remote,
+                audioBookDao::getSyncMergeStates,
+                audioBookDao::getByIds,
+                playbackProgressDao::getByAudioBookIds,
+            )
+        }
+
+    private suspend fun saveMerged(books: List<AudioBook>) {
+        audioBookDao.upsertAll(withContext(Dispatchers.Default) { books.map { it.toEntity() } })
+    }
+
+    private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000L
+
+    /**
+     * Applies an authoritative library-list removal under the same lock as
+     * that library's item sync. A list response cannot prune this library
+     * while an older item response is still in flight and about to upsert its
+     * stale books.
      */
     internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String): Boolean =
-        runSerializedLibraryItemPrune(syncLibraryItemsMutex) {
+        runSerializedLibraryItemPrune(lockFor(watermarkStore.currentSyncIdentity().flightKey(libraryId))) {
             audioBookDao.deleteServerBooksByLibrary(libraryId)
             audioBookDao.hasDownloadedServerBooks(libraryId)
         }
@@ -442,6 +652,43 @@ class AudioBookRepository @Inject constructor(
     suspend fun deleteAll() {
         audioBookDao.deleteAll()
     }
+
+    // ─── Readers outside the Library shelf ───────────────────────────────
+
+    /**
+     * The books among [ids] that belong to one library and source, looked up
+     * 500 ids at a time. Ids that are missing or belong elsewhere are left out.
+     */
+    suspend fun getByIdsInLibraryAndSource(
+        libraryId: String,
+        isLocal: Boolean,
+        ids: Collection<String>,
+    ): List<AudioBook> =
+        fetchByIdChunks(ids.distinct()) { chunk ->
+            audioBookDao.getByIdsInLibraryAndSource(libraryId, if (isLocal) 1 else 0, chunk)
+        }.map { it.toDomain() }
+
+    /** One page of Android Auto's Library list, A to Z, light rows. */
+    suspend fun getAutoBrowsePage(libraryId: String, isLocal: Boolean, limit: Int, offset: Int): List<AutoBrowseRow> =
+        audioBookDao.getAutoBrowsePage(libraryId, if (isLocal) 1 else 0, limit, offset)
+
+    /** One page of Android Auto's Downloaded list, A to Z, light rows. */
+    suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Boolean, limit: Int, offset: Int): List<AutoBrowseRow> =
+        audioBookDao.getAutoDownloadedPage(libraryId, if (isLocal) 1 else 0, limit, offset)
+
+    /** One page of Android Auto search hits for an escaped LIKE [pattern], light rows. */
+    suspend fun searchAutoPage(
+        libraryId: String,
+        isLocal: Boolean,
+        pattern: String,
+        limit: Int,
+        offset: Int,
+    ): List<AutoBrowseRow> =
+        audioBookDao.searchAutoPage(libraryId, if (isLocal) 1 else 0, pattern, limit, offset)
+
+    /** How many Android Auto search hits [pattern] has, counting no further than [cap]. */
+    suspend fun countAutoSearch(libraryId: String, isLocal: Boolean, pattern: String, cap: Int): Int =
+        audioBookDao.countAutoSearch(libraryId, if (isLocal) 1 else 0, pattern, cap)
 }
 
 private const val MAXIMUM_AUDIOBOOK_LOOKUP_BIND_COUNT = 500
@@ -474,16 +721,15 @@ internal suspend fun mergeSyncedBooks(
 
 /**
  * Reconciles the DAO's cached SERVER rows for one library against a
- * completed [syncLibraryItems] fetch, extracted so the branching is
- * unit-testable without Room (issue #14, PR #30 review).
+ * completed fetch, extracted so the branching is unit-testable without Room
+ * (issue #14, PR #30 review).
  *
- * A complete ([isComplete]) fetch is authoritative for [libraryId] — the
+ * A complete ([isComplete]) fetch is authoritative for [libraryId]: the
  * cache should end up matching it exactly, including down to nothing when
  * [merged] is empty (a previously populated library that genuinely emptied
  * out). An incomplete (Partial) fetch is never authoritative: it upserts
  * what it got (some of the shelf beats none of it) but never prunes,
- * because a page it couldn't reach is not proof those books are gone —
- * that retention is unchanged from before this fix.
+ * because a page it couldn't reach is not proof those books are gone.
  *
  * [cachedNonDownloadedIds], [deleteByIds], and [deleteAllServerBooks] are
  * expected to scope to server (non-local) rows and exempt downloaded books.
@@ -503,10 +749,31 @@ internal suspend fun reconcileServerLibrary(
         upsertAll(merged)
     }
     if (!isComplete) return
-    if (merged.isEmpty()) {
+    pruneServerLibraryTo(
+        keptIds = merged.mapTo(mutableSetOf()) { it.id },
+        libraryId = libraryId,
+        cachedNonDownloadedIds = cachedNonDownloadedIds,
+        deleteByIds = deleteByIds,
+        deleteAllServerBooks = deleteAllServerBooks,
+    )
+}
+
+/**
+ * The prune half of [reconcileServerLibrary], for a complete fetch whose
+ * books were already saved page by page: every cached non-downloaded server
+ * book of [libraryId] not in [keptIds] goes, and an empty [keptIds] empties
+ * the library. Only ever called after a complete fetch.
+ */
+internal suspend fun pruneServerLibraryTo(
+    keptIds: Set<String>,
+    libraryId: String,
+    cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
+    deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
+    deleteAllServerBooks: suspend (libraryId: String) -> Unit,
+) {
+    if (keptIds.isEmpty()) {
         deleteAllServerBooks(libraryId)
     } else {
-        val keptIds = merged.mapTo(mutableSetOf()) { it.id }
         val missingIds = cachedNonDownloadedIds(libraryId).filterNot { it in keptIds }
         for (ids in missingIds.chunked(MAXIMUM_SERVER_BOOK_DELETE_BIND_COUNT)) {
             deleteByIds(libraryId, ids)
@@ -515,46 +782,104 @@ internal suspend fun reconcileServerLibrary(
 }
 
 /**
- * Serializes one item's full fetch, merge, and reconciliation sequence. Both
- * SyncManager and LibraryViewModel can refresh the same library independently.
- * Holding [mutex] across the network fetch makes a later caller fetch only
- * after every earlier response has been applied, so an old response cannot
- * upsert books that a newer complete response already pruned.
+ * One full fetch-save-prune pass for a library, the caller holding its lock.
+ *
+ * Each page is merged and saved as it arrives ([fetchPages] hands pages to
+ * the callback), so a big library fills the shelf progressively and never
+ * sits in memory whole. Saves run NonCancellable so a page is saved entirely
+ * or not at all. Only a complete (Ok) fetch prunes, against every id it
+ * delivered, and the prune also runs NonCancellable: once the fetch has
+ * proved what the server holds, the cache is brought in line even if the
+ * caller is cancelled in between. A Partial or Failed fetch keeps the pages
+ * it saved and prunes nothing.
+ *
+ * [writeIfCurrent] runs a write only while the account the pass runs for is
+ * still signed in, checking and writing as one step that no sign-in can
+ * split (see [LibrarySyncWatermarkStore.runIfCurrent]). Each save and the
+ * prune go through it, and once it refuses the pass stops, writes nothing
+ * more, and fails with [SYNC_ACCOUNT_CHANGED]: the cache now belongs to
+ * someone else, whose own sync fills and prunes it.
  */
-internal suspend fun runSerializedLibraryItemSync(
-    mutex: Mutex,
+internal suspend fun runLibraryItemSyncPass(
     libraryId: String,
-    fetchItems: suspend () -> RemoteResult<List<AudioBook>>,
+    fetchPages: suspend (onPage: suspend (List<AudioBook>) -> Unit) -> RemoteResult<Int>,
     mergeItems: suspend (List<AudioBook>) -> List<AudioBook>,
     upsertAll: suspend (List<AudioBook>) -> Unit,
     cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
     deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
-): RemoteResult<List<AudioBook>> = mutex.withLock {
-    val result = fetchItems()
-    val remote = when (result) {
-        is RemoteResult.Ok -> result.value
-        is RemoteResult.Partial -> result.value
-        is RemoteResult.Failed -> return@withLock result
+    onPageSaved: suspend (List<AudioBook>) -> Unit = {},
+    writeIfCurrent: suspend (write: suspend () -> Unit) -> Boolean = { write -> write(); true },
+): RemoteResult<Int> {
+    val keptIds = HashSet<String>()
+    val result = try {
+        fetchPages { page ->
+            val merged = mergeItems(page)
+            val saved = withContext(NonCancellable) {
+                writeIfCurrent { if (merged.isNotEmpty()) upsertAll(merged) }
+            }
+            // Thrown to stop the download: the rest is for an account that
+            // is no longer signed in.
+            if (!saved) throw SyncAccountChangedException()
+            merged.mapTo(keptIds) { it.id }
+            onPageSaved(merged)
+        }
+    } catch (_: SyncAccountChangedException) {
+        return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
     }
-    val merged = mergeItems(remote)
+    // A streaming fetch turns a throw in onPage into a short result, so
+    // look again rather than trusting the catch above alone.
+    if (!writeIfCurrent {}) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
+    if (result is RemoteResult.Ok) {
+        // The read of cached ids and every delete run inside one gated
+        // step, so a sign-in waits for the whole prune rather than slipping
+        // in between the read and a delete.
+        val pruned = withContext(NonCancellable) {
+            writeIfCurrent {
+                pruneServerLibraryTo(
+                    keptIds = keptIds,
+                    libraryId = libraryId,
+                    cachedNonDownloadedIds = cachedNonDownloadedIds,
+                    deleteByIds = deleteByIds,
+                    deleteAllServerBooks = deleteAllServerBooks,
+                )
+            }
+        }
+        if (!pruned) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
+    }
+    return result
+}
 
-    withContext(NonCancellable) {
-        reconcileServerLibrary(
-            isComplete = result is RemoteResult.Ok,
-            merged = merged,
-            libraryId = libraryId,
-            upsertAll = upsertAll,
-            cachedNonDownloadedIds = cachedNonDownloadedIds,
-            deleteByIds = deleteByIds,
-            deleteAllServerBooks = deleteAllServerBooks,
-        )
-    }
+/** Why a sync stopped: the account it ran for is no longer the signed-in one. */
+internal const val SYNC_ACCOUNT_CHANGED = "the signed-in account changed during the sync"
 
-    when (result) {
-        is RemoteResult.Partial -> RemoteResult.Partial(merged, result.reason)
-        else -> RemoteResult.Ok(merged)
-    }
+private class SyncAccountChangedException : Exception(SYNC_ACCOUNT_CHANGED)
+
+/**
+ * [runLibraryItemSyncPass] under [mutex]. Holding the lock across the whole
+ * fetch makes a later caller fetch only after every earlier response has
+ * been applied, so an old response cannot upsert books that a newer
+ * complete response already pruned.
+ */
+internal suspend fun runSerializedLibraryItemSync(
+    mutex: Mutex,
+    libraryId: String,
+    fetchPages: suspend (onPage: suspend (List<AudioBook>) -> Unit) -> RemoteResult<Int>,
+    mergeItems: suspend (List<AudioBook>) -> List<AudioBook>,
+    upsertAll: suspend (List<AudioBook>) -> Unit,
+    cachedNonDownloadedIds: suspend (libraryId: String) -> List<String>,
+    deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
+    deleteAllServerBooks: suspend (libraryId: String) -> Unit,
+): RemoteResult<Int> = mutex.withLock {
+    runLibraryItemSyncPass(
+        libraryId = libraryId,
+        fetchPages = fetchPages,
+        mergeItems = mergeItems,
+        upsertAll = upsertAll,
+        cachedNonDownloadedIds = cachedNonDownloadedIds,
+        deleteByIds = deleteByIds,
+        deleteAllServerBooks = deleteAllServerBooks,
+    )
 }
 
 /** Runs an authoritative item prune in the same ordering domain as item sync. */
@@ -564,12 +889,85 @@ internal suspend fun <T> runSerializedLibraryItemPrune(
 ): T = mutex.withLock { prune() }
 
 /**
+ * [mergeSyncedBooks] reading only the columns the merge keeps. The whole row
+ * (audio file and chapter lists) is read only for a downloaded book whose
+ * server copy came back without tracks or chapters, the one case the merge
+ * borrows them from the local row. A book new to the cache takes the
+ * position the progress pull saved for it ([getProgressRows]), see
+ * [withPulledProgress].
+ */
+internal suspend fun mergeSyncedBooksLean(
+    remote: List<AudioBook>,
+    getMergeStates: suspend (List<String>) -> List<SyncMergeState>,
+    getFullRows: suspend (List<String>) -> List<AudioBookEntity>,
+    getProgressRows: suspend (List<String>) -> List<PlaybackProgressEntity>,
+): List<AudioBook> {
+    if (remote.isEmpty()) return emptyList()
+    val states = fetchByIdChunks(remote.map { it.id }, getMergeStates).associateBy { it.id }
+    val needDetail = remote.filter { book ->
+        states[book.id]?.isDownloaded == 1 && (book.audioFiles.isEmpty() || book.chapters.isEmpty())
+    }.map { it.id }
+    val details = if (needDetail.isEmpty()) emptyMap() else fetchByIdChunks(needDetail, getFullRows).associateBy { it.id }
+    val newIds = remote.filter { states[it.id] == null }.map { it.id }
+    val pulled = if (newIds.isEmpty()) emptyMap() else fetchByIdChunks(newIds, getProgressRows).associateBy { it.audioBookId }
+    return remote.map { book ->
+        val state = states[book.id]
+        if (state == null) withPulledProgress(book, pulled[book.id]) else mergeSyncedBook(book, state, details[book.id])
+    }
+}
+
+/**
+ * A book new to the cache, with the position the progress pull already saved
+ * for it. The library list carries no listening progress, and a pull fetches
+ * only the few most recently listened unknown books one by one, so every
+ * other book with progress used to land on the shelf at zero and unfinished
+ * (wrong in In Progress, Completed, and hide finished) until a later pull.
+ * The saved row wins only when it is ahead, as local progress does in
+ * [mergeSyncedBook].
+ */
+internal fun withPulledProgress(remote: AudioBook, row: PlaybackProgressEntity?): AudioBook {
+    if (row == null) return remote
+    val finished = row.isFinished == 1
+    val remoteTime = remote.currentTime.inWholeMilliseconds / 1000.0
+    if (row.positionSeconds <= remoteTime && (!finished || remote.isFinished)) return remote
+    return remote.copy(
+        currentTime = row.positionSeconds.seconds,
+        progress = shelfProgress(
+            currentTime = row.positionSeconds,
+            duration = remote.duration.inWholeMilliseconds / 1000.0,
+            isFinished = finished,
+            existingProgress = remote.progress,
+        ),
+        isFinished = finished || remote.isFinished,
+    )
+}
+
+internal fun AudioBookEntity.toSyncMergeState(): SyncMergeState = SyncMergeState(
+    id = id,
+    isDownloaded = isDownloaded,
+    localPath = localPath,
+    localCoverPath = localCoverPath,
+    currentTimeSeconds = currentTimeSeconds,
+    progress = progress,
+    isFinished = isFinished,
+    archivedAt = archivedAt,
+)
+
+/**
  * Merge a server book with its local row during sync, preserving local-only
  * state the server does not know about: the download flag, the on-disk audio
  * path, the cover persisted at download time, and any local playback progress
  * that is ahead of the server. Pure, so it is unit-testable without the DB.
  */
-internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioBook {
+internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioBook =
+    mergeSyncedBook(remote, local?.toSyncMergeState(), local)
+
+/**
+ * [mergeSyncedBook] from the kept columns alone. [detail] is the whole local
+ * row, needed only to borrow tracks or chapters for a downloaded book whose
+ * server copy has none. Without it those stay as the server sent them.
+ */
+internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: AudioBookEntity?): AudioBook {
     if (local == null) return remote
 
     val withDownload = if (local.isDownloaded == 1) {
@@ -577,15 +975,24 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
             isDownloaded = true,
             localPath = local.localPath,
             localCoverPath = local.localCoverPath,
-            audioFiles = remote.audioFiles.ifEmpty { local.toDomain().audioFiles },
-            chapters = remote.chapters.ifEmpty { local.toDomain().chapters },
+            audioFiles = remote.audioFiles.ifEmpty { detail?.toDomain()?.audioFiles.orEmpty() },
+            chapters = remote.chapters.ifEmpty { detail?.toDomain()?.chapters.orEmpty() },
         )
     } else remote
 
-    // Preserve local progress if it's ahead of the server (offline playback).
+    // Preserve local progress if it's ahead of the server (offline playback),
+    // or if it is a completion the server copy does not carry. The library
+    // list holds no listening progress, so its copy always reads unfinished
+    // at zero, and a book the progress pull marked finished at position zero
+    // (finished on the server without a saved place) has no time to be
+    // ahead with. Comparing times alone wiped that completion on the next
+    // refresh. Only the progress pull, which reads the server's own record,
+    // may mark a book unfinished again.
     val localTime = local.currentTimeSeconds
     val remoteTime = withDownload.currentTime.inWholeMilliseconds / 1000.0
-    val merged = if (localTime > remoteTime) {
+    val localDone = local.isFinished == 1 || local.progress >= 1.0
+    val remoteDone = withDownload.isFinished || withDownload.progress >= 1.0
+    val merged = if (localTime > remoteTime || (localDone && !remoteDone)) {
         withDownload.copy(
             currentTime = localTime.seconds,
             progress = local.progress,
@@ -619,7 +1026,7 @@ internal fun buildLibrarySql(
     downloadedOnly: Boolean,
     hasSearch: Boolean,
 ): String = buildString {
-    append("SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab")
+    append("SELECT ").append(SHELF_BOOK_COLUMNS).append(" FROM AudioBooks ab")
     append(" LEFT JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId")
     append(" WHERE ab.LibraryId = ?")
 
@@ -655,10 +1062,23 @@ internal fun buildLibrarySql(
         append(" AND ab.IsDownloaded = 1")
     }
 
-    // Search
+    // Search. The bound patterns are escaped (see buildLibrarySqlArgs), so
+    // "%" and "_" typed in the search box match themselves.
     if (hasSearch) {
-        append(" AND (ab.Title LIKE ? OR ab.Author LIKE ? OR ab.SeriesName LIKE ? OR ab.Narrator LIKE ?)")
+        append(" AND (ab.Title LIKE ? ESCAPE '\\' OR ab.Author LIKE ? ESCAPE '\\'")
+        append(" OR ab.SeriesName LIKE ? ESCAPE '\\' OR ab.Narrator LIKE ? ESCAPE '\\')")
     }
 
-    append(" ORDER BY ab.Title")
+    // No ORDER BY: the Library sorts in Kotlin (sortBooks), so sorting here
+    // too was paid twice. Android Auto reads its own paged queries.
+}
+
+/**
+ * The arguments for [buildLibrarySql]: the library, then one escaped pattern
+ * per searched column when there is a search.
+ */
+internal fun buildLibrarySqlArgs(libraryId: String, searchQuery: String): Array<Any> {
+    if (searchQuery.isBlank()) return arrayOf(libraryId)
+    val pattern = containsLikePattern(searchQuery)
+    return arrayOf(libraryId, pattern, pattern, pattern, pattern)
 }

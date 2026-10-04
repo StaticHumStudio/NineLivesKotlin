@@ -10,8 +10,10 @@ import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
 import com.ninelivesaudio.app.data.remote.dto.ApiAudioFile
+import com.ninelivesaudio.app.data.remote.dto.ApiChapter
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.AudioFile
+import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.SettingsManager
@@ -228,15 +230,18 @@ class DownloadEngine @Inject constructor(
         // a cover failure must never fail an otherwise-complete download.
         val localCoverUri = persistCover(book, downloadDir)
 
-        // Update audiobook as downloaded with local path
+        // Mark the book downloaded and keep the track list and chapters that were
+        // just downloaded. List-synced rows hold an empty manifest, and offline
+        // playback falls back to sorting files by name without one.
         val bookEntity = audioBookDao.getById(audioBook.id)
         if (bookEntity != null) {
             audioBookDao.upsert(
-                bookEntity.copy(
-                    isDownloaded = 1,
+                completedDownloadBook(
+                    row = bookEntity.toDomain(),
+                    downloaded = book,
                     localPath = downloadDir.absolutePath,
-                    localCoverPath = localCoverUri ?: bookEntity.localCoverPath,
-                )
+                    localCoverUri = localCoverUri,
+                ).toEntity()
             )
         }
 
@@ -269,15 +274,18 @@ class DownloadEngine @Inject constructor(
         }
     }
 
-    /** Fetch full book details (audio file metadata) from the server. */
+    /** Fetch full book details (audio files and chapters) from the server. */
     suspend fun fetchFullBookDetails(audioBookId: String): AudioBook? {
         return try {
             val response = api.getItem(audioBookId, expanded = 1)
             if (response.isSuccessful) {
                 response.body()?.let { apiItem ->
                     val audioFiles = toDomainAudioFiles(apiItem.media?.audioFiles.orEmpty())
+                    val chapters = toDomainChapters(apiItem.media?.chapters.orEmpty())
 
-                    audioBookDao.getById(audioBookId)?.toDomain()?.copy(audioFiles = audioFiles)
+                    audioBookDao.getById(audioBookId)?.toDomain()?.let { row ->
+                        row.copy(audioFiles = audioFiles, chapters = chapters.ifEmpty { row.chapters })
+                    }
                 }
             } else null
         } catch (cancellation: CancellationException) {
@@ -296,28 +304,37 @@ class DownloadEngine @Inject constructor(
         return File(basePath, folderName)
     }
 
+    /**
+     * Where [audioBook]'s download folder is under the current settings, for
+     * cancel cleanup. Resolves exactly like [getDownloadPath] but creates
+     * nothing.
+     */
+    internal fun downloadLocationFor(audioBook: AudioBook): DownloadLocation {
+        val (root, appOwned) = resolveDownloadRoot(
+            configuredPath = settingsManager.currentSettings.downloadPath,
+            defaultRoot = defaultBasePath(),
+        )
+        val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
+        return DownloadLocation(root = root, folder = File(root, folderName), rootIsAppOwned = appOwned)
+    }
+
     /** Base storage directory for all downloads. */
     private fun getBasePath(): File {
         // Respect user-configured path when possible, with path traversal validation.
         val configuredPath = settingsManager.currentSettings.downloadPath.trim()
-        if (configuredPath.isNotEmpty()) {
-            try {
-                val candidate = File(configuredPath).canonicalFile
-                // Reject paths targeting sensitive system directories
-                val forbidden = listOf("/system", "/data/data", "/data/user", "/proc", "/dev")
-                val isSafe = forbidden.none { candidate.absolutePath.startsWith(it) }
-                if (isSafe) {
-                    return candidate.also { it.mkdirs() }
-                }
-                Log.w(TAG, "getBasePath: Configured path rejected (targets system dir): $configuredPath")
-            } catch (e: Exception) {
-                Log.w(TAG, "getBasePath: Failed to resolve configured path: $configuredPath", e)
-            }
+        val fallback = defaultBasePath()
+        val (root, _) = resolveDownloadRoot(configuredPath, fallback)
+        // The fallback instance itself comes back only when the configured path lost.
+        if (configuredPath.isNotEmpty() && root === fallback) {
+            Log.w(TAG, "getBasePath: Configured path rejected or unresolvable: $configuredPath")
         }
+        return root.also { it.mkdirs() }
+    }
 
-        // Fallback to app-specific external storage.
+    /** App-specific external storage, the fallback root. */
+    private fun defaultBasePath(): File {
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
-        return File(musicDir, "Audiobookshelf").also { it.mkdirs() }
+        return File(musicDir, "Audiobookshelf")
     }
 }
 
@@ -348,3 +365,31 @@ internal fun toDomainAudioFiles(files: List<ApiAudioFile>): List<AudioFile> =
             size = af.metadata?.size ?: 0,
         )
     }
+
+/**
+ * Map the expanded item response's chapters onto the domain model, with the same
+ * filtering and blank-title fallback as the item mapping in ApiService.
+ */
+internal fun toDomainChapters(chapters: List<ApiChapter>): List<Chapter> =
+    chapters
+        .filter { c -> c.start >= 0.0 && c.end > c.start }
+        .map { c -> Chapter(id = c.id, start = c.start, end = c.end, title = c.title.ifBlank { "Chapter ${c.id}" }) }
+
+/**
+ * The book row to save when a download finishes. The track list that was just
+ * downloaded names the files on disk, so it replaces whatever the row held
+ * (usually the empty list a library sync leaves). Chapters come along when the
+ * download has them. An empty list never wipes what the row already had.
+ */
+internal fun completedDownloadBook(
+    row: AudioBook,
+    downloaded: AudioBook,
+    localPath: String,
+    localCoverUri: String?,
+): AudioBook = row.copy(
+    isDownloaded = true,
+    localPath = localPath,
+    localCoverPath = localCoverUri ?: row.localCoverPath,
+    audioFiles = downloaded.audioFiles.ifEmpty { row.audioFiles },
+    chapters = downloaded.chapters.ifEmpty { row.chapters },
+)

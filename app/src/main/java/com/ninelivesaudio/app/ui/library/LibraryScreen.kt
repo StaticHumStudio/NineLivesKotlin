@@ -33,6 +33,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -45,6 +49,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.BookCoverImage
+import com.ninelivesaudio.app.ui.components.THUMBNAIL_COVER_WIDTH_PX
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
@@ -79,12 +84,9 @@ fun LibraryScreen(
     // (i.e. each time the user navigates to the Library tab).
     LaunchedEffect(Unit) {
         viewModel.incrementWhisperEpoch()
+        viewModel.onScreenEntered()
     }
 
-    // Flatten grouped items only when groupedSections or expandedGroups change
-    val groupedListItems = remember(uiState.groupedSections, uiState.expandedGroups) {
-        flattenGroupedItems(uiState.groupedSections, uiState.expandedGroups)
-    }
     val shelfDecision = remember(
         uiState.lastSyncResult,
         uiState.lastSyncSequence,
@@ -195,6 +197,16 @@ fun LibraryScreen(
                     }
                 }
 
+                // A load or filter that threw. Shown over every shelf state,
+                // full or empty, so a failed query is never silent.
+                uiState.errorMessage?.let { message ->
+                    LibraryErrorBanner(
+                        message = message,
+                        onRetry = viewModel::refresh,
+                        onDismiss = viewModel::dismissError,
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
             }
 
@@ -253,7 +265,9 @@ fun LibraryScreen(
                                         )
                                     }
                                 }
-                            if (uiState.viewMode == ViewMode.ALL) {
+                            // The mode in effect, not the stored choice: a grouped view
+                            // whose unlock was lost shows the flat shelf.
+                            if (uiState.effectiveViewMode == ViewMode.ALL) {
                                 // Flat list in ALL mode
                                 itemsIndexed(
                                     items = uiState.filteredBooks,
@@ -269,7 +283,7 @@ fun LibraryScreen(
                             } else {
                                 // Grouped expandable list in SERIES / AUTHOR / GENRE modes
                                 itemsIndexed(
-                                    items = groupedListItems,
+                                    items = uiState.groupedListItems,
                                     key = { _, item ->
                                         when (item) {
                                             is LibraryListItem.GroupHeader -> "header-${item.groupKey}"
@@ -701,17 +715,36 @@ private fun LibraryFiltersRow(
 
 // ─── Group Header Row ────────────────────────────────────────────────────
 
+/** What TalkBack says a group header is: open or closed. */
+internal fun groupHeaderStateDescription(isExpanded: Boolean): String =
+    if (isExpanded) "Expanded" else "Collapsed"
+
+/** What TalkBack says a tap on a group header does. */
+internal fun groupHeaderClickLabel(isExpanded: Boolean): String =
+    if (isExpanded) "Collapse group" else "Expand group"
+
 @Composable
-private fun GroupHeaderRow(
+internal fun GroupHeaderRow(
     title: String,
     count: Int,
     isExpanded: Boolean,
     onClick: () -> Unit,
 ) {
+    // A heading, so TalkBack can jump group to group, that says whether it is
+    // open and what a tap does. Thousands of groups were otherwise one long
+    // run of unlabeled buttons.
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .semantics(mergeDescendants = true) {
+                heading()
+                stateDescription = groupHeaderStateDescription(isExpanded)
+            }
+            .clickable(
+                onClickLabel = groupHeaderClickLabel(isExpanded),
+                role = Role.Button,
+                onClick = onClick,
+            ),
         shape = RoundedCornerShape(10.dp),
         color = NineLivesTheme.colors.archiveVoidElevated,
         border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
@@ -793,6 +826,7 @@ private fun ArchiveBookListItem(
                         modifier = Modifier.fillMaxSize(),
                         title = book.title,
                         bookId = book.id,
+                        thumbnailWidthPx = THUMBNAIL_COVER_WIDTH_PX,
                     )
                 }
 
@@ -1076,6 +1110,46 @@ private fun SyncWarningBanner(
             )
             TextButton(onClick = onRetry) {
                 Text("Retry")
+            }
+        }
+    }
+}
+
+/** A failed load or filter, with Retry and a way to dismiss it. */
+@Composable
+internal fun LibraryErrorBanner(
+    message: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = NineLivesTheme.colors.archiveVoidSurface,
+        border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = NineLivesTheme.colors.archiveTextSecondary,
+            )
+            TextButton(onClick = onRetry) {
+                Text("Retry")
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = "Dismiss",
+                    tint = NineLivesTheme.colors.archiveTextMuted,
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
     }

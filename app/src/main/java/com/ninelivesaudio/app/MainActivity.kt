@@ -34,7 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import androidx.navigation.NavGraph.Companion.findStartDestination
+import com.ninelivesaudio.app.ui.navigation.navigateToTab
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.lifecycle.Lifecycle
@@ -250,13 +250,7 @@ class MainActivity : ComponentActivity() {
                                         MiniPlayer(
                                             playbackManager = playbackManager,
                                             onNavigateToPlayer = {
-                                                navController.navigate(Routes.PLAYER) {
-                                                    popUpTo(navController.graph.findStartDestination().id) {
-                                                        saveState = true
-                                                    }
-                                                    launchSingleTop = true
-                                                    restoreState = true
-                                                }
+                                                navController.navigateToTab(Routes.PLAYER)
                                             }
                                         )
                                     }

@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.LibraryEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.LibrarySyncWatermarkStore
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
@@ -154,6 +155,7 @@ class LibraryLocalCatalogLiveUpdateTest {
             localBookmarkDao = database.localBookmarkDao(),
             playbackProgressDao = database.playbackProgressDao(),
             database = database,
+            watermarkStore = LibrarySyncWatermarkStore(app.settingsManager),
         )
         val libraryRepository = LibraryRepository(
             libraryDao = database.libraryDao(),
@@ -171,6 +173,7 @@ class LibraryLocalCatalogLiveUpdateTest {
                 settingsManager = app.settingsManager,
                 entitlements = app.entitlementRepository,
                 localFolderAccess = LocalFolderAccess(app),
+                syncManager = app.syncManager,
             ) as T
         }
         lateinit var viewModel: LibraryViewModel

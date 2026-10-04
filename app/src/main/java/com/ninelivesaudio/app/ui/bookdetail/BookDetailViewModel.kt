@@ -15,6 +15,7 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -51,6 +52,27 @@ internal fun historyPresentation(result: RemoteResult<List<ListeningSession>>): 
         message = "Listening history could not load: ${result.reason}",
     )
 }
+
+/**
+ * The library list sync carries no chapters, so most server books open with an
+ * empty chapter list. Fetch the single item for them while the server is
+ * reachable. Scanned-local and archived books have nothing to ask the server.
+ */
+internal fun shouldFetchDetailChapters(
+    book: AudioBook,
+    appMode: AppMode,
+    connection: ConnectivityMonitor.ConnectionStatus,
+): Boolean =
+    appMode == AppMode.AUDIOBOOKSHELF &&
+        !book.isLocal &&
+        !book.isArchived &&
+        book.chapters.isEmpty() &&
+        (connection == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+            connection == ConnectivityMonitor.ConnectionStatus.SYNCING)
+
+/** The stored chapters when the row has them, else the ones fetched for this screen. */
+internal fun detailChapters(stored: List<Chapter>, fetched: List<Chapter>?): List<Chapter> =
+    stored.ifEmpty { fetched.orEmpty() }.sortedBy { it.start }
 
 /** Tracks resumes for one ViewModel lifetime, never across process recreation. */
 internal class BookDetailResumeTracker {
@@ -137,6 +159,12 @@ class BookDetailViewModel @Inject constructor(
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
     private val resumeTracker = BookDetailResumeTracker()
 
+    // Chapters from the single-item fetch, for a row the library list synced
+    // without them. Held for this screen only and never written back, so the
+    // shelf rows stay light.
+    private var serverChapters: List<Chapter>? = null
+    private var chapterFetchStarted = false
+
     init {
         if (bookId.isNotEmpty()) {
             loadBook()
@@ -181,10 +209,43 @@ class BookDetailViewModel @Inject constructor(
                     sourceAccessible = access.isPlayable || access.book.isArchived,
                     needsFolderRecovery = access.needsFolderRecovery,
                 )
+                if (!chapterFetchStarted && shouldFetchDetailChapters(
+                        book = access.book,
+                        appMode = settings.appMode,
+                        connection = connectivityMonitor.connectionStatus.value,
+                    )
+                ) {
+                    chapterFetchStarted = true
+                    loadServerChapters()
+                }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isLoading = false, errorMessage = "Failed to load: ${e.message}")
                 }
+            }
+        }
+    }
+
+    private fun loadServerChapters() {
+        viewModelScope.launch {
+            val fetched = try {
+                audioBookRepository.fetchFromServer(bookId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (fetched == null) {
+                // The call failed, so a resume or a later open can try again.
+                // A book the server says has no chapters is not asked twice.
+                chapterFetchStarted = false
+                return@launch
+            }
+            if (fetched.chapters.isEmpty()) return@launch
+            serverChapters = fetched.chapters
+            _uiState.update { state ->
+                val held = state.book ?: return@update state
+                state.copy(chapters = detailChapters(held.chapters, serverChapters))
             }
         }
     }
@@ -222,7 +283,7 @@ class BookDetailViewModel @Inject constructor(
                 isArchived = book.isArchived,
                 sourceAccessible = sourceAccessible,
                 needsFolderRecovery = needsFolderRecovery,
-                chapters = book.chapters.sortedBy { c -> c.start },
+                chapters = detailChapters(book.chapters, serverChapters),
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
             )
@@ -363,8 +424,7 @@ class BookDetailViewModel @Inject constructor(
                         it.copy(
                             downloadState = previous,
                             downloadProgress = 0,
-                            downloadNotice = "Free keeps one downloaded book at a time. " +
-                                "Delete the one you have, or unlock for unlimited offline books.",
+                            downloadNotice = FreeTier.DOWNLOAD_SLOT_NOTICE,
                             downloadNoticeOffersUnlock = true,
                         )
                     }

@@ -136,8 +136,8 @@ class PlaybackService : MediaLibraryService() {
                     // Start a fresh browse-artwork epoch so every book is
                     // eligible for another fetch attempt. Note this emits on
                     // every sync pass that clears SyncManager's pre-checks,
-                    // changed data or not, so in ABS mode it behaves as a
-                    // ~5-minute heartbeat rather than a strict change signal.
+                    // changed data or not (a foreground check every 15
+                    // minutes), so it is a heartbeat, not a change signal.
                     // That is deliberate and harmless: a working set that fits
                     // the cache re-queries into hits and fetches nothing.
                     mediaBrowseTree.invalidateArtworkEpoch()
@@ -427,9 +427,9 @@ class PlaybackService : MediaLibraryService() {
             // Trigger async search; results delivered via onGetSearchResult
             serviceScope.launch(Dispatchers.IO) {
                 try {
-                    val results = mediaBrowseTree.search(query)
-                    Log.d(TAG, "onSearch: query='$query' → ${results.size} results")
-                    session.notifySearchResultChanged(browser, query, results.size, params)
+                    val count = mediaBrowseTree.searchCount(query)
+                    Log.d(TAG, "onSearch: query='$query' → $count results")
+                    session.notifySearchResultChanged(browser, query, count, params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onSearch($query) failed: ${e.message}", e)
                 }
@@ -453,9 +453,7 @@ class PlaybackService : MediaLibraryService() {
             }
             return serviceScope.future(Dispatchers.IO) {
                 try {
-                    val results = mediaBrowseTree.search(query)
-                        .drop(page * pageSize)
-                        .take(pageSize)
+                    val results = mediaBrowseTree.search(query, page, pageSize)
                     Log.d(TAG, "onGetSearchResult: query='$query' → ${results.size} results")
                     LibraryResult.ofItemList(ImmutableList.copyOf(results), params)
                 } catch (e: Exception) {

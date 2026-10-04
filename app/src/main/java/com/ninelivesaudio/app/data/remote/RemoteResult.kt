@@ -65,11 +65,12 @@ internal sealed class PageOutcome<T> {
         val reportedPage: Int? = null,
         val reportedPageCount: Int? = null,
     ) : PageOutcome<T>()
-    data class Stopped<T>(val reason: String) : PageOutcome<T>()
+    /** [retryable] marks a stop worth another try (a 5xx, a rate limit), not a 4xx. */
+    data class Stopped<T>(val reason: String, val retryable: Boolean = false) : PageOutcome<T>()
 }
 
 /**
- * The pagination loop ApiService.getLibraryItems() (and any future paginated
+ * The pagination loop ApiService.streamLibraryItems() (and any future paginated
  * fetch) runs, extracted so its termination logic is pinned directly against
  * a fake [fetchPage] instead of only being exercised through a live Retrofit
  * call. A page whose [PageOutcome.Page.results] come back empty, or shorter
@@ -96,8 +97,53 @@ internal suspend fun <T> runPaginatedFetch(
     itemKey: ((T) -> String)? = null,
     fetchPage: suspend (page: Int) -> PageOutcome<T>,
 ): RemoteResult<List<T>> {
-    require(maxPages > 0) { "maxPages must be positive" }
     val allItems = mutableListOf<T>()
+    return when (
+        val counted = runPaginatedFetchStreaming(
+            limit = limit,
+            maxPages = maxPages,
+            onPageFailure = onPageFailure,
+            itemKey = itemKey,
+            onPage = { allItems.addAll(it) },
+            fetchPage = fetchPage,
+        )
+    ) {
+        is RemoteResult.Ok -> RemoteResult.Ok(allItems.toList())
+        is RemoteResult.Partial -> RemoteResult.Partial(allItems.toList(), counted.reason)
+        is RemoteResult.Failed -> counted
+    }
+}
+
+/** [stoppedShort] by count, for a fetch that hands its pages on instead of keeping them. */
+private fun stoppedShortCount(fetched: Int, reason: String): RemoteResult<Int> =
+    if (fetched == 0) RemoteResult.Failed(reason) else RemoteResult.Partial(fetched, reason)
+
+/** [paginationResult] by count. */
+private fun paginationCountResult(fetched: Int, total: Int, currentPage: Int): RemoteResult<Int> =
+    if (total == 0 || fetched >= total) {
+        RemoteResult.Ok(fetched)
+    } else {
+        stoppedShortCount(fetched, "page $currentPage: got $fetched of $total reported")
+    }
+
+/**
+ * [runPaginatedFetch] without holding the pages: each page's new rows go to
+ * [onPage] as they arrive and only the count comes back. The termination
+ * rules are the same code, so Ok still means the reported total was reached.
+ * A big library's sync saves each page as it lands instead of keeping every
+ * book in memory until the last page, and a page that throws in [onPage]
+ * stops the fetch short exactly like a failed request.
+ */
+internal suspend fun <T> runPaginatedFetchStreaming(
+    limit: Int,
+    maxPages: Int,
+    onPageFailure: (page: Int, e: Exception) -> Unit = { _, _ -> },
+    itemKey: ((T) -> String)? = null,
+    onPage: suspend (List<T>) -> Unit,
+    fetchPage: suspend (page: Int) -> PageOutcome<T>,
+): RemoteResult<Int> {
+    require(maxPages > 0) { "maxPages must be positive" }
+    var fetched = 0
     val seenKeys = mutableSetOf<String>()
     var currentPage = 0
     var highestReportedTotal = 0
@@ -105,14 +151,14 @@ internal suspend fun <T> runPaginatedFetch(
     return try {
         while (true) {
             if (currentPage >= maxPages) {
-                return stoppedShort(allItems, "page $currentPage: reached the $maxPages page cap")
+                return stoppedShortCount(fetched, "page $currentPage: reached the $maxPages page cap")
             }
             when (val outcome = fetchPage(currentPage)) {
-                is PageOutcome.Stopped -> return stoppedShort(allItems, outcome.reason)
+                is PageOutcome.Stopped -> return stoppedShortCount(fetched, outcome.reason)
                 is PageOutcome.Page -> {
                     if (outcome.reportedPage != null && outcome.reportedPage != currentPage) {
-                        return stoppedShort(
-                            allItems,
+                        return stoppedShortCount(
+                            fetched,
                             "page $currentPage: server reported page ${outcome.reportedPage}",
                         )
                     }
@@ -123,37 +169,38 @@ internal suspend fun <T> runPaginatedFetch(
                     if (outcome.results.isNotEmpty() &&
                         outcome.reportedPageCount != null && outcome.reportedPageCount <= currentPage
                     ) {
-                        return stoppedShort(
-                            allItems,
+                        return stoppedShortCount(
+                            fetched,
                             "page $currentPage: invalid page count ${outcome.reportedPageCount}",
                         )
                     }
                     if (expectedPageCount != null && outcome.reportedPageCount != null &&
                         expectedPageCount != outcome.reportedPageCount
                     ) {
-                        return stoppedShort(
-                            allItems,
+                        return stoppedShortCount(
+                            fetched,
                             "page $currentPage: server changed page count from $expectedPageCount to ${outcome.reportedPageCount}",
                         )
                     }
                     if (outcome.reportedPageCount != null) expectedPageCount = outcome.reportedPageCount
                     highestReportedTotal = maxOf(highestReportedTotal, outcome.total)
                     if (outcome.results.isEmpty()) {
-                        return paginationResult(allItems, highestReportedTotal, currentPage)
+                        return paginationCountResult(fetched, highestReportedTotal, currentPage)
                     }
                     val newResults = itemKey?.let { key ->
                         outcome.results.filter { seenKeys.add(key(it)) }
                     } ?: outcome.results
                     if (newResults.isEmpty()) {
-                        return stoppedShort(allItems, "page $currentPage: repeated rows made no progress")
+                        return stoppedShortCount(fetched, "page $currentPage: repeated rows made no progress")
                     }
-                    allItems.addAll(newResults)
+                    onPage(newResults)
+                    fetched += newResults.size
                     if (
-                        (highestReportedTotal > 0 && allItems.size >= highestReportedTotal) ||
+                        (highestReportedTotal > 0 && fetched >= highestReportedTotal) ||
                         outcome.results.size < limit ||
                         (outcome.reportedPageCount != null && currentPage == outcome.reportedPageCount - 1)
                     ) {
-                        return paginationResult(allItems, highestReportedTotal, currentPage)
+                        return paginationCountResult(fetched, highestReportedTotal, currentPage)
                     }
                     currentPage++
                 }
@@ -165,9 +212,48 @@ internal suspend fun <T> runPaginatedFetch(
         throw e
     } catch (e: Exception) {
         onPageFailure(currentPage, e)
-        stoppedShort(allItems, "page $currentPage: ${describeFailure(e)}")
+        stoppedShortCount(fetched, "page $currentPage: ${describeFailure(e)}")
     }
 }
+
+/** How long a failed library page waits before each retry. */
+internal val PAGE_RETRY_DELAYS_MS = listOf(2_000L, 6_000L)
+
+/**
+ * Fetches one page, trying again after each of [delaysMs] when it fails in a
+ * way worth retrying: a thrown network error, or a [PageOutcome.Stopped]
+ * marked retryable (a 5xx or a rate limit). A 401 or 404 is returned at
+ * once. One slow page on a slow home server used to end the whole download
+ * short with no second try. The last failure is returned (or rethrown) as
+ * is, so the paging loop reports it exactly as before. Cancellation is
+ * never retried.
+ */
+internal suspend fun <T> fetchPageWithRetry(
+    delaysMs: List<Long> = PAGE_RETRY_DELAYS_MS,
+    sleep: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+    fetch: suspend () -> PageOutcome<T>,
+): PageOutcome<T> {
+    var attempt = 0
+    while (true) {
+        val outcome = try {
+            fetch()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (attempt >= delaysMs.size) throw e
+            null
+        }
+        if (outcome != null) {
+            val retry = outcome is PageOutcome.Stopped && outcome.retryable && attempt < delaysMs.size
+            if (!retry) return outcome
+        }
+        sleep(delaysMs[attempt])
+        attempt++
+    }
+}
+
+/** HTTP statuses worth another try: server errors, timeouts, and rate limits. */
+internal fun isRetryableHttpStatus(code: Int): Boolean = code >= 500 || code == 408 || code == 429
 
 private const val MAX_FAILURE_REASON = 120
 

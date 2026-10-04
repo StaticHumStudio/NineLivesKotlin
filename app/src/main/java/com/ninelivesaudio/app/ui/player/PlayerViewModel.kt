@@ -79,6 +79,7 @@ class PlayerViewModel @Inject constructor(
 
         // Bookmarks
         val bookmarks: List<Bookmark> = emptyList(),
+        val bookmarksLoadFailed: Boolean = false,
         val showBookmarks: Boolean = false,
         val bookmarkItemId: String? = null,
 
@@ -279,6 +280,7 @@ class PlayerViewModel @Inject constructor(
                 seriesName = book?.seriesName,
                 bookmarkItemId = book?.id,
                 bookmarks = emptyList(),
+                bookmarksLoadFailed = false,
             )
         }
         if (book != null) {
@@ -388,9 +390,17 @@ class PlayerViewModel @Inject constructor(
             scope = viewModelScope,
             request = request,
             load = bookmarkRepository::getBookmarks,
-        ) { bookmarks ->
-            _uiState.update { it.copy(bookmarks = bookmarks) }
+        ) { result ->
+            _uiState.update {
+                val next = bookmarkListState(it.bookmarks, result)
+                it.copy(bookmarks = next.bookmarks, bookmarksLoadFailed = next.loadFailed)
+            }
         }
+    }
+
+    fun retryBookmarks() {
+        val itemId = _uiState.value.bookmarkItemId ?: return
+        bookmarkPublication.refreshCurrent(itemId)?.let(::loadBookmarks)
     }
 
     fun addBookmark(title: String) {

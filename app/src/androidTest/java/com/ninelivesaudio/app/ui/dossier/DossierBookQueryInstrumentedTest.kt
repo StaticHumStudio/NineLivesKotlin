@@ -135,6 +135,39 @@ class DossierBookQueryInstrumentedTest {
         assertEquals("Rich Chapter", queryScope.single().chapters.single().title)
     }
 
+    @Test
+    fun listenedBookLookupMatchesFormerScopeForThoseIdsOnly() = runBlocking {
+        val listened = richBook(id = "listened", title = "A Listened")
+        val listenedArchived = richBook(
+            id = "listened-archived",
+            title = "B Archived",
+            archivedAt = 1_725_769_200_000L,
+        )
+        val notListened = richBook(id = "not-listened", title = "C Shelf Only")
+        val wrongSource = richBook(id = "wrong-source", title = "D Server", isLocal = 0)
+        val wrongLibrary = richBook(id = "wrong-library", title = "E Other", libraryId = "other-library")
+        database.audioBookDao().upsertAll(
+            listOf(listened, listenedArchived, notListened, wrongSource, wrongLibrary),
+        )
+        val settings = AppSettings(
+            appMode = AppMode.LOCAL,
+            selectedLocalLibraryId = ACTIVE_LIBRARY_ID,
+        )
+        val sessionIds = listOf("listened", "listened-archived", "wrong-source", "wrong-library", "gone")
+
+        val former = dossierBooksInActiveScope(
+            database.audioBookDao().getAll().map { it.toDomain() },
+            settings,
+        ).filter { it.id in sessionIds }
+        val lookedUp = database.audioBookDao()
+            .getByIdsInLibraryAndSource(ACTIVE_LIBRARY_ID, isLocal = 1, ids = sessionIds)
+            .map { it.toDomain() }
+
+        assertEquals(former.map { it.id }.toSet(), lookedUp.map { it.id }.toSet())
+        assertEquals(former.sortedBy { it.id }, lookedUp.sortedBy { it.id })
+        assertEquals("Rich Chapter", lookedUp.first().chapters.single().title)
+    }
+
     private fun richBook(
         id: String,
         title: String,

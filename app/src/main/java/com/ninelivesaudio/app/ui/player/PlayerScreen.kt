@@ -78,6 +78,8 @@ fun PlayerScreen(
     if (uiState.showBookmarks) {
         BookmarkSheet(
             bookmarks = uiState.bookmarks,
+            loadFailed = uiState.bookmarksLoadFailed,
+            onRetry = { viewModel.retryBookmarks() },
             positionText = uiState.positionText,
             onAddBookmark = { title -> viewModel.addBookmark(title) },
             onSeekToBookmark = { bookmark -> viewModel.seekToBookmark(bookmark) },
@@ -1009,10 +1011,14 @@ private fun EmptyPlayerState() {
 
 // ─── Bookmark Sheet ──────────────────────────────────────────────────────
 
+internal const val BOOKMARKS_LOAD_FAILED_COPY = "Bookmarks didn't load. Tap to try again."
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BookmarkSheet(
     bookmarks: List<Bookmark>,
+    loadFailed: Boolean,
+    onRetry: () -> Unit,
     positionText: String,
     onAddBookmark: (String) -> Unit,
     onSeekToBookmark: (Bookmark) -> Unit,
@@ -1092,17 +1098,34 @@ private fun BookmarkSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Bookmark list
-            if (bookmarks.isEmpty()) {
+            if (loadFailed) {
                 Text(
-                    text = "No bookmarks yet",
+                    text = BOOKMARKS_LOAD_FAILED_COPY,
                     style = MaterialTheme.typography.bodySmall,
-                    color = NineLivesTheme.colors.archiveTextMuted,
+                    color = NineLivesTheme.colors.goldFilament,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 24.dp),
+                        .clickable(onClick = onRetry)
+                        .padding(vertical = 12.dp),
                     textAlign = TextAlign.Center,
                 )
+            }
+
+            // Bookmark list
+            if (bookmarks.isEmpty()) {
+                // After a failed load the line above already speaks. "No
+                // bookmarks yet" would claim the book has none.
+                if (!loadFailed) {
+                    Text(
+                        text = "No bookmarks yet",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextMuted,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier.heightIn(max = 300.dp),

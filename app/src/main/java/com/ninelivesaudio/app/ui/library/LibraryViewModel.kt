@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.library
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
@@ -10,19 +11,25 @@ import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.remote.describeFailure
 import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.LibraryRefreshOutcome
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
+import com.ninelivesaudio.app.data.repository.itemCountResult
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
+import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PersistedSyncOutcome
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.buildShelfSyncReport
+import com.ninelivesaudio.app.service.buildShelfSyncReportFromCount
+import com.ninelivesaudio.app.service.isSyncedLibrary
 import com.ninelivesaudio.app.service.lastSyncForCurrentServer
 import com.ninelivesaudio.app.service.persistActiveLibrarySelection
 import com.ninelivesaudio.app.service.persistSyncOutcome
@@ -78,6 +85,7 @@ data class GroupedSection(
     val books: List<AudioBook>,
 )
 
+private const val SHELF_REREAD_THROTTLE_MS = 1_000L
 private const val UNKNOWN_SERIES_GROUP = "Standalone/Unknown Series"
 private const val UNKNOWN_AUTHOR_GROUP = "Unknown Author"
 private const val UNKNOWN_GENRE_GROUP = "Uncategorized Genre"
@@ -116,6 +124,27 @@ internal fun shouldReloadLibrariesAfterSync(
     cachedLibraryIds: List<String>,
 ): Boolean = (selectedLibrary == null && cachedLibraryIds.isNotEmpty()) ||
     cachedLibraryIds.toSet() != shownLibraryIds.toSet()
+
+internal enum class AfterProgressPull { REFILTER, RELOAD_LIBRARIES }
+
+/**
+ * What the Library does when a check pulled progress. A check that put one
+ * library's full download off writes no sync record, yet it already saved
+ * the library list it fetched (one library removed, say), and later checks
+ * compare against that saved list and never report the change again. So the
+ * shown list is compared with the saved one here as well, not only when a
+ * record lands.
+ */
+internal fun afterProgressPull(
+    selectedLibrary: Library?,
+    shownLibraryIds: List<String>,
+    cachedLibraryIds: List<String>,
+): AfterProgressPull =
+    if (shouldReloadLibrariesAfterSync(selectedLibrary, shownLibraryIds, cachedLibraryIds)) {
+        AfterProgressPull.RELOAD_LIBRARIES
+    } else {
+        AfterProgressPull.REFILTER
+    }
 
 /**
  * Which local folders exist, which books each holds (live or archived), and
@@ -229,6 +258,33 @@ internal suspend fun updateLibraryLoadStateIfActive(update: () -> Unit) {
     if (currentCoroutineContext().isActive) update()
 }
 
+/**
+ * What a shelf load was started for. The tabs keep the Library alive while
+ * another tab is open, so a return only reloads when this changed underneath
+ * it (a server, account, mode, or library switch in Settings).
+ */
+internal data class ShelfIdentity(
+    val appMode: AppMode,
+    val serverUrl: String,
+    val username: String,
+    val activeLibraryId: String?,
+)
+
+internal fun AppSettings.shelfIdentity() =
+    ShelfIdentity(appMode, serverUrl, username, activeLibraryId)
+
+/**
+ * A return to the Library reloads when what it shows no longer matches the
+ * settings, or when it has nothing to show because its last fetch failed, so
+ * the return doubles as a retry.
+ * Nothing loaded yet means the first load is still starting and owns the shelf.
+ */
+internal fun shouldReloadOnLibraryReturn(
+    loadedFor: ShelfIdentity?,
+    current: ShelfIdentity,
+    lastFetchFailed: Boolean,
+): Boolean = loadedFor != null && (loadedFor != current || lastFetchFailed)
+
 // ─── ViewModel ───────────────────────────────────────────────────────────
 
 @HiltViewModel
@@ -240,6 +296,7 @@ class LibraryViewModel @Inject constructor(
     private val settingsManager: SettingsManager,
     private val entitlements: EntitlementRepository,
     private val localFolderAccess: LocalFolderAccess,
+    private val syncManager: SyncManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -251,12 +308,22 @@ class LibraryViewModel @Inject constructor(
         val selectedLibrary: Library? = null,
         val filteredBooks: List<AudioBook> = emptyList(),
         val searchQuery: String = "",
+        // The user's chosen view. The shelf shows [effectiveViewMode], which
+        // is this clamped to ALL when grouping is locked, so a lost unlock
+        // shows the flat shelf instead of empty groups.
         val viewMode: ViewMode = ViewMode.ALL,
+        val effectiveViewMode: ViewMode = ViewMode.ALL,
         val sortMode: SortMode = SortMode.RECENTLY_PLAYED,
+        // No picker sets or applies these yet. The distinct-groups query that
+        // filled availableGroups ran on every grouped refilter (Genre view
+        // decoded every distinct genre list) and nothing rendered it, so it
+        // is gone until a picker exists.
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
         val groupedSections: List<GroupedSection> = emptyList(),
-        val expandedGroups: Set<String> = emptySet(),
+        // Headers and rows for the grouped views, built off the main thread
+        // whenever the groups or an expand choice change. See groupChoices.
+        val groupedListItems: List<LibraryListItem> = emptyList(),
         val selectedTab: LibraryTab = LibraryTab.All,
         val isLocalMode: Boolean = false, // LOCAL mode shows the Archive tab
         val hideFinished: Boolean = false,
@@ -295,6 +362,41 @@ class LibraryViewModel @Inject constructor(
         _whisperEpoch.update { it + 1 }
     }
 
+    // The settings the shown shelf was loaded for. See [onScreenEntered].
+    private var shelfLoadedFor: ShelfIdentity? = null
+
+    /**
+     * Called by LibraryScreen each time it enters composition. A tab return
+     * keeps the shelf it already has instead of downloading the library again,
+     * and re-reads it from Room so progress played elsewhere and a cache
+     * cleared in Settings show up. Room changes outside a sync are not watched.
+     */
+    fun onScreenEntered() {
+        val state = _uiState.value
+        // Only a shelf with nothing saved retries on return: no library came
+        // back at all, or the selected one failed with no books cached. A
+        // saved shelf, even one filtered to nothing, keeps its books, and the
+        // periodic and reconnect syncs recover it.
+        val lastFetchFailed = state.selectedLibrary == null || (
+            state.totalBookCount == 0 && (
+                state.selectedLibraryFetchResult == SyncResult.FAILED ||
+                    state.lastSyncResult == SyncResult.FAILED ||
+                    state.errorMessage != null
+                )
+            )
+        if (shouldReloadOnLibraryReturn(
+                loadedFor = shelfLoadedFor,
+                current = settingsManager.currentSettings.shelfIdentity(),
+                lastFetchFailed = lastFetchFailed,
+            )
+        ) {
+            // This can replace a refresh in the lane, so it owns that spinner.
+            libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
+        } else if (shelfLoadedFor != null && !state.isLoading) {
+            applyFilter()
+        }
+    }
+
     // Search debounce
     private var searchJob: Job? = null
     private val filterPublication = LibraryFilterPublication()
@@ -311,7 +413,30 @@ class LibraryViewModel @Inject constructor(
     // A library picked on this screen whose settings write has not finished.
     private var pendingLibraryPickId: String? = null
 
+    // The groups the user expanded or collapsed by hand, per view mode, kept
+    // for as long as this ViewModel lives (tab switches included). A group
+    // with no choice follows groupsStartExpanded.
+    private val groupChoices = MutableStateFlow<Map<ViewMode, Map<String, Boolean>>>(emptyMap())
+
     init {
+        // Flatten the grouped shelf on Default whenever its groups or the
+        // expand choices change. Doing it in composition ran on the main
+        // thread for every toggle, about 150,000 rows in a big Genre view.
+        viewModelScope.launch {
+            combine(
+                _uiState
+                    .map { it.groupedSections to it.effectiveViewMode }
+                    .distinctUntilChanged { old, new -> old.first === new.first && old.second == new.second },
+                groupChoices,
+            ) { (sections, mode), choices -> Triple(sections, mode, choices[mode].orEmpty()) }
+                .collectLatest { (sections, _, choices) ->
+                    val items = withContext(Dispatchers.Default) { flattenGroupedItems(sections, choices) }
+                    _uiState.update {
+                        if (it.groupedSections === sections) it.copy(groupedListItems = items) else it
+                    }
+                }
+        }
+
         // Observe connectivity and auto-filter to downloaded when offline
         viewModelScope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
@@ -381,6 +506,44 @@ class LibraryViewModel @Inject constructor(
                 }
         }
 
+        // A check that found the book list unchanged, or put a download off,
+        // writes no sync record, so the collector above never sees it.
+        // Re-read the saved shelf so progress pulled from the server shows
+        // while the tab is open, and reload the libraries if the check saved
+        // a changed list (see afterProgressPull).
+        viewModelScope.launch {
+            syncManager.progressPulled.collect {
+                val state = _uiState.value
+                if (shelfLoadedFor != null && !state.isLoading && !state.isLocalMode) {
+                    val cached = visibleCachedLibraries(
+                        settings = settingsManager.currentSettings,
+                        cached = libraryRepository.getAudiobookshelf(),
+                    )
+                    when (afterProgressPull(state.selectedLibrary, state.libraries.map { it.id }, cached.map { it.id })) {
+                        AfterProgressPull.RELOAD_LIBRARIES ->
+                            libraryLoadLaunch.launch(viewModelScope) { loadLibrariesOwningRefresh() }
+                        AfterProgressPull.REFILTER -> applyFilter()
+                    }
+                }
+            }
+        }
+
+        // A full download saves a page at a time, so a big library's first
+        // load fills in as pages land instead of after the last one. At most
+        // one re-read per second or so, whoever started the download.
+        viewModelScope.launch {
+            audioBookRepository.booksSaved
+                .filter { libraryId ->
+                    val state = _uiState.value
+                    shelfLoadedFor != null && !state.isLocalMode && state.selectedLibrary?.id == libraryId
+                }
+                .conflate()
+                .collect {
+                    applyFilter()?.join()
+                    delay(SHELF_REREAD_THROTTLE_MS)
+                }
+        }
+
         // LOCAL mode has no sync record, so watch the local catalog itself.
         // A folder scan or rescan running in Settings lands here while the
         // tab is open, not only on the next visit.
@@ -438,7 +601,14 @@ class LibraryViewModel @Inject constructor(
 
     // ─── Loading ──────────────────────────────────────────────────────────
 
-    private suspend fun loadLibraries(keepPendingPick: Boolean = false) {
+    /**
+     * [explicit] is a refresh the user asked for (pull to refresh, Retry):
+     * the selected library downloads in full. Otherwise (first load, a
+     * return, a reload after a background sync) it only asks the server what
+     * changed. See [loadAudioBooks].
+     */
+    private suspend fun loadLibraries(keepPendingPick: Boolean = false, explicit: Boolean = false) {
+        shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         localCatalogBaseline.await()
 
@@ -450,10 +620,25 @@ class LibraryViewModel @Inject constructor(
             // The item load below reuses this probe so a dead server costs one
             // 5s wait on a cold start, not two back to back.
             var serverReachable: Boolean? = null
+            // Show the saved shelf before the /ping probe and the library list
+            // fetch. A gone server costs a 5s probe per check, and the gate
+            // runs them one after another (issue #53).
+            val saved = if (!isLocalMode) showSavedShelfBeforeNetwork(settings) else null
+            // The app's own change check ran under two minutes ago (the cold
+            // start or foreground entry check) and covered this shelf, so
+            // opening the Library sends nothing: no /ping, no library list,
+            // no change check. Pull to refresh still goes to the server.
+            val skipNetwork = !isLocalMode && saved != null && libraryLoadSkipsNetwork(
+                explicit = explicit,
+                checkDue = syncManager.isCheckDueNow(),
+                savedLibraryIsSynced = isSyncedLibrary(saved),
+                savedLibraryHasBooks = audioBookRepository.hasServerBooks(saved.id),
+            )
+            if (skipNetwork) serverReachable = false
             val libs = if (isLocalMode) {
                 libraryRepository.getLocalLibraries()
             } else {
-                if (shouldSyncOnLibraryLoad(
+                if (!skipNetwork && shouldSyncOnLibraryLoad(
                         isLocalLibrary = false,
                         isOnline = connectivityMonitor.isOnline.value,
                     ) && connectivityMonitor.checkServerReachable().also { serverReachable = it }
@@ -490,6 +675,9 @@ class LibraryViewModel @Inject constructor(
                 updateSettings = settingsManager::updateSettings,
             )
             val selected = selection.library
+            // The selection this load settled on, so a return does not
+            // mistake its own write for a change made in Settings.
+            shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
 
             _uiState.update {
                 it.withLibrarySelection(
@@ -500,13 +688,18 @@ class LibraryViewModel @Inject constructor(
             }
             filterPublication.invalidate()
 
-            val itemResult = selected?.let {
-                loadAudioBooks(it.id, persistResult = false, serverReachable = serverReachable)
+            val itemLoad = selected?.let {
+                loadAudioBooks(it.id, persistResult = false, serverReachable = serverReachable, explicit = explicit)
             }
-            if (!isLocalMode) {
-                buildShelfSyncReport(libraryResult, selected, itemResult)?.let { report ->
+            val itemResult = itemLoad?.result
+            // A check that found nothing new, or a download put off until
+            // unmetered, has no news for the record. A library list failure
+            // still does.
+            val recordWorthy = itemLoad == null || itemLoad.recordWorthy || libraryResult !is RemoteResult.Ok
+            if (!isLocalMode && recordWorthy) {
+                buildShelfSyncReportFromCount(libraryResult, selected, itemResult)?.let { report ->
                     val selectedLibraryFetchResult = selected?.let {
-                        buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)?.result
+                        buildShelfSyncReportFromCount(libraries = null, selectedLibrary = it, items = itemResult)?.result
                     }
                     persistLastSync(
                         report = report,
@@ -518,7 +711,7 @@ class LibraryViewModel @Inject constructor(
         } catch (e: Exception) {
             rethrowLibraryLoadCancellation(e)
             _uiState.update {
-                it.copy(errorMessage = "Failed to load libraries: ${e.message}")
+                it.copy(errorMessage = loadFailureMessage(LibraryLoadFailure.LIBRARIES, e))
             }
         } finally {
             updateLibraryLoadStateIfActive {
@@ -527,15 +720,48 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Publishes the cached shelf of the saved library selection, if it is
+     * cached, and returns that library. The load that follows still resolves
+     * and persists the real selection and replaces this shelf.
+     */
+    private suspend fun showSavedShelfBeforeNetwork(settings: AppSettings): Library? {
+        val cachedLibraries = visibleCachedLibraries(
+            settings = settings,
+            cached = libraryRepository.getAudiobookshelf(),
+        )
+        val saved = cachedLibraries.firstOrNull { it.id == settings.activeLibraryId } ?: return null
+        _uiState.update {
+            it.withLibrarySelection(
+                libraries = cachedLibraries,
+                selectedLibrary = saved,
+                isLocalMode = false,
+            )
+        }
+        applyFilter()?.join()
+        return saved
+    }
+
+    /**
+     * Shows the saved shelf, then brings it up to date: a full download when
+     * [explicit], otherwise the change check, which may find nothing, fetch
+     * only added books, or fall back to a full download (deferred on a
+     * metered network). A check is shared with SyncManager's if both run at
+     * once, as is a full download.
+     */
     private suspend fun loadAudioBooks(
         libraryId: String,
         persistResult: Boolean = true,
         serverReachable: Boolean? = null,
-    ): RemoteResult<List<AudioBook>>? {
-        var itemResult: RemoteResult<List<AudioBook>>? = null
+        explicit: Boolean = false,
+    ): ShelfItemLoad? {
+        var itemLoad: ShelfItemLoad? = null
         try {
             val serverUrlAtStart = settingsManager.currentSettings.serverUrl
             val selected = _uiState.value.selectedLibrary
+            // Show the saved shelf before the network. A full fetch of a big
+            // library takes minutes, and the spinner only covers an empty shelf.
+            if (selected?.isLocal != true) applyFilter()?.join()
             // Only hit the network when a remote library is selected AND we have
             // connectivity. In airplane mode the old code attempted syncLibraryItems
             // regardless, leaving the switch spinning on a doomed request until the
@@ -547,15 +773,26 @@ class LibraryViewModel @Inject constructor(
                     isOnline = connectivityMonitor.isOnline.value,
                 ) && (serverReachable ?: connectivityMonitor.checkServerReachable())
             ) {
-                itemResult = refreshSelectedLibraryItems(
-                    libraryId = libraryId,
-                    fetchRemote = audioBookRepository::syncLibraryItems,
-                )
+                val load = if (explicit) {
+                    ShelfItemLoad(
+                        result = refreshSelectedLibraryItems(
+                            libraryId = libraryId,
+                            fetchRemote = audioBookRepository::syncLibraryItems,
+                        ),
+                        recordWorthy = true,
+                    )
+                } else {
+                    checkSelectedLibraryItems(libraryId) { id ->
+                        audioBookRepository.refreshLibraryItemsIfChanged(id, connectivityMonitor.refreshIsMetered())
+                    }
+                }
+                itemLoad = load
+                val itemResult = load.result
                 // The selected library's own outcome, tracked separately
                 // from the whole-account aggregate lastSyncResult (issue
                 // #14, PR #30 review, finding A) — see decideLibraryShelf.
                 val ownShelfReport = selected?.let {
-                    buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)
+                    buildShelfSyncReportFromCount(libraries = null, selectedLibrary = it, items = itemResult)
                 }
                 _uiState.update {
                     it.copy(
@@ -564,7 +801,7 @@ class LibraryViewModel @Inject constructor(
                         selectedLibraryFetchPersisted = false,
                     )
                 }
-                if (persistResult && ownShelfReport != null) {
+                if (persistResult && load.recordWorthy && ownShelfReport != null) {
                     persistLastSync(
                         report = ownShelfReport,
                         serverUrlAtStart = serverUrlAtStart,
@@ -580,10 +817,10 @@ class LibraryViewModel @Inject constructor(
         } catch (e: Exception) {
             rethrowLibraryLoadCancellation(e)
             _uiState.update {
-                it.copy(errorMessage = "Failed to load audiobooks: ${e.message}")
+                it.copy(errorMessage = loadFailureMessage(LibraryLoadFailure.BOOKS, e))
             }
         }
-        return itemResult
+        return itemLoad
     }
 
     private suspend fun persistLastSync(
@@ -651,7 +888,9 @@ class LibraryViewModel @Inject constructor(
                 }
             }
             if (pendingLibraryPickId == library.id) pendingLibraryPickId = null
-            // Full resync for the newly selected library
+            shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
+            // Brings the newly selected library up to date: a full download
+            // the first time, only what changed after that.
             loadAudioBooks(library.id)
             _uiState.update { it.copy(isLoading = false) }
         }
@@ -694,11 +933,10 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun onGroupExpansionToggled(groupKey: String) {
-        _uiState.update { state ->
-            val updated = state.expandedGroups.toMutableSet().apply {
-                if (!add(groupKey)) remove(groupKey)
-            }
-            state.copy(expandedGroups = updated)
+        val state = _uiState.value
+        val mode = state.effectiveViewMode
+        groupChoices.update { all ->
+            all + (mode to toggledGroupChoices(all[mode].orEmpty(), groupKey, state.groupedSections.size))
         }
     }
 
@@ -718,17 +956,18 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** Pull to refresh and every Retry button: the selected library downloads in full. */
     fun refresh() {
         libraryLoadLaunch.launch(viewModelScope) {
             _uiState.update { it.copy(isRefreshing = true) }
-            loadLibrariesOwningRefresh()
+            loadLibrariesOwningRefresh(explicit = true)
         }
     }
 
     /** Load, then clear the refresh spinner unless a newer load took over the lane. */
-    private suspend fun loadLibrariesOwningRefresh(keepPendingPick: Boolean = false) {
+    private suspend fun loadLibrariesOwningRefresh(keepPendingPick: Boolean = false, explicit: Boolean = false) {
         try {
-            loadLibraries(keepPendingPick)
+            loadLibraries(keepPendingPick, explicit)
         } finally {
             updateLibraryLoadStateIfActive {
                 _uiState.update { it.copy(isRefreshing = false) }
@@ -738,6 +977,16 @@ class LibraryViewModel @Inject constructor(
 
     fun dismissError() {
         _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    /** The banner line for [failure]. The exception goes to the log, not the screen. */
+    private fun loadFailureMessage(failure: LibraryLoadFailure, error: Throwable): String {
+        Log.w(TAG, "Library load failed: $failure", error)
+        return libraryErrorMessage(failure)
+    }
+
+    private companion object {
+        const val TAG = "LibraryViewModel"
     }
 
     // ─── Filter/Sort Logic ────────────────────────────────────────────────
@@ -757,21 +1006,13 @@ class LibraryViewModel @Inject constructor(
 
     private data class FilterResult(
         val books: List<AudioBook>,
-        val availableGroups: List<String>,
+        val effectiveViewMode: ViewMode,
         val groupedSections: List<GroupedSection>,
         val totalBookCount: Int,
     )
 
     private suspend fun buildFilterResult(snapshot: FilterSnapshot): FilterResult? {
         val libraryId = snapshot.request.libraryId
-
-        val groups = when (snapshot.viewMode) {
-            ViewMode.SERIES -> audioBookRepository.getDistinctSeries(libraryId)
-            ViewMode.AUTHOR -> audioBookRepository.getDistinctAuthors(libraryId)
-            ViewMode.GENRE -> audioBookRepository.getDistinctGenres(libraryId)
-            ViewMode.ALL -> emptyList()
-        }
-        if (!filterPublication.isCurrent(snapshot.request)) return null
 
         // Push filters to SQL — only load the books that match
         val tab = when (snapshot.selectedTab) {
@@ -793,29 +1034,20 @@ class LibraryViewModel @Inject constructor(
         )
         if (!filterPublication.isCurrent(snapshot.request)) return null
         val accessibleLocalIds = localFolderAccess.accessibleLibraryIds(snapshot.libraries)
+        // A newer filter cancels this one. The long loops below check for
+        // that, so two big builds never run side by side on fast chip taps.
         val books = storedBooks
-            .map { reconcileLocalBookAccess(it, accessibleLocalIds).book }
+            .mapCooperatively { reconcileLocalBookAccess(it, accessibleLocalIds).book }
             .filterNot {
                 !it.isDownloaded &&
                     (snapshot.selectedTab == LibraryTab.Downloaded || snapshot.showDownloadedOnly)
             }
 
-        // Clamped at the point of consumption, not just in the UI. Gating the
-        // chips stops a free user CHOOSING a premium sort, but says nothing
-        // about one already selected before a downgrade, which would otherwise
-        // keep running behind a greyed control.
-        //
-        // The stored choice in uiState is left alone, so unlocking restores it.
-        val isUnlocked = entitlements.current.isUnlocked
-        val effectiveSort = FreeTier.effectiveSort(snapshot.sortMode, isUnlocked)
-        val effectiveViewMode = FreeTier.effectiveViewMode(snapshot.viewMode, isUnlocked)
-
-        // Sort and group in-memory (complex logic stays in Kotlin)
-        val sortedBooks = sortBooks(books, effectiveSort)
-        val groupedSections = buildGroupedSections(
-            books = sortedBooks,
-            viewMode = effectiveViewMode,
-            sortMode = effectiveSort,
+        val shelf = arrangeShelf(
+            books = books,
+            storedSort = snapshot.sortMode,
+            storedViewMode = snapshot.viewMode,
+            isUnlocked = entitlements.current.isUnlocked,
         )
 
         // Get total count from DB (not from filtered set)
@@ -823,25 +1055,19 @@ class LibraryViewModel @Inject constructor(
         if (!filterPublication.isCurrent(snapshot.request)) return null
 
         return FilterResult(
-            books = sortedBooks,
-            availableGroups = groups,
-            groupedSections = groupedSections,
+            books = shelf.books,
+            effectiveViewMode = shelf.viewMode,
+            groupedSections = shelf.sections,
             totalBookCount = totalCount,
         )
     }
 
     private fun publishFilterResult(result: FilterResult) {
         _uiState.update {
-            val groupKeys = result.groupedSections.map { section -> section.key }.toSet()
-            val previousKeys = it.groupedSections.map { section -> section.key }.toSet()
-            val expandedGroups = it.expandedGroups
-                .filterTo(mutableSetOf()) { key -> key in groupKeys }
-                .apply { addAll(groupKeys - previousKeys) }
             it.copy(
                 filteredBooks = result.books,
-                availableGroups = result.availableGroups,
+                effectiveViewMode = result.effectiveViewMode,
                 groupedSections = result.groupedSections,
-                expandedGroups = expandedGroups,
                 totalBookCount = result.totalBookCount,
             )
         }
@@ -873,9 +1099,10 @@ class LibraryViewModel @Inject constructor(
         return filterPublication.launch(
             scope = viewModelScope,
             request = snapshot.request,
-            load = { buildFilterResult(snapshot) },
+            // Decoding and sorting thousands of books stays off the main thread.
+            load = { withContext(Dispatchers.Default) { buildFilterResult(snapshot) } },
             onFailure = { e ->
-                _uiState.update { it.copy(errorMessage = "Failed to load audiobooks: ${e.message}") }
+                _uiState.update { it.copy(errorMessage = loadFailureMessage(LibraryLoadFailure.SHELF, e)) }
             },
         ) { result ->
             result?.let(::publishFilterResult)
@@ -891,6 +1118,20 @@ class LibraryViewModel @Inject constructor(
 }
 
 // ─── Load-path decisions (internal for testability) ───────────────────────
+
+/** What failed, for the Library's error banner. */
+internal enum class LibraryLoadFailure { LIBRARIES, BOOKS, SHELF }
+
+/**
+ * The banner line for a failed load, in the screen's own voice. The banner
+ * sits beside a Retry button. The exception text is for the log only, it
+ * means nothing to a listener.
+ */
+internal fun libraryErrorMessage(failure: LibraryLoadFailure): String = when (failure) {
+    LibraryLoadFailure.LIBRARIES -> "Libraries could not be loaded."
+    LibraryLoadFailure.BOOKS -> "Books could not be loaded."
+    LibraryLoadFailure.SHELF -> "Saved books could not be read."
+}
 
 internal sealed interface LibraryShelfDecision {
     data object Empty : LibraryShelfDecision
@@ -931,15 +1172,44 @@ internal suspend fun refreshRemoteLibraryList(
     )
 }
 
-internal suspend fun refreshSelectedLibraryItems(
+internal suspend fun <T> refreshSelectedLibraryItems(
     libraryId: String,
-    fetchRemote: suspend (String) -> RemoteResult<List<AudioBook>>,
-): RemoteResult<List<AudioBook>> = try {
+    fetchRemote: suspend (String) -> RemoteResult<T>,
+): RemoteResult<T> = try {
     fetchRemote(libraryId)
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
     RemoteResult.Failed(describeFailure(e))
+}
+
+/**
+ * What the selected library's load brought back: its book count result (null
+ * when there is no verdict, as for a download waiting on an unmetered
+ * network) and whether that is news worth a sync record. A check that found
+ * nothing new is a fine verdict for this screen but not a new record.
+ */
+internal data class ShelfItemLoad(
+    val result: RemoteResult<Int>?,
+    val recordWorthy: Boolean,
+)
+
+/** The change check for the selected library, as a [ShelfItemLoad]. A thrown failure reads as a failed check. */
+internal suspend fun checkSelectedLibraryItems(
+    libraryId: String,
+    check: suspend (String) -> LibraryRefreshOutcome,
+): ShelfItemLoad {
+    val outcome = try {
+        check(libraryId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        LibraryRefreshOutcome.CheckFailed(describeFailure(e))
+    }
+    return ShelfItemLoad(
+        result = outcome.itemCountResult(),
+        recordWorthy = outcome !is LibraryRefreshOutcome.Unchanged && outcome !is LibraryRefreshOutcome.Deferred,
+    )
 }
 
 internal fun rethrowLibraryLoadCancellation(error: Exception) {
@@ -957,7 +1227,7 @@ internal fun LibraryViewModel.UiState.withLibrarySelection(
     filteredBooks = if (selectedLibrary == null) emptyList() else filteredBooks,
     availableGroups = if (selectedLibrary == null) emptyList() else availableGroups,
     groupedSections = if (selectedLibrary == null) emptyList() else groupedSections,
-    expandedGroups = if (selectedLibrary == null) emptySet() else expandedGroups,
+    groupedListItems = if (selectedLibrary == null) emptyList() else groupedListItems,
     totalBookCount = if (selectedLibrary == null) 0 else totalBookCount,
     // A stale outcome from whatever was PREVIOUSLY selected must never be
     // read as this (possibly different) library's own verdict — cleared on
@@ -1062,8 +1332,62 @@ internal fun selectedLibraryFetchSequence(outcome: PersistedSyncOutcome): Long? 
 internal fun shouldSyncOnLibraryLoad(isLocalLibrary: Boolean, isOnline: Boolean): Boolean =
     !isLocalLibrary && isOnline
 
+/**
+ * Whether opening the Library skips the server because the app's own change
+ * check ran under two minutes ago. It used to check again regardless, a
+ * second HEAD 73 seconds after the cold-start one. Only for a load the user
+ * did not ask for (pull to refresh and Retry always go out), and only for a
+ * saved library that check covers: a book library (podcast libraries are
+ * not checked in the background) with books already cached (a fresh
+ * sign-in or a new server has nothing to show yet).
+ */
+internal fun libraryLoadSkipsNetwork(
+    explicit: Boolean,
+    checkDue: Boolean,
+    savedLibraryIsSynced: Boolean,
+    savedLibraryHasBooks: Boolean,
+): Boolean = !explicit && !checkDue && savedLibraryIsSynced && savedLibraryHasBooks
+
 // ─── Grouping helpers (internal for testability) ──────────────────────────
 
+/** The shelf as shown: sorted books, the view mode in effect, and its groups. */
+internal data class ArrangedShelf(
+    val books: List<AudioBook>,
+    val viewMode: ViewMode,
+    val sections: List<GroupedSection>,
+)
+
+/**
+ * Sorts and groups the filtered books. Sort and view mode are clamped here,
+ * at the point of use, not just in the UI. Gating the chips stops a free user
+ * CHOOSING a premium mode, but says nothing about one already selected before
+ * a downgrade, which would otherwise keep running behind a greyed control.
+ * The stored choice is left alone, so unlocking restores it, and the screen
+ * lays out by [ArrangedShelf.viewMode], never the stored one.
+ */
+internal suspend fun arrangeShelf(
+    books: List<AudioBook>,
+    storedSort: SortMode,
+    storedViewMode: ViewMode,
+    isUnlocked: Boolean,
+): ArrangedShelf {
+    val sort = FreeTier.effectiveSort(storedSort, isUnlocked)
+    val viewMode = FreeTier.effectiveViewMode(storedViewMode, isUnlocked)
+    currentCoroutineContext().ensureActive()
+    val sorted = sortBooks(books, sort)
+    currentCoroutineContext().ensureActive()
+    return ArrangedShelf(
+        books = sorted,
+        viewMode = viewMode,
+        sections = buildGroupedSections(books = sorted, viewMode = viewMode, sortMode = sort),
+    )
+}
+
+/**
+ * Groups shelf books. [books] must already be in [sortMode] order (the shelf
+ * sorts once before grouping), and each group keeps that order, so groups are
+ * not sorted again.
+ */
 internal fun buildGroupedSections(
     books: List<AudioBook>,
     viewMode: ViewMode,
@@ -1072,25 +1396,51 @@ internal fun buildGroupedSections(
     if (viewMode == ViewMode.ALL) return emptyList()
 
     // Genre view uses multi-placement: a book appears in every genre group it belongs to.
-    val grouped = mutableMapOf<String, MutableList<AudioBook>>()
+    val grouped = linkedMapOf<String, MutableList<AudioBook>>()
     books.forEach { book ->
         val keys = groupingKeysForBook(book, viewMode)
         keys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }
 
     return grouped.entries
-        .map { (key, values) ->
-            GroupedSection(key = key, title = key, books = sortBooks(values, sortMode))
-        }
+        .map { (key, values) -> SectionSortEntry(GroupedSection(key = key, title = key, books = values)) }
         .sortedWith(groupedSectionComparator(sortMode))
+        .map { it.section }
 }
 
+/** Grouped views start collapsed when they have more groups than this. */
+internal const val COLLAPSE_GROUPS_ABOVE = 50
+
+/**
+ * Whether a group the user has not touched starts open. A small library keeps
+ * every group open as before. A big one starts with headers only, or a Genre
+ * view of 50,000 books opened as one endless list.
+ */
+internal fun groupsStartExpanded(groupCount: Int): Boolean = groupCount <= COLLAPSE_GROUPS_ABOVE
+
+/**
+ * The user's choices after tapping [groupKey]: the opposite of what that
+ * header showed, which is their earlier choice or else the default for
+ * [groupCount] groups.
+ */
+internal fun toggledGroupChoices(
+    choices: Map<String, Boolean>,
+    groupKey: String,
+    groupCount: Int,
+): Map<String, Boolean> =
+    choices + (groupKey to !(choices[groupKey] ?: groupsStartExpanded(groupCount)))
+
+/**
+ * Headers and rows for a grouped view. A group the user expanded or collapsed
+ * by hand ([choices]) stays that way, any other follows [groupsStartExpanded].
+ */
 internal fun flattenGroupedItems(
     groupedSections: List<GroupedSection>,
-    expandedGroups: Set<String>,
+    choices: Map<String, Boolean>,
 ): List<LibraryListItem> = buildList {
+    val startExpanded = groupsStartExpanded(groupedSections.size)
     groupedSections.forEach { section ->
-        val expanded = section.key in expandedGroups
+        val expanded = choices[section.key] ?: startExpanded
         add(
             LibraryListItem.GroupHeader(
                 groupKey = section.key,
@@ -1118,16 +1468,21 @@ private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<Strin
     ViewMode.ALL -> emptyList()
 }
 
-private fun groupedSectionComparator(sortMode: SortMode): Comparator<GroupedSection> {
-    val alphaAsc = compareBy<GroupedSection> { it.title.lowercase() }
+/** A section with its lowercased title worked out once, not on every compare. */
+private class SectionSortEntry(val section: GroupedSection) {
+    val titleKey: String = section.title.lowercase()
+}
+
+private fun groupedSectionComparator(sortMode: SortMode): Comparator<SectionSortEntry> {
+    val alphaAsc = compareBy<SectionSortEntry> { it.titleKey }
     return when (sortMode) {
         SortMode.TITLE_ZA, SortMode.AUTHOR_ZA -> alphaAsc.reversed()
         SortMode.TITLE_AZ, SortMode.AUTHOR_AZ -> alphaAsc
         SortMode.PROGRESS_LOW, SortMode.DURATION_SHORT ->
-            compareBy<GroupedSection> { it.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MAX_VALUE }
+            compareBy<SectionSortEntry> { it.section.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MAX_VALUE }
                 .then(alphaAsc)
         else ->
-            compareByDescending<GroupedSection> { it.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MIN_VALUE }
+            compareByDescending<SectionSortEntry> { it.section.books.firstOrNull()?.let { b -> sortSignal(b, sortMode) } ?: Long.MIN_VALUE }
                 .then(alphaAsc)
     }
 }
@@ -1141,29 +1496,41 @@ private fun sortSignal(book: AudioBook, sortMode: SortMode): Long = when (sortMo
     SortMode.TITLE_AZ, SortMode.TITLE_ZA, SortMode.AUTHOR_AZ, SortMode.AUTHOR_ZA -> 0L
 }
 
+/**
+ * A book with its sort keys worked out once. Lowercasing inside a comparator
+ * ran about 1.5 million times per sort on a 50,000 book shelf.
+ */
+private class BookSortEntry(val book: AudioBook, needsAuthor: Boolean) {
+    val titleKey: String = book.title.lowercase()
+    val authorKey: String = if (needsAuthor) book.author.lowercase() else ""
+}
+
+/**
+ * The shelf order. The query has no ORDER BY, since this sorts every time, so
+ * every mode ends on the raw title (the order the query used to return) and
+ * then the id, and the same shelf always comes out the same way.
+ */
 internal fun sortBooks(books: List<AudioBook>, sortMode: SortMode): List<AudioBook> {
-    val sequence = books.asSequence()
-    return when (sortMode) {
-        SortMode.RECENTLY_ADDED -> sequence.sortedWith(
-            compareByDescending<AudioBook> { it.addedAt ?: Long.MIN_VALUE }
-                .thenBy { it.title.lowercase() }
-        )
-        SortMode.TITLE_AZ -> sequence.sortedBy { it.title.lowercase() }
-        SortMode.TITLE_ZA -> sequence.sortedByDescending { it.title.lowercase() }
-        SortMode.AUTHOR_AZ -> sequence.sortedWith(compareBy({ it.author.lowercase() }, { it.title.lowercase() }))
-        SortMode.AUTHOR_ZA -> sequence.sortedWith(compareByDescending<AudioBook> { it.author.lowercase() }.thenByDescending { it.title.lowercase() })
-        SortMode.PROGRESS_HIGH -> sequence.sortedByDescending { it.progressPercent }
-        SortMode.PROGRESS_LOW -> sequence.sortedBy { it.progressPercent }
-        SortMode.DURATION_LONG -> sequence.sortedByDescending { it.duration.inWholeSeconds }
-        SortMode.DURATION_SHORT -> sequence.sortedBy { it.duration.inWholeSeconds }
-        SortMode.RECENTLY_PLAYED -> sequence.sortedWith(
-            // Treat books with no playback history as oldest via Long.MIN_VALUE fallback.
-            compareByDescending<AudioBook> { it.lastPlayedAt ?: Long.MIN_VALUE }
-                .thenBy { it.title.lowercase() }
-        )
-        SortMode.UNPLAYED_FIRST -> sequence.sortedWith(
-            compareBy<AudioBook> { if (it.hasProgress) 1 else 0 }
-                .thenBy { it.title.lowercase() }
-        )
-    }.toList()
+    val needsAuthor = sortMode == SortMode.AUTHOR_AZ || sortMode == SortMode.AUTHOR_ZA
+    val entries = books.map { BookSortEntry(it, needsAuthor) }
+    val primary: Comparator<BookSortEntry> = when (sortMode) {
+        SortMode.RECENTLY_ADDED ->
+            compareByDescending<BookSortEntry> { it.book.addedAt ?: Long.MIN_VALUE }.thenBy { it.titleKey }
+        SortMode.TITLE_AZ -> compareBy { it.titleKey }
+        SortMode.TITLE_ZA -> compareByDescending { it.titleKey }
+        SortMode.AUTHOR_AZ -> compareBy<BookSortEntry> { it.authorKey }.thenBy { it.titleKey }
+        SortMode.AUTHOR_ZA -> compareByDescending<BookSortEntry> { it.authorKey }.thenByDescending { it.titleKey }
+        SortMode.PROGRESS_HIGH -> compareByDescending { it.book.progressPercent }
+        SortMode.PROGRESS_LOW -> compareBy { it.book.progressPercent }
+        SortMode.DURATION_LONG -> compareByDescending { it.book.duration.inWholeSeconds }
+        SortMode.DURATION_SHORT -> compareBy { it.book.duration.inWholeSeconds }
+        // Treat books with no playback history as oldest via Long.MIN_VALUE fallback.
+        SortMode.RECENTLY_PLAYED ->
+            compareByDescending<BookSortEntry> { it.book.lastPlayedAt ?: Long.MIN_VALUE }.thenBy { it.titleKey }
+        SortMode.UNPLAYED_FIRST ->
+            compareBy<BookSortEntry> { if (it.book.hasProgress) 1 else 0 }.thenBy { it.titleKey }
+    }
+    return entries
+        .sortedWith(primary.thenBy { it.book.title }.thenBy { it.book.id })
+        .map { it.book }
 }

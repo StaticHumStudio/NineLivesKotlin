@@ -168,6 +168,7 @@ class ApiService @Inject constructor(
         // any real library, so a normal shelf never reaches it.
         private const val LIBRARY_ITEMS_PAGE_CAP = 1000
         private const val LISTENING_SESSIONS_PAGE_SIZE = 50
+        private const val SORT_ADDED_AT = "addedAt"
         private const val LISTENING_SESSIONS_ITEM_PAGE_CAP = 3
         private const val LISTENING_SESSIONS_ALL_PAGE_CAP = 20
     }
@@ -675,36 +676,132 @@ class ApiService @Inject constructor(
     // ─── Library Items (Paginated batch load) ────────────────────────────
 
     /**
-     * Every item in a library, paginated. A page that fails part-way through
-     * yields [RemoteResult.Partial]: the books already fetched are still worth
-     * showing, but the caller has to know the shelf stopped short rather than
-     * ended. The same is true when a page merely comes back empty or shorter
-     * than [limit] while the server's own reported total says more exist —
-     * [runPaginatedFetch] is what decides that (issue #14, PR #30 review,
-     * finding B); only actually reaching the reported total is a genuine Ok.
+     * Every item in a library, paginated, handed to [onPage] a page at a time
+     * so the caller can save each page as it lands instead of holding the
+     * whole shelf in memory. Returns the count of distinct books delivered.
+     *
+     * A page that fails part-way through yields [RemoteResult.Partial] (or
+     * Failed with nothing delivered), and so does a page that merely comes
+     * back empty or short while the server's own reported total says more
+     * exist; [runPaginatedFetchStreaming] decides that (issue #14, PR #30
+     * review, finding B). Only reaching the reported total is a genuine Ok.
+     *
+     * Sorted oldest-added first: a book added during a multi-minute download
+     * lands at the end instead of pushing every later page down by one row,
+     * which used to repeat one book and skip another. Rows repeated anyway
+     * (a removal mid-download shifts the other way) are dropped by id, and
+     * the count check then reports the run short rather than complete. ABS
+     * indexes (libraryId, mediaType, createdAt), so the order is cheap.
+     * A failed page gets [PAGE_RETRY_DELAYS_MS] more tries before the run
+     * stops short.
      */
-    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
+    internal suspend fun streamLibraryItems(
+        libraryId: String,
+        limit: Int = 100,
+        onPage: suspend (List<AudioBook>) -> Unit,
+    ): RemoteResult<Int> =
         withContext(Dispatchers.IO) {
-            runPaginatedFetch(
+            runPaginatedFetchStreaming(
                 limit = limit,
                 maxPages = LIBRARY_ITEMS_PAGE_CAP,
-                onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
+                onPageFailure = { page, e -> Log.w(TAG, "streamLibraryItems($libraryId) failed at page $page", e) },
+                itemKey = { it.id },
+                onPage = onPage,
             ) { page ->
-                val response = api.getLibraryItems(libraryId, limit, page)
+                fetchPageWithRetry {
+                    val response = api.getLibraryItems(
+                        libraryId = libraryId,
+                        limit = limit,
+                        page = page,
+                        sort = SORT_ADDED_AT,
+                        desc = 0,
+                    )
+                    if (!response.isSuccessful) {
+                        Log.w(TAG, "streamLibraryItems($libraryId): HTTP ${response.code()} at page $page")
+                        return@fetchPageWithRetry PageOutcome.Stopped(
+                            "page $page: HTTP ${response.code()}",
+                            retryable = isRetryableHttpStatus(response.code()),
+                        )
+                    }
+
+                    val body = response.body()
+                    if (body == null) {
+                        Log.w(TAG, "streamLibraryItems($libraryId): no body at page $page")
+                        return@fetchPageWithRetry PageOutcome.Stopped("page $page: empty body", retryable = true)
+                    }
+
+                    PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
+                }
+            }
+        }
+
+    /**
+     * The library's book count and its most recently added book, in one tiny
+     * request (one minified item). Used to ask "anything new since the last
+     * sync?" without downloading the shelf. A missing total next to a
+     * non-empty page is reported as a failure, because a zero total would
+     * otherwise read as "the library emptied".
+     */
+    internal suspend fun getLibraryHead(libraryId: String): RemoteResult<LibraryHead> =
+        withContext(Dispatchers.IO) {
+            remoteResultCatching(onFailure = { e -> Log.w(TAG, "getLibraryHead($libraryId) failed", e) }) {
+                val response = api.getLibraryItems(
+                    libraryId = libraryId,
+                    limit = 1,
+                    page = 0,
+                    minified = 1,
+                    sort = SORT_ADDED_AT,
+                    desc = 1,
+                )
+                if (!response.isSuccessful) return@remoteResultCatching RemoteResult.Failed("head: HTTP ${response.code()}")
+                val body = response.body() ?: return@remoteResultCatching RemoteResult.Failed("head: empty body")
+                val newest = body.results.firstOrNull()
+                if (newest != null && body.total <= 0) {
+                    return@remoteResultCatching RemoteResult.Failed("head: no book count reported")
+                }
+                RemoteResult.Ok(LibraryHead(total = body.total, newestItemId = newest?.id, newestAddedAt = newest?.addedAt))
+            }
+        }
+
+    /**
+     * Books added at or after [cutoff], newest first, mapped exactly as the
+     * full download maps them. Pages stop at the first older book; see
+     * [runIncrementalFetch] for when this gives up instead.
+     */
+    internal suspend fun getLibraryItemsAddedSince(
+        libraryId: String,
+        cutoff: Long,
+        pageSize: Int,
+        maxPages: Int,
+    ): RemoteResult<IncrementalFetch<AudioBook>> = withContext(Dispatchers.IO) {
+        runIncrementalFetch(
+            pageSize = pageSize,
+            maxPages = maxPages,
+            cutoff = cutoff,
+            addedAt = { it.addedAt },
+            itemKey = { it.id },
+            onPageFailure = { page, e -> Log.w(TAG, "getLibraryItemsAddedSince($libraryId) failed at page $page", e) },
+        ) { page ->
+            fetchPageWithRetry {
+                val response = api.getLibraryItems(
+                    libraryId = libraryId,
+                    limit = pageSize,
+                    page = page,
+                    minified = 0,
+                    sort = SORT_ADDED_AT,
+                    desc = 1,
+                )
                 if (!response.isSuccessful) {
-                    Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
-                    return@runPaginatedFetch PageOutcome.Stopped("page $page: HTTP ${response.code()}")
+                    return@fetchPageWithRetry PageOutcome.Stopped(
+                        "HTTP ${response.code()}",
+                        retryable = isRetryableHttpStatus(response.code()),
+                    )
                 }
-
-                val body = response.body()
-                if (body == null) {
-                    Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
-                    return@runPaginatedFetch PageOutcome.Stopped("page $page: empty body")
-                }
-
+                val body = response.body() ?: return@fetchPageWithRetry PageOutcome.Stopped("empty body", retryable = true)
                 PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
             }
         }
+    }
 
     // ─── Single Item ─────────────────────────────────────────────────────
 
@@ -928,32 +1025,66 @@ class ApiService @Inject constructor(
 
     // ─── Bookmarks ───────────────────────────────────────────────────────
 
-    suspend fun getBookmarks(itemId: String): List<Bookmark> = withContext(Dispatchers.IO) {
-        try {
-            val response = api.getMe()
-            if (!response.isSuccessful) return@withContext emptyList()
+    private val meBookmarksCache = MeBookmarksCache()
 
-            response.body()?.bookmarks
-                ?.filter { it.libraryItemId == itemId }
-                ?.sortedBy { it.time }
-                ?.map { b ->
-                    Bookmark(
-                        id = b.id,
-                        libraryItemId = b.libraryItemId,
-                        title = b.title,
-                        time = b.time,
-                        createdAt = b.createdAt,
-                    )
-                } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
+    /**
+     * One book's bookmarks. Uses the per-book route when the server has it and
+     * falls back to a briefly cached /api/me on older servers, because /api/me
+     * carries every progress row the account owns (megabytes at a big library).
+     */
+    suspend fun getBookmarks(itemId: String): RemoteResult<List<Bookmark>> = withContext(Dispatchers.IO) {
+        loadItemBookmarks(
+            itemId = itemId,
+            sessionKey = "$authGeneration|${settingsManager.currentSettings.serverUrl}",
+            cache = meBookmarksCache,
+            fetchItem = ::fetchItemBookmarks,
+            fetchAll = ::fetchAllBookmarksFromMe,
+        )
     }
+
+    private suspend fun fetchItemBookmarks(itemId: String): ItemBookmarksOutcome {
+        val response = try {
+            api.getItemBookmarks(itemId)
+        } catch (e: kotlinx.serialization.SerializationException) {
+            // A server between the route landing and its 2.36.0 shape, or a
+            // proxy page. Either way the /api/me fallback still works.
+            return ItemBookmarksOutcome.Unsupported
+        }
+        if (response.code() == 404 || response.code() == 405) {
+            response.errorBody()?.close()
+            return ItemBookmarksOutcome.Unsupported
+        }
+        if (!response.isSuccessful) {
+            response.errorBody()?.close()
+            return ItemBookmarksOutcome.Failed("HTTP ${response.code()} loading bookmarks")
+        }
+        val body = response.body() ?: return ItemBookmarksOutcome.Failed("Empty bookmarks body")
+        return ItemBookmarksOutcome.Found(body.bookmarks.map { it.toBookmark() })
+    }
+
+    private suspend fun fetchAllBookmarksFromMe(): RemoteResult<List<Bookmark>> {
+        val response = api.getMe()
+        if (!response.isSuccessful) {
+            response.errorBody()?.close()
+            return RemoteResult.Failed("HTTP ${response.code()} loading bookmarks")
+        }
+        val body = response.body() ?: return RemoteResult.Failed("Empty profile body")
+        return RemoteResult.Ok(body.bookmarks.orEmpty().map { it.toBookmark() })
+    }
+
+    private fun ApiBookmark.toBookmark(): Bookmark = Bookmark(
+        id = id,
+        libraryItemId = libraryItemId,
+        title = title,
+        time = time,
+        createdAt = createdAt,
+    )
 
     suspend fun createBookmark(itemId: String, title: String, time: Double): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val response = api.createBookmark(itemId, CreateBookmarkRequest(title, time))
+                if (response.isSuccessful) meBookmarksCache.invalidate()
                 response.isSuccessful
             } catch (e: Exception) {
                 false
@@ -964,6 +1095,7 @@ class ApiService @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 val response = api.deleteBookmark(itemId, time)
+                if (response.isSuccessful) meBookmarksCache.invalidate()
                 response.isSuccessful
             } catch (e: Exception) {
                 false
@@ -1039,25 +1171,6 @@ class ApiService @Inject constructor(
             progress = normalizeProgress(item.userMediaProgress?.progress ?: 0.0),
             isFinished = item.userMediaProgress?.isFinished ?: false,
         )
-    }
-
-    /**
-     * Parses the ABS combined seriesName field (e.g. "Dungeon Crawler Carl #7") into a
-     * (name, sequence) pair. The non-expanded library items endpoint returns this single
-     * concatenated string instead of the structured series array that the expanded endpoint
-     * provides. Supported formats:
-     *   "Series Name #7"    → ("Series Name", "7")
-     *   "Series Name #1.5"  → ("Series Name", "1.5")
-     *   "Series Name"       → ("Series Name", null)
-     */
-    private fun parseSeriesNameField(seriesName: String): Pair<String?, String?> {
-        val trimmed = seriesName.trim()
-        val hashMatch = Regex("""^(.+?)\s*#([\d.]+)\s*$""").find(trimmed)
-        return if (hashMatch != null) {
-            hashMatch.groupValues[1].trim() to hashMatch.groupValues[2]
-        } else {
-            trimmed to null
-        }
     }
 
     private fun normalizeProgress(value: Double): Double {

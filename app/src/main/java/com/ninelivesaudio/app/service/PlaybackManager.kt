@@ -64,6 +64,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -238,7 +239,21 @@ internal data class PolledProgressReport(
     val bookId: String,
     val currentTime: Double,
     val duration: Double,
+    /**
+     * The immediate-save request count when this sample was taken. Every later
+     * sample carries a count at least as high, so the conflated channel can
+     * drop a sample without losing the request it carried.
+     */
+    val saveRequest: Long = 0L,
 )
+
+/**
+ * Whether a polled sample asks for an immediate local save: it is the first
+ * sample the reporting worker has delivered this play (null), or an
+ * immediate save was requested since the last sample it delivered.
+ */
+internal fun polledReportForcesSave(saveRequest: Long, lastDeliveredSaveRequest: Long?): Boolean =
+    lastDeliveredSaveRequest == null || saveRequest != lastDeliveredSaveRequest
 
 private class StaleProgressWriteException : Exception()
 
@@ -249,8 +264,15 @@ internal class PlaybackProgressOwner {
     private val ownerLock = Any()
     private val mutexes = mutableMapOf<String, Mutex>()
     private val snapshotGenerations = mutableMapOf<String, Long>()
+    // Bumped by a paused seek. A snapshot taken before it holds an older
+    // position, but its listening time is still good.
+    private val positionGenerations = mutableMapOf<String, Long>()
 
-    data class SnapshotToken(val bookId: String, val generation: Long)
+    data class SnapshotToken(
+        val bookId: String,
+        val generation: Long,
+        val positionGeneration: Long = 0L,
+    )
 
     private fun mutexFor(bookId: String): Mutex = synchronized(ownerLock) {
         mutexes.getOrPut(bookId, ::Mutex)
@@ -259,8 +281,20 @@ internal class PlaybackProgressOwner {
     fun snapshotToken(bookId: String): SnapshotToken = synchronized(ownerLock) {
         val generation = (snapshotGenerations[bookId] ?: 0L) + 1L
         snapshotGenerations[bookId] = generation
-        SnapshotToken(bookId, generation)
+        SnapshotToken(bookId, generation, positionGenerations[bookId] ?: 0L)
     }
+
+    fun invalidateSnapshotPositions(bookId: String) {
+        synchronized(ownerLock) {
+            positionGenerations[bookId] = (positionGenerations[bookId] ?: 0L) + 1L
+        }
+    }
+
+    private fun isCurrent(token: SnapshotToken): Boolean =
+        token.generation == snapshotGenerations[token.bookId]
+
+    private fun positionIsCurrent(token: SnapshotToken): Boolean =
+        token.positionGeneration == (positionGenerations[token.bookId] ?: 0L)
 
     fun invalidateSnapshots(bookId: String) {
         synchronized(ownerLock) {
@@ -275,11 +309,23 @@ internal class PlaybackProgressOwner {
     suspend fun <T> sync(bookId: String, block: suspend () -> T): T =
         mutexFor(bookId).withLock { block() }
 
-    suspend fun syncSnapshot(token: SnapshotToken, block: suspend () -> Unit) {
+    /**
+     * Runs [block] if nothing has retired [token]. If only a paused seek has
+     * (its position is older than the seek's), [onPositionSuperseded] runs
+     * instead, so the snapshot's listening time is still saved without its
+     * old position.
+     */
+    suspend fun syncSnapshot(
+        token: SnapshotToken,
+        onPositionSuperseded: (suspend () -> Unit)? = null,
+        block: suspend () -> Unit,
+    ) {
         mutexFor(token.bookId).withLock {
-            if (synchronized(ownerLock) { token.generation == snapshotGenerations[token.bookId] }) {
-                block()
+            val (current, positionCurrent) = synchronized(ownerLock) {
+                isCurrent(token) to positionIsCurrent(token)
             }
+            if (!current) return@withLock
+            if (positionCurrent) block() else onPositionSuperseded?.invoke()
         }
     }
 
@@ -289,11 +335,33 @@ internal class PlaybackProgressOwner {
         flushProgress: suspend () -> Unit,
     ) {
         mutexFor(token.bookId).withLock {
-            if (synchronized(ownerLock) { token.generation == snapshotGenerations[token.bookId] }) {
+            if (synchronized(ownerLock) { isCurrent(token) && positionIsCurrent(token) }) {
                 flushProgress()
                 syncTerminal()
             }
         }
+    }
+}
+
+/**
+ * Save a seek made while paused. A pause save still waiting for the book's
+ * lock captured the position from before this seek, so its position write is
+ * retired first, on the caller's thread, before this save is queued.
+ * Otherwise a delayed pause save could land after this one and put the old
+ * position back. Its listening time still gets saved.
+ */
+internal fun PlaybackProgressOwner.launchPausedSeekSave(
+    scope: CoroutineScope,
+    bookId: String,
+    save: suspend () -> Unit,
+): Job {
+    invalidateSnapshotPositions(bookId)
+    return scope.launch {
+        try {
+            report(bookId) { save() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {}
     }
 }
 
@@ -866,6 +934,18 @@ class PlaybackManager @Inject constructor(
                 )
             ) return@withNewLoadRequest false
 
+            // Nothing pings while the app is in the background, so a car
+            // session can start on a stale "unreachable". Probe once before
+            // the load refuses a streamed book on it, the way restore does.
+            if (
+                shouldProbeServerBeforeRestore(
+                    book = book,
+                    connectionStatus = connectivityMonitor.connectionStatus.value,
+                )
+            ) {
+                connectivityMonitor.checkServerReachable()
+            }
+
             withContext(Dispatchers.Main) {
                 loadAudioBookOwned(loadRequest, book, skipServiceStart = true)
             }
@@ -923,6 +1003,10 @@ class PlaybackManager @Inject constructor(
     private var positionPollingJob: Job? = null
     private var progressReportingJob: Job? = null
     private var progressReportingChannel: Channel<PolledProgressReport>? = null
+    // Bumped by anything that should save the position now instead of on the
+    // 10 second cadence: a seek, a chapter change, the app leaving the
+    // foreground. Read by the poll with each sample.
+    private val immediateSaveRequests = AtomicLong(0L)
     private var sessionSyncJob: Job? = null
     private val playbackProgressOwner = PlaybackProgressOwner()
     private val pendingTerminalOwner = PendingTerminalOwner()
@@ -993,7 +1077,17 @@ class PlaybackManager @Inject constructor(
                 if (snapshot != null) {
                     val snapshotToken = playbackProgressOwner.snapshotToken(snapshot.bookId)
                     scope.launch(Dispatchers.IO) {
-                        playbackProgressOwner.syncSnapshot(snapshotToken) {
+                        playbackProgressOwner.syncSnapshot(
+                            token = snapshotToken,
+                            // A paused seek landed first. Save the listening
+                            // time against the seek's position, never this
+                            // snapshot's older one.
+                            onPositionSuperseded = {
+                                latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.let { (_, position) ->
+                                    syncPlaybackProgress(snapshot.copy(position = position))
+                                }
+                            },
+                        ) {
                             syncPlaybackProgress(snapshot)
                         }
                     }
@@ -1079,6 +1173,9 @@ class PlaybackManager @Inject constructor(
     private var currentLocalSessionId: Long? = null
     private var localSessionAccumSec: Double = 0.0
     private var pendingPauseSnapshot: PlaybackProgressSnapshot? = null
+    // The book and position of the last seek made while paused, read by a
+    // pause save that the seek overtook.
+    @Volatile private var latestPausedSeek: Pair<String, Duration>? = null
     // Cap to ignore long gaps (background, doze) between heartbeats. 60s ≫ the 12s normal interval.
     private val localSessionMaxTickSec: Double = 60.0
 
@@ -2503,6 +2600,22 @@ class PlaybackManager @Inject constructor(
             }
         }
 
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            // Covers every seek, including the notification scrubber and
+            // Android Auto, which reach the player without passing seekTo().
+            // A load's own seek lands while LOADING, so it only bumps the
+            // request. SEEK_ADJUSTMENT is left out on purpose: the player can
+            // raise it on its own after a paused restore, and saving then
+            // would stamp an old position as new and queue it for the server.
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                onSeekApplied()
+            }
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val idx = exoPlayer?.currentMediaItemIndex ?: 0
             val reasonStr = when (reason) {
@@ -2531,6 +2644,9 @@ class PlaybackManager @Inject constructor(
         val reportChannel = newPolledProgressReportChannel()
         progressReportingChannel = reportChannel
         progressReportingJob = scope.launch {
+            // Null until the first sample of this play lands, so a play (and the
+            // resume rewind it may apply) is saved at once.
+            var lastDeliveredSaveRequest: Long? = null
             for (report in reportChannel) {
                 try {
                     playbackProgressOwner.report(report.bookId) {
@@ -2539,8 +2655,12 @@ class PlaybackManager @Inject constructor(
                             currentTime = report.currentTime,
                             duration = report.duration,
                             isFinished = false,
+                            force = polledReportForcesSave(report.saveRequest, lastDeliveredSaveRequest),
                         )
                     }
+                    // Only after the save returned, so a failed forced save is
+                    // forced again on the next sample.
+                    lastDeliveredSaveRequest = report.saveRequest
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (_: Exception) {}
@@ -2554,6 +2674,10 @@ class PlaybackManager @Inject constructor(
                 _position.value = pos
                 chapterPlayer?.absolutePositionMs = pos.inWholeMilliseconds
                 updateCurrentChapter(pos)
+                // Read after the chapter check so a chapter change in this tick
+                // rides on this sample. Seeks run on this same main thread, so
+                // no seek lands between the position read and this one.
+                val saveRequest = immediateSaveRequests.get()
 
                 // Keep the 500 ms playback clock independent from slow server I/O.
                 // The single reporting worker stays sequential while this conflated
@@ -2567,9 +2691,79 @@ class PlaybackManager @Inject constructor(
                             bookId = reportBook.id,
                             currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
                             duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            saveRequest = saveRequest,
                         ),
                     )
                 }
+            }
+        }
+    }
+
+    /** Save the position on the poll's next sample instead of the 10 second cadence. */
+    private fun requestImmediateProgressSave() {
+        immediateSaveRequests.incrementAndGet()
+    }
+
+    /**
+     * The app left the foreground. A playing book saves its position on the
+     * next poll sample, so a process killed in the background loses nothing
+     * past that moment. A paused book already saved on pause.
+     */
+    fun onAppBackgrounded() {
+        requestImmediateProgressSave()
+    }
+
+    /**
+     * A seek landed, from the app, the notification, Android Auto, or a
+     * chapter jump. While playing, the next poll sample saves it. While paused
+     * nothing polls, so save it now through the same per-book owner the poll
+     * uses. The server push keeps its usual throttle.
+     */
+    private fun onSeekApplied() {
+        requestImmediateProgressSave()
+        if (positionPollingJob?.isActive == true) return
+        if (_playbackState.value != PlaybackState.PAUSED) return
+        val book = _currentBook.value ?: return
+        val player = exoPlayer ?: return
+        if (player.mediaItemCount == 0) return
+        val position = getCurrentPosition()
+        val duration = _duration.value
+        latestPausedSeek = book.id to position
+        playbackProgressOwner.launchPausedSeekSave(scope, book.id) {
+            syncManager.reportPlaybackPosition(
+                itemId = book.id,
+                currentTime = position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                duration = duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                isFinished = false,
+                force = true,
+            )
+        }
+    }
+
+    /**
+     * The service is going away with a book still playing. Save where it is
+     * before the player is released. Detached from the scope's cancellation
+     * so the write finishes during teardown.
+     */
+    private fun saveProgressBeforeTeardown() {
+        if (positionPollingJob?.isActive != true) return
+        val book = _currentBook.value ?: return
+        if (exoPlayer == null) return
+        val position = getCurrentPosition()
+        val duration = _duration.value
+        scope.launch(NonCancellable) {
+            try {
+                playbackProgressOwner.report(book.id) {
+                    syncManager.reportPlaybackPosition(
+                        itemId = book.id,
+                        currentTime = position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                        duration = duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                        isFinished = false,
+                        force = true,
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Teardown progress save failed", e)
             }
         }
     }
@@ -2602,6 +2796,7 @@ class PlaybackManager @Inject constructor(
         }
 
         if (newIndex != _currentChapterIndex.value) {
+            requestImmediateProgressSave()
             _currentChapterIndex.value = newIndex
             val chapter = if (newIndex >= 0) cachedChapters[newIndex] else null
             _currentChapter.value = chapter
@@ -2884,11 +3079,17 @@ class PlaybackManager @Inject constructor(
         )
 
     private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot) {
+        // Same rule as a seek's save, so a pause save carrying a position at
+        // the very end keeps the book finished instead of undoing it.
+        val finished = positionCountsAsFinished(
+            currentTimeSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+            durationSec = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+        )
         val terminal = terminalPlaybackSnapshot(
             bookId = snapshot.bookId,
             position = snapshot.position,
             duration = snapshot.duration,
-            isFinished = false,
+            isFinished = finished,
             serverSessionId = snapshot.serverSessionId,
             timeListened = snapshot.serverTimeListened,
             serverListening = snapshot.serverListening,
@@ -2903,7 +3104,7 @@ class PlaybackManager @Inject constructor(
                 progressRepository.savePushOrEnqueueProgress(
                     itemId = snapshot.bookId,
                     currentTime = posSec,
-                    isFinished = false,
+                    isFinished = finished,
                     duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
                     pushToServer = false,
                     onPersisted = {
@@ -3126,6 +3327,7 @@ class PlaybackManager @Inject constructor(
     /** Full teardown: release player, session, and all resources. Called on service destroy. */
     fun releaseAll() {
         Log.d(TAG, "releaseAll: full teardown starting (sessionInit=$sessionInitialized)")
+        saveProgressBeforeTeardown()
         stopPositionPolling()
         stopSessionSync()
         val session = mediaSession

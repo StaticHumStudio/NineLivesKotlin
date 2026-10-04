@@ -3,12 +3,74 @@ package com.ninelivesaudio.app.service
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ServerReturnResyncTest {
+
+    // Lets the listener's combine pipeline catch up on the single runBlocking thread.
+    private suspend fun settle() = repeat(20) { yield() }
+
+    @Test
+    fun `a missed check flagged after the server already turned Connected still runs`() = runBlocking {
+        // The entry check read offline, then the status turned Connected and
+        // the listener found nothing to do (last sync clean, flag not set yet).
+        val live = MutableStateFlow(false)
+        val missed = MutableStateFlow(false)
+        var checks = 0
+        val listener = launch(start = CoroutineStart.UNDISPATCHED) {
+            runServerReturnChecks(
+                serverLive = live,
+                missedCheckWhileNotReady = missed,
+                shouldCheck = { flagged ->
+                    shouldCheckOnServerReturn(
+                        inForeground = true,
+                        checkDue = checks == 0,
+                        missedCheckWhileNotReady = flagged,
+                        lastResult = SyncResult.SUCCESS,
+                    )
+                },
+                check = { checks += 1 },
+            )
+        }
+        live.value = true
+        settle()
+        assertEquals("nothing to do on the edge itself", 0, checks)
+        // The skipped entry check returns and sets the flag.
+        missed.value = true
+        settle()
+        assertEquals(1, checks)
+        listener.cancel()
+    }
+
+    @Test
+    fun `a missed check flagged while offline runs when the server returns`() = runBlocking {
+        val live = MutableStateFlow(false)
+        val missed = MutableStateFlow(false)
+        var checks = 0
+        val listener = launch(start = CoroutineStart.UNDISPATCHED) {
+            runServerReturnChecks(
+                serverLive = live,
+                missedCheckWhileNotReady = missed,
+                shouldCheck = { flagged -> flagged },
+                check = { checks += 1 },
+            )
+        }
+        missed.value = true
+        settle()
+        assertEquals("offline runs nothing", 0, checks)
+        live.value = true
+        settle()
+        assertEquals(1, checks)
+        listener.cancel()
+    }
 
     @Test
     fun `a returning server resyncs after a failed or partial sync`() {

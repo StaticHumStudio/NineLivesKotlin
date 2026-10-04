@@ -2,14 +2,12 @@ package com.ninelivesaudio.app.ui.downloads
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ninelivesaudio.app.data.local.converter.effectiveCoverPath
 import com.ninelivesaudio.app.data.local.converter.toDomain
-import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
-import com.ninelivesaudio.app.domain.model.DownloadStatus
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.DownloadManager
@@ -23,7 +21,6 @@ import javax.inject.Inject
 class DownloadsViewModel @Inject constructor(
     private val downloadManager: DownloadManager,
     private val downloadItemDao: DownloadItemDao,
-    private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
 ) : ViewModel() {
@@ -41,6 +38,8 @@ class DownloadsViewModel @Inject constructor(
         val showEmptyState: Boolean = true,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val isLocalMode: Boolean = false,
+        /** Why the last Resume or Retry did not start, or null. */
+        val notice: String? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -63,52 +62,48 @@ class DownloadsViewModel @Inject constructor(
     }
 
     init {
-        // Observe active downloads
+        // The download rows and the downloaded book rows feed both lists. The
+        // queries re-run on every download progress write and every book row
+        // write (playback saves its place), so unchanged lists are dropped
+        // before they reach the screen.
         viewModelScope.launch {
-            downloadItemDao.observeActive().collect { entities ->
-                val items = entities.mapNotNull { entity ->
-                    val item = entity.toDomain()
-                    val book = audioBookDao.getById(item.audioBookId)
-                    // Skip items where book was deleted from DB
-                    if (book == null) return@mapNotNull null
-                    DownloadUiItem(
-                        download = item,
-                        coverPath = book.effectiveCoverPath,
-                    ).withLiveProgress()
-                }
-                // Drop live entries for downloads that are no longer active so the
-                // overlay map cannot grow without bound.
-                val activeIds = items.mapTo(HashSet()) { it.download.id }
-                liveProgress = liveProgress.filterKeys { it in activeIds }
-                _uiState.update {
-                    it.copy(
-                        activeDownloads = items,
-                        showEmptyState = items.isEmpty() && it.completedDownloads.isEmpty(),
-                    )
-                }
+            combine(
+                downloadItemDao.observeAllWithBooks(),
+                downloadItemDao.observeDownloadedServerBooks(),
+            ) { rows, books ->
+                splitDownloadRows(
+                    rows = rows.map { row ->
+                        DownloadRow(
+                            download = row.download.toDomain(),
+                            coverPath = row.coverPath,
+                            bookIsDownloaded = row.bookIsDownloaded == 1,
+                        )
+                    },
+                    downloadedBooks = books.map { book ->
+                        DownloadedBook(audioBookId = book.id, title = book.title, coverPath = book.coverPath)
+                    },
+                )
             }
-        }
-
-        // Observe completed downloads
-        viewModelScope.launch {
-            downloadItemDao.observeCompleted().collect { entities ->
-                val items = entities.mapNotNull { entity ->
-                    val item = entity.toDomain()
-                    val book = audioBookDao.getById(item.audioBookId)
-                    // Skip items where book was deleted from DB
-                    if (book == null) return@mapNotNull null
-                    DownloadUiItem(
-                        download = item,
-                        coverPath = book.effectiveCoverPath,
-                    )
+                .distinctUntilChanged()
+                .collect { lists ->
+                    val active = lists.active.map {
+                        DownloadUiItem(download = it.download, coverPath = it.coverPath).withLiveProgress()
+                    }
+                    val completed = lists.completed.map {
+                        DownloadUiItem(download = it.download, coverPath = it.coverPath)
+                    }
+                    // Drop live entries for downloads that are no longer active so the
+                    // overlay map cannot grow without bound.
+                    val activeIds = active.mapTo(HashSet()) { it.download.id }
+                    liveProgress = liveProgress.filterKeys { it in activeIds }
+                    _uiState.update {
+                        it.copy(
+                            activeDownloads = active,
+                            completedDownloads = completed,
+                            showEmptyState = active.isEmpty() && completed.isEmpty(),
+                        )
+                    }
                 }
-                _uiState.update {
-                    it.copy(
-                        completedDownloads = items,
-                        showEmptyState = items.isEmpty() && it.activeDownloads.isEmpty(),
-                    )
-                }
-            }
         }
 
         // Observe progress updates
@@ -160,8 +155,13 @@ class DownloadsViewModel @Inject constructor(
 
     fun resumeDownload(downloadId: String) {
         viewModelScope.launch {
-            downloadManager.resumeDownload(downloadId)
+            val result = downloadManager.resumeDownload(downloadId)
+            _uiState.update { it.copy(notice = resumeNotice(result)) }
         }
+    }
+
+    fun dismissNotice() {
+        _uiState.update { it.copy(notice = null) }
     }
 
     fun cancelDownload(downloadId: String) {
@@ -176,25 +176,20 @@ class DownloadsViewModel @Inject constructor(
         }
     }
 
-    fun clearCompleted() {
-        viewModelScope.launch {
-            val completed = _uiState.value.completedDownloads
-            completed.forEach { item ->
-                try {
-                    // Only remove the download tracking record — keep the actual files
-                    // on disk so the user's downloaded audiobooks remain playable.
-                    downloadItemDao.deleteById(item.download.id)
-                } catch (_: Exception) {
-                    // Continue clearing others even if one fails
-                }
-            }
-        }
-    }
-
     /** Queue a new download for an audiobook. */
     fun queueDownload(audioBook: AudioBook) {
         viewModelScope.launch {
             downloadManager.queueDownload(audioBook)
         }
     }
+}
+
+/**
+ * A Retry the free slot refuses has to say so. It used to requeue anyway and
+ * sit in Queued forever with no word.
+ */
+internal fun resumeNotice(result: DownloadManager.ResumeResult): String? = when (result) {
+    DownloadManager.ResumeResult.BLOCKED_BY_FREE_SLOT -> FreeTier.DOWNLOAD_SLOT_NOTICE
+    DownloadManager.ResumeResult.RESUMED,
+    DownloadManager.ResumeResult.NOT_RESUMABLE -> null
 }

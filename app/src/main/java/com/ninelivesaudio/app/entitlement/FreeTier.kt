@@ -17,6 +17,10 @@ import com.ninelivesaudio.app.ui.library.ViewMode
  */
 object FreeTier {
 
+    /** Said wherever a download is refused because the one free slot is taken. */
+    const val DOWNLOAD_SLOT_NOTICE = "Free keeps one downloaded book at a time. " +
+        "Delete the one you have, or unlock for unlimited offline books."
+
     /**
      * Sorts a free install can choose: all of them, as of 2026-08-15.
      *

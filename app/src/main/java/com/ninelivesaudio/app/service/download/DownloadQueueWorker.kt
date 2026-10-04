@@ -115,19 +115,25 @@ class DownloadQueueWorker(
             // and Android rate-limits notification posts, so unthrottled updates
             // get dropped and the bar appears frozen / far behind.
             var lastNotifiedPercent = -1
-            val result = withContext(Dispatchers.IO) {
-                engine.download(item, book) { id, downloaded, total ->
-                    manager.publishProgress(id, downloaded, total)
-                    val percent = if (total > 0) {
-                        ((downloaded.toDouble() / total) * 100).toInt()
-                    } else {
-                        -1
-                    }
-                    if (percent != lastNotifiedPercent) {
-                        lastNotifiedPercent = percent
-                        setForeground(foregroundInfo(item.title, downloaded, total))
+            // Cancel cleanup checks this last thing before deleting files.
+            manager.onEngineStarted(item.audioBookId)
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    engine.download(item, book) { id, downloaded, total ->
+                        manager.publishProgress(id, downloaded, total)
+                        val percent = if (total > 0) {
+                            ((downloaded.toDouble() / total) * 100).toInt()
+                        } else {
+                            -1
+                        }
+                        if (percent != lastNotifiedPercent) {
+                            lastNotifiedPercent = percent
+                            setForeground(foregroundInfo(item.title, downloaded, total))
+                        }
                     }
                 }
+            } finally {
+                manager.onEngineStopped()
             }
             manager.notifyTerminal(result)
             android.util.Log.d(TAG, "done id=${item.id} result=${result.status}")

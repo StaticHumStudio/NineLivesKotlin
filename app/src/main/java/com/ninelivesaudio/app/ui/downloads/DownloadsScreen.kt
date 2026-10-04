@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.ui.downloads
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.BookCoverImage
+import com.ninelivesaudio.app.ui.components.THUMBNAIL_COVER_WIDTH_PX
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
 
@@ -60,6 +62,20 @@ fun DownloadsScreen(
                 contentPadding = PaddingValues(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                uiState.notice?.let { message ->
+                    item {
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = viewModel::dismissNotice)
+                                .padding(vertical = 8.dp),
+                        )
+                    }
+                }
+
                 // ── Active Downloads Section ──────────────────────────
                 if (uiState.activeDownloads.isNotEmpty()) {
                     item {
@@ -82,22 +98,12 @@ fun DownloadsScreen(
                 // ── Completed Downloads Section ───────────────────────
                 if (uiState.completedDownloads.isNotEmpty()) {
                     item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 16.dp, bottom = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                        // No Clear All here. It deleted the download rows and
+                        // kept the files, so offline books vanished from the
+                        // one screen that manages them. Each book's Delete
+                        // removes its files.
+                        Box(modifier = Modifier.padding(top = 16.dp, bottom = 4.dp)) {
                             SectionHeader(title = "Completed")
-
-                            TextButton(onClick = { viewModel.clearCompleted() }) {
-                                Text(
-                                    text = "Clear All",
-                                    color = NineLivesTheme.colors.goldFilament,
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            }
                         }
                     }
 
@@ -174,6 +180,7 @@ private fun ActiveDownloadCard(
                         modifier = Modifier.fillMaxSize(),
                         title = download.title,
                         bookId = download.audioBookId,
+                        thumbnailWidthPx = THUMBNAIL_COVER_WIDTH_PX,
                     )
                 }
 
@@ -252,7 +259,7 @@ private fun ActiveDownloadCard(
                         ) {
                             Icon(
                                 Icons.Outlined.PlayArrow,
-                                contentDescription = "Resume",
+                                contentDescription = if (download.status == DownloadStatus.Failed) "Retry" else "Resume",
                                 tint = NineLivesTheme.colors.goldFilament,
                                 modifier = Modifier.size(20.dp),
                             )
@@ -346,6 +353,7 @@ private fun CompletedDownloadCard(
                     modifier = Modifier.fillMaxSize(),
                     title = download.title,
                     bookId = download.audioBookId,
+                    thumbnailWidthPx = THUMBNAIL_COVER_WIDTH_PX,
                 )
             }
 
@@ -376,12 +384,16 @@ private fun CompletedDownloadCard(
                         color = NineLivesTheme.colors.archiveSuccess,
                         fontSize = 11.sp,
                     )
-                    Text(
-                        text = download.sizeDisplay,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NineLivesTheme.colors.archiveTextMuted,
-                        fontSize = 11.sp,
-                    )
+                    // A book listed from its row alone has no download
+                    // record, so no byte count to show.
+                    if (download.totalBytes > 0) {
+                        Text(
+                            text = download.sizeDisplay,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                            fontSize = 11.sp,
+                        )
+                    }
                 }
             }
 

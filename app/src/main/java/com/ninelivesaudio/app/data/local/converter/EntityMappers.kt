@@ -16,6 +16,15 @@ private inline fun <reified T> decodeJsonList(jsonString: String?): List<T> =
         catch (_: Exception) { emptyList() }
     } ?: emptyList()
 
+// Shelf rows decode these per book. Most server rows hold "[]", which skips
+// the JSON parser entirely.
+internal fun decodeStringListJson(jsonString: String?): List<String> =
+    if (jsonString == null || jsonString == "[]") emptyList() else decodeJsonList(jsonString)
+
+internal fun decodeChapterListJson(jsonString: String?): List<Chapter> =
+    if (jsonString == null || jsonString == "[]") emptyList()
+    else decodeJsonList<ChapterJson>(jsonString).map { it.toDomain() }
+
 // ─── AudioBook ───────────────────────────────────────────────────────────
 
 fun AudioBookEntity.toDomain(): AudioBook = AudioBook(

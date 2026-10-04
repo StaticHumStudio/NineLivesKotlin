@@ -7,9 +7,14 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
+import com.ninelivesaudio.app.data.local.entity.BookProgressState
+import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.local.entity.SlotBookRow
+import com.ninelivesaudio.app.data.local.entity.ShelfBookRow
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -42,6 +47,29 @@ interface AudioBookDao {
     /** Batch lookup by IDs — used by syncLibraryItems to preserve download state. */
     @Query("SELECT * FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getByIds(ids: List<String>): List<AudioBookEntity>
+
+    /** Only the local-only fields a server sync keeps, for up to 500 IDs at a time. */
+    @Query(
+        "SELECT Id, IsDownloaded, LocalPath, LocalCoverPath, CurrentTimeSeconds, Progress, IsFinished, ArchivedAt " +
+            "FROM AudioBooks WHERE Id IN (:ids)"
+    )
+    suspend fun getSyncMergeStates(ids: List<String>): List<SyncMergeState>
+
+    /** Shelf progress for up to 500 IDs, for the progress pull's "anything changed?" check. */
+    @Query("SELECT Id, CurrentTimeSeconds, Progress, IsFinished, DurationSeconds FROM AudioBooks WHERE Id IN (:ids)")
+    suspend fun getProgressStates(ids: List<String>): List<BookProgressState>
+
+    /** How many SERVER books one library has cached, downloads included. */
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0")
+    suspend fun countServerBooksByLibrary(libraryId: String): Int
+
+    /** Which of up to 500 IDs are already cached as SERVER books of this library. */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id IN (:ids)")
+    suspend fun getServerIdsInLibrary(libraryId: String, ids: List<String>): List<String>
+
+    /** Every stored localPath except [excludeId]'s, for the shared-folder check on cancel. */
+    @Query("SELECT LocalPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != ''")
+    suspend fun getLocalPathsExcept(excludeId: String): List<String>
 
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     fun observeById(id: String): Flow<AudioBookEntity?>
@@ -139,17 +167,103 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
     suspend fun updateCoverPath(id: String, coverPath: String)
 
+    // ─── Readers outside the Library shelf ───────────────────────────────
+    //
+    // Screens and services that only need a handful of books ask for those
+    // books, not the whole library. Each query here is bounded by an id list,
+    // a LIMIT, or a small projection.
+
+    /** Up to 500 books by id, kept to one library and source (the Dossier's listened books). */
+    @Query("SELECT * FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND Id IN (:ids)")
+    suspend fun getByIdsInLibraryAndSource(libraryId: String, isLocal: Int, ids: List<String>): List<AudioBookEntity>
+
+    /**
+     * One page of Android Auto's Library list: live books in one library and
+     * source, A to Z, light columns only. Id breaks title ties so pages never
+     * overlap or skip.
+     */
+    @Query(
+        """
+        SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
+        FROM AudioBooks
+        WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
+        ORDER BY Title COLLATE NOCASE, Id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun getAutoBrowsePage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /** Same as [getAutoBrowsePage], downloaded books only. */
+    @Query(
+        """
+        SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
+        FROM AudioBooks
+        WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL AND IsDownloaded = 1
+        ORDER BY Title COLLATE NOCASE, Id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /**
+     * One page of Android Auto search hits in one library and source: title or
+     * author contains [pattern], an escaped LIKE pattern (backslash escapes).
+     */
+    @Query(
+        """
+        SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
+        FROM AudioBooks
+        WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
+            AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+        ORDER BY Title COLLATE NOCASE, Id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun searchAutoPage(libraryId: String, isLocal: Int, pattern: String, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /** How many rows [searchAutoPage] can return, counting no further than [cap]. */
+    @Query(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM AudioBooks
+            WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
+                AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+            LIMIT :cap
+        )
+        """
+    )
+    suspend fun countAutoSearch(libraryId: String, isLocal: Int, pattern: String, cap: Int): Int
+
+    /** Slot fields of every downloaded book, in any library. */
+    @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE IsDownloaded = 1")
+    suspend fun getDownloadedSlotRows(): List<SlotBookRow>
+
+    /** Slot fields for up to 500 books by id. */
+    @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE Id IN (:ids)")
+    suspend fun getSlotRowsByIds(ids: List<String>): List<SlotBookRow>
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 
     @Query("DELETE FROM AudioBooks WHERE IsLocal = 0")
     suspend fun deleteAudiobookshelf()
 
+    // ─── Recently played ─────────────────────────────────────────────────
+    //
+    // These start from PlaybackProgress and walk it newest first through
+    // idx_playback_progress_updated, looking each book up by id. CROSS JOIN
+    // pins that order. Left to itself SQLite started from the library index
+    // instead and read every book in the library, and Home reruns this on
+    // every playback progress write (every 500 ms while listening).
+
     /** Nine Lives — recently played books with their last-played timestamp. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -159,8 +273,8 @@ interface AudioBookDao {
     /** Nine Lives — observable version for reactive UI. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -170,8 +284,8 @@ interface AudioBookDao {
     /** Nine Lives — recently played books filtered by library. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -181,8 +295,8 @@ interface AudioBookDao {
     /** Android Auto variant applies source scope before LIMIT. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -196,8 +310,8 @@ interface AudioBookDao {
     /** Nine Lives — observable recently played books filtered by library. */
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.ArchivedAt IS NULL
         ORDER BY pp.UpdatedAt DESC
         LIMIT :limit
@@ -214,22 +328,16 @@ interface AudioBookDao {
     """)
     suspend fun getByLibraryWithLastPlayed(libraryId: String): List<RecentlyPlayedResult>
 
-    /** Search audiobooks by title or author. */
-    @Query("""
-        SELECT * FROM AudioBooks
-        WHERE Title LIKE '%' || :query || '%'
-           OR Author LIKE '%' || :query || '%'
-        ORDER BY Title
-    """)
-    suspend fun search(query: String): List<AudioBookEntity>
-
     /** Update just the progress fields on an audiobook. */
     @Query("UPDATE AudioBooks SET CurrentTimeSeconds = :currentTimeSeconds, Progress = :progress, IsFinished = :isFinished WHERE Id = :id")
     suspend fun updateProgress(id: String, currentTimeSeconds: Double, progress: Double, isFinished: Int)
 
-    /** Dynamic filtered query — built by AudioBookRepository.getFilteredBooks(). */
+    /**
+     * Dynamic filtered shelf query, built by AudioBookRepository.getFilteredBooks().
+     * Light rows only (see [ShelfBookRow]), never `ab.*`.
+     */
     @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
-    suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<RecentlyPlayedResult>
+    suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<ShelfBookRow>
 
     /** Count live audiobooks in a library (drives the empty-state copy, so it
      *  excludes archived books — an archive-only library reads as empty). */
@@ -248,21 +356,9 @@ interface AudioBookDao {
 
     @Query("""
         SELECT COUNT(DISTINCT ab.Id)
-        FROM AudioBooks ab
-        INNER JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId
+        FROM PlaybackProgress pp
+        CROSS JOIN AudioBooks ab ON ab.Id = pp.AudioBookId
         WHERE ab.LibraryId = :libraryId AND ab.IsLocal = :isLocal AND ab.ArchivedAt IS NULL
     """)
     suspend fun countRecentlyPlayedByLibrary(libraryId: String, isLocal: Int): Int
-
-    /** Distinct series names for a library. */
-    @Query("SELECT DISTINCT SeriesName FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND SeriesName IS NOT NULL AND SeriesName != '' ORDER BY SeriesName")
-    suspend fun getDistinctSeries(libraryId: String): List<String>
-
-    /** Distinct authors for a library. */
-    @Query("SELECT DISTINCT Author FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND Author IS NOT NULL AND Author != '' ORDER BY Author")
-    suspend fun getDistinctAuthors(libraryId: String): List<String>
-
-    /** Distinct genres for a library (genres stored as JSON array). */
-    @Query("SELECT DISTINCT GenresJson FROM AudioBooks WHERE LibraryId = :libraryId AND ArchivedAt IS NULL AND GenresJson IS NOT NULL AND GenresJson != '[]' AND GenresJson != ''")
-    suspend fun getDistinctGenresJson(libraryId: String): List<String>
 }

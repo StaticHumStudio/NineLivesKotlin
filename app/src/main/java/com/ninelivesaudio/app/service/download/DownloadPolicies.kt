@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service.download
 
 import com.ninelivesaudio.app.domain.model.AudioFile
+import com.ninelivesaudio.app.domain.model.DownloadStatus
 import kotlin.math.pow
 
 // ─── Download decision logic (pure, unit-testable) ────────────────────────
@@ -90,3 +91,22 @@ internal fun retryBackoffMs(retryCount: Int): Long =
 /** A file is already downloaded if it exists on disk with non-zero length. */
 internal fun shouldSkipDownloadedFile(exists: Boolean, length: Long): Boolean =
     exists && length > 0
+
+/** What a Resume or Retry tap on one download row should do. */
+internal enum class ResumeDecision { REQUEUE, BLOCKED_BY_FREE_SLOT, IGNORE }
+
+/**
+ * Only a Paused or Failed row can be resumed, and only when its book may hold
+ * the free slot ([canClaim] is true whenever the slot does not apply). A
+ * Failed row gives the slot up, so another book can download meanwhile.
+ * Requeueing it anyway left it Queued forever: the drain only runs the slot
+ * winner, which was the other book.
+ */
+internal suspend fun decideResume(
+    status: DownloadStatus,
+    canClaim: suspend () -> Boolean,
+): ResumeDecision = when {
+    status != DownloadStatus.Paused && status != DownloadStatus.Failed -> ResumeDecision.IGNORE
+    !canClaim() -> ResumeDecision.BLOCKED_BY_FREE_SLOT
+    else -> ResumeDecision.REQUEUE
+}

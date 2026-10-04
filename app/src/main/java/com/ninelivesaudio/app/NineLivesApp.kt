@@ -2,10 +2,14 @@ package com.ninelivesaudio.app
 
 import android.app.Application
 import android.content.Context
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.imageLoaderHttpClient
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.entitlement.BillingManager
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
@@ -122,6 +126,30 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // screen happened to ask for it.
         billingManager.start()
 
+        // The library check timer runs only while the app is visible. The
+        // process lifecycle covers every activity together, and its stop
+        // waits a moment past the last activity so a rotation is not a trip
+        // to the background. Registered here, before settings load, so the
+        // first foreground entry is never missed: the flag is state, and the
+        // timer reads it whenever SyncManager.start() gets to it. The server
+        // ping follows the same flag, so nothing polls in the background.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    // Connectivity first: it re-reads the real network state,
+                    // which the sync's entry check then reads.
+                    connectivityMonitor.setAppForeground(true)
+                    syncManager.setAppForeground(true)
+                }
+                override fun onStop(owner: LifecycleOwner) {
+                    syncManager.setAppForeground(false)
+                    connectivityMonitor.setAppForeground(false)
+                    // A playing book saves its position now, not 10 seconds on.
+                    playbackManager.onAppBackgrounded()
+                }
+            }
+        )
+
         // Load settings from disk FIRST, then bring up everything that depends
         // on them. Order matters: the server URL and auth token must be in
         // place before any network call fires. Otherwise the first request
@@ -166,8 +194,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // Re-resolve the download slot whenever entitlement is or becomes free.
         // Deliberately includes the initial emission rather than transitions
         // only, so a downgrade that happened while the app was dead is still
-        // handled. Resolution early-returns when there is nothing over cap, so
-        // the common case costs one query and never touches the worker.
+        // handled. Resolution reads only download rows and downloaded books,
+        // a few small queries, and early-returns when there is nothing over
+        // cap, so the common case never touches the worker.
         appScope.launch {
             entitlementRepository.state
                 .map { it.isUnlocked }
@@ -191,13 +220,15 @@ class NineLivesApp : Application(), ImageLoaderFactory {
     }
 
     /**
-     * Coil image loader for the whole app. Reuses the authenticated OkHttpClient
-     * so server covers carry the auth token, and adds a persistent disk cache so
-     * covers fetched once survive offline instead of relying on Coil's defaults.
+     * Coil image loader for the whole app. Builds on the authenticated
+     * OkHttpClient so server covers carry the auth token, with its own request
+     * dispatcher so a burst of covers never queues API calls (see
+     * [imageLoaderHttpClient]). Adds a persistent disk cache so covers fetched
+     * once survive offline instead of relying on Coil's defaults.
      */
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
-            .okHttpClient { okHttpClient }
+            .okHttpClient { imageLoaderHttpClient(okHttpClient) }
             .crossfade(true)
             .diskCache {
                 DiskCache.Builder()

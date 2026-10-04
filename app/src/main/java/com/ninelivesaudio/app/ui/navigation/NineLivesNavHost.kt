@@ -3,7 +3,6 @@ package com.ninelivesaudio.app.ui.navigation
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -61,10 +60,7 @@ fun NineLivesNavHost(
                 val route = when (destination) {
                     OnboardingDestination.SETTINGS -> Routes.SETTINGS
                 }
-                navController.navigate(route) {
-                    popUpTo(Routes.WELCOME) { inclusive = true }
-                    launchSingleTop = true
-                }
+                navController.finishOnboarding(route)
             }
             WelcomeScreen(
                 onChooseLocal = {
@@ -78,10 +74,10 @@ fun NineLivesNavHost(
 
         composable(Routes.HOME) {
             HomeScreen(
+                // Tab targets go through navigateToTab so the tab comes back as
+                // the user left it instead of as a fresh second copy.
                 onNavigateToLibrary = {
-                    navController.navigate(Routes.LIBRARY) {
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.LIBRARY)
                 },
                 onNavigateToBookDetail = { bookId ->
                     navController.navigate(Routes.bookDetail(bookId))
@@ -97,9 +93,7 @@ fun NineLivesNavHost(
                     }
                 },
                 onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.SETTINGS)
                 },
             )
         }
@@ -205,17 +199,10 @@ fun NineLivesNavHost(
                 bookId = bookId,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.SETTINGS)
                 },
                 onNavigateToPlayer = {
-                    navController.navigate(Routes.PLAYER) {
-                        popUpTo(navController.graph.findStartDestination().id) {
-                            inclusive = false
-                        }
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.PLAYER)
                 }
             )
         }

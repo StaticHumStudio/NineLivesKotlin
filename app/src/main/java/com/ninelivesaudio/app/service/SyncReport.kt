@@ -106,6 +106,13 @@ internal fun buildShelfSyncReport(
     libraries: RemoteResult<List<Library>>?,
     selectedLibrary: Library?,
     items: RemoteResult<List<AudioBook>>?,
+): SyncReport? = buildShelfSyncReportFromCount(libraries, selectedLibrary, items?.map { it.size })
+
+/** [buildShelfSyncReport] for an item fetch that reports how many books it saved. */
+internal fun buildShelfSyncReportFromCount(
+    libraries: RemoteResult<List<Library>>?,
+    selectedLibrary: Library?,
+    items: RemoteResult<Int>?,
 ): SyncReport? {
     if (libraries == null && items == null) return null
 
@@ -116,8 +123,8 @@ internal fun buildShelfSyncReport(
         null -> if (selectedLibrary == null) 0 else 1
     }
     val bookCount = when (items) {
-        is RemoteResult.Ok -> items.value.size
-        is RemoteResult.Partial -> items.value.size
+        is RemoteResult.Ok -> items.value
+        is RemoteResult.Partial -> items.value
         is RemoteResult.Failed, null -> 0
     }
     val itemName = selectedLibrary?.name ?: "library"
@@ -165,6 +172,18 @@ internal fun unreachableServerSyncReport(): SyncReport = SyncReport(
 internal suspend fun fetchLibrarySyncReport(
     fetchLibraries: suspend () -> RemoteResult<List<Library>>,
     fetchItems: suspend (Library) -> RemoteResult<List<AudioBook>>,
+): SyncReport = fetchLibrarySyncReportFromCounts(
+    fetchLibraries = fetchLibraries,
+    fetchItemCounts = { library -> fetchItems(library).map { books -> books.size } },
+)
+
+/**
+ * [fetchLibrarySyncReport] for item fetches that report how many books they
+ * saved rather than handing the books back.
+ */
+internal suspend fun fetchLibrarySyncReportFromCounts(
+    fetchLibraries: suspend () -> RemoteResult<List<Library>>,
+    fetchItemCounts: suspend (Library) -> RemoteResult<Int>,
 ): SyncReport {
     val librariesResult = try {
         fetchLibraries()
@@ -176,14 +195,13 @@ internal suspend fun fetchLibrarySyncReport(
 
     val libraries = librariesResult.valueOrEmpty()
     val itemResults = libraries.map { library ->
-        val result = try {
-            fetchItems(library)
+        try {
+            fetchItemCounts(library)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             RemoteResult.Failed(describeFailure(e))
         }
-        result.map { books -> books.size }
     }
 
     return buildSyncReport(

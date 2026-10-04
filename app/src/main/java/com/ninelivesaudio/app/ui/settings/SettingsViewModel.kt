@@ -34,8 +34,10 @@ import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.local.LocalLibraryScanner
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
-import com.ninelivesaudio.app.service.local.LocalMetadataExtractor
-import com.ninelivesaudio.app.service.local.toAudioBook
+import com.ninelivesaudio.app.service.local.LocalScanCoordinator
+import com.ninelivesaudio.app.service.local.LocalScanImporter
+import com.ninelivesaudio.app.service.local.LocalScanRequest
+import com.ninelivesaudio.app.service.local.LocalScanState
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -192,8 +194,8 @@ class SettingsViewModel @Inject constructor(
     private val unhingedRepository: UnhingedSettingsRepository,
     private val syncManager: SyncManager,
     private val playbackManager: PlaybackManager,
-    private val localScanner: LocalLibraryScanner,
-    private val localMetadataExtractor: LocalMetadataExtractor,
+    private val localScanImporter: LocalScanImporter,
+    private val localScanCoordinator: LocalScanCoordinator,
     private val localFolderAccess: LocalFolderAccess,
 ) : ViewModel() {
 
@@ -363,6 +365,15 @@ class SettingsViewModel @Inject constructor(
                             .toSet() - localFolderAccess.accessibleLibraryIds(locals),
                     )
                 }
+            }
+        }
+
+        // Follow the app-wide folder scan. A result that landed while
+        // Settings was closed shows once here, then is acknowledged.
+        viewModelScope.launch {
+            localScanCoordinator.state.collect { scan ->
+                _uiState.update { it.withLocalScan(scan) }
+                if (scan is LocalScanState.Finished) localScanCoordinator.acknowledge(scan.id)
             }
         }
 
@@ -537,86 +548,14 @@ class SettingsViewModel @Inject constructor(
      * before passing the URI string here.
      */
     fun onLocalFolderPicked(uriString: String) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true, lastScanMessage = null, errorMessage = null) }
-            try {
-                // Derive a display name from the URI path
-                val uri = Uri.parse(uriString)
-                val displayName = uri.lastPathSegment
-                    ?.substringAfterLast(':')
-                    ?.substringAfterLast('/')
-                    ?.ifBlank { null }
-                    ?: "Local Library"
-
-                val scanResult = withContext(Dispatchers.IO) {
-                    localScanner.scan(uri)
-                }
-                failEmptyScanWithErrors(scanResult)
-
-                // Create or reuse the local library row after confirming the folder is readable.
-                val library = libraryRepository.createLocalLibrary(displayName, uriString)
-
-                importAndReconcile(library.id, scanResult)
-
-                // Select this library
-                settingsManager.updateSettings {
-                    it.copy(selectedLocalLibraryId = library.id)
-                }
-
-                val outcome = buildScanOutcome(scanResult, countedAs = "imported")
-
-                _uiState.update {
-                    it.copy(
-                        isScanning = false,
-                        lastScanMessage = outcome.lastScanMessage,
-                        selectedLocalLibrary = library,
-                        inaccessibleLocalLibraryIds = it.inaccessibleLocalLibraryIds - library.id,
-                        successMessage = outcome.successMessage,
-                        errorMessage = outcome.errorMessage,
-                    )
-                }
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isScanning = false,
-                        errorMessage = "Scan failed: ${e.message}",
-                    )
-                }
-            }
-        }
+        // The scan runs app-wide so leaving Settings cannot cancel it (#57).
+        // The state collector in init shows its progress and result.
+        localScanCoordinator.start(LocalScanRequest.AddFolder(uriString))
     }
 
     fun rescanLocalLibrary(library: Library) {
-        val folderUri = library.folderUri ?: return
-        viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true, lastScanMessage = null, errorMessage = null) }
-            try {
-                val scanResult = withContext(Dispatchers.IO) {
-                    localScanner.scan(Uri.parse(folderUri))
-                }
-                failEmptyScanWithErrors(scanResult)
-
-                importAndReconcile(library.id, scanResult)
-
-                val outcome = buildScanOutcome(scanResult, countedAs = "found") { "Rescan complete: $it" }
-
-                _uiState.update {
-                    it.copy(
-                        isScanning = false,
-                        lastScanMessage = outcome.lastScanMessage,
-                        successMessage = outcome.successMessage,
-                        errorMessage = outcome.errorMessage,
-                    )
-                }
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isScanning = false,
-                        errorMessage = "Rescan failed: ${e.message}",
-                    )
-                }
-            }
-        }
+        if (library.folderUri == null) return
+        localScanCoordinator.start(LocalScanRequest.Rescan(library))
     }
 
     fun removeLocalLibrary(library: Library) {
@@ -630,7 +569,7 @@ class SettingsViewModel @Inject constructor(
                 // re-adding the same folder re-imports and clears ArchivedAt
                 // (restore). "Delete forever" / the archive sweep is the path
                 // to actually remove them.
-                archiveMissingBooks(library.id, scannedIds = emptyList())
+                localScanImporter.archiveMissingBooks(library.id, scannedIds = emptyList())
                 releaseSafPermission(library.folderUri)
                 moveSelectionOffLibrary(library)
 
@@ -784,72 +723,6 @@ class SettingsViewModel @Inject constructor(
         savedLocalId: String?,
     ): Library? {
         return localLibraries.firstOrNull { it.id == savedLocalId } ?: localLibraries.firstOrNull()
-    }
-
-    /**
-     * Import what the scan found, then reconcile the library against it: any
-     * local book whose folder was not seen in this scan leaves the library
-     * (issue #20). Without this a rescan only ever adds, so moving a folder one
-     * level deeper leaves a ghost entry pointing at files that are gone, and
-     * playing it fails.
-     *
-     * Removal is gated on [LocalLibraryScanner.ScanResult.coverageComplete], NOT
-     * on "the scan reported no warnings". The distinction is the whole safety
-     * argument: a folder that could not be listed, a revoked permission, or a
-     * traversal cut short by the depth or folder cap all mean books exist that
-     * this scan never saw, and absence from a partial inventory is not evidence
-     * a book is gone. Those scans import and reconcile nothing. A warning that
-     * is not a coverage gap (a single unreadable file, whose id the scan hands
-     * back as retained) no longer freezes the whole library forever.
-     *
-     * "Leaves the library" means archived, not deleted. A folder can come back:
-     * the card is out of the library and its Archive tab entry keeps the cover,
-     * progress, and history, and re-adding the folder restores it in place. The
-     * Orphaned Books sweep in this screen stays the one path that actually
-     * deletes rows, and it already cascades progress, sessions, bookmarks, and
-     * the local_covers file.
-     */
-    private suspend fun importAndReconcile(
-        libraryId: String,
-        scanResult: LocalLibraryScanner.ScanResult,
-    ) {
-        val books = scanResult.books.map { it.toAudioBook(libraryId) }
-        val seenIds = scanResult.seenBookIds()
-        // Captured before the import, so a book that arrived in THIS scan is
-        // distinguishable from one that was already in the library.
-        val existingIds = if (scanResult.coverageComplete) {
-            audioBookRepository.getLiveLocalIds(libraryId)
-        } else {
-            emptyList()
-        }
-
-        audioBookRepository.importLocalBooksCarryingMoves(
-            libraryId = libraryId,
-            books = books,
-            existingIds = existingIds,
-            seenIds = seenIds,
-        )
-
-        if (!scanResult.coverageComplete) return
-
-        archiveMissingBooks(libraryId, seenIds)
-    }
-
-    /**
-     * The single archive choke point: before soft-deleting the books missing
-     * from [scannedIds], copy any still-readable content:// folder cover to
-     * durable storage. Both archive triggers (whole-folder Remove and the
-     * missing-books pass after a rescan) route through here, so a book scanned
-     * under an older build keeps its cover once archived — the folder is still
-     * accessible at this point (permission not yet released; a rescan only
-     * archives what a clean scan reported missing). Already-durable and
-     * unreadable covers are left as-is (best-effort).
-     */
-    private suspend fun archiveMissingBooks(libraryId: String, scannedIds: List<String>) {
-        audioBookRepository.persistFolderCovers(libraryId) { uri, id ->
-            localMetadataExtractor.persistFolderCover(uri, id)
-        }
-        audioBookRepository.removeMissingLocalBooks(libraryId, scannedIds)
     }
 
     // ─── User Actions ─────────────────────────────────────────────────────
@@ -1980,6 +1853,49 @@ internal fun buildScanOutcome(
         successMessage = if (warning != null) null else withArchiveHint(successMessage(msg), scanResult.archiveFileCount),
         errorMessage = warning?.let { withArchiveHint(it, scanResult.archiveFileCount) },
     )
+}
+
+/**
+ * How the app-wide folder scan shows in Settings (#57). Running clears the
+ * last result and shows "Scanning folder...". Finished shows the same
+ * summary and banners the scan showed when it ran inside this screen, and
+ * Add Folder also selects the library it just imported.
+ */
+internal fun SettingsViewModel.UiState.withLocalScan(
+    scan: LocalScanState,
+): SettingsViewModel.UiState = when (scan) {
+    LocalScanState.Idle -> copy(isScanning = false)
+    is LocalScanState.Running -> copy(isScanning = true, lastScanMessage = null, errorMessage = null)
+    is LocalScanState.Finished -> {
+        val rescan = scan.request is LocalScanRequest.Rescan
+        val imported = scan.imported
+        if (imported == null) {
+            copy(
+                isScanning = false,
+                errorMessage = (if (rescan) "Rescan failed: " else "Scan failed: ") + scan.failure,
+            )
+        } else {
+            val outcome = if (rescan) {
+                buildScanOutcome(imported.scanResult, countedAs = "found") { "Rescan complete: $it" }
+            } else {
+                buildScanOutcome(imported.scanResult, countedAs = "imported")
+            }
+            val shown = copy(
+                isScanning = false,
+                lastScanMessage = outcome.lastScanMessage,
+                successMessage = outcome.successMessage,
+                errorMessage = outcome.errorMessage,
+            )
+            if (rescan) {
+                shown
+            } else {
+                shown.copy(
+                    selectedLocalLibrary = imported.library,
+                    inaccessibleLocalLibraryIds = inaccessibleLocalLibraryIds - imported.library.id,
+                )
+            }
+        }
+    }
 }
 
 private fun withArchiveHint(message: String, archiveFileCount: Int): String {

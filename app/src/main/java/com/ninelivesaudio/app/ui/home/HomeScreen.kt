@@ -61,7 +61,7 @@ fun HomeScreen(
 
     if (uiState.showEmptyState && !uiState.isLoading) {
         EmptyHomeState(
-            isLocalMode = uiState.isLocalMode,
+            kind = homeEmptyKind(uiState.isLocalMode, uiState.libraryHasBooks),
             connectionPillState = connectionPillState,
             onReconnect = viewModel::reconnect,
             onNavigateToLibrary = onNavigateToLibrary,
@@ -420,12 +420,13 @@ private fun NineLivesAltar(
 
 @Composable
 private fun EmptyHomeState(
-    isLocalMode: Boolean,
+    kind: HomeEmptyKind,
     connectionPillState: HomeConnectionPillState,
     onReconnect: () -> Unit,
     onNavigateToLibrary: () -> Unit,
     onNavigateToSettings: () -> Unit,
 ) {
+    val copy = homeEmptyCopy(kind)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -465,7 +466,7 @@ private fun EmptyHomeState(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = if (isLocalMode) "No local audio yet" else "The Archive stands empty",
+                text = copy.subtitle,
                 style = MaterialTheme.typography.titleMedium,
                 color = NineLivesTheme.colors.archiveTextSecondary,
                 textAlign = TextAlign.Center,
@@ -474,14 +475,12 @@ private fun EmptyHomeState(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = if (isLocalMode) {
-                    "Add a folder of audiobooks in Settings to begin"
-                } else {
+                text = copy.body ?: (
                     CopyEngine.getEmptyStateFlavor(
                         CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_RITUAL,
                         CopyStyleGuide.EmptyStates.EMPTY_LIBRARY_UNHINGED,
                     ) ?: "Begin listening to fill these halls with your progress"
-                },
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = NineLivesTheme.colors.archiveTextMuted,
                 textAlign = TextAlign.Center,
@@ -491,7 +490,10 @@ private fun EmptyHomeState(
             Spacer(modifier = Modifier.height(32.dp))
 
             Button(
-                onClick = if (isLocalMode) onNavigateToSettings else onNavigateToLibrary,
+                onClick = when (copy.action) {
+                    HomeEmptyAction.OPEN_SETTINGS -> onNavigateToSettings
+                    HomeEmptyAction.OPEN_LIBRARY -> onNavigateToLibrary
+                },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = NineLivesTheme.colors.goldFilament,
                     contentColor = NineLivesTheme.colors.onAccent,
@@ -499,7 +501,7 @@ private fun EmptyHomeState(
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Text(
-                    text = if (isLocalMode) "Open Settings" else "Enter The Archive",
+                    text = copy.button,
                     fontWeight = FontWeight.SemiBold,
                 )
             }

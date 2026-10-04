@@ -410,7 +410,9 @@ class SyncManager @Inject constructor(
      * it is skipped, and an import updates only the book's progress columns.
      * Books the cache has never seen are looked up one by one only for the
      * most recently listened few (see [unknownBooksToFetch]). The library
-     * sync brings the rest, and their progress rows import either way.
+     * sync brings the rest, and their progress rows import either way, so
+     * the sync shelves those books with that progress (see
+     * [com.ninelivesaudio.app.data.repository.withPulledProgress]).
      */
     private suspend fun syncProgress() {
         try {

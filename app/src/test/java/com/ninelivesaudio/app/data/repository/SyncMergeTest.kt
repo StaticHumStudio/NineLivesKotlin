@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.data.repository
 
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.AudioFile
@@ -147,6 +148,7 @@ class SyncMergeTest {
             ),
             getMergeStates = { ids -> listOf(downloaded, plain).filter { it.id in ids }.map { it.toSyncMergeState() } },
             getFullRows = { ids -> fullRowLookups += ids; listOf(downloaded).filter { it.id in ids } },
+            getProgressRows = { emptyList() },
         )
 
         assertEquals(listOf(listOf("1")), fullRowLookups)
@@ -155,6 +157,37 @@ class SyncMergeTest {
         assertTrue(merged[0].isDownloaded)
         assertEquals(50.0, merged[1].currentTime.inWholeMilliseconds / 1000.0, 0.0001)
         assertEquals(AudioBook(id = "3", title = "New"), merged[2])
+    }
+
+    @Test
+    fun `a book new to the cache takes the progress the pull already saved for it`() = kotlinx.coroutines.runBlocking {
+        // The library list carries no progress. The pull fetched only 12
+        // unknown books one by one, and saved rows for these two anyway.
+        val progressLookups = mutableListOf<List<String>>()
+        val merged = mergeSyncedBooksLean(
+            remote = listOf(
+                AudioBook(id = "listening", duration = 1000.seconds),
+                AudioBook(id = "done", duration = 500.seconds),
+                AudioBook(id = "untouched", duration = 300.seconds),
+            ),
+            getMergeStates = { emptyList() },
+            getFullRows = { emptyList() },
+            getProgressRows = { ids ->
+                progressLookups += ids
+                listOf(
+                    PlaybackProgressEntity(audioBookId = "listening", positionSeconds = 250.0),
+                    PlaybackProgressEntity(audioBookId = "done", positionSeconds = 0.0, isFinished = 1),
+                ).filter { it.audioBookId in ids }
+            },
+        )
+
+        assertEquals(listOf(listOf("listening", "done", "untouched")), progressLookups)
+        assertEquals(250.0, merged[0].currentTime.inWholeMilliseconds / 1000.0, 0.0001)
+        assertEquals(0.25, merged[0].progress, 0.0001)
+        assertFalse(merged[0].isFinished)
+        assertTrue(merged[1].isFinished)
+        assertEquals(1.0, merged[1].progress, 0.0001)
+        assertEquals(AudioBook(id = "untouched", duration = 300.seconds), merged[2])
     }
 
     @Test

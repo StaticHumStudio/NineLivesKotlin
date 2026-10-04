@@ -12,11 +12,13 @@ import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
+import com.ninelivesaudio.app.service.shelfProgress
 import com.ninelivesaudio.app.service.local.LocalBookFingerprint
 import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
 import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
@@ -448,7 +450,12 @@ class AudioBookRepository @Inject constructor(
     // main thread the Library calls from.
     private suspend fun mergeForSave(remote: List<AudioBook>): List<AudioBook> =
         withContext(Dispatchers.Default) {
-            mergeSyncedBooksLean(remote, audioBookDao::getSyncMergeStates, audioBookDao::getByIds)
+            mergeSyncedBooksLean(
+                remote,
+                audioBookDao::getSyncMergeStates,
+                audioBookDao::getByIds,
+                playbackProgressDao::getByAudioBookIds,
+            )
         }
 
     private suspend fun saveMerged(books: List<AudioBook>) {
@@ -870,12 +877,15 @@ internal suspend fun <T> runSerializedLibraryItemPrune(
  * [mergeSyncedBooks] reading only the columns the merge keeps. The whole row
  * (audio file and chapter lists) is read only for a downloaded book whose
  * server copy came back without tracks or chapters, the one case the merge
- * borrows them from the local row.
+ * borrows them from the local row. A book new to the cache takes the
+ * position the progress pull saved for it ([getProgressRows]), see
+ * [withPulledProgress].
  */
 internal suspend fun mergeSyncedBooksLean(
     remote: List<AudioBook>,
     getMergeStates: suspend (List<String>) -> List<SyncMergeState>,
     getFullRows: suspend (List<String>) -> List<AudioBookEntity>,
+    getProgressRows: suspend (List<String>) -> List<PlaybackProgressEntity>,
 ): List<AudioBook> {
     if (remote.isEmpty()) return emptyList()
     val states = fetchByIdChunks(remote.map { it.id }, getMergeStates).associateBy { it.id }
@@ -883,7 +893,38 @@ internal suspend fun mergeSyncedBooksLean(
         states[book.id]?.isDownloaded == 1 && (book.audioFiles.isEmpty() || book.chapters.isEmpty())
     }.map { it.id }
     val details = if (needDetail.isEmpty()) emptyMap() else fetchByIdChunks(needDetail, getFullRows).associateBy { it.id }
-    return remote.map { book -> mergeSyncedBook(book, states[book.id], details[book.id]) }
+    val newIds = remote.filter { states[it.id] == null }.map { it.id }
+    val pulled = if (newIds.isEmpty()) emptyMap() else fetchByIdChunks(newIds, getProgressRows).associateBy { it.audioBookId }
+    return remote.map { book ->
+        val state = states[book.id]
+        if (state == null) withPulledProgress(book, pulled[book.id]) else mergeSyncedBook(book, state, details[book.id])
+    }
+}
+
+/**
+ * A book new to the cache, with the position the progress pull already saved
+ * for it. The library list carries no listening progress, and a pull fetches
+ * only the few most recently listened unknown books one by one, so every
+ * other book with progress used to land on the shelf at zero and unfinished
+ * (wrong in In Progress, Completed, and hide finished) until a later pull.
+ * The saved row wins only when it is ahead, as local progress does in
+ * [mergeSyncedBook].
+ */
+internal fun withPulledProgress(remote: AudioBook, row: PlaybackProgressEntity?): AudioBook {
+    if (row == null) return remote
+    val finished = row.isFinished == 1
+    val remoteTime = remote.currentTime.inWholeMilliseconds / 1000.0
+    if (row.positionSeconds <= remoteTime && (!finished || remote.isFinished)) return remote
+    return remote.copy(
+        currentTime = row.positionSeconds.seconds,
+        progress = shelfProgress(
+            currentTime = row.positionSeconds,
+            duration = remote.duration.inWholeMilliseconds / 1000.0,
+            isFinished = finished,
+            existingProgress = remote.progress,
+        ),
+        isFinished = finished || remote.isFinished,
+    )
 }
 
 internal fun AudioBookEntity.toSyncMergeState(): SyncMergeState = SyncMergeState(

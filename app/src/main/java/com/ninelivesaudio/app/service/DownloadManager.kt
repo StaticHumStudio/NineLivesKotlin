@@ -12,14 +12,10 @@ import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.download.CancelCleanupDecision
 import com.ninelivesaudio.app.service.download.DOWNLOAD_WORK_NAME
-import com.ninelivesaudio.app.service.download.applyCancelCleanup
-import com.ninelivesaudio.app.service.download.cancelCleanupStillClear
 import com.ninelivesaudio.app.service.download.cancelMayTouchFiles
-import com.ninelivesaudio.app.service.download.decideCancelCleanup
-import com.ninelivesaudio.app.service.download.deleteDownloadFiles
-import com.ninelivesaudio.app.service.download.downloadedFileNames
-import com.ninelivesaudio.app.service.download.FolderSharer
 import com.ninelivesaudio.app.service.download.DownloadEngine
+import com.ninelivesaudio.app.service.download.DownloadOwnership
+import com.ninelivesaudio.app.service.download.FolderReads
 import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
@@ -37,9 +33,9 @@ import com.ninelivesaudio.app.service.download.liveOverrides
 import com.ninelivesaudio.app.service.download.mayDownloadOnDrain
 import com.ninelivesaudio.app.service.download.overrideRestartsDrain
 import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
-import com.ninelivesaudio.app.service.download.writeAfterEngineStops
 import com.ninelivesaudio.app.service.download.runEngineExclusively
-import com.ninelivesaudio.app.service.download.unfinishedDownloadOwners
+import com.ninelivesaudio.app.service.download.removeCancelledPartialFiles
+import com.ninelivesaudio.app.service.download.removeDownloadedBookFiles
 import com.ninelivesaudio.app.service.download.DownloadOwnerRow
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -77,6 +73,7 @@ class DownloadManager @Inject constructor(
     private val downloadItemDao: DownloadItemDao,
     private val audioBookDao: AudioBookDao,
     private val engine: DownloadEngine,
+    private val ownership: DownloadOwnership,
     private val slotStore: DownloadSlotStore,
     private val settingsManager: SettingsManager,
     private val connectivityMonitor: ConnectivityMonitor,
@@ -97,15 +94,16 @@ class DownloadManager @Inject constructor(
     /**
      * Keeps cancel cleanup from racing anything that brings a download back.
      *
-     * Cancel holds it from the row read through the engine stop, the row delete,
-     * the ownership snapshot and the file deletion. Resume holds it across its
+     * Cancel, delete and pause hold it from the row read through the engine
+     * stop, the write and any file deletion. Resume holds it across its
      * read, its write and the drain start. Promotion in [queueDownload] holds it
      * for the write that makes a row pickable, and every drain start goes through
      * [enqueueDrain], which takes it too. Without it a resume could read a
      * Paused row, lose the race to cancel, write the row back and start the
      * engine, and cleanup would then delete files the resumed engine reuses.
      *
-     * Lock order: this one first, [slotMutex] inside it, never the reverse.
+     * Lock order: this one first, [slotMutex] or [DownloadOwnership]'s lock
+     * inside it, never the reverse.
      */
     private val rowMutex = Mutex()
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
@@ -174,38 +172,16 @@ class DownloadManager @Inject constructor(
         drainRunning = false
     }
 
-    /**
-     * The book the engine is streaming right now in this process, or null.
-     * Cancel cleanup checks it one last time before deleting anything.
-     */
-    @Volatile
-    private var engineBookId: String? = null
-
-    /** The download row the engine is on, for the Wi-Fi only rule. */
-    @Volatile
-    private var engineDownloadId: String? = null
-
     /** Held across every engine run, cleanup included. See [runEngineExclusively]. */
     private val engineLock = Mutex()
 
     /**
-     * Run [block] (the engine on [downloadId]) once no other engine run is
-     * still unwinding, recording the book for cancel cleanup and the Wi-Fi
-     * rule while it runs. Called by [DownloadQueueWorker].
+     * Run [block] (one engine run) once no other engine run is still
+     * unwinding. Which book the engine owns is tracked by [DownloadOwnership],
+     * which the engine claims itself. Called by [DownloadQueueWorker].
      */
-    suspend fun <T> runEngine(audioBookId: String, downloadId: String, block: suspend () -> T): T =
-        runEngineExclusively(
-            lock = engineLock,
-            onStart = {
-                engineBookId = audioBookId
-                engineDownloadId = downloadId
-            },
-            onStop = {
-                engineBookId = null
-                engineDownloadId = null
-            },
-            block = block,
-        )
+    suspend fun <T> runEngine(block: suspend () -> T): T =
+        runEngineExclusively(lock = engineLock, onStart = {}, onStop = {}, block = block)
 
     // ─── Wi-Fi only (#79) ────────────────────────────────────────────────────
 
@@ -299,7 +275,7 @@ class DownloadManager @Inject constructor(
         rowMutex.withLock {
             if (downloadsPaused) return@withLock
             if (downloadItemDao.getDownloadable().isEmpty()) return@withLock
-            val engineRowOverridden = engineDownloadId?.let { it in _meteredOverrides.value } ?: false
+            val engineRowOverridden = ownership.engineDownloadId?.let { it in _meteredOverrides.value } ?: false
             if (wifiRuleChangeRestartsDrain(wifiOnly, drainRunning, drainUnmetered, engineRowOverridden)) {
                 restartDrainHoldingRowLock()
             }
@@ -664,19 +640,24 @@ class DownloadManager @Inject constructor(
 
     /** Pause a download: mark it Paused; restart the drain if it was the active one. */
     suspend fun pauseDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
-        val entity = downloadItemDao.getById(downloadId) ?: return@finishInOwnerScope
-        val wasDownloading = entity.status == DownloadStatus.Downloading.ordinal
-        writeAfterEngineStops(wasDownloading, { stopDrainAndAwait() }) {
-            // Re-read after the stop: the engine's last tick moved the bytes on,
-            // and it may have finished the book in the meantime. A Completed row
-            // only counts once the book itself is marked downloaded, since the
-            // stop can land between those two writes.
-            val latest = downloadItemDao.getById(downloadId) ?: return@writeAfterEngineStops
-            val book = audioBookDao.getById(latest.audioBookId)
-            if (pauseKeepsCompletedRow(latest.status, book?.isDownloaded, book?.localPath)) {
-                return@writeAfterEngineStops
+        // Held like cancel, so no drain starts between the stop and the write.
+        val wasDownloading = rowMutex.withLock {
+            val entity = downloadItemDao.getById(downloadId) ?: return@withLock false
+            ownership.actOnceEngineIsOff(
+                audioBookId = entity.audioBookId,
+                rowIsDownloading = { isDownloadingRow(downloadId) },
+                stopEngine = { stopDrainAndAwait() },
+            ) { stop ->
+                // Re-read after any stop: the engine's last tick moved the bytes on,
+                // and it may have finished the book in the meantime. A Completed row
+                // that predates the book's saved local copy still gets Paused.
+                val latest = downloadItemDao.getById(downloadId) ?: return@actOnceEngineIsOff stop.wasDownloading
+                val book = audioBookDao.getById(latest.audioBookId)
+                if (!pauseKeepsCompletedRow(latest.status, book?.isDownloaded, book?.localPath)) {
+                    downloadItemDao.upsert(latest.copy(status = DownloadStatus.Paused.ordinal))
+                }
+                stop.wasDownloading
             }
-            downloadItemDao.upsert(latest.copy(status = DownloadStatus.Paused.ordinal))
         }
         if (wasDownloading) {
             // The engine was stopped above; let the drain continue with the rest.
@@ -736,20 +717,26 @@ class DownloadManager @Inject constructor(
     suspend fun cancelDownload(downloadId: String): Unit = finishInOwnerScope(scope) {
         // Held from the read to the last deleted file. Resume, promotion and
         // every drain start wait here, so nothing can bring this book's row
-        // back or start the engine on it while its files are being judged.
+        // back or start a drain while its files are being judged.
         val wasDownloading = rowMutex.withLock {
-            val entity = downloadItemDao.getById(downloadId)
-            val downloading = entity?.status == DownloadStatus.Downloading.ordinal
-            var stopConfirmed = false
-            writeAfterEngineStops(downloading, { stopConfirmed = stopDrainAndAwait() }) {
+            val audioBookId = downloadItemDao.getById(downloadId)?.audioBookId
+            if (audioBookId == null) {
+                dropMeteredOverride(downloadId)
+                return@withLock false
+            }
+            ownership.actOnceEngineIsOff(
+                audioBookId = audioBookId,
+                rowIsDownloading = { isDownloadingRow(downloadId) },
+                stopEngine = { stopDrainAndAwait() },
+            ) { stop ->
+                val entity = downloadItemDao.getById(downloadId)
                 downloadItemDao.deleteById(downloadId)
                 dropMeteredOverride(downloadId)
-                // Still before any drain restart below, so nothing is writing here.
-                if (entity != null && cancelMayTouchFiles(entity.status, downloading, stopConfirmed)) {
+                if (entity != null && cancelMayTouchFiles(entity.status, stop.wasDownloading, stop.stopConfirmed)) {
                     removeCancelledPartialFiles(entity.audioBookId)
                 }
+                stop.wasDownloading
             }
-            downloading
         }
 
         if (downloadItemDao.getDownloadable().isEmpty()) {
@@ -763,49 +750,23 @@ class DownloadManager @Inject constructor(
         }
     }
 
+    private suspend fun isDownloadingRow(downloadId: String): Boolean =
+        downloadItemDao.getById(downloadId)?.status == DownloadStatus.Downloading.ordinal
+
     /**
-     * Delete the partial folder a cancelled download left behind (#51).
-     *
-     * Runs only once the engine is known to be off this book, and after this
-     * book's row is gone, with [rowMutex] held by the caller. The rules live in
-     * [decideCancelCleanup] and keep the files on any doubt, including when
-     * another book or download points at the same folder (#49). Right before
-     * deleting, [cancelCleanupStillClear] checks again that no row for the book
-     * or folder came back and the engine is not on the book. Best effort: a
-     * failure here never fails the cancel.
+     * Delete the partial folder a cancelled download left behind (#51). Runs
+     * inside [DownloadOwnership.actOnceEngineIsOff], after this book's row is
+     * gone. See [removeCancelledPartialFiles]. Best effort: a failure here
+     * never fails the cancel.
      */
     private suspend fun removeCancelledPartialFiles(audioBookId: String) {
         try {
-            val bookEntity = audioBookDao.getById(audioBookId) ?: return
-            val location = engine.downloadLocationFor(bookEntity.toDomain())
-            val otherBookPaths = audioBookDao.getLocalPathsExcept(audioBookId)
-            // Every download row still around, this book's included if it was
-            // queued again, mapped to the folder it would write to.
-            suspend fun liveRows() = downloadItemDao.getAll().map { it.audioBookId }.distinct()
-            suspend fun foldersOf(bookIds: List<String>) =
-                lookUpInChunks(bookIds) { audioBookDao.getByIds(it) }
-                    .map { engine.downloadLocationFor(it.toDomain()).folder }
-            val otherFolders = foldersOf(liveRows())
-            val bookIsDownloaded = bookEntity.isDownloaded == 1 || !bookEntity.localPath.isNullOrEmpty()
-
-            val decision = withContext(Dispatchers.IO) {
-                decideCancelCleanup(location, bookIsDownloaded, otherBookPaths, otherFolders)
-            }
-            when (decision) {
+            when (val decision = removeCancelledPartialFiles(folderReads, ownership, audioBookId)) {
+                null -> Unit
                 is CancelCleanupDecision.Keep ->
                     android.util.Log.d("DownloadManager", "cancel cleanup kept files: ${decision.reason}")
-                is CancelCleanupDecision.Delete -> {
-                    val rowBookIds = liveRows()
-                    val clear = withContext(Dispatchers.IO) {
-                        cancelCleanupStillClear(audioBookId, decision.folder, rowBookIds, foldersOf(rowBookIds), engineBookId)
-                    }
-                    if (!clear) {
-                        android.util.Log.d("DownloadManager", "cancel cleanup kept files: a row or the engine came back")
-                        return
-                    }
-                    val count = withContext(Dispatchers.IO) { applyCancelCleanup(decision) }
-                    android.util.Log.d("DownloadManager", "cancel cleanup removed $count files")
-                }
+                is CancelCleanupDecision.Delete ->
+                    android.util.Log.d("DownloadManager", "cancel cleanup removed ${decision.files.size} files")
             }
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
             throw cancellation
@@ -819,15 +780,16 @@ class DownloadManager @Inject constructor(
         // Held through the file deletion like cancel, so no resume or drain
         // start lands on this book while its files are being judged.
         val wasDownloading = rowMutex.withLock {
-            val downloadEntity = downloadItemDao.getByAudioBookId(audioBookId)
-            // The drain can pick a Queued row at any moment, so the engine
-            // already being on the book counts as downloading too.
-            val downloading = downloadEntity?.status == DownloadStatus.Downloading.ordinal ||
-                engineBookId == audioBookId
-            writeAfterEngineStops(downloading, { stopDrainAndAwait() }) {
-                deleteDownloadedFilesAndRows(audioBookId, downloadEntity?.id)
+            ownership.actOnceEngineIsOff(
+                audioBookId = audioBookId,
+                rowIsDownloading = {
+                    downloadItemDao.getByAudioBookId(audioBookId)?.status == DownloadStatus.Downloading.ordinal
+                },
+                stopEngine = { stopDrainAndAwait() },
+            ) { stop ->
+                deleteDownloadedFilesAndRows(audioBookId, downloadItemDao.getByAudioBookId(audioBookId)?.id)
+                stop.wasDownloading
             }
-            downloading
         }
         if (wasDownloading) {
             // Restart the drain for whatever else is queued.
@@ -860,49 +822,14 @@ class DownloadManager @Inject constructor(
 
     /**
      * Delete [book]'s downloaded files from [localPath] and nothing else (#49).
-     *
-     * Two editions with the same author and title share one folder, so the
-     * other books stored there come along with their track lists, and only this
-     * book's own files go. The rules live in [deleteDownloadFiles], which shares
-     * cancel cleanup's fences: never outside the download root, never in a
-     * user-picked folder, never recursive. Best effort: a failure here leaves
-     * files behind but never fails the delete.
+     * Runs inside [DownloadOwnership.actOnceEngineIsOff]. See
+     * [removeDownloadedBookFiles]. Best effort: a failure here leaves files
+     * behind but never fails the delete.
      */
     private suspend fun removeDownloadedFiles(book: AudioBook, localPath: String) {
         try {
-            val location = engine.storedDownloadLocation(localPath) ?: return
-            val sharers = lookUpInChunks(audioBookDao.getFilePathBookIdsExcept(book.id)) { audioBookDao.getByIds(it) }
-                .map { it.toDomain() }
-                .map { other ->
-                    FolderSharer(
-                        path = other.localPath.orEmpty(),
-                        fileNames = other.audioFiles.takeIf { it.isNotEmpty() }?.let(::downloadedFileNames),
-                    )
-                }
-            // Other books that may still be writing, and where each would write.
-            // Their track lists are not settled yet, so sharing a folder with
-            // one keeps everything. That includes a Completed row whose book has
-            // no saved local copy yet (the engine is still on the cover) and the
-            // book the engine is on, row or not.
-            val rows = downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status) }
-            val candidateIds = (rows.map { it.audioBookId } + listOfNotNull(engineBookId))
-                .filter { it != book.id }
-                .distinct()
-            val candidates = lookUpInChunks(candidateIds) { audioBookDao.getByIds(it) }.associateBy { it.id }
-            val withLocalCopy = candidates.values
-                .filter { it.isDownloaded == 1 && !it.localPath.isNullOrEmpty() }
-                .mapTo(HashSet()) { it.id }
-            val otherFolders = unfinishedDownloadOwners(rows, withLocalCopy, book.id, engineBookId)
-                // No book row means nothing the engine could be writing for it.
-                .mapNotNull { candidates[it] }
-                .map { engine.downloadLocationFor(it.toDomain()).folder } +
-                // The folder the engine really writes to, in case the title moved.
-                listOfNotNull(engine.activeDownloadDir.takeIf { engineBookId != book.id })
-
-            val decision = withContext(Dispatchers.IO) {
-                deleteDownloadFiles(location, downloadedFileNames(book.audioFiles), sharers, otherFolders)
-            }
-            when (decision) {
+            when (val decision = removeDownloadedBookFiles(folderReads, ownership, book, localPath)) {
+                null -> Unit
                 is CancelCleanupDecision.Keep ->
                     android.util.Log.d("DownloadManager", "delete kept files: ${decision.reason}")
                 is CancelCleanupDecision.Delete ->
@@ -913,6 +840,20 @@ class DownloadManager @Inject constructor(
         } catch (e: Exception) {
             android.util.Log.w("DownloadManager", "delete left files: ${e.message}")
         }
+    }
+
+    /** Room and the engine's path rules, as delete and cancel read them. */
+    private val folderReads = object : FolderReads {
+        override suspend fun book(id: String) = audioBookDao.getById(id)?.toDomain()
+        override suspend fun books(ids: List<String>) =
+            lookUpInChunks(ids) { audioBookDao.getByIds(it) }.map { it.toDomain() }
+        override suspend fun filePathBookIdsExcept(audioBookId: String) =
+            audioBookDao.getFilePathBookIdsExcept(audioBookId)
+        override suspend fun localPathsExcept(audioBookId: String) = audioBookDao.getLocalPathsExcept(audioBookId)
+        override suspend fun downloadRows() =
+            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status) }
+        override fun plannedLocation(book: AudioBook) = engine.downloadLocationFor(book)
+        override fun storedLocation(localPath: String) = engine.storedDownloadLocation(localPath)
     }
 
     /** Check if a book is downloaded. */

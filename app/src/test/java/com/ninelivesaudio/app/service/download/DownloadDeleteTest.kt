@@ -248,25 +248,13 @@ class DownloadDeleteTest {
 
     @Test
     fun `an edition whose row says Completed before its local copy is saved still owns the folder`() {
-        // The engine writes Completed, then fetches the cover, then saves
-        // localPath. Deleting the other edition in that window must not
-        // count this one as finished.
+        // An older build wrote Completed before the localPath, and a process
+        // death between the two leaves it that way. Deleting the other
+        // edition must not count this one as finished.
         val owners = unfinishedDownloadOwners(
             rows = listOf(row("A", DownloadStatus.Completed), row("B", DownloadStatus.Completed)),
             booksWithLocalCopy = setOf("A"),
             excludeBookId = "A",
-            engineBookId = null,
-        )
-        assertEquals(listOf("B"), owners)
-    }
-
-    @Test
-    fun `the book the engine is on owns its folder even with no row`() {
-        val owners = unfinishedDownloadOwners(
-            rows = emptyList(),
-            booksWithLocalCopy = emptySet(),
-            excludeBookId = "A",
-            engineBookId = "B",
         )
         assertEquals(listOf("B"), owners)
     }
@@ -283,7 +271,6 @@ class DownloadDeleteTest {
             ),
             booksWithLocalCopy = setOf("D"),
             excludeBookId = "A",
-            engineBookId = "A",
         )
         assertEquals(listOf("B", "C", "E"), owners)
     }
@@ -296,7 +283,6 @@ class DownloadDeleteTest {
             rows = listOf(row("B", DownloadStatus.Completed)),
             booksWithLocalCopy = emptySet(),
             excludeBookId = "A",
-            engineBookId = "B",
         )
         // B has no localPath yet, so it is not a sharer. Only its ownership protects it.
         val ownerFolders = owners.map { folder }

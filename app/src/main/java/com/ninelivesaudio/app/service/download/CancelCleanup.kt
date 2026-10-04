@@ -168,26 +168,6 @@ internal fun decideCancelCleanup(
 }
 
 /**
- * The last look before a [CancelCleanupDecision.Delete] runs: true only when
- * no download row exists for [audioBookId], none would write to [folder], and
- * the engine is not on the book ([engineBookId]). [liveRowBookIds] and
- * [liveRowFolders] are read fresh right before the delete. A folder that will
- * not resolve counts as a match, so any doubt keeps the files.
- */
-internal fun cancelCleanupStillClear(
-    audioBookId: String,
-    folder: File,
-    liveRowBookIds: List<String>,
-    liveRowFolders: List<File>,
-    engineBookId: String?,
-): Boolean {
-    if (engineBookId == audioBookId) return false
-    if (audioBookId in liveRowBookIds) return false
-    val target = canonicalOrNull(folder) ?: return false
-    return liveRowFolders.none { other -> canonicalOrNull(other)?.let { it == target } ?: true }
-}
-
-/**
  * Carry out a [CancelCleanupDecision.Delete]. Deletes each listed path without
  * following links, then the folder only if it is empty by then. Never recurses.
  * Returns how many files went.
@@ -380,27 +360,25 @@ internal data class DownloadOwnerRow(val audioBookId: String, val status: Int)
  * [deleteDownloadFiles]).
  *
  * Any row short of Completed counts. So does a Completed row whose book is not
- * in [booksWithLocalCopy] (marked downloaded with a stored localPath): the
- * engine writes Completed, then fetches the cover, and only then saves the
- * localPath, so in that window the book has audio on disk and no stored path
- * that would make it a sharer. The book the engine is on ([engineBookId])
- * always counts, row or not. Any doubt keeps the files.
+ * in [booksWithLocalCopy] (marked downloaded with a stored localPath). The
+ * engine writes both in one step now, but a row left that way by an older
+ * build or a process death between the two writes still has audio on disk and
+ * no stored path that would make it a sharer. Any doubt keeps the files. The
+ * folder the engine is writing right now is protected separately, see
+ * [DownloadOwnership].
  */
 internal fun unfinishedDownloadOwners(
     rows: List<DownloadOwnerRow>,
     booksWithLocalCopy: Set<String>,
     excludeBookId: String,
-    engineBookId: String?,
-): List<String> {
-    val owners = rows
+): List<String> =
+    rows
         .filter { row ->
             row.status != DownloadStatus.Completed.ordinal || row.audioBookId !in booksWithLocalCopy
         }
         .map { it.audioBookId }
-    return (owners + listOfNotNull(engineBookId))
         .filter { it != excludeBookId }
         .distinct()
-}
 
 /** The cover the engine saves next to the audio. */
 private const val COVER_FILE_NAME = "cover.jpg"

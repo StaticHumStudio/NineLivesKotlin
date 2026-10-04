@@ -131,16 +131,12 @@ class DownloadQueueWorker(
             // get dropped and the bar appears frozen / far behind.
             var lastNotifiedPercent = -1
             // One engine at a time across drains: a replacement waits here until
-            // a cancelled drain's engine has really exited. Cancel cleanup checks
-            // the book recorded on entry last thing before deleting files.
-            val result = manager.runEngine(item.audioBookId, item.id) {
-                // The wait can outlast an old engine or a user action, so the row
-                // is read again and only a still downloadable one goes ahead.
-                val fresh = dao.getById(item.id)?.toDomain()
-                    ?.takeIf { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
-                    ?: return@runEngine null
+            // a cancelled drain's engine has really exited. The wait can outlast
+            // an old engine or a user action, so the engine claims the row only
+            // if it is still downloadable, and returns null otherwise.
+            val result = manager.runEngine {
                 withContext(Dispatchers.IO) {
-                    engine.download(fresh, book) { id, downloaded, total ->
+                    engine.download(item, book) { id, downloaded, total ->
                         manager.publishProgress(id, downloaded, total)
                         val percent = if (total > 0) {
                             ((downloaded.toDouble() / total) * 100).toInt()

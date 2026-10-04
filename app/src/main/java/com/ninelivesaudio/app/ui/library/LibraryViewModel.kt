@@ -22,6 +22,7 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.PersistedSyncOutcome
 import com.ninelivesaudio.app.service.SettingsManager
+import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.buildShelfSyncReport
 import com.ninelivesaudio.app.service.lastSyncForCurrentServer
 import com.ninelivesaudio.app.service.persistActiveLibrarySelection
@@ -267,6 +268,7 @@ class LibraryViewModel @Inject constructor(
     private val settingsManager: SettingsManager,
     private val entitlements: EntitlementRepository,
     private val localFolderAccess: LocalFolderAccess,
+    private val syncManager: SyncManager,
 ) : ViewModel() {
 
     // ─── UI State ─────────────────────────────────────────────────────────
@@ -441,6 +443,16 @@ class LibraryViewModel @Inject constructor(
                         }
                     }
                 }
+        }
+
+        // The timer's progress-only ticks write no sync record, so the
+        // collector above never sees them. Re-read the saved shelf so
+        // progress pulled from the server shows while the tab is open.
+        viewModelScope.launch {
+            syncManager.progressPulled.collect {
+                val state = _uiState.value
+                if (shelfLoadedFor != null && !state.isLoading && !state.isLocalMode) applyFilter()
+            }
         }
 
         // LOCAL mode has no sync record, so watch the local catalog itself.

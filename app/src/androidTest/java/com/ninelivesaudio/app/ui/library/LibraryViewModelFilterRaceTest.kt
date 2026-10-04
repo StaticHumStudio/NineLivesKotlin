@@ -140,6 +140,7 @@ private class LibraryViewModelFixture(app: NineLivesApp, database: AppDatabase) 
         settingsManager = app.settingsManager,
         entitlements = app.entitlementRepository,
         localFolderAccess = LocalFolderAccess(app),
+        syncManager = app.syncManager,
     )
 
     suspend fun awaitInitialShelf() {

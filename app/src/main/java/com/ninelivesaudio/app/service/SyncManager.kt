@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.data.remote.ApiService
 
+import android.os.SystemClock
 import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
@@ -32,8 +33,9 @@ private const val MIN_PROGRESS_DELTA = 0.01
  * Manages periodic synchronization with the Audiobookshelf server.
  *
  * Responsibilities:
- * - Periodic sync of libraries and audiobooks from server
- * - Progress sync (pull from server, push offline queue)
+ * - Full sync of libraries and audiobooks at start, on explicit triggers,
+ *   and at most hourly from the timer (see [shouldRefreshItemList])
+ * - Progress sync every tick (pull from server, push offline queue)
  * - Offline queue flushing on reconnect
  * - Throttled position reporting during playback
  *
@@ -62,6 +64,13 @@ class SyncManager @Inject constructor(
     // Sync state
     @Volatile private var activeItemId: String? = null
 
+    // When a full sync last ran the book-list fetch, for the timer's hourly
+    // decision. Kept in memory on purpose. Every cold start runs the initial
+    // full sync anyway, so a persisted stamp would never change a decision,
+    // and the persisted LastSyncRecord cannot stand in for it because the
+    // Library's single-shelf refresh writes that record too.
+    @Volatile private var lastFullItemSync: FullItemSyncStamp? = null
+
     private val playbackThrottleOwner = PlaybackThrottleOwner()
 
     // ─── Events ──────────────────────────────────────────────────────────────
@@ -85,6 +94,14 @@ class SyncManager @Inject constructor(
     private val _syncCompleted = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
     val syncCompleted: SharedFlow<Unit> = _syncCompleted.asSharedFlow()
 
+    /**
+     * A progress-only tick finished. It writes no [LastSyncRecord], so a
+     * screen that re-reads its shelf on new records listens here instead to
+     * pick up the progress it just pulled into Room.
+     */
+    private val _progressPulled = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
+    val progressPulled: SharedFlow<Unit> = _progressPulled.asSharedFlow()
+
     // ─── Lifecycle ───────────────────────────────────────────────────────────
 
     /**
@@ -98,10 +115,21 @@ class SyncManager @Inject constructor(
                 delay(INITIAL_DELAY_MS)
                 syncNow()
 
-                // Periodic sync
+                // Periodic sync. Progress every tick, the full book list at
+                // most hourly. A big library on a slow server used to pay a
+                // full re-download every 5 minutes here.
                 while (isActive) {
                     delay(DEFAULT_SYNC_INTERVAL_MS)
-                    syncNow()
+                    if (shouldRefreshItemList(
+                            lastFullSync = lastFullItemSync,
+                            serverUrl = settingsManager.currentSettings.serverUrl,
+                            nowElapsedMs = SystemClock.elapsedRealtime(),
+                        )
+                    ) {
+                        syncNow()
+                    } else {
+                        syncProgressOnly()
+                    }
                     // Also retry the offline queue here. The rising-edge flush only
                     // fires once per reconnect, so a push that failed right after
                     // reconnect would otherwise sit queued until the next full
@@ -201,16 +229,7 @@ class SyncManager @Inject constructor(
         val serverUrlAtStart = settingsManager.currentSettings.serverUrl
 
         return runSyncAttempt(
-            // Cheap pre-check: authenticated, non-LOCAL, and the OS reports a
-            // network. Evaluated fresh every call — the post-probe recheck
-            // below must see a mode switch or sign-out that landed mid-probe.
-            isSyncReady = {
-                shouldRunSync(
-                    isOnline = connectivityMonitor.isOnline.value,
-                    isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
-                    hasAuth = hasAuthToken(),
-                )
-            },
+            isSyncReady = { isSyncReady() },
             // Actually reach the server before committing to a sync. A live
             // VPN interface (e.g. Tailscale) keeps isOnline=true with no real
             // connectivity, so without this probe the sync fires and hangs
@@ -236,7 +255,15 @@ class SyncManager @Inject constructor(
                     fetchLibraries = libraryRepository::syncFromServer,
                     // syncLibraryItems already preserves local download state.
                     fetchItems = { library -> audioBookRepository.syncLibraryItems(library.id) },
-                )
+                ).also {
+                    // Stamped whatever the result. The hourly cap protects a
+                    // slow server, and a timeout there is exactly when a
+                    // 5-minute retry of the whole list hurts most.
+                    lastFullItemSync = FullItemSyncStamp(
+                        serverUrl = serverUrlAtStart,
+                        atElapsedMs = SystemClock.elapsedRealtime(),
+                    )
+                }
             },
             persistOutcome = { report ->
                 persistSyncOutcome(
@@ -275,6 +302,44 @@ class SyncManager @Inject constructor(
             },
         )
     }
+
+    /**
+     * The timer's tick between full syncs: pull listening progress and
+     * nothing else. Same gate, reachability probe, and mutex as [syncNow],
+     * but it writes no [LastSyncRecord]. A progress pull says nothing about
+     * the book list, so recording one would fake a library verdict and flip
+     * the Library's sync banners and shelf decisions. An unreachable server
+     * is left for the next full sync to record.
+     */
+    private suspend fun syncProgressOnly() {
+        if (!isSyncReady()) return
+        val reachable = connectivityMonitor.checkServerReachable()
+        if (!isSyncReady() || !reachable) return
+        if (!syncMutex.tryLock()) return
+        _isSyncing.value = true
+        connectivityMonitor.setSyncing(true)
+        try {
+            syncProgress()
+        } finally {
+            _isSyncing.value = false
+            connectivityMonitor.setSyncing(false)
+            syncMutex.unlock()
+        }
+        // Android Auto's browse refresh treats this as its 5-minute heartbeat.
+        _syncCompleted.tryEmit(Unit)
+        _progressPulled.tryEmit(Unit)
+    }
+
+    /**
+     * Cheap pre-check: authenticated, non-LOCAL, and the OS reports a
+     * network. Evaluated fresh every call, so a recheck after the probe sees
+     * a mode switch or sign-out that landed mid-probe.
+     */
+    private suspend fun isSyncReady(): Boolean = shouldRunSync(
+        isOnline = connectivityMonitor.isOnline.value,
+        isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL,
+        hasAuth = hasAuthToken(),
+    )
 
     /**
      * Sync progress from the server.
@@ -568,6 +633,36 @@ internal fun isServerSessionLive(
  */
 internal fun shouldResyncOnServerReturn(lastResult: SyncResult?): Boolean =
     lastResult != null && lastResult != SyncResult.SUCCESS
+
+/** How often the timer may re-download every library's book list. */
+internal const val FULL_ITEM_SYNC_INTERVAL_MS = 3_600_000L // 1 hour
+
+/** When a full sync last fetched the book list, and for which server. */
+internal data class FullItemSyncStamp(
+    val serverUrl: String,
+    val atElapsedMs: Long,
+)
+
+/**
+ * Whether the periodic tick runs a full sync (every library's book list) or
+ * only pulls progress. Only the timer asks. App start, sign-in, a server
+ * switch, a mode switch back to the server, Home's reconnect, a server
+ * return after a failed sync, and Settings' Sync Now always run the full
+ * sync, and the Library's pull to refresh fetches its own shelf. A book
+ * added on the server can take up to an hour to appear without one of those.
+ *
+ * No stamp yet, a different server, or a clock that went backward all
+ * count as due, so the answer is never "skip" without a real recent sync.
+ */
+internal fun shouldRefreshItemList(
+    lastFullSync: FullItemSyncStamp?,
+    serverUrl: String,
+    nowElapsedMs: Long,
+): Boolean {
+    if (lastFullSync == null || lastFullSync.serverUrl != serverUrl) return true
+    val elapsedMs = nowElapsedMs - lastFullSync.atElapsedMs
+    return elapsedMs < 0 || elapsedMs >= FULL_ITEM_SYNC_INTERVAL_MS
+}
 
 internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,

@@ -171,6 +171,7 @@ class LibraryLocalCatalogLiveUpdateTest {
                 settingsManager = app.settingsManager,
                 entitlements = app.entitlementRepository,
                 localFolderAccess = LocalFolderAccess(app),
+                syncManager = app.syncManager,
             ) as T
         }
         lateinit var viewModel: LibraryViewModel

@@ -69,6 +69,13 @@ internal fun cancelMayTouchFiles(status: Int, wasDownloading: Boolean, stopConfi
     }
 
 internal enum class CancelKeepReason {
+    /**
+     * The root is a user-picked download folder. Other tools can write there
+     * (a `.part` file from a browser or a sync app looks just like ours), so
+     * cancel never deletes anything from it.
+     */
+    USER_FOLDER,
+
     /** The book row is marked downloaded, so this is a finished download. */
     BOOK_DOWNLOADED,
 
@@ -93,12 +100,11 @@ internal sealed interface CancelCleanupDecision {
 
     /**
      * Delete exactly [files] (all directly inside the canonical [folder]), then
-     * [folder] itself only when [removeFolder].
+     * [folder] itself once it is empty.
      */
     data class Delete(
         val folder: File,
         val files: List<File>,
-        val removeFolder: Boolean,
     ) : CancelCleanupDecision
 }
 
@@ -106,6 +112,7 @@ internal sealed interface CancelCleanupDecision {
  * Decide what a cancelled download may delete from [location].
  *
  * Kept, in this order, when:
+ * - the root is a user-picked download folder rather than the app's own storage,
  * - the book row says the book is downloaded,
  * - the folder is not a real direct child of the root (a symlink, the root
  *   itself, `..`, or anything that resolves elsewhere),
@@ -116,13 +123,12 @@ internal sealed interface CancelCleanupDecision {
  *   write) is the folder,
  * - the folder holds a subdirectory, a symlink, or anything not a plain file.
  *
- * Otherwise, in the app-owned root, every file goes and then the empty folder.
- * In a user-configured root only `.part` files go, since finished tracks there
- * could be the user's own copy the engine reused through its skip check.
+ * Otherwise every file goes and then the empty folder. That only ever happens
+ * in the app's own storage, which nothing else can write to.
  *
  * Content URIs in [otherBookPaths] are skipped. They come from the Storage
  * Access Framework, which cannot reach app storage on API 30+, and a
- * user-configured root only ever loses `.part` files.
+ * user-configured root is never touched at all.
  */
 internal fun decideCancelCleanup(
     location: DownloadLocation,
@@ -130,6 +136,7 @@ internal fun decideCancelCleanup(
     otherBookPaths: List<String>,
     otherDownloadFolders: List<File>,
 ): CancelCleanupDecision {
+    if (!location.rootIsAppOwned) return CancelCleanupDecision.Keep(CancelKeepReason.USER_FOLDER)
     if (bookIsDownloaded) return CancelCleanupDecision.Keep(CancelKeepReason.BOOK_DOWNLOADED)
 
     val root = canonicalOrNull(location.root)
@@ -173,15 +180,7 @@ internal fun decideCancelCleanup(
         return CancelCleanupDecision.Keep(CancelKeepReason.UNEXPECTED_CONTENTS)
     }
 
-    return if (location.rootIsAppOwned) {
-        CancelCleanupDecision.Delete(folder, children.map(Path::toFile), removeFolder = true)
-    } else {
-        CancelCleanupDecision.Delete(
-            folder,
-            children.filter { it.fileName.toString().endsWith(".part") }.map(Path::toFile),
-            removeFolder = false,
-        )
-    }
+    return CancelCleanupDecision.Delete(folder, children.map(Path::toFile))
 }
 
 /**
@@ -200,11 +199,9 @@ internal fun applyCancelCleanup(decision: CancelCleanupDecision.Delete): Int {
         if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) continue
         if (runCatching { Files.deleteIfExists(path) }.getOrDefault(false)) deleted++
     }
-    if (decision.removeFolder) {
-        // Fails on a non-empty folder, which is the point: anything that showed
-        // up since the decision stays.
-        runCatching { Files.deleteIfExists(folder.toPath()) }
-    }
+    // Fails on a non-empty folder, which is the point: anything that showed
+    // up since the decision stays.
+    runCatching { Files.deleteIfExists(folder.toPath()) }
     return deleted
 }
 

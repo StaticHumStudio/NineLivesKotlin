@@ -50,7 +50,6 @@ class CancelCleanupTest {
 
         val decision = decide(root, folder) as CancelCleanupDecision.Delete
         assertEquals(setOf("01.mp3", "02.mp3.part", "cover.jpg"), decision.files.map { it.name }.toSet())
-        assertTrue(decision.removeFolder)
 
         assertEquals(3, applyCancelCleanup(decision))
         assertFalse(folder.exists())
@@ -71,18 +70,21 @@ class CancelCleanupTest {
         assertTrue(File(sibling, "01.mp3").exists())
     }
 
+    // ─── User-picked folder ──────────────────────────────────────────────────
+
     @Test
-    fun `a user-chosen root only loses part files`() {
+    fun `a user-chosen root keeps every file, part files included`() {
         val root = root()
-        val folder = bookFolder(root, "01.mp3", "02.mp3.part")
+        // A .part from a browser or sync app looks exactly like one of ours.
+        val folder = bookFolder(root, "01.mp3", "02.mp3.part", "someone-elses.zip.part")
 
-        val decision = decide(root, folder, appOwned = false) as CancelCleanupDecision.Delete
-        assertEquals(listOf("02.mp3.part"), decision.files.map { it.name })
-        assertFalse(decision.removeFolder)
-
-        applyCancelCleanup(decision)
+        assertEquals(
+            CancelCleanupDecision.Keep(CancelKeepReason.USER_FOLDER),
+            decide(root, folder, appOwned = false),
+        )
         assertTrue(File(folder, "01.mp3").exists())
-        assertFalse(File(folder, "02.mp3.part").exists())
+        assertTrue(File(folder, "02.mp3.part").exists())
+        assertTrue(File(folder, "someone-elses.zip.part").exists())
     }
 
     @Test

@@ -24,6 +24,21 @@ class LibrarySyncWatermarkStore @Inject constructor(
         return SyncAccountKey(serverUrl = settings.serverUrl, username = settings.username)
     }
 
+    /**
+     * The server, account, and sign-in a sync runs for. Read again before
+     * each write, so a sync that outlives its sign-in stops writing.
+     */
+    internal suspend fun currentSyncIdentity(): LibrarySyncIdentity {
+        val token = try {
+            settingsManager.getAuthToken()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        return LibrarySyncIdentity(currentAccount(), token?.hashCode() ?: 0)
+    }
+
     internal fun get(key: SyncAccountKey, libraryId: String): LibrarySyncWatermark? =
         settingsManager.currentSettings.librarySyncWatermarks.watermarkFor(key, libraryId)
 

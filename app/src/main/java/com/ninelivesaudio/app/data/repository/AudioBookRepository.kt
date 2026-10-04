@@ -60,11 +60,17 @@ class AudioBookRepository @Inject constructor(
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncFlights = LibrarySyncSingleFlight<LibraryRefreshOutcome>(syncScope)
 
-    // One lock per library. Fetch, save, and prune for a library happen under
-    // its lock, so an older response can never land after a newer complete
-    // one pruned. Other libraries no longer wait behind a big one's download.
+    // One lock per library and signed-in account (the same key as the
+    // flights). Fetch, save, and prune for a library happen under its lock,
+    // so an older response can never land after a newer complete one pruned.
+    // Other libraries no longer wait behind a big one's download, and a new
+    // account never waits behind (or shares) the previous account's sync,
+    // whose writes stop once it notices the switch.
     private val libraryLocks = ConcurrentHashMap<String, Mutex>()
-    private fun lockFor(libraryId: String): Mutex = libraryLocks.computeIfAbsent(libraryId) { Mutex() }
+    private fun lockFor(flightKey: String): Mutex = libraryLocks.computeIfAbsent(flightKey) { Mutex() }
+
+    private suspend fun isCurrent(identity: LibrarySyncIdentity): Boolean =
+        watermarkStore.currentSyncIdentity() == identity
 
     // Background full downloads that keep failing wait before trying again.
     private val fullSyncFailures = ConcurrentHashMap<String, FullSyncFailures>()
@@ -262,10 +268,13 @@ class AudioBookRepository @Inject constructor(
      *
      * Returns how many books the fetch saved.
      */
-    suspend fun syncLibraryItems(libraryId: String): RemoteResult<Int> =
-        syncFlights.run(libraryId, LibrarySyncKind.FULL) {
-            lockFor(libraryId).withLock { runFullSyncLocked(libraryId) }
+    suspend fun syncLibraryItems(libraryId: String): RemoteResult<Int> {
+        val identity = watermarkStore.currentSyncIdentity()
+        val flightKey = identity.flightKey(libraryId)
+        return syncFlights.run(flightKey, LibrarySyncKind.FULL) {
+            lockFor(flightKey).withLock { runFullSyncLocked(libraryId, identity) }
         }.itemCountResult() ?: RemoteResult.Failed("sync did not run")
+    }
 
     /**
      * The background check for one library: ask the server whether anything
@@ -276,13 +285,21 @@ class AudioBookRepository @Inject constructor(
      * fall back to the full download, which waits for an unmetered network
      * when [isMetered] and a cached shelf exists. See [planLibrarySync].
      */
-    internal suspend fun refreshLibraryItemsIfChanged(libraryId: String, isMetered: Boolean): LibraryRefreshOutcome =
-        syncFlights.run(libraryId, LibrarySyncKind.CHECK) {
-            lockFor(libraryId).withLock { runCheckLocked(libraryId, isMetered) }
+    internal suspend fun refreshLibraryItemsIfChanged(libraryId: String, isMetered: Boolean): LibraryRefreshOutcome {
+        val identity = watermarkStore.currentSyncIdentity()
+        val flightKey = identity.flightKey(libraryId)
+        return syncFlights.run(flightKey, LibrarySyncKind.CHECK) {
+            lockFor(flightKey).withLock { runCheckLocked(libraryId, identity, isMetered) }
         }
+    }
 
-    private suspend fun runCheckLocked(libraryId: String, isMetered: Boolean): LibraryRefreshOutcome {
-        val key = watermarkStore.currentAccount()
+    private suspend fun runCheckLocked(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        isMetered: Boolean,
+    ): LibraryRefreshOutcome {
+        if (!isCurrent(identity)) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
+        val key = identity.account
         val watermark = watermarkStore.get(key, libraryId)
         val localCount = audioBookDao.countServerBooksByLibrary(libraryId)
         val hasCachedRows = localCount > 0
@@ -305,15 +322,15 @@ class AudioBookRepository @Inject constructor(
         return when (plan) {
             LibrarySyncPlan.SKIP -> LibraryRefreshOutcome.Unchanged(watermark?.itemCount ?: localCount)
             LibrarySyncPlan.DEFER_FULL -> deferUntilUnmetered(libraryId, reason)
-            LibrarySyncPlan.FULL -> runBackgroundFullLocked(libraryId, reason)
+            LibrarySyncPlan.FULL -> runBackgroundFullLocked(libraryId, identity, reason)
             LibrarySyncPlan.INCREMENTAL ->
-                runIncrementalLocked(libraryId, key, watermark!!, isMetered, hasCachedRows)
+                runIncrementalLocked(libraryId, identity, watermark!!, isMetered, hasCachedRows)
         }
     }
 
     private suspend fun runIncrementalLocked(
         libraryId: String,
-        key: SyncAccountKey,
+        identity: LibrarySyncIdentity,
         watermark: com.ninelivesaudio.app.domain.model.LibrarySyncWatermark,
         isMetered: Boolean,
         hasCachedRows: Boolean,
@@ -324,8 +341,9 @@ class AudioBookRepository @Inject constructor(
             pageSize = INCREMENTAL_PAGE_SIZE,
             maxPages = INCREMENTAL_MAX_PAGES,
         )
+        val key = identity.account
         val value = (fetched as? RemoteResult.Ok)?.value
-            ?: return fallBackToFullLocked(libraryId, (fetched as? RemoteResult.Failed)?.reason ?: "added-since fetch failed", isMetered, hasCachedRows)
+            ?: return fallBackToFullLocked(libraryId, identity, (fetched as? RemoteResult.Failed)?.reason ?: "added-since fetch failed", isMetered, hasCachedRows)
         val books = value.items
         val alreadyCached = fetchByIdChunks(books.map { it.id }) { ids ->
             audioBookDao.getServerIdsInLibrary(libraryId, ids)
@@ -335,7 +353,11 @@ class AudioBookRepository @Inject constructor(
             val merged = mergeForSave(books)
             // Added books are saved even when the counts disagree below: they
             // are real, and the full download that follows prunes, not this.
-            withContext(NonCancellable) { saveMerged(merged) }
+            // Never into a cache another account has taken over meanwhile.
+            val saved = withContext(NonCancellable) {
+                isCurrent(identity).also { current -> if (current) saveMerged(merged) }
+            }
+            if (!saved) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
             _booksSaved.tryEmit(libraryId)
         }
         if (!incrementalCountsAgree(watermark.itemCount, newBookCount, value.total)) {
@@ -345,6 +367,7 @@ class AudioBookRepository @Inject constructor(
             watermarkStore.remove(key, libraryId)
             return fallBackToFullLocked(
                 libraryId,
+                identity,
                 "server has ${value.total} books, expected ${watermark.itemCount} + $newBookCount new",
                 isMetered,
                 hasCachedRows,
@@ -356,6 +379,7 @@ class AudioBookRepository @Inject constructor(
 
     private suspend fun fallBackToFullLocked(
         libraryId: String,
+        identity: LibrarySyncIdentity,
         reason: String,
         isMetered: Boolean,
         hasCachedRows: Boolean,
@@ -363,14 +387,18 @@ class AudioBookRepository @Inject constructor(
         if (shouldDeferFullSync(isMetered, explicit = false, hasCachedRows)) {
             deferUntilUnmetered(libraryId, reason)
         } else {
-            runBackgroundFullLocked(libraryId, reason)
+            runBackgroundFullLocked(libraryId, identity, reason)
         }
 
-    private suspend fun runBackgroundFullLocked(libraryId: String, reason: String): LibraryRefreshOutcome {
+    private suspend fun runBackgroundFullLocked(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        reason: String,
+    ): LibraryRefreshOutcome {
         if (isFullSyncBackedOff(fullSyncFailures[libraryId], monotonicNowMs())) {
             return LibraryRefreshOutcome.Deferred("$reason (waiting after failed downloads)", untilUnmetered = false)
         }
-        return runFullSyncLocked(libraryId)
+        return runFullSyncLocked(libraryId, identity)
     }
 
     private fun deferUntilUnmetered(libraryId: String, reason: String): LibraryRefreshOutcome {
@@ -378,11 +406,11 @@ class AudioBookRepository @Inject constructor(
         return LibraryRefreshOutcome.Deferred(reason, untilUnmetered = true)
     }
 
-    private suspend fun runFullSyncLocked(libraryId: String): LibraryRefreshOutcome {
+    private suspend fun runFullSyncLocked(libraryId: String, identity: LibrarySyncIdentity): LibraryRefreshOutcome {
         // A check that got here is now a full download: let a full refresh
         // asked for meanwhile share it rather than queue a second one.
-        syncFlights.upgradeToFull(libraryId)
-        val key = watermarkStore.currentAccount()
+        syncFlights.upgradeToFull(identity.flightKey(libraryId))
+        val key = identity.account
         val tally = FullSyncTally()
         val result = runLibraryItemSyncPass(
             libraryId = libraryId,
@@ -396,7 +424,13 @@ class AudioBookRepository @Inject constructor(
                 tally.add(books)
                 _booksSaved.tryEmit(libraryId)
             },
+            isCurrent = { isCurrent(identity) },
         )
+        // Another account signed in mid-download. Nothing more was written,
+        // and this account's watermark and failure count stay as they were.
+        if (result is RemoteResult.Failed && result.reason == SYNC_ACCOUNT_CHANGED) {
+            return LibraryRefreshOutcome.Full(result)
+        }
         val watermark = watermarkAfterFullSync(key, libraryId, tally, result, System.currentTimeMillis())
         if (watermark != null) watermarkStore.put(watermark) else watermarkStore.remove(key, libraryId)
         if (result is RemoteResult.Ok) {
@@ -430,7 +464,7 @@ class AudioBookRepository @Inject constructor(
      * stale books.
      */
     internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String): Boolean =
-        runSerializedLibraryItemPrune(lockFor(libraryId)) {
+        runSerializedLibraryItemPrune(lockFor(watermarkStore.currentSyncIdentity().flightKey(libraryId))) {
             audioBookDao.deleteServerBooksByLibrary(libraryId)
             audioBookDao.hasDownloadedServerBooks(libraryId)
         }
@@ -739,6 +773,11 @@ internal suspend fun pruneServerLibraryTo(
  * proved what the server holds, the cache is brought in line even if the
  * caller is cancelled in between. A Partial or Failed fetch keeps the pages
  * it saved and prunes nothing.
+ *
+ * [isCurrent] says whether the account the pass runs for is still signed in.
+ * Each save and the prune ask it first, and once it says no the pass stops,
+ * writes nothing more, and fails with [SYNC_ACCOUNT_CHANGED]: the cache now
+ * belongs to someone else, whose own sync fills and prunes it.
  */
 internal suspend fun runLibraryItemSyncPass(
     libraryId: String,
@@ -749,29 +788,50 @@ internal suspend fun runLibraryItemSyncPass(
     deleteByIds: suspend (libraryId: String, ids: List<String>) -> Unit,
     deleteAllServerBooks: suspend (libraryId: String) -> Unit,
     onPageSaved: suspend (List<AudioBook>) -> Unit = {},
+    isCurrent: suspend () -> Boolean = { true },
 ): RemoteResult<Int> {
     val keptIds = HashSet<String>()
-    val result = fetchPages { page ->
-        val merged = mergeItems(page)
-        withContext(NonCancellable) {
-            if (merged.isNotEmpty()) upsertAll(merged)
+    val result = try {
+        fetchPages { page ->
+            val merged = mergeItems(page)
+            val saved = withContext(NonCancellable) {
+                isCurrent().also { current -> if (current && merged.isNotEmpty()) upsertAll(merged) }
+            }
+            // Thrown to stop the download: the rest is for an account that
+            // is no longer signed in.
+            if (!saved) throw SyncAccountChangedException()
+            merged.mapTo(keptIds) { it.id }
+            onPageSaved(merged)
         }
-        merged.mapTo(keptIds) { it.id }
-        onPageSaved(merged)
+    } catch (_: SyncAccountChangedException) {
+        return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
     }
+    // A streaming fetch turns a throw in onPage into a short result, so
+    // look again rather than trusting the catch above alone.
+    if (!isCurrent()) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
     if (result is RemoteResult.Ok) {
-        withContext(NonCancellable) {
-            pruneServerLibraryTo(
-                keptIds = keptIds,
-                libraryId = libraryId,
-                cachedNonDownloadedIds = cachedNonDownloadedIds,
-                deleteByIds = deleteByIds,
-                deleteAllServerBooks = deleteAllServerBooks,
-            )
+        val pruned = withContext(NonCancellable) {
+            isCurrent().also { current ->
+                if (current) {
+                    pruneServerLibraryTo(
+                        keptIds = keptIds,
+                        libraryId = libraryId,
+                        cachedNonDownloadedIds = cachedNonDownloadedIds,
+                        deleteByIds = deleteByIds,
+                        deleteAllServerBooks = deleteAllServerBooks,
+                    )
+                }
+            }
         }
+        if (!pruned) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
     }
     return result
 }
+
+/** Why a sync stopped: the account it ran for is no longer the signed-in one. */
+internal const val SYNC_ACCOUNT_CHANGED = "the signed-in account changed during the sync"
+
+private class SyncAccountChangedException : Exception(SYNC_ACCOUNT_CHANGED)
 
 /**
  * [runLibraryItemSyncPass] under [mutex]. Holding the lock across the whole

@@ -46,6 +46,18 @@ internal const val MAX_STORED_WATERMARKS = 64
 /** A server and the account signed in to it. Watermarks never cross accounts. */
 internal data class SyncAccountKey(val serverUrl: String, val username: String)
 
+/**
+ * Who a library sync runs for: the server, the account, and which sign-in
+ * ([sessionHash], a hash of its token, so two token sign-ins that both keep
+ * an empty username still differ). Flights and per-library locks are keyed
+ * by this, so a sync started for one account is never shared with, queued
+ * in front of, or written into the cache for the next one.
+ */
+internal data class LibrarySyncIdentity(val account: SyncAccountKey, val sessionHash: Int) {
+    fun flightKey(libraryId: String): String =
+        listOf(account.serverUrl, account.username, sessionHash.toString(), libraryId).joinToString("\u0000")
+}
+
 internal fun List<LibrarySyncWatermark>.watermarkFor(
     key: SyncAccountKey,
     libraryId: String,

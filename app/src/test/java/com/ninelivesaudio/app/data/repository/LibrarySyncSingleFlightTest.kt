@@ -11,6 +11,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
@@ -130,6 +131,67 @@ class LibrarySyncSingleFlightTest {
         assertEquals("a", a.await())
         assertEquals("b", b.await())
         scope.cancel()
+    }
+
+    @Test
+    fun `a new account never joins the previous account's sync of the same library`() = runBlocking {
+        val scope = flightScope()
+        val flights = LibrarySyncSingleFlight<String>(scope)
+        val server = "https://abs.example.net"
+        val accountA = LibrarySyncIdentity(SyncAccountKey(server, "alice"), sessionHash = 11)
+        val accountB = LibrarySyncIdentity(SyncAccountKey(server, "bob"), sessionHash = 22)
+        // Two token sign-ins keep an empty username and differ only by session.
+        val tokenA = LibrarySyncIdentity(SyncAccountKey(server, ""), sessionHash = 33)
+        val tokenB = LibrarySyncIdentity(SyncAccountKey(server, ""), sessionHash = 44)
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+
+        val slowA = async {
+            flights.run(accountA.flightKey("lib"), LibrarySyncKind.FULL) {
+                started.complete(Unit)
+                release.await()
+                "alice's catalog"
+            }
+        }
+        started.await()
+        try {
+            // Joining alice's flight would wait on her download, so time out.
+            val bob = withTimeout(5_000) {
+                flights.run(accountB.flightKey("lib"), LibrarySyncKind.FULL) { "bob's catalog" }
+            }
+            assertEquals("bob's catalog", bob)
+            assertFalse(slowA.isCompleted)
+        } finally {
+            release.complete(Unit)
+        }
+        assertEquals("alice's catalog", slowA.await())
+        assertTrue(tokenA.flightKey("lib") != tokenB.flightKey("lib"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `a download that outlives its account stops writing and prunes nothing`() = runBlocking {
+        val cache = mutableListOf("bob-book")
+        var signedIn = "alice"
+        val result = runLibraryItemSyncPass(
+            libraryId = "lib",
+            fetchPages = { onPage ->
+                onPage(listOf(AudioBook(id = "alice-1")))
+                signedIn = "bob"
+                onPage(listOf(AudioBook(id = "alice-2")))
+                RemoteResult.Ok(2)
+            },
+            mergeItems = { it },
+            upsertAll = { books -> books.forEach { cache += it.id } },
+            cachedNonDownloadedIds = { cache.toList() },
+            deleteByIds = { _, ids -> cache.removeAll(ids) },
+            deleteAllServerBooks = { cache.clear() },
+            isCurrent = { signedIn == "alice" },
+        )
+        assertEquals(RemoteResult.Failed(SYNC_ACCOUNT_CHANGED), result)
+        // Page one landed before the switch. Nothing after it, and bob's
+        // book was not pruned by alice's catalog.
+        assertEquals(listOf("bob-book", "alice-1"), cache)
     }
 
     @Test

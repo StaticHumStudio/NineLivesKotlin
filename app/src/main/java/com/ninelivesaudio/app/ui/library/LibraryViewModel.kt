@@ -319,7 +319,9 @@ class LibraryViewModel @Inject constructor(
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
         val groupedSections: List<GroupedSection> = emptyList(),
-        val expandedGroups: Set<String> = emptySet(),
+        // Headers and rows for the grouped views, built off the main thread
+        // whenever the groups or an expand choice change. See groupChoices.
+        val groupedListItems: List<LibraryListItem> = emptyList(),
         val selectedTab: LibraryTab = LibraryTab.All,
         val isLocalMode: Boolean = false, // LOCAL mode shows the Archive tab
         val hideFinished: Boolean = false,
@@ -409,7 +411,30 @@ class LibraryViewModel @Inject constructor(
     // A library picked on this screen whose settings write has not finished.
     private var pendingLibraryPickId: String? = null
 
+    // The groups the user expanded or collapsed by hand, per view mode, kept
+    // for as long as this ViewModel lives (tab switches included). A group
+    // with no choice follows groupsStartExpanded.
+    private val groupChoices = MutableStateFlow<Map<ViewMode, Map<String, Boolean>>>(emptyMap())
+
     init {
+        // Flatten the grouped shelf on Default whenever its groups or the
+        // expand choices change. Doing it in composition ran on the main
+        // thread for every toggle, about 150,000 rows in a big Genre view.
+        viewModelScope.launch {
+            combine(
+                _uiState
+                    .map { it.groupedSections to it.effectiveViewMode }
+                    .distinctUntilChanged { old, new -> old.first === new.first && old.second == new.second },
+                groupChoices,
+            ) { (sections, mode), choices -> Triple(sections, mode, choices[mode].orEmpty()) }
+                .collectLatest { (sections, _, choices) ->
+                    val items = withContext(Dispatchers.Default) { flattenGroupedItems(sections, choices) }
+                    _uiState.update {
+                        if (it.groupedSections === sections) it.copy(groupedListItems = items) else it
+                    }
+                }
+        }
+
         // Observe connectivity and auto-filter to downloaded when offline
         viewModelScope.launch {
             connectivityMonitor.connectionStatus.collect { status ->
@@ -894,11 +919,10 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun onGroupExpansionToggled(groupKey: String) {
-        _uiState.update { state ->
-            val updated = state.expandedGroups.toMutableSet().apply {
-                if (!add(groupKey)) remove(groupKey)
-            }
-            state.copy(expandedGroups = updated)
+        val state = _uiState.value
+        val mode = state.effectiveViewMode
+        groupChoices.update { all ->
+            all + (mode to toggledGroupChoices(all[mode].orEmpty(), groupKey, state.groupedSections.size))
         }
     }
 
@@ -1016,16 +1040,10 @@ class LibraryViewModel @Inject constructor(
 
     private fun publishFilterResult(result: FilterResult) {
         _uiState.update {
-            val groupKeys = result.groupedSections.map { section -> section.key }.toSet()
-            val previousKeys = it.groupedSections.map { section -> section.key }.toSet()
-            val expandedGroups = it.expandedGroups
-                .filterTo(mutableSetOf()) { key -> key in groupKeys }
-                .apply { addAll(groupKeys - previousKeys) }
             it.copy(
                 filteredBooks = result.books,
                 effectiveViewMode = result.effectiveViewMode,
                 groupedSections = result.groupedSections,
-                expandedGroups = expandedGroups,
                 totalBookCount = result.totalBookCount,
             )
         }
@@ -1171,7 +1189,7 @@ internal fun LibraryViewModel.UiState.withLibrarySelection(
     filteredBooks = if (selectedLibrary == null) emptyList() else filteredBooks,
     availableGroups = if (selectedLibrary == null) emptyList() else availableGroups,
     groupedSections = if (selectedLibrary == null) emptyList() else groupedSections,
-    expandedGroups = if (selectedLibrary == null) emptySet() else expandedGroups,
+    groupedListItems = if (selectedLibrary == null) emptyList() else groupedListItems,
     totalBookCount = if (selectedLibrary == null) 0 else totalBookCount,
     // A stale outcome from whatever was PREVIOUSLY selected must never be
     // read as this (possibly different) library's own verdict — cleared on
@@ -1336,12 +1354,39 @@ internal fun buildGroupedSections(
         .map { it.section }
 }
 
+/** Grouped views start collapsed when they have more groups than this. */
+internal const val COLLAPSE_GROUPS_ABOVE = 50
+
+/**
+ * Whether a group the user has not touched starts open. A small library keeps
+ * every group open as before. A big one starts with headers only, or a Genre
+ * view of 50,000 books opened as one endless list.
+ */
+internal fun groupsStartExpanded(groupCount: Int): Boolean = groupCount <= COLLAPSE_GROUPS_ABOVE
+
+/**
+ * The user's choices after tapping [groupKey]: the opposite of what that
+ * header showed, which is their earlier choice or else the default for
+ * [groupCount] groups.
+ */
+internal fun toggledGroupChoices(
+    choices: Map<String, Boolean>,
+    groupKey: String,
+    groupCount: Int,
+): Map<String, Boolean> =
+    choices + (groupKey to !(choices[groupKey] ?: groupsStartExpanded(groupCount)))
+
+/**
+ * Headers and rows for a grouped view. A group the user expanded or collapsed
+ * by hand ([choices]) stays that way, any other follows [groupsStartExpanded].
+ */
 internal fun flattenGroupedItems(
     groupedSections: List<GroupedSection>,
-    expandedGroups: Set<String>,
+    choices: Map<String, Boolean>,
 ): List<LibraryListItem> = buildList {
+    val startExpanded = groupsStartExpanded(groupedSections.size)
     groupedSections.forEach { section ->
-        val expanded = section.key in expandedGroups
+        val expanded = choices[section.key] ?: startExpanded
         add(
             LibraryListItem.GroupHeader(
                 groupKey = section.key,

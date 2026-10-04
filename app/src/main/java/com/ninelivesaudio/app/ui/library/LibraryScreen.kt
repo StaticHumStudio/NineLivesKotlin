@@ -83,10 +83,6 @@ fun LibraryScreen(
         viewModel.onScreenEntered()
     }
 
-    // Flatten grouped items only when groupedSections or expandedGroups change
-    val groupedListItems = remember(uiState.groupedSections, uiState.expandedGroups) {
-        flattenGroupedItems(uiState.groupedSections, uiState.expandedGroups)
-    }
     val shelfDecision = remember(
         uiState.lastSyncResult,
         uiState.lastSyncSequence,
@@ -273,7 +269,7 @@ fun LibraryScreen(
                             } else {
                                 // Grouped expandable list in SERIES / AUTHOR / GENRE modes
                                 itemsIndexed(
-                                    items = groupedListItems,
+                                    items = uiState.groupedListItems,
                                     key = { _, item ->
                                         when (item) {
                                             is LibraryListItem.GroupHeader -> "header-${item.groupKey}"

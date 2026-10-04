@@ -14,6 +14,7 @@ import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import com.ninelivesaudio.app.data.local.entity.SlotBookRow
+import com.ninelivesaudio.app.data.local.entity.ShelfBookRow
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -340,9 +341,12 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET CurrentTimeSeconds = :currentTimeSeconds, Progress = :progress, IsFinished = :isFinished WHERE Id = :id")
     suspend fun updateProgress(id: String, currentTimeSeconds: Double, progress: Double, isFinished: Int)
 
-    /** Dynamic filtered query — built by AudioBookRepository.getFilteredBooks(). */
+    /**
+     * Dynamic filtered shelf query, built by AudioBookRepository.getFilteredBooks().
+     * Light rows only (see [ShelfBookRow]), never `ab.*`.
+     */
     @RawQuery(observedEntities = [AudioBookEntity::class, PlaybackProgressEntity::class])
-    suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<RecentlyPlayedResult>
+    suspend fun getFilteredBooks(query: SupportSQLiteQuery): List<ShelfBookRow>
 
     /** Count live audiobooks in a library (drives the empty-state copy, so it
      *  excludes archived books — an archive-only library reads as empty). */

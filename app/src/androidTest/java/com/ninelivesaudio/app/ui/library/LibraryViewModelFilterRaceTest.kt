@@ -10,10 +10,9 @@ import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
 import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
-import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.LibraryEntity
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
-import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.local.entity.ShelfBookRow
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibrarySyncWatermarkStore
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -161,7 +160,7 @@ private object FixtureLibraries {
 private class DelayedLibraryFilterDao {
     private val delayedQueryStarted = CountDownLatch(1)
     @Volatile private var delayNextQuery = false
-    @Volatile private var delayedContinuation: Continuation<List<RecentlyPlayedResult>>? = null
+    @Volatile private var delayedContinuation: Continuation<List<ShelfBookRow>>? = null
 
     val audioBookDao: AudioBookDao = proxy { method, args ->
         when (method.name) {
@@ -193,32 +192,38 @@ private class DelayedLibraryFilterDao {
 
         delayNextQuery = false
         @Suppress("UNCHECKED_CAST")
-        val continuation = args?.lastOrNull() as? Continuation<List<RecentlyPlayedResult>>
+        val continuation = args?.lastOrNull() as? Continuation<List<ShelfBookRow>>
             ?: error("Room suspend continuation missing from getFilteredBooks")
         delayedContinuation = continuation
         delayedQueryStarted.countDown()
         return COROUTINE_SUSPENDED
     }
 
-    private fun betaResult() = RecentlyPlayedResult(
-        audioBook = AudioBookEntity(
-            id = "beta-book",
-            libraryId = FixtureLibraries.beta.id,
-            isLocal = 0,
-            title = "Beta Book",
-            author = "Author",
-        ),
-        lastPlayedAt = null,
-    )
+    private fun betaResult() = shelfRow(id = "beta-book", libraryId = FixtureLibraries.beta.id, title = "Beta Book")
 
-    private fun alphaResult() = RecentlyPlayedResult(
-        audioBook = AudioBookEntity(
-            id = "alpha-book",
-            libraryId = FixtureLibraries.alpha.id,
-            isLocal = 0,
-            title = "Alpha Book",
-            author = "Author",
-        ),
+    private fun alphaResult() = shelfRow(id = "alpha-book", libraryId = FixtureLibraries.alpha.id, title = "Alpha Book")
+
+    private fun shelfRow(id: String, libraryId: String, title: String) = ShelfBookRow(
+        id = id,
+        libraryId = libraryId,
+        isLocal = 0,
+        title = title,
+        author = "Author",
+        narrator = null,
+        coverPath = null,
+        durationSeconds = 0.0,
+        addedAt = null,
+        currentTimeSeconds = 0.0,
+        progress = 0.0,
+        isFinished = 0,
+        isDownloaded = 0,
+        localPath = null,
+        localCoverPath = null,
+        archivedAt = null,
+        seriesName = null,
+        seriesSequence = null,
+        genresJson = null,
+        chaptersJson = null,
         lastPlayedAt = null,
     )
 }

@@ -14,7 +14,9 @@ import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
+import com.ninelivesaudio.app.data.local.entity.SHELF_BOOK_COLUMNS
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
+import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -190,6 +192,9 @@ class AudioBookRepository @Inject constructor(
      * Get filtered books for a library, pushing WHERE clauses to SQL.
      * Eliminates the need to hold all books in memory for filtering.
      *
+     * Returns light shelf books: description, audio files, and tags are
+     * empty. Never pass one to [save] or [saveAll], read the book by id.
+     *
      * @param tab 0=All, 1=InProgress, 2=Completed, 3=Downloaded
      * @param hideFinished whether to exclude finished books
      * @param downloadedOnly whether to show only downloaded books
@@ -211,11 +216,9 @@ class AudioBookRepository @Inject constructor(
         }
 
         val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args.toTypedArray()))
-        return results.map { result ->
-            result.audioBook.toDomain().copy(
-                lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
-            )
-        }
+        // Shelf books carry no description, audio files, or tags. They are
+        // for showing and navigating, never for saving back. See toShelfBook.
+        return results.map { it.toShelfBook() }
     }
 
     /** Count all audiobooks in a library. */
@@ -1040,7 +1043,7 @@ internal fun buildLibrarySql(
     downloadedOnly: Boolean,
     hasSearch: Boolean,
 ): String = buildString {
-    append("SELECT ab.*, pp.UpdatedAt AS lastPlayedAt FROM AudioBooks ab")
+    append("SELECT ").append(SHELF_BOOK_COLUMNS).append(" FROM AudioBooks ab")
     append(" LEFT JOIN PlaybackProgress pp ON ab.Id = pp.AudioBookId")
     append(" WHERE ab.LibraryId = ?")
 

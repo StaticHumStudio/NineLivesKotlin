@@ -24,6 +24,7 @@ import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import com.ninelivesaudio.app.service.download.finishInOwnerScope
+import com.ninelivesaudio.app.service.download.lookUpInChunks
 import com.ninelivesaudio.app.service.download.pauseKeepsCompletedRow
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.selectNextDownload
@@ -610,7 +611,8 @@ class DownloadManager @Inject constructor(
             // queued again, mapped to the folder it would write to.
             suspend fun liveRows() = downloadItemDao.getAll().map { it.audioBookId }.distinct()
             suspend fun foldersOf(bookIds: List<String>) =
-                audioBookDao.getByIds(bookIds).map { engine.downloadLocationFor(it.toDomain()).folder }
+                lookUpInChunks(bookIds) { audioBookDao.getByIds(it) }
+                    .map { engine.downloadLocationFor(it.toDomain()).folder }
             val otherFolders = foldersOf(liveRows())
             val bookIsDownloaded = bookEntity.isDownloaded == 1 || !bookEntity.localPath.isNullOrEmpty()
 

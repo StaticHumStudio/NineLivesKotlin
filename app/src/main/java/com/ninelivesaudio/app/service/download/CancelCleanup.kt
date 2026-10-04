@@ -225,6 +225,26 @@ internal fun applyCancelCleanup(decision: CancelCleanupDecision.Delete): Int {
     return deleted
 }
 
+/**
+ * Most ids one book lookup binds. Android 11 ships SQLite 3.28, which refuses a
+ * statement with more than 999 bound values, so a single IN over every download
+ * row failed (and the cleanup quietly kept the files) past that many rows.
+ */
+internal const val CLEANUP_LOOKUP_CHUNK = 500
+
+/** Run [lookup] over [ids] in chunks of at most [chunkSize] and join the results. */
+internal suspend fun <T> lookUpInChunks(
+    ids: List<String>,
+    chunkSize: Int = CLEANUP_LOOKUP_CHUNK,
+    lookup: suspend (List<String>) -> List<T>,
+): List<T> {
+    val results = mutableListOf<T>()
+    for (chunk in ids.chunked(chunkSize)) {
+        results += lookup(chunk)
+    }
+    return results
+}
+
 private fun canonicalOrNull(file: File): File? = try {
     file.canonicalFile
 } catch (_: IOException) {

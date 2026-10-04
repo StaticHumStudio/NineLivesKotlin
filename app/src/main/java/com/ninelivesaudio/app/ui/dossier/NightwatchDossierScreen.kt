@@ -14,9 +14,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Lock
@@ -199,102 +201,135 @@ private fun DossierContent(
     isUnlocked: Boolean,
     onNavigateToUnlock: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+    var booksExpanded by remember { mutableStateOf(false) }
+
+    // Lazy, so Show all on a long history composes only the cards on screen.
+    // Several composables in one lazy item stack on top of each other, so each
+    // section item wraps its children in a spaced Column like the old one.
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // ─── Period Selector ─────────────────────────────────────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            DossierPeriod.entries.forEach { period ->
-                // Greyed, never hidden, matching every other gate in the app. A
-                // free user should be able to see that longer windows exist and
-                // what they would be buying, not wonder why the Dossier only
-                // has one chip.
-                val locked = !FreeTier.allowsDossierPeriod(period, isUnlocked)
-                FilterChip(
-                    selected = state.selectedPeriod == period,
-                    onClick = {
-                        if (locked) onNavigateToUnlock() else viewModel.onPeriodChanged(period)
-                    },
-                    label = {
-                        Text(
-                            text = period.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = if (locked) Modifier.alpha(0.5f) else Modifier,
+        item(key = "overview") {
+            DossierSection {
+                // ─── Period Selector ─────────────────────────────────────────
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    DossierPeriod.entries.forEach { period ->
+                        // Greyed, never hidden, matching every other gate in the app. A
+                        // free user should be able to see that longer windows exist and
+                        // what they would be buying, not wonder why the Dossier only
+                        // has one chip.
+                        val locked = !FreeTier.allowsDossierPeriod(period, isUnlocked)
+                        FilterChip(
+                            selected = state.selectedPeriod == period,
+                            onClick = {
+                                if (locked) onNavigateToUnlock() else viewModel.onPeriodChanged(period)
+                            },
+                            label = {
+                                Text(
+                                    text = period.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = if (locked) Modifier.alpha(0.5f) else Modifier,
+                                )
+                            },
+                            // Same lock sigil GatedControl uses, so a gated chip reads
+                            // as part of the existing vocabulary rather than a new badge.
+                            trailingIcon = if (!locked) null else {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Lock,
+                                        contentDescription = "${period.label} requires unlock",
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .alpha(0.5f),
+                                    )
+                                }
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = NineLivesTheme.colors.archiveVoidSurface,
+                                selectedContainerColor = NineLivesTheme.colors.goldFilamentFaint,
+                                labelColor = NineLivesTheme.colors.archiveTextSecondary,
+                                selectedLabelColor = NineLivesTheme.colors.goldFilament,
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(
+                                borderColor = NineLivesTheme.colors.archiveOutline,
+                                selectedBorderColor = NineLivesTheme.colors.goldFilament.copy(alpha = 0.4f),
+                                enabled = true,
+                                selected = state.selectedPeriod == period,
+                            ),
+                            shape = RoundedCornerShape(20.dp),
                         )
-                    },
-                    // Same lock sigil GatedControl uses, so a gated chip reads
-                    // as part of the existing vocabulary rather than a new badge.
-                    trailingIcon = if (!locked) null else {
-                        {
-                            Icon(
-                                imageVector = Icons.Outlined.Lock,
-                                contentDescription = "${period.label} requires unlock",
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .alpha(0.5f),
-                            )
-                        }
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        containerColor = NineLivesTheme.colors.archiveVoidSurface,
-                        selectedContainerColor = NineLivesTheme.colors.goldFilamentFaint,
-                        labelColor = NineLivesTheme.colors.archiveTextSecondary,
-                        selectedLabelColor = NineLivesTheme.colors.goldFilament,
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        borderColor = NineLivesTheme.colors.archiveOutline,
-                        selectedBorderColor = NineLivesTheme.colors.goldFilament.copy(alpha = 0.4f),
-                        enabled = true,
-                        selected = state.selectedPeriod == period,
-                    ),
-                    shape = RoundedCornerShape(20.dp),
-                )
+                    }
+                }
+
+                // ─── Overview ──────────────────────────────────────────────
+                OverviewSection(state, viewModel)
             }
         }
 
-        // ─── Overview ──────────────────────────────────────────────
-        OverviewSection(state, viewModel)
-
         // ─── Book Stats ────────────────────────────────────────────
         if (state.bookStats.isNotEmpty()) {
-            BookStatsSection(state.bookStats, viewModel)
+            bookStatsItems(
+                bookStats = state.bookStats,
+                expanded = booksExpanded,
+                onToggleExpanded = { booksExpanded = !booksExpanded },
+                viewModel = viewModel,
+            )
         }
 
         // ─── Narrators ─────────────────────────────────────────────
         if (state.narratorStats.isNotEmpty()) {
-            NarratorSection(state.narratorStats, state.narratorWhisper, viewModel)
+            item(key = "narrators") {
+                DossierSection { NarratorSection(state.narratorStats, state.narratorWhisper, viewModel) }
+            }
         }
 
         // ─── Authors ───────────────────────────────────────────────
         if (state.authorStats.isNotEmpty()) {
-            AuthorSection(state.authorStats, state.authorWhisper, viewModel)
+            item(key = "authors") {
+                DossierSection { AuthorSection(state.authorStats, state.authorWhisper, viewModel) }
+            }
         }
 
         // ─── Genres ────────────────────────────────────────────────
         if (state.genreStats.isNotEmpty()) {
-            GenreSection(state.genreStats, state.genreWhisper, viewModel)
+            item(key = "genres") {
+                DossierSection { GenreSection(state.genreStats, state.genreWhisper, viewModel) }
+            }
         }
 
         // ─── Temporal ──────────────────────────────────────────────
         if (state.hourlyDistribution.isNotEmpty()) {
-            TemporalSection(state, viewModel)
+            item(key = "temporal") {
+                DossierSection { TemporalSection(state, viewModel) }
+            }
         }
 
         // ─── Shareable Summary Card ────────────────────────────────
-        DossierShareSection(state, viewModel)
+        item(key = "share") {
+            DossierSection { DossierShareSection(state, viewModel) }
+        }
 
         // Bottom padding
-        Spacer(modifier = Modifier.height(80.dp))
+        item(key = "bottom-padding") {
+            Spacer(modifier = Modifier.height(80.dp))
+        }
     }
+}
+
+@Composable
+private fun DossierSection(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        content = content,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -392,134 +427,147 @@ private fun StatChip(value: String, label: String, highlight: Boolean = false) {
 //  Book Stats Section
 // ═══════════════════════════════════════════════════════════════
 
-@Composable
-private fun BookStatsSection(
+/**
+ * The expanded list is one lazy item per book, so tapping Show all on a long
+ * listening history composes only the cards on screen.
+ */
+private fun LazyListScope.bookStatsItems(
     bookStats: List<BookStat>,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
     viewModel: NightwatchDossierViewModel,
 ) {
-    SectionHeader("Books")
+    item(key = "books-header") { SectionHeader("Books") }
 
-    var expanded by remember { mutableStateOf(false) }
     val visibleBooks = if (expanded || bookStats.size <= 5) bookStats else bookStats.take(5)
-
-    visibleBooks.forEach { book ->
-        DossierCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // Cover thumbnail
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(NineLivesTheme.colors.archiveVoidElevated),
-                ) {
-                    BookCoverImage(
-                        coverUrl = book.coverUrl,
-                        contentDescription = book.title,
-                        modifier = Modifier.fillMaxSize(),
-                        title = book.title,
-                        bookId = book.bookId,
-                    )
-                }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = book.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = NineLivesTheme.colors.archiveTextPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = book.author,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = NineLivesTheme.colors.archiveTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    book.narrator?.let { narrator ->
-                        Text(
-                            text = "Read by $narrator",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = NineLivesTheme.colors.archiveTextMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-
-                // Time badge
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = viewModel.formatDuration(book.listeningTime),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = NineLivesTheme.colors.goldFilament,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "${book.sessionCount} sessions",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NineLivesTheme.colors.archiveTextMuted,
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Progress bar
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                LinearProgressIndicator(
-                    progress = { (book.progress / 100.0).toFloat().coerceIn(0f, 1f) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp)),
-                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
-                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
-                )
-
-                val progressLabel = when {
-                    book.isFinished -> "Complete"
-                    book.chaptersTotal > 0 && book.currentChapter > 0 ->
-                        "Ch ${book.currentChapter}/${book.chaptersTotal}"
-                    book.progress > 0 -> "${book.progress.toInt()}%"
-                    else -> ""
-                }
-                if (progressLabel.isNotEmpty()) {
-                    Text(
-                        text = progressLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
-                        fontSize = 10.sp,
-                    )
-                }
-            }
-
-            // Book whisper
-            book.whisper?.let { whisper ->
-                Spacer(modifier = Modifier.height(4.dp))
-                WhisperText(whisper)
-            }
-        }
+    items(visibleBooks, key = { it.bookId }) { book ->
+        BookStatCard(book, viewModel)
     }
 
     if (bookStats.size > 5) {
-        TextButton(
-            onClick = { expanded = !expanded },
+        item(key = "books-toggle") {
+            TextButton(
+                onClick = onToggleExpanded,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = if (expanded) "Show less" else "Show all ${bookStats.size} books",
+                    color = NineLivesTheme.colors.goldFilamentDim,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookStatCard(
+    book: BookStat,
+    viewModel: NightwatchDossierViewModel,
+) {
+    DossierCard {
+        Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = if (expanded) "Show less" else "Show all ${bookStats.size} books",
-                color = NineLivesTheme.colors.goldFilamentDim,
-                style = MaterialTheme.typography.labelMedium,
+            // Cover thumbnail
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(NineLivesTheme.colors.archiveVoidElevated),
+            ) {
+                BookCoverImage(
+                    coverUrl = book.coverUrl,
+                    contentDescription = book.title,
+                    modifier = Modifier.fillMaxSize(),
+                    title = book.title,
+                    bookId = book.bookId,
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = book.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NineLivesTheme.colors.archiveTextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = book.author,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                book.narrator?.let { narrator ->
+                    Text(
+                        text = "Read by $narrator",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NineLivesTheme.colors.archiveTextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            // Time badge
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = viewModel.formatDuration(book.listeningTime),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = NineLivesTheme.colors.goldFilament,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "${book.sessionCount} sessions",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NineLivesTheme.colors.archiveTextMuted,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Progress bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LinearProgressIndicator(
+                progress = { (book.progress / 100.0).toFloat().coerceIn(0f, 1f) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
+                trackColor = NineLivesTheme.colors.archiveVoidElevated,
             )
+
+            val progressLabel = when {
+                book.isFinished -> "Complete"
+                book.chaptersTotal > 0 && book.currentChapter > 0 ->
+                    "Ch ${book.currentChapter}/${book.chaptersTotal}"
+                book.progress > 0 -> "${book.progress.toInt()}%"
+                else -> ""
+            }
+            if (progressLabel.isNotEmpty()) {
+                Text(
+                    text = progressLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
+                    fontSize = 10.sp,
+                )
+            }
+        }
+
+        // Book whisper
+        book.whisper?.let { whisper ->
+            Spacer(modifier = Modifier.height(4.dp))
+            WhisperText(whisper)
         }
     }
 }

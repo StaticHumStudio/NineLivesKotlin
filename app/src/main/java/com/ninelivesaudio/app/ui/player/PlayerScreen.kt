@@ -12,6 +12,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -559,25 +561,72 @@ private fun ChapterSelectorButton(
             )
         }
 
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            containerColor = NineLivesTheme.colors.archiveVoidSurface,
+    }
+
+    // Composed only while open, so a book with hundreds of chapters builds
+    // nothing until asked and then only the rows on screen.
+    if (expanded) {
+        ChapterSheet(
+            chapters = chapters,
+            currentChapterIndex = currentChapterIndex,
+            onChapterSelected = {
+                onChapterSelected(it)
+                expanded = false
+            },
+            onDismiss = { expanded = false },
+        )
+    }
+}
+
+/** The row the chapter list opens scrolled to: the chapter that is playing. */
+internal fun chapterListInitialIndex(currentChapterIndex: Int, chapterCount: Int): Int =
+    currentChapterIndex.coerceIn(0, (chapterCount - 1).coerceAtLeast(0))
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChapterSheet(
+    chapters: List<Chapter>,
+    currentChapterIndex: Int,
+    onChapterSelected: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = chapterListInitialIndex(currentChapterIndex, chapters.size),
+    )
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = NineLivesTheme.colors.archiveVoidSurface,
+        contentColor = NineLivesTheme.colors.archiveTextPrimary,
+    ) {
+        Text(
+            text = "Chapters",
+            style = MaterialTheme.typography.titleMedium,
+            color = NineLivesTheme.colors.goldFilament,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 20.dp),
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f, fill = false),
+            contentPadding = PaddingValues(bottom = 32.dp),
         ) {
-            chapters.forEachIndexed { index, chapter ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = "${index + 1}. ${chapter.title}",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = if (index == currentChapterIndex) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
-                        )
-                    },
-                    onClick = {
-                        onChapterSelected(index)
-                        expanded = false
-                    },
+            itemsIndexed(chapters) { index, chapter ->
+                Text(
+                    text = "${index + 1}. ${chapter.title}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (index == currentChapterIndex) NineLivesTheme.colors.goldFilament else NineLivesTheme.colors.archiveTextPrimary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onChapterSelected(index) }
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                 )
             }
         }

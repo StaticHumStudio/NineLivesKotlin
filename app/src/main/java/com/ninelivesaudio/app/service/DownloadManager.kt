@@ -38,6 +38,7 @@ import com.ninelivesaudio.app.service.download.mayDownloadOnDrain
 import com.ninelivesaudio.app.service.download.overrideRestartsDrain
 import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
 import com.ninelivesaudio.app.service.download.writeAfterEngineStops
+import com.ninelivesaudio.app.service.download.runEngineExclusively
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -182,17 +183,27 @@ class DownloadManager @Inject constructor(
     @Volatile
     private var engineDownloadId: String? = null
 
-    /** Called by [DownloadQueueWorker] right before it runs the engine on a book. */
-    fun onEngineStarted(audioBookId: String, downloadId: String) {
-        engineBookId = audioBookId
-        engineDownloadId = downloadId
-    }
+    /** Held across every engine run, cleanup included. See [runEngineExclusively]. */
+    private val engineLock = Mutex()
 
-    /** Called by [DownloadQueueWorker] from a finally once the engine returns or throws. */
-    fun onEngineStopped() {
-        engineBookId = null
-        engineDownloadId = null
-    }
+    /**
+     * Run [block] (the engine on [downloadId]) once no other engine run is
+     * still unwinding, recording the book for cancel cleanup and the Wi-Fi
+     * rule while it runs. Called by [DownloadQueueWorker].
+     */
+    suspend fun <T> runEngine(audioBookId: String, downloadId: String, block: suspend () -> T): T =
+        runEngineExclusively(
+            lock = engineLock,
+            onStart = {
+                engineBookId = audioBookId
+                engineDownloadId = downloadId
+            },
+            onStop = {
+                engineBookId = null
+                engineDownloadId = null
+            },
+            block = block,
+        )
 
     // ─── Wi-Fi only (#79) ────────────────────────────────────────────────────
 

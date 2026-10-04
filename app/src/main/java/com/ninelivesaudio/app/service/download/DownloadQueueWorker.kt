@@ -130,11 +130,17 @@ class DownloadQueueWorker(
             // and Android rate-limits notification posts, so unthrottled updates
             // get dropped and the bar appears frozen / far behind.
             var lastNotifiedPercent = -1
-            // Cancel cleanup checks this last thing before deleting files.
-            manager.onEngineStarted(item.audioBookId, item.id)
-            val result = try {
+            // One engine at a time across drains: a replacement waits here until
+            // a cancelled drain's engine has really exited. Cancel cleanup checks
+            // the book recorded on entry last thing before deleting files.
+            val result = manager.runEngine(item.audioBookId, item.id) {
+                // The wait can outlast an old engine or a user action, so the row
+                // is read again and only a still downloadable one goes ahead.
+                val fresh = dao.getById(item.id)?.toDomain()
+                    ?.takeIf { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
+                    ?: return@runEngine null
                 withContext(Dispatchers.IO) {
-                    engine.download(item, book) { id, downloaded, total ->
+                    engine.download(fresh, book) { id, downloaded, total ->
                         manager.publishProgress(id, downloaded, total)
                         val percent = if (total > 0) {
                             ((downloaded.toDouble() / total) * 100).toInt()
@@ -147,9 +153,7 @@ class DownloadQueueWorker(
                         }
                     }
                 }
-            } finally {
-                manager.onEngineStopped()
-            }
+            } ?: continue
             manager.notifyTerminal(result)
             android.util.Log.d(TAG, "done id=${item.id} result=${result.status}")
         }

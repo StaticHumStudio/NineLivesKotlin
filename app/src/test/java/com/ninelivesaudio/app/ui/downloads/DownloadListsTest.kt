@@ -124,4 +124,44 @@ class DownloadListsTest {
 
         assertEquals("cover-q", lists.active.single().coverPath)
     }
+
+    // Clear All used to delete the download rows and keep the files, so every
+    // offline book vanished from Downloads. Book rows now list them.
+
+    private fun book(id: String, title: String = id) =
+        DownloadedBook(audioBookId = id, title = title, coverPath = "book-cover-$id")
+
+    @Test
+    fun `a downloaded book with no download row still shows as completed`() {
+        val lists = splitDownloadRows(emptyList(), listOf(book("b")))
+
+        assertEquals(listOf("${BOOK_ONLY_ID_PREFIX}b"), lists.completedIds())
+        val entry = lists.completed.single()
+        assertEquals("b", entry.download.audioBookId)
+        assertEquals("book-cover-b", entry.coverPath)
+        assertEquals(DownloadStatus.Completed, entry.download.status)
+    }
+
+    @Test
+    fun `a completed row speaks for its book, so the book is listed once`() {
+        val lists = splitDownloadRows(
+            listOf(row("c", DownloadStatus.Completed, bookId = "b", completedAt = 5)),
+            listOf(book("b")),
+        )
+
+        assertEquals(listOf("c"), lists.completedIds())
+    }
+
+    @Test
+    fun `books without rows follow the completed rows, by title`() {
+        val lists = splitDownloadRows(
+            listOf(row("c", DownloadStatus.Completed, bookId = "x", completedAt = 5)),
+            listOf(book("z", title = "zebra"), book("a", title = "Aardvark")),
+        )
+
+        assertEquals(
+            listOf("c", "${BOOK_ONLY_ID_PREFIX}a", "${BOOK_ONLY_ID_PREFIX}z"),
+            lists.completedIds(),
+        )
+    }
 }

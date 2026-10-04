@@ -8,7 +8,7 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
  *
  * Assembled by the caller from three tables, because no single one of them is
  * sufficient. `DownloadEngine` writes the offline fields on `AudioBooks` only
- * AFTER writing `Completed`, and `clearCompleted()` deletes `DownloadItems` rows
+ * AFTER writing `Completed`, and an older Clear All deleted `DownloadItems` rows
  * while leaving the files on disk. Either source alone therefore misses real
  * offline books.
  */

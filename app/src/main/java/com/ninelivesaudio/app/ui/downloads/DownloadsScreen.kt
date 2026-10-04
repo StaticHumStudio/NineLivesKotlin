@@ -83,22 +83,12 @@ fun DownloadsScreen(
                 // ── Completed Downloads Section ───────────────────────
                 if (uiState.completedDownloads.isNotEmpty()) {
                     item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 16.dp, bottom = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                        // No Clear All here. It deleted the download rows and
+                        // kept the files, so offline books vanished from the
+                        // one screen that manages them. Each book's Delete
+                        // removes its files.
+                        Box(modifier = Modifier.padding(top = 16.dp, bottom = 4.dp)) {
                             SectionHeader(title = "Completed")
-
-                            TextButton(onClick = { viewModel.clearCompleted() }) {
-                                Text(
-                                    text = "Clear All",
-                                    color = NineLivesTheme.colors.goldFilament,
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            }
                         }
                     }
 
@@ -379,12 +369,16 @@ private fun CompletedDownloadCard(
                         color = NineLivesTheme.colors.archiveSuccess,
                         fontSize = 11.sp,
                     )
-                    Text(
-                        text = download.sizeDisplay,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NineLivesTheme.colors.archiveTextMuted,
-                        fontSize = 11.sp,
-                    )
+                    // A book listed from its row alone has no download
+                    // record, so no byte count to show.
+                    if (download.totalBytes > 0) {
+                        Text(
+                            text = download.sizeDisplay,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                            fontSize = 11.sp,
+                        )
+                    }
                 }
             }
 

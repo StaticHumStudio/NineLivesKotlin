@@ -59,23 +59,28 @@ class DownloadsViewModel @Inject constructor(
     }
 
     init {
-        // One joined query feeds both lists. It re-runs on every download
-        // progress write and every book row write (playback saves position
-        // twice a second), so unchanged lists are dropped before they reach
-        // the screen.
+        // The download rows and the downloaded book rows feed both lists. The
+        // queries re-run on every download progress write and every book row
+        // write (playback saves its place), so unchanged lists are dropped
+        // before they reach the screen.
         viewModelScope.launch {
-            downloadItemDao.observeAllWithBooks()
-                .map { rows ->
-                    splitDownloadRows(
-                        rows.map { row ->
-                            DownloadRow(
-                                download = row.download.toDomain(),
-                                coverPath = row.coverPath,
-                                bookIsDownloaded = row.bookIsDownloaded == 1,
-                            )
-                        }
-                    )
-                }
+            combine(
+                downloadItemDao.observeAllWithBooks(),
+                downloadItemDao.observeDownloadedServerBooks(),
+            ) { rows, books ->
+                splitDownloadRows(
+                    rows = rows.map { row ->
+                        DownloadRow(
+                            download = row.download.toDomain(),
+                            coverPath = row.coverPath,
+                            bookIsDownloaded = row.bookIsDownloaded == 1,
+                        )
+                    },
+                    downloadedBooks = books.map { book ->
+                        DownloadedBook(audioBookId = book.id, title = book.title, coverPath = book.coverPath)
+                    },
+                )
+            }
                 .distinctUntilChanged()
                 .collect { lists ->
                     val active = lists.active.map {
@@ -160,21 +165,6 @@ class DownloadsViewModel @Inject constructor(
     fun deleteDownload(audioBookId: String) {
         viewModelScope.launch {
             downloadManager.deleteDownload(audioBookId)
-        }
-    }
-
-    fun clearCompleted() {
-        viewModelScope.launch {
-            val completed = _uiState.value.completedDownloads
-            completed.forEach { item ->
-                try {
-                    // Only remove the download tracking record — keep the actual files
-                    // on disk so the user's downloaded audiobooks remain playable.
-                    downloadItemDao.deleteById(item.download.id)
-                } catch (_: Exception) {
-                    // Continue clearing others even if one fails
-                }
-            }
         }
     }
 

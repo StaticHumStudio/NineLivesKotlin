@@ -59,7 +59,7 @@ class DownloadSlotStore @Inject constructor(
      *
      * Built from the union of live download rows and retained offline state,
      * because neither source alone is complete: the engine writes the offline
-     * fields only after writing Completed, and `clearCompleted()` deletes rows
+     * fields only after writing Completed, and an older Clear All deleted rows
      * while leaving files on disk.
      */
     suspend fun buildCandidates(): List<SlotCandidate> = withContext(Dispatchers.IO) {

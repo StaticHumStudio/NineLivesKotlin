@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.ninelivesaudio.app.data.local.entity.DownloadItemEntity
 import com.ninelivesaudio.app.data.local.entity.DownloadRowWithBook
+import com.ninelivesaudio.app.data.local.entity.DownloadedBookRow
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -48,6 +49,21 @@ interface DownloadItemDao {
         """
     )
     fun observeAllWithBooks(): Flow<List<DownloadRowWithBook>>
+
+    /**
+     * Every server book on the device, from the book rows. Download rows can be
+     * gone (an older Clear All deleted them and kept the files), and the
+     * Downloads screen still has to list the book. Reads only the three columns
+     * the screen needs, never the chapter or file blobs.
+     */
+    @Query(
+        """
+        SELECT Id, Title, COALESCE(LocalCoverPath, CoverPath) AS BookCoverPath
+        FROM AudioBooks
+        WHERE IsDownloaded = 1 AND IsLocal = 0
+        """
+    )
+    fun observeDownloadedServerBooks(): Flow<List<DownloadedBookRow>>
 
     /**
      * Downloadable items for the drain worker: Queued (0) or interrupted

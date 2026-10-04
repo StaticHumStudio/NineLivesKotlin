@@ -36,12 +36,11 @@ class ConnectivityMonitor @Inject constructor(
         private const val TAG = "ConnectivityMonitor"
         /** Minimum background duration (ms) before triggering recovery on foreground. */
         private const val MIN_BACKGROUND_DURATION_MS = 5_000L
-        /** Reachability probe budget. Short so the app drops to offline quickly. */
-        private const val PROBE_TIMEOUT_MS = 5_000L
     }
 
     // A clone of the app client with a short total-call timeout, used only for the
     // reachability probe so it fails fast instead of waiting out the 30s sync timeout.
+    // Each probe sets its own call budget on top (see probeServerWithRetry).
     private val probeClient: OkHttpClient by lazy {
         okHttpClient.newBuilder()
             .callTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -141,12 +140,11 @@ class ConnectivityMonitor @Inject constructor(
      * Prevents unbounded concurrent server pings during network flaps
      * (e.g., WiFi → cellular handoff firing onAvailable + onCapabilitiesChanged).
      */
-    private fun launchReachabilityCheck() {
+    private fun launchReachabilityCheck(): Job =
         synchronized(reachabilityJobLock) {
             reachabilityJob?.cancel()
-            reachabilityJob = scope.launch { reachabilityCheckGate.run() }
+            scope.launch { reachabilityCheckGate.run() }.also { reachabilityJob = it }
         }
-    }
 
     fun requestReachabilityCheck() {
         launchReachabilityCheck()
@@ -168,17 +166,19 @@ class ConnectivityMonitor @Inject constructor(
         // Initial state check
         checkCurrentConnectivity()
 
-        // Start periodic server ping (every 60 seconds)
+        // Start the periodic server ping: every 60 seconds, or 15 while the
+        // network is up and the server is not answering, so a server that
+        // comes back is noticed soon.
         pingJob?.cancel()
         pingJob = scope.launch {
             while (isActive) {
-                delay(60_000)
+                delay(nextPingDelayMs(isOnline = _isOnline.value, isServerReachable = _isServerReachable.value))
                 // Route through launchReachabilityCheck so the periodic ping
                 // shares the single-flight cancellation with the callback- and
                 // foreground-driven checks. Calling checkServerReachable()
                 // directly let two checks race and the slower (stale) one win
                 // the last write to _isServerReachable.
-                launchReachabilityCheck()
+                launchReachabilityCheck().join()
             }
         }
     }
@@ -250,18 +250,28 @@ class ConnectivityMonitor @Inject constructor(
             updateConnectionStatus()
             return false
         }
-        val reachable = withContext(Dispatchers.IO) {
-            try {
-                val request = Request.Builder().url("${serverUrl.trimEnd('/')}/ping").build()
-                probeClient.newCall(request).execute().use { true }
-            } catch (_: Exception) {
-                false
-            }
-        }
+        val pingUrl = "${serverUrl.trimEnd('/')}/ping"
+        val reachable = probeServerWithRetry(
+            wasReachable = _isServerReachable.value,
+            stillOnline = { _isOnline.value },
+            probe = { budgetMs -> pingOnce(pingUrl, budgetMs) },
+        )
         _isServerReachable.value = reachable
         updateConnectionStatus()
         return reachable
     }
+
+    private suspend fun pingOnce(pingUrl: String, budgetMs: Long): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder().url(pingUrl).build()
+                val call = probeClient.newCall(request)
+                call.timeout().timeout(budgetMs, TimeUnit.MILLISECONDS)
+                call.execute().use { response -> pingStatusMeansReachable(response.code) }
+            } catch (_: Exception) {
+                false
+            }
+        }
 
     // ─── Sync State (updated by SyncManager) ─────────────────────────────
 
@@ -342,6 +352,58 @@ internal fun computeConnectionStatus(
     isServerReachable -> ConnectivityMonitor.ConnectionStatus.CONNECTED
     else -> ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE
 }
+
+/** First probe budget. Short so a gone server shows as unreachable quickly. */
+internal const val PROBE_TIMEOUT_MS = 5_000L
+
+/** Wait before the confirming probe, so a busy moment can pass. */
+internal const val PROBE_RETRY_DELAY_MS = 3_000L
+
+/** Budget for the confirming probe. Longer, for a busy Pi or a slow VPN. */
+internal const val PROBE_RETRY_TIMEOUT_MS = 10_000L
+
+/** The periodic ping while the server answers (or the network is down). */
+internal const val PING_INTERVAL_MS = 60_000L
+
+/** The periodic ping while the network is up and the server is not answering. */
+internal const val PING_RETRY_INTERVAL_MS = 15_000L
+
+/**
+ * Any answer from /ping below 500 means Audiobookshelf itself is up. A 5xx is
+ * a reverse proxy (or tunnel) answering for a server that is down, which used
+ * to read as Connected because any response counted.
+ */
+internal fun pingStatusMeansReachable(code: Int): Boolean = code in 100..499
+
+/**
+ * One /ping, and when it fails while the server was reachable and the OS
+ * still reports a network, one more after [retryDelayMs] with a longer
+ * budget before the server is called unreachable.
+ *
+ * Calling it unreachable switches a streaming user's Library to Downloaded
+ * only, so one slow answer from a busy Pi or a VPN must not do that. A server
+ * already marked unreachable gets no retry: a failure there changes nothing,
+ * and a success flips it back on the first try.
+ */
+internal suspend fun probeServerWithRetry(
+    wasReachable: Boolean,
+    stillOnline: () -> Boolean,
+    probe: suspend (budgetMs: Long) -> Boolean,
+    sleep: suspend (Long) -> Unit = { delay(it) },
+    firstBudgetMs: Long = PROBE_TIMEOUT_MS,
+    retryDelayMs: Long = PROBE_RETRY_DELAY_MS,
+    retryBudgetMs: Long = PROBE_RETRY_TIMEOUT_MS,
+): Boolean {
+    if (probe(firstBudgetMs)) return true
+    if (!wasReachable || !stillOnline()) return false
+    sleep(retryDelayMs)
+    if (!stillOnline()) return false
+    return probe(retryBudgetMs)
+}
+
+/** How long the periodic ping waits before its next probe. */
+internal fun nextPingDelayMs(isOnline: Boolean, isServerReachable: Boolean): Long =
+    if (isOnline && !isServerReachable) PING_RETRY_INTERVAL_MS else PING_INTERVAL_MS
 
 internal class ReachabilityCheckGate(
     private val check: suspend () -> Boolean,

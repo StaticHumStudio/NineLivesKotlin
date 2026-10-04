@@ -158,14 +158,55 @@ class LibrarySyncPlannerTest {
         val fetched = listOf(AudioBook(id = "li_new", addedAt = 9_000L), AudioBook(id = "li_newest", addedAt = 5_000L))
         val newCount = newBooksSinceWatermark(watermark(), fetched, alreadyCached = setOf("li_new", "li_newest"))
         assertEquals(1, newCount)
-        assertFalse(incrementalCountsAgree(previousCount = 100, newBookCount = newCount, serverTotal = 100))
+        assertFalse(incrementalCountsAgree(previousCount = 100, newBookCount = newCount!!, serverTotal = 100))
     }
 
     @Test
-    fun `a book inside the overlap window counts as new only when the cache lacks it`() {
+    fun `a book inside the overlap window is new unless the watermark counted it`() {
         val overlap = listOf(AudioBook(id = "li_late", addedAt = 4_990L))
-        assertEquals(0, newBooksSinceWatermark(watermark(), overlap, alreadyCached = setOf("li_late")))
+        val counted = watermark().copy(overlapItemIds = listOf("li_late", "li_newest"))
+        val notCounted = watermark().copy(overlapItemIds = listOf("li_newest"))
+        // Cache presence no longer decides it, either way round.
+        assertEquals(0, newBooksSinceWatermark(counted, overlap, alreadyCached = setOf("li_late")))
+        assertEquals(0, newBooksSinceWatermark(counted, overlap, alreadyCached = emptySet()))
+        assertEquals(1, newBooksSinceWatermark(notCounted, overlap, alreadyCached = setOf("li_late")))
+        assertEquals(1, newBooksSinceWatermark(notCounted, overlap, alreadyCached = emptySet()))
+        // A watermark from before the list cannot tell a cached one apart.
+        assertNull(newBooksSinceWatermark(watermark(), overlap, alreadyCached = setOf("li_late")))
         assertEquals(1, newBooksSinceWatermark(watermark(), overlap, alreadyCached = emptySet()))
+    }
+
+    @Test
+    fun `an already cached book stamped just before the newest cannot hide a removal`() {
+        // Watermark: 100 books, newest li_newest at 5_000. A delayed scan adds
+        // li_early stamped at 4_990 and li_new at 9_000, and removes li_gone,
+        // so the server has 101. A progress pull cached li_early first.
+        val tally = FullSyncTally().apply {
+            add((1..98).map { AudioBook(id = "li_$it", addedAt = it.toLong() * -100_000L) })
+            add(listOf(AudioBook(id = "li_gone", addedAt = 4_000L), AudioBook(id = "li_newest", addedAt = 5_000L)))
+        }
+        val stored = watermarkAfterFullSync(key, "lib", tally, RemoteResult.Ok(100), nowMs = 1L)!!
+        assertEquals(setOf("li_gone", "li_newest"), stored.overlapItemIds!!.toSet())
+        val fetched = listOf(
+            AudioBook(id = "li_new", addedAt = 9_000L),
+            AudioBook(id = "li_newest", addedAt = 5_000L),
+            AudioBook(id = "li_early", addedAt = 4_990L),
+            AudioBook(id = "li_1", addedAt = -100_000L),
+        )
+        val newCount = newBooksSinceWatermark(stored, fetched, alreadyCached = setOf("li_newest", "li_early", "li_1"))
+        assertEquals(2, newCount)
+        assertFalse(incrementalCountsAgree(stored.itemCount, newCount!!, serverTotal = 101))
+    }
+
+    @Test
+    fun `an incremental sync records the books in its new overlap window`() {
+        val fetched = listOf(
+            AudioBook(id = "li_new", addedAt = 70_000L),
+            AudioBook(id = "li_near", addedAt = 30_000L),
+            AudioBook(id = "li_newest", addedAt = 5_000L),
+        )
+        val next = watermarkAfterIncremental(watermark(), fetched, serverTotal = 102, nowMs = 50L)
+        assertEquals(listOf("li_new", "li_near"), next.overlapItemIds)
     }
 
     @Test

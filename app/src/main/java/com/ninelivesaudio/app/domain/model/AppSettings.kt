@@ -107,6 +107,10 @@ data class LastSyncRecord(
  * many books it reported, and [lastFullSyncAtMs] is the wall clock time of
  * the last full download, which bounds how long a metadata edit can go
  * unseen (the server cannot be asked for edited books, only added ones).
+ * [overlapItemIds] lists the books [itemCount] includes whose added date is
+ * within a minute of [newestAddedAt], so the next check can tell a book
+ * stamped just before the newest one apart from one it already counted.
+ * Null on a watermark saved before the list existed.
  */
 @Serializable
 data class LibrarySyncWatermark(
@@ -116,6 +120,7 @@ data class LibrarySyncWatermark(
     val newestAddedAt: Long? = null,
     val newestItemId: String? = null,
     val itemCount: Int = 0,
+    val overlapItemIds: List<String>? = null,
     val lastFullSyncAtMs: Long = 0L,
     val updatedAtMs: Long = 0L,
 )

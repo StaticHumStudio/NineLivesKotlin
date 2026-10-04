@@ -329,7 +329,7 @@ class AudioBookRepository @Inject constructor(
             if (!saved) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
             _booksSaved.tryEmit(libraryId)
         }
-        if (!incrementalCountsAgree(watermark.itemCount, newBookCount, value.total)) {
+        if (newBookCount == null || !incrementalCountsAgree(watermark.itemCount, newBookCount, value.total)) {
             // The books just saved are not in the watermark's count, so it no
             // longer describes the cache. Forgetting it keeps every later
             // check on the full download until one completes.
@@ -337,7 +337,11 @@ class AudioBookRepository @Inject constructor(
             return fallBackToFullLocked(
                 libraryId,
                 identity,
-                "server has ${value.total} books, expected ${watermark.itemCount} + $newBookCount new",
+                if (newBookCount == null) {
+                    "cannot tell which books near the newest one are new"
+                } else {
+                    "server has ${value.total} books, expected ${watermark.itemCount} + $newBookCount new"
+                },
                 isMetered,
                 hasCachedRows,
             )

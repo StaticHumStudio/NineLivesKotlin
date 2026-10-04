@@ -204,26 +204,49 @@ internal fun incrementalCountsAgree(
 ): Boolean = previousCount + newBookCount == serverTotal
 
 /**
- * How many of the fetched books the last good sync's count left out. A book
- * added after the stored newest one cannot be in that count, even when the
- * cache already holds it: an earlier check whose counts disagreed saved it,
- * or a progress pull, or a full download that stopped short. Counting by
+ * How many of the fetched books the last good sync's count left out, or null
+ * when that cannot be told and only a full download is safe.
+ *
+ * A book added after the stored newest one cannot be in that count, even when
+ * the cache already holds it: an earlier check whose counts disagreed saved
+ * it, or a progress pull, or a full download that stopped short. Counting by
  * cache presence alone let the retry after "one removed, one added" read
- * 100 + 0 = 100 and call the shelf current with the removed book still on
- * it. A book inside the overlap window counts only when the cache lacks it.
+ * 100 + 0 = 100 and call the shelf current with the removed book still on it.
+ *
+ * Inside the overlap window cache presence says nothing either. A delayed
+ * scan can stamp a new book just before the stored newest one, and a
+ * progress pull can cache it before the check runs. Counting it as old then
+ * hides a removal made alongside it. So the watermark records which books
+ * in the window its count includes ([LibrarySyncWatermark.overlapItemIds]),
+ * and a book there is new exactly when it is not on that list. A watermark
+ * saved before that list existed cannot tell, so a cached book in its window
+ * (other than the stored newest one) makes the answer null.
+ *
+ * Books below the window are on the fetch only because they shared its last
+ * page, and count only when the cache lacks them.
  */
 internal fun newBooksSinceWatermark(
     watermark: LibrarySyncWatermark,
     fetched: List<AudioBook>,
     alreadyCached: Set<String>,
-): Int {
-    val storedNewest = watermark.newestAddedAt
-    return fetched.distinctBy { it.id }.count { book ->
-        val added = book.addedAt
-        book.id !in alreadyCached ||
-            storedNewest == null ||
-            (added != null && added > storedNewest && book.id != watermark.newestItemId)
+): Int? {
+    val storedNewest = watermark.newestAddedAt ?: return fetched.distinctBy { it.id }.size
+    val cutoff = incrementalCutoff(watermark)
+    val counted = watermark.overlapItemIds?.toHashSet()
+    var newCount = 0
+    for (book in fetched.distinctBy { it.id }) {
+        val added = book.addedAt ?: return null
+        val isNew = when {
+            added < cutoff -> book.id !in alreadyCached
+            counted != null -> book.id !in counted && book.id != watermark.newestItemId
+            book.id == watermark.newestItemId -> false
+            added > storedNewest -> true
+            book.id in alreadyCached -> return null
+            else -> true
+        }
+        if (isNew) newCount++
     }
+    return newCount
 }
 
 /**
@@ -233,6 +256,8 @@ internal fun newBooksSinceWatermark(
  */
 internal class FullSyncTally {
     private val seen = HashSet<String>()
+    // Books close behind the newest so far, trimmed as the newest moves.
+    private val recent = ArrayList<Pair<String, Long>>()
     var count: Int = 0
         private set
     var newestAddedAt: Long? = null
@@ -249,11 +274,31 @@ internal class FullSyncTally {
             val time = book.addedAt
             if (time == null) {
                 missingAddedAt = true
-            } else if (newestAddedAt == null || time > newestAddedAt!!) {
-                newestAddedAt = time
-                newestItemId = book.id
+            } else {
+                if (newestAddedAt == null || time > newestAddedAt!!) {
+                    newestAddedAt = time
+                    newestItemId = book.id
+                }
+                if (time >= newestAddedAt!! - INCREMENTAL_OVERLAP_MS) recent += book.id to time
+                if (recent.size > RECENT_TRIM_AT) trimRecent()
             }
         }
+    }
+
+    /** Every book this download counted whose added date falls inside the next check's overlap window. */
+    val overlapItemIds: List<String>
+        get() {
+            trimRecent()
+            return recent.map { it.first }
+        }
+
+    private fun trimRecent() {
+        val newest = newestAddedAt ?: return
+        recent.removeAll { it.second < newest - INCREMENTAL_OVERLAP_MS }
+    }
+
+    private companion object {
+        const val RECENT_TRIM_AT = 512
     }
 }
 
@@ -283,6 +328,7 @@ internal fun watermarkAfterFullSync(
         newestAddedAt = tally.newestAddedAt,
         newestItemId = tally.newestItemId,
         itemCount = tally.count,
+        overlapItemIds = tally.overlapItemIds,
         lastFullSyncAtMs = nowMs,
         updatedAtMs = nowMs,
     )
@@ -321,7 +367,10 @@ internal fun isFullSyncBackedOff(failures: FullSyncFailures?, nowMs: Long): Bool
 /**
  * The watermark after an "added since" fetch whose counts agreed. The newest
  * book is the first one the server listed (it sorted newest first), and the
- * last full download time carries over unchanged.
+ * last full download time carries over unchanged. The fetch reached back to
+ * the old window's edge, so it holds every book in the new window too, and
+ * the counts agreeing means all of them are in [serverTotal]: those become
+ * the new [LibrarySyncWatermark.overlapItemIds].
  */
 internal fun watermarkAfterIncremental(
     previous: LibrarySyncWatermark,
@@ -333,10 +382,19 @@ internal fun watermarkAfterIncremental(
     val firstTime = first?.addedAt
     val advance = first != null && firstTime != null &&
         (previous.newestAddedAt == null || firstTime >= previous.newestAddedAt)
+    val newestAddedAt = if (advance) firstTime else previous.newestAddedAt
+    val overlapItemIds = if (newestAddedAt == null) {
+        previous.overlapItemIds
+    } else {
+        fetched.filter { book -> book.addedAt?.let { it >= newestAddedAt - INCREMENTAL_OVERLAP_MS } == true }
+            .map { it.id }
+            .distinct()
+    }
     return previous.copy(
-        newestAddedAt = if (advance) firstTime else previous.newestAddedAt,
+        newestAddedAt = newestAddedAt,
         newestItemId = if (advance) first!!.id else previous.newestItemId,
         itemCount = serverTotal,
+        overlapItemIds = overlapItemIds,
         updatedAtMs = nowMs,
     )
 }

@@ -29,6 +29,7 @@ import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.buildShelfSyncReport
 import com.ninelivesaudio.app.service.buildShelfSyncReportFromCount
+import com.ninelivesaudio.app.service.isSyncedLibrary
 import com.ninelivesaudio.app.service.lastSyncForCurrentServer
 import com.ninelivesaudio.app.service.persistActiveLibrarySelection
 import com.ninelivesaudio.app.service.persistSyncOutcome
@@ -622,11 +623,22 @@ class LibraryViewModel @Inject constructor(
             // Show the saved shelf before the /ping probe and the library list
             // fetch. A gone server costs a 5s probe per check, and the gate
             // runs them one after another (issue #53).
-            if (!isLocalMode) showSavedShelfBeforeNetwork(settings)
+            val saved = if (!isLocalMode) showSavedShelfBeforeNetwork(settings) else null
+            // The app's own change check ran under two minutes ago (the cold
+            // start or foreground entry check) and covered this shelf, so
+            // opening the Library sends nothing: no /ping, no library list,
+            // no change check. Pull to refresh still goes to the server.
+            val skipNetwork = !isLocalMode && saved != null && libraryLoadSkipsNetwork(
+                explicit = explicit,
+                checkDue = syncManager.isCheckDueNow(),
+                savedLibraryIsSynced = isSyncedLibrary(saved),
+                savedLibraryHasBooks = audioBookRepository.hasServerBooks(saved.id),
+            )
+            if (skipNetwork) serverReachable = false
             val libs = if (isLocalMode) {
                 libraryRepository.getLocalLibraries()
             } else {
-                if (shouldSyncOnLibraryLoad(
+                if (!skipNetwork && shouldSyncOnLibraryLoad(
                         isLocalLibrary = false,
                         isOnline = connectivityMonitor.isOnline.value,
                     ) && connectivityMonitor.checkServerReachable().also { serverReachable = it }
@@ -710,15 +722,15 @@ class LibraryViewModel @Inject constructor(
 
     /**
      * Publishes the cached shelf of the saved library selection, if it is
-     * cached. The load that follows still resolves and persists the real
-     * selection and replaces this shelf.
+     * cached, and returns that library. The load that follows still resolves
+     * and persists the real selection and replaces this shelf.
      */
-    private suspend fun showSavedShelfBeforeNetwork(settings: AppSettings) {
+    private suspend fun showSavedShelfBeforeNetwork(settings: AppSettings): Library? {
         val cachedLibraries = visibleCachedLibraries(
             settings = settings,
             cached = libraryRepository.getAudiobookshelf(),
         )
-        val saved = cachedLibraries.firstOrNull { it.id == settings.activeLibraryId } ?: return
+        val saved = cachedLibraries.firstOrNull { it.id == settings.activeLibraryId } ?: return null
         _uiState.update {
             it.withLibrarySelection(
                 libraries = cachedLibraries,
@@ -727,6 +739,7 @@ class LibraryViewModel @Inject constructor(
             )
         }
         applyFilter()?.join()
+        return saved
     }
 
     /**
@@ -1318,6 +1331,22 @@ internal fun selectedLibraryFetchSequence(outcome: PersistedSyncOutcome): Long? 
  */
 internal fun shouldSyncOnLibraryLoad(isLocalLibrary: Boolean, isOnline: Boolean): Boolean =
     !isLocalLibrary && isOnline
+
+/**
+ * Whether opening the Library skips the server because the app's own change
+ * check ran under two minutes ago. It used to check again regardless, a
+ * second HEAD 73 seconds after the cold-start one. Only for a load the user
+ * did not ask for (pull to refresh and Retry always go out), and only for a
+ * saved library that check covers: a book library (podcast libraries are
+ * not checked in the background) with books already cached (a fresh
+ * sign-in or a new server has nothing to show yet).
+ */
+internal fun libraryLoadSkipsNetwork(
+    explicit: Boolean,
+    checkDue: Boolean,
+    savedLibraryIsSynced: Boolean,
+    savedLibraryHasBooks: Boolean,
+): Boolean = !explicit && !checkDue && savedLibraryIsSynced && savedLibraryHasBooks
 
 // ─── Grouping helpers (internal for testability) ──────────────────────────
 

@@ -36,4 +36,37 @@ class LibrarySyncGateTest {
     fun `local library never syncs when offline`() {
         assertFalse(shouldSyncOnLibraryLoad(isLocalLibrary = true, isOnline = false))
     }
+
+    @Test
+    fun `opening the Library right after the app's own check sends nothing`() {
+        assertTrue(
+            libraryLoadSkipsNetwork(explicit = false, checkDue = false, savedLibraryIsSynced = true, savedLibraryHasBooks = true),
+        )
+    }
+
+    @Test
+    fun `opening the Library checks when the app's check is two minutes old or more`() {
+        assertFalse(
+            libraryLoadSkipsNetwork(explicit = false, checkDue = true, savedLibraryIsSynced = true, savedLibraryHasBooks = true),
+        )
+    }
+
+    @Test
+    fun `pull to refresh always goes to the server`() {
+        assertFalse(
+            libraryLoadSkipsNetwork(explicit = true, checkDue = false, savedLibraryIsSynced = true, savedLibraryHasBooks = true),
+        )
+    }
+
+    @Test
+    fun `a library the app's check does not cover still loads from the server`() {
+        // Podcast libraries are not checked in the background.
+        assertFalse(
+            libraryLoadSkipsNetwork(explicit = false, checkDue = false, savedLibraryIsSynced = false, savedLibraryHasBooks = true),
+        )
+        // Nothing cached yet (fresh sign-in, new server).
+        assertFalse(
+            libraryLoadSkipsNetwork(explicit = false, checkDue = false, savedLibraryIsSynced = true, savedLibraryHasBooks = false),
+        )
+    }
 }

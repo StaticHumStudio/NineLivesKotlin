@@ -25,6 +25,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,7 +64,10 @@ class ConnectivityMonitor @Inject constructor(
     // background checks also share reachabilityCheckGate, so probes cannot race.
     private var reachabilityJob: Job? = null
     private val reachabilityJobLock = Any()
-    private val reachabilityCheckGate = ReachabilityCheckGate { performServerReachabilityCheck() }
+    private val reachabilityCheckGate = ReachabilityCheckGate(
+        nowMs = { SystemClock.elapsedRealtime() },
+        reuseWindowMs = PROBE_REUSE_WINDOW_MS,
+    ) { performServerReachabilityCheck() }
 
     // Track when the app went to background for debouncing foreground recovery
     @Volatile private var backgroundedAt: Long = 0L
@@ -114,6 +118,12 @@ class ConnectivityMonitor @Inject constructor(
     // new one is already up) cannot mark the app offline on its own.
     private val knownNetworks = ConcurrentHashMap<Network, Boolean>()
 
+    // Bumped whenever the path to the server may have changed: online
+    // flipped, a new network appeared, a known one was lost, or a caller
+    // asked for a fresh probe. A finished probe's answer is shared only
+    // within one generation (see ReachabilityCheckGate).
+    private val networkGeneration = AtomicLong(0L)
+
     // True once startMonitoring ran, so a foreground entry before settings
     // load does not probe a blank server URL.
     @Volatile private var monitoring = false
@@ -129,14 +139,15 @@ class ConnectivityMonitor @Inject constructor(
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            knownNetworks[network] = true
+            val isNew = knownNetworks.put(network, true) == null
+            if (isNew) networkGeneration.incrementAndGet()
             reevaluateNetwork()
             // Check server reachability on reconnect (deduplicated)
             launchReachabilityCheck()
         }
 
         override fun onLost(network: Network) {
-            knownNetworks.remove(network)
+            if (knownNetworks.remove(network) != null) networkGeneration.incrementAndGet()
             // Re-derive from every network still known plus the OS default.
             // A backgrounded app can be network-blocked, so the OS default
             // reads null here even with Wi-Fi up. Coming back to the
@@ -185,6 +196,7 @@ class ConnectivityMonitor @Inject constructor(
         val wasOnline = _isOnline.value
         _isOnline.value = online
         if (!online) _isServerReachable.value = false
+        if (online != wasOnline) networkGeneration.incrementAndGet()
         refreshIsMetered()
         updateConnectionStatus()
         wasOnline to online
@@ -214,15 +226,34 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     /**
-     * Cancel any in-flight reachability check and start a fresh one.
-     * Prevents unbounded concurrent server pings during network flaps
-     * (e.g., WiFi to cellular handoff firing onAvailable + onCapabilitiesChanged).
+     * Start a reachability check, or join the one already running for the
+     * same network generation. A check from an older generation is cancelled
+     * (its answer describes a path that may be gone). [fresh] starts a new
+     * generation first, for callers that must not reuse an earlier answer.
+     * Cold start used to send 3 to 4 /ping in about 1.5 seconds because each
+     * caller cancelled the one before and pinged again.
      */
-    private fun launchReachabilityCheck(): Job =
+    private fun launchReachabilityCheck(fresh: Boolean = false): Job =
         synchronized(reachabilityJobLock) {
-            reachabilityJob?.cancel()
-            scope.launch { reachabilityCheckGate.run() }.also { reachabilityJob = it }
+            if (fresh) networkGeneration.incrementAndGet()
+            val generation = networkGeneration.get()
+            val running = reachabilityJob
+            if (running != null && running.isActive && reachabilityJobGeneration == generation) {
+                return@synchronized running
+            }
+            running?.cancel()
+            reachabilityJobGeneration = generation
+            val key = reuseKey()
+            scope.launch { reachabilityCheckGate.run(key) }.also { reachabilityJob = it }
         }
+
+    // The generation the running reachabilityJob belongs to. Guarded by reachabilityJobLock.
+    private var reachabilityJobGeneration = -1L
+
+    private fun reuseKey(): ProbeReuseKey = ProbeReuseKey(
+        generation = networkGeneration.get(),
+        serverUrl = settingsManager.currentSettings.serverUrl.trim(),
+    )
 
     fun requestReachabilityCheck() {
         launchReachabilityCheck()
@@ -288,7 +319,10 @@ class ConnectivityMonitor @Inject constructor(
     // ─── Checks ───────────────────────────────────────────────────────────
 
     private fun checkCurrentConnectivity() {
-        refreshIsOnlineFromSystem()
+        // No forced new generation here: the default network's onAvailable,
+        // replayed at registration, may already have started this probe.
+        pruneGoneNetworks()
+        reevaluateNetwork()
 
         // Initial server check (deduplicated)
         launchReachabilityCheck()
@@ -304,11 +338,16 @@ class ConnectivityMonitor @Inject constructor(
      * Also called directly by the Home reconnect tap (no network request here,
      * just re-reading the OS state) so [SyncManager.syncNow]'s own shouldRunSync
      * pre-check sees a fresh flag instead of the stale one, and its own
-     * checkServerReachable() call is left as the tap's single /ping.
+     * checkServerReachable() call is left as the tap's single /ping. It
+     * starts a new network generation, so that /ping is never answered from
+     * an earlier probe's shared result.
      */
     fun refreshIsOnlineFromSystem() {
         pruneGoneNetworks()
         reevaluateNetwork()
+        // An explicit re-read (the reconnect tap, a mode switch) wants a
+        // probe of its own, not one shared from just before.
+        networkGeneration.incrementAndGet()
     }
 
     /** Re-reads the default network's metered state from the OS. */
@@ -322,7 +361,11 @@ class ConnectivityMonitor @Inject constructor(
         return metered
     }
 
-    suspend fun checkServerReachable(): Boolean = reachabilityCheckGate.run()
+    /**
+     * The server's reachability, from a fresh /ping or from one that finished
+     * within [PROBE_REUSE_WINDOW_MS] on the same network and server.
+     */
+    suspend fun checkServerReachable(): Boolean = reachabilityCheckGate.run(reuseKey())
 
     suspend fun probeServerReachable(): Boolean = checkServerReachable()
 
@@ -422,7 +465,7 @@ class ConnectivityMonitor @Inject constructor(
         val (wasOnline, online) = reevaluateNetwork()
         Log.d(TAG, "foreground: background=${backgroundForMs}ms online $wasOnline -> $online")
         if (foregroundEntryProbes(wasOnline, online, _isServerReachable.value, backgroundForMs)) {
-            launchReachabilityCheck()
+            launchReachabilityCheck(fresh = true)
         }
         if (!online) startSettleRereads()
     }
@@ -436,7 +479,7 @@ class ConnectivityMonitor @Inject constructor(
                     val (wasOnline, online) = reevaluateNetwork()
                     if (online && !wasOnline) {
                         Log.d(TAG, "foreground settle: network readable again")
-                        launchReachabilityCheck()
+                        launchReachabilityCheck(fresh = true)
                     }
                     online
                 }
@@ -605,12 +648,57 @@ internal fun serverAnswerMarksReachable(isOnline: Boolean, isServerReachable: Bo
 internal fun nextPingDelayMs(isOnline: Boolean, isServerReachable: Boolean): Long =
     if (isOnline && !isServerReachable) PING_RETRY_INTERVAL_MS else PING_INTERVAL_MS
 
+/** Which probe answers can be shared: same network generation, same server. */
+internal data class ProbeReuseKey(val generation: Long, val serverUrl: String)
+
+/**
+ * How long a finished probe's answer is shared with callers asking about the
+ * same network and server. Cold start has the monitor, the sync's entry
+ * check, the Library and playback all asking within a second or two.
+ */
+internal const val PROBE_REUSE_WINDOW_MS = 3_000L
+
+/**
+ * Whether a probe that finished at [finishedAtMs] under [previousKey] answers
+ * a caller asking under [key] at [nowMs]. A null key never shares, and a
+ * clock reading before the finish (or the window passing) means probe again.
+ */
+internal fun canReuseProbe(
+    previousKey: Any?,
+    key: Any?,
+    finishedAtMs: Long,
+    nowMs: Long,
+    windowMs: Long,
+): Boolean {
+    if (key == null || previousKey != key) return false
+    val age = nowMs - finishedAtMs
+    return age in 0 until windowMs
+}
+
+/**
+ * Runs reachability checks one at a time. A caller whose [run] key matches
+ * a check that finished under [reuseWindowMs] ago (including one it waited
+ * on) gets that answer instead of a new /ping.
+ */
 internal class ReachabilityCheckGate(
+    private val nowMs: () -> Long = { 0L },
+    private val reuseWindowMs: Long = 0L,
     private val check: suspend () -> Boolean,
 ) {
-    private val mutex = Mutex()
+    private class Finished(val key: Any?, val atMs: Long, val reachable: Boolean)
 
-    suspend fun run(): Boolean = mutex.withLock { check() }
+    private val mutex = Mutex()
+    private var last: Finished? = null // guarded by mutex
+
+    suspend fun run(key: Any? = null): Boolean = mutex.withLock {
+        val previous = last
+        if (previous != null && canReuseProbe(previous.key, key, previous.atMs, nowMs(), reuseWindowMs)) {
+            return@withLock previous.reachable
+        }
+        val reachable = check()
+        last = Finished(key, nowMs(), reachable)
+        reachable
+    }
 }
 
 /**

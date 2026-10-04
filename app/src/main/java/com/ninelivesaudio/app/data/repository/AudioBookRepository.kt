@@ -243,6 +243,10 @@ class AudioBookRepository @Inject constructor(
         }.itemCountResult() ?: RemoteResult.Failed("sync did not run")
     }
 
+    /** Whether this library has any server books cached, so a shelf exists to show. */
+    internal suspend fun hasServerBooks(libraryId: String): Boolean =
+        audioBookDao.countServerBooksByLibrary(libraryId) > 0
+
     /**
      * The background check for one library: ask the server whether anything
      * was added or removed since the last good sync (one tiny request), and

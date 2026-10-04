@@ -238,6 +238,13 @@ class SyncManager @Inject constructor(
 
     // ─── Sync Operations ─────────────────────────────────────────────────────
 
+    /**
+     * Whether a change check is due under the shared two-minute debounce. The
+     * Library reads this so opening it right after the entry check (a cold
+     * start) does not send its own check again.
+     */
+    internal fun isCheckDueNow(): Boolean = isCheckDue(lastCheckAtMs, monotonicNowMs())
+
     /** A timer tick or foreground entry: a check, unless one just ran, then the offline queue. */
     private suspend fun runForegroundCheck() {
         if (isCheckDue(lastCheckAtMs, monotonicNowMs())) {

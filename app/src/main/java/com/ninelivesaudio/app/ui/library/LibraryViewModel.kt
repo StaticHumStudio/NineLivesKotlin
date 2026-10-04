@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.library
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
@@ -698,7 +699,7 @@ class LibraryViewModel @Inject constructor(
         } catch (e: Exception) {
             rethrowLibraryLoadCancellation(e)
             _uiState.update {
-                it.copy(errorMessage = "Failed to load libraries: ${e.message}")
+                it.copy(errorMessage = loadFailureMessage(LibraryLoadFailure.LIBRARIES, e))
             }
         } finally {
             updateLibraryLoadStateIfActive {
@@ -803,7 +804,7 @@ class LibraryViewModel @Inject constructor(
         } catch (e: Exception) {
             rethrowLibraryLoadCancellation(e)
             _uiState.update {
-                it.copy(errorMessage = "Failed to load audiobooks: ${e.message}")
+                it.copy(errorMessage = loadFailureMessage(LibraryLoadFailure.BOOKS, e))
             }
         }
         return itemLoad
@@ -965,6 +966,16 @@ class LibraryViewModel @Inject constructor(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    /** The banner line for [failure]. The exception goes to the log, not the screen. */
+    private fun loadFailureMessage(failure: LibraryLoadFailure, error: Throwable): String {
+        Log.w(TAG, "Library load failed: $failure", error)
+        return libraryErrorMessage(failure)
+    }
+
+    private companion object {
+        const val TAG = "LibraryViewModel"
+    }
+
     // ─── Filter/Sort Logic ────────────────────────────────────────────────
 
     private data class FilterSnapshot(
@@ -1078,7 +1089,7 @@ class LibraryViewModel @Inject constructor(
             // Decoding and sorting thousands of books stays off the main thread.
             load = { withContext(Dispatchers.Default) { buildFilterResult(snapshot) } },
             onFailure = { e ->
-                _uiState.update { it.copy(errorMessage = "Failed to load audiobooks: ${e.message}") }
+                _uiState.update { it.copy(errorMessage = loadFailureMessage(LibraryLoadFailure.SHELF, e)) }
             },
         ) { result ->
             result?.let(::publishFilterResult)
@@ -1094,6 +1105,20 @@ class LibraryViewModel @Inject constructor(
 }
 
 // ─── Load-path decisions (internal for testability) ───────────────────────
+
+/** What failed, for the Library's error banner. */
+internal enum class LibraryLoadFailure { LIBRARIES, BOOKS, SHELF }
+
+/**
+ * The banner line for a failed load, in the screen's own voice. The banner
+ * sits beside a Retry button. The exception text is for the log only, it
+ * means nothing to a listener.
+ */
+internal fun libraryErrorMessage(failure: LibraryLoadFailure): String = when (failure) {
+    LibraryLoadFailure.LIBRARIES -> "Libraries could not be loaded."
+    LibraryLoadFailure.BOOKS -> "Books could not be loaded."
+    LibraryLoadFailure.SHELF -> "Saved books could not be read."
+}
 
 internal sealed interface LibraryShelfDecision {
     data object Empty : LibraryShelfDecision

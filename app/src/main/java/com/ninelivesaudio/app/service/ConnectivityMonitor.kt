@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.SystemClock
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -19,6 +20,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -103,47 +105,115 @@ class ConnectivityMonitor @Inject constructor(
 
     // ─── Network Callback ─────────────────────────────────────────────────
 
+    // Every network the callbacks have reported, and whether it carries
+    // internet. The online flag is re-derived from all of them plus the OS
+    // default network, so one onLost (often for the old network after the
+    // new one is already up) cannot mark the app offline on its own.
+    private val knownNetworks = ConcurrentHashMap<Network, Boolean>()
+
+    // True once startMonitoring ran, so a foreground entry before settings
+    // load does not probe a blank server URL.
+    @Volatile private var monitoring = false
+
+    // Process-level background start (SystemClock.elapsedRealtime), 0 before
+    // the first trip to the background.
+    @Volatile private var processBackgroundedAt: Long = 0L
+
+    // Foreground-only OS re-reads while the network still reads as down
+    // right after the app comes back (see FOREGROUND_SETTLE_REREADS_MS).
+    private var settleJob: Job? = null
+    private val settleJobLock = Any()
+
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            refreshIsMetered()
-            _isOnline.value = true
-            updateConnectionStatus()
+            knownNetworks[network] = true
+            reevaluateNetwork()
             // Check server reachability on reconnect (deduplicated)
             launchReachabilityCheck()
         }
 
         override fun onLost(network: Network) {
-            refreshIsMetered()
-            // Check if we still have any active network
-            val activeNetwork = connectivityManager.activeNetwork
-            val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
-            val stillConnected = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-
-            if (!stillConnected) {
-                _isOnline.value = false
-                _isServerReachable.value = false
-                updateConnectionStatus()
-            }
+            knownNetworks.remove(network)
+            // Re-derive from every network still known plus the OS default.
+            // A backgrounded app can be network-blocked, so the OS default
+            // reads null here even with Wi-Fi up. Coming back to the
+            // foreground re-reads it (reevaluateOnForeground).
+            reevaluateNetwork()
         }
 
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
             // Fires when Wi-Fi is marked metered or not, too.
-            refreshIsMetered()
-            val hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            if (_isOnline.value != hasInternet) {
-                _isOnline.value = hasInternet
-                updateConnectionStatus()
-                if (hasInternet) {
-                    launchReachabilityCheck()
-                }
+            knownNetworks[network] = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val (wasOnline, online) = reevaluateNetwork()
+            if (online && !wasOnline) launchReachabilityCheck()
+        }
+
+        override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
+            // Android blocks a backgrounded app's network and unblocks it when
+            // the app returns. The unblock is the moment the OS default
+            // network becomes readable again.
+            if (blocked) return
+            val (wasOnline, online) = reevaluateNetwork()
+            if (online && (!wasOnline || !_isServerReachable.value)) {
+                launchReachabilityCheck()
             }
         }
     }
 
     /**
+     * Re-derives [isOnline] from the OS default network and every network the
+     * callbacks know about, and returns (online before, online now). Going
+     * offline also clears server reachability. No network request.
+     */
+    private fun reevaluateNetwork(): Pair<Boolean, Boolean> = synchronized(knownNetworks) {
+        val active = try {
+            connectivityManager.activeNetwork
+        } catch (_: Exception) {
+            null
+        }
+        val activeHasInternet = active?.let { hasInternet(it) } == true
+        // The default network is known too, so its replayed onAvailable at
+        // registration does not count as a new network.
+        if (active != null && activeHasInternet) knownNetworks[active] = true
+        val online = networkStateSaysOnline(
+            defaultHasInternet = activeHasInternet,
+            knownNetworksHaveInternet = knownNetworks.values,
+        )
+        val wasOnline = _isOnline.value
+        _isOnline.value = online
+        if (!online) _isServerReachable.value = false
+        refreshIsMetered()
+        updateConnectionStatus()
+        wasOnline to online
+    }
+
+    private fun hasInternet(network: Network): Boolean = try {
+        connectivityManager.getNetworkCapabilities(network)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * Drops networks the OS no longer knows (an onLost that never arrived
+     * while the app was frozen), so a stale entry cannot keep the app
+     * "online" with no network at all.
+     */
+    private fun pruneGoneNetworks() {
+        val gone = knownNetworks.keys.filter { network ->
+            try {
+                connectivityManager.getNetworkCapabilities(network) == null
+            } catch (_: Exception) {
+                true
+            }
+        }
+        gone.forEach { knownNetworks.remove(it) }
+    }
+
+    /**
      * Cancel any in-flight reachability check and start a fresh one.
      * Prevents unbounded concurrent server pings during network flaps
-     * (e.g., WiFi → cellular handoff firing onAvailable + onCapabilitiesChanged).
+     * (e.g., WiFi to cellular handoff firing onAvailable + onCapabilitiesChanged).
      */
     private fun launchReachabilityCheck(): Job =
         synchronized(reachabilityJobLock) {
@@ -169,6 +239,7 @@ class ConnectivityMonitor @Inject constructor(
         }
 
         // Initial state check
+        monitoring = true
         checkCurrentConnectivity()
 
         // Start the periodic server ping, foreground only: every 60 seconds,
@@ -194,6 +265,8 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     fun stopMonitoring() {
+        monitoring = false
+        cancelSettleRereads()
         try {
             connectivityManager.unregisterNetworkCallback(networkCallback)
         } catch (_: Exception) {}
@@ -226,11 +299,8 @@ class ConnectivityMonitor @Inject constructor(
      * checkServerReachable() call is left as the tap's single /ping.
      */
     fun refreshIsOnlineFromSystem() {
-        val activeNetwork = connectivityManager.activeNetwork
-        val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
-        _isOnline.value = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        refreshIsMetered()
-        updateConnectionStatus()
+        pruneGoneNetworks()
+        reevaluateNetwork()
     }
 
     /** Re-reads the default network's metered state from the OS. */
@@ -310,9 +380,67 @@ class ConnectivityMonitor @Inject constructor(
      * The app came to the foreground (true) or left it (false), from the
      * process lifecycle so it covers every activity together. The periodic
      * ping runs only in the foreground.
+     *
+     * Coming back re-reads the real network state first. Android blocks a
+     * backgrounded app's network, so a network change while it was away can
+     * leave [isOnline] false with Wi-Fi fine, and nothing else would ever
+     * re-read it (no ping runs in the background, and the ping loop cannot
+     * get past an offline flag). Call this before anything that reads
+     * [isOnline] on entry, such as SyncManager's entry check.
      */
     fun setAppForeground(inForeground: Boolean) {
-        appInForeground.value = inForeground
+        if (inForeground) {
+            val backgroundedAt = processBackgroundedAt
+            val backgroundForMs =
+                if (backgroundedAt == 0L) null else SystemClock.elapsedRealtime() - backgroundedAt
+            appInForeground.value = true
+            reevaluateOnForeground(backgroundForMs)
+        } else {
+            processBackgroundedAt = SystemClock.elapsedRealtime()
+            appInForeground.value = false
+            cancelSettleRereads()
+        }
+    }
+
+    /**
+     * Foreground entry: re-derive connectivity from the OS, probe the server
+     * when [foregroundEntryProbes] says so, and keep re-reading for a few
+     * seconds while the OS still reports no network (the unblock can land
+     * just after the app is visible).
+     */
+    private fun reevaluateOnForeground(backgroundForMs: Long?) {
+        if (!monitoring) return
+        pruneGoneNetworks()
+        val (wasOnline, online) = reevaluateNetwork()
+        Log.d(TAG, "foreground: background=${backgroundForMs}ms online $wasOnline -> $online")
+        if (foregroundEntryProbes(wasOnline, online, _isServerReachable.value, backgroundForMs)) {
+            launchReachabilityCheck()
+        }
+        if (!online) startSettleRereads()
+    }
+
+    private fun startSettleRereads() {
+        synchronized(settleJobLock) {
+            settleJob?.cancel()
+            settleJob = scope.launch {
+                rereadUntilOnline(FOREGROUND_SETTLE_REREADS_MS) {
+                    if (!appInForeground.value) return@rereadUntilOnline true
+                    val (wasOnline, online) = reevaluateNetwork()
+                    if (online && !wasOnline) {
+                        Log.d(TAG, "foreground settle: network readable again")
+                        launchReachabilityCheck()
+                    }
+                    online
+                }
+            }
+        }
+    }
+
+    private fun cancelSettleRereads() {
+        synchronized(settleJobLock) {
+            settleJob?.cancel()
+            settleJob = null
+        }
     }
 
     /**
@@ -327,11 +455,11 @@ class ConnectivityMonitor @Inject constructor(
      * Called when the app returns to the foreground (Activity.onStart).
      *
      * After device sleep or extended background, TCP connections in OkHttp's
-     * pool are often dead but not yet detected — making all API calls fail
-     * until the pool cycles. Fix: evict idle connections immediately, then
-     * force a server reachability check so the rest of the app knows the
-     * connection state within seconds. Nothing pings while the app is in the
-     * background, so this check is what refreshes a stale state.
+     * pool are often dead but not yet detected, making all API calls fail
+     * until the pool cycles. Fix: evict idle connections immediately. The
+     * reachability check that follows runs from [setAppForeground], which
+     * the process lifecycle calls just after this, once the network state
+     * has been re-read.
      */
     fun onAppForegrounded() {
         // Never backgrounded yet (first foreground after cold start): there are
@@ -343,7 +471,7 @@ class ConnectivityMonitor @Inject constructor(
         val elapsed = System.currentTimeMillis() - backgroundedAt
         if (elapsed < MIN_BACKGROUND_DURATION_MS) return
 
-        Log.d(TAG, "onAppForegrounded: background=${elapsed}ms — evicting stale connections")
+        Log.d(TAG, "onAppForegrounded: background=${elapsed}ms, evicting stale connections")
 
         // Kill stale TCP connections so the next request opens a fresh socket
         try {
@@ -351,9 +479,6 @@ class ConnectivityMonitor @Inject constructor(
         } catch (e: Exception) {
             Log.w(TAG, "onAppForegrounded: evictAll failed: ${e.message}")
         }
-
-        // Force immediate server check (the periodic ping was off in the background)
-        launchReachabilityCheck()
 
         // Notify observers (PlaybackManager) that we're back from background
         _appResumedFromBackground.tryEmit(Unit)
@@ -471,4 +596,71 @@ internal class ReachabilityCheckGate(
     private val mutex = Mutex()
 
     suspend fun run(): Boolean = mutex.withLock { check() }
+}
+
+/**
+ * Whether the app has a network, from the OS default network and every
+ * network the callbacks still know about. A single onLost used to decide this
+ * from the default network alone, which reads null for a backgrounded app
+ * Android has network-blocked, so the old Wi-Fi's onLost marked the app
+ * offline with the new Wi-Fi already up. INTERNET, not VALIDATED: a home
+ * server on a LAN with no route to the internet never validates.
+ */
+internal fun networkStateSaysOnline(
+    defaultHasInternet: Boolean,
+    knownNetworksHaveInternet: Collection<Boolean>,
+): Boolean = defaultHasInternet || knownNetworksHaveInternet.any { it }
+
+/** Minimum background time before a foreground entry re-probes a server that was answering. */
+internal const val FOREGROUND_REPROBE_AFTER_MS = 5_000L
+
+/**
+ * Whether a foreground entry probes the server, after the network state has
+ * just been re-read from the OS.
+ *
+ * - No network: nothing to probe.
+ * - The re-read found a network the stale state had missed: probe, this is
+ *   the stuck "Offline" coming unstuck.
+ * - The server is not marked reachable: probe, so the screen stops lying.
+ * - First entry after a cold start ([backgroundForMs] null): startMonitoring
+ *   already probes.
+ * - Otherwise only after a real trip to the background, not a quick flip.
+ */
+internal fun foregroundEntryProbes(
+    wasOnline: Boolean,
+    isOnline: Boolean,
+    isServerReachable: Boolean,
+    backgroundForMs: Long?,
+): Boolean = when {
+    !isOnline -> false
+    !wasOnline -> true
+    !isServerReachable -> true
+    backgroundForMs == null -> false
+    else -> backgroundForMs >= FOREGROUND_REPROBE_AFTER_MS
+}
+
+/**
+ * When a foreground entry still reads no network, how long after it to read
+ * the OS state again. Android lifts its background network block a moment
+ * after the app is visible. Reads only (no request), foreground only, and it
+ * stops at the first one that finds a network.
+ */
+internal val FOREGROUND_SETTLE_REREADS_MS = listOf(1_000L, 2_000L, 4_000L)
+
+/**
+ * Waits out each delay in [delaysMs] and calls [reread], stopping as soon as
+ * it returns true. Returns how many rereads ran.
+ */
+internal suspend fun rereadUntilOnline(
+    delaysMs: List<Long>,
+    sleep: suspend (Long) -> Unit = { delay(it) },
+    reread: () -> Boolean,
+): Int {
+    var reads = 0
+    for (wait in delaysMs) {
+        sleep(wait)
+        reads += 1
+        if (reread()) break
+    }
+    return reads
 }

@@ -80,6 +80,10 @@ class SyncManager @Inject constructor(
     // debounce. In memory on purpose: a cold start should always check.
     @Volatile private var lastCheckAtMs: Long? = null
 
+    // A foreground entry or timer check found the app not ready (offline)
+    // and ran nothing. Cleared by the next check that runs.
+    @Volatile private var missedCheckWhileNotReady = false
+
     // Set from the process lifecycle (NineLivesApp). The timer only runs
     // while this is true.
     private val appInForeground = MutableStateFlow(false)
@@ -192,10 +196,11 @@ class SyncManager @Inject constructor(
                 ) { status, settings -> isServerSessionLive(status, settings.appMode) }
                     .distinctUntilChanged()
                     .collect { live ->
-                        if (live && appInForeground.value &&
-                            isCheckDue(lastCheckAtMs, monotonicNowMs()) &&
-                            shouldResyncOnServerReturn(
-                                settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
+                        if (live && shouldCheckOnServerReturn(
+                                inForeground = appInForeground.value,
+                                checkDue = isCheckDue(lastCheckAtMs, monotonicNowMs()),
+                                missedCheckWhileNotReady = missedCheckWhileNotReady,
+                                lastResult = settingsManager.currentSettings.lastSyncForCurrentServer()?.result,
                             )
                         ) {
                             checkNow()
@@ -235,7 +240,11 @@ class SyncManager @Inject constructor(
 
     /** A timer tick or foreground entry: a check, unless one just ran, then the offline queue. */
     private suspend fun runForegroundCheck() {
-        if (isCheckDue(lastCheckAtMs, monotonicNowMs())) checkNow()
+        if (isCheckDue(lastCheckAtMs, monotonicNowMs())) {
+            // Offline on entry (the network still coming back) runs nothing.
+            // The server-return listener above runs the check once connected.
+            if (checkNow().attempt == SyncAttempt.SKIPPED_NOT_READY) missedCheckWhileNotReady = true
+        }
         // Retry the offline queue too. The rising-edge flush only fires once
         // per reconnect, so a push that failed right after reconnect would
         // otherwise sit queued until the next full disconnect/reconnect cycle.
@@ -290,6 +299,7 @@ class SyncManager @Inject constructor(
                 _isSyncing.value = false
                 connectivityMonitor.setSyncing(false)
                 lastCheckAtMs = monotonicNowMs()
+                missedCheckWhileNotReady = false
             },
             // Progress sync FIRST — this populates the home screen grid
             // immediately. Library sync runs after (heavier, fetches all
@@ -754,6 +764,22 @@ internal fun isServerSessionLive(
  */
 internal fun shouldResyncOnServerReturn(lastResult: SyncResult?): Boolean =
     lastResult != null && lastResult != SyncResult.SUCCESS
+
+/**
+ * Whether the server coming back (status turning Connected) runs a check:
+ * foreground only, under the two-minute debounce, and only when the last
+ * attempt did not fully succeed or a foreground check was skipped because
+ * the app was offline at the time. The second case is the app coming back
+ * from the background reading "Offline" for a moment: its entry check ran
+ * nothing, and without this the shelf waited 15 minutes for the next timer.
+ */
+internal fun shouldCheckOnServerReturn(
+    inForeground: Boolean,
+    checkDue: Boolean,
+    missedCheckWhileNotReady: Boolean,
+    lastResult: SyncResult?,
+): Boolean = inForeground && checkDue &&
+    (missedCheckWhileNotReady || shouldResyncOnServerReturn(lastResult))
 
 internal fun shouldReconnectForModeTransition(
     previousMode: AppMode,

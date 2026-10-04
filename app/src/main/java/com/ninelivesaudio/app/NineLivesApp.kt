@@ -136,8 +136,10 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
-                    syncManager.setAppForeground(true)
+                    // Connectivity first: it re-reads the real network state,
+                    // which the sync's entry check then reads.
                     connectivityMonitor.setAppForeground(true)
+                    syncManager.setAppForeground(true)
                 }
                 override fun onStop(owner: LifecycleOwner) {
                     syncManager.setAppForeground(false)

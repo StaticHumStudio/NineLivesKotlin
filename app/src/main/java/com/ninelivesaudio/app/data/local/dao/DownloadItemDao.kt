@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.ninelivesaudio.app.data.local.entity.DownloadItemEntity
+import com.ninelivesaudio.app.data.local.entity.DownloadRowWithBook
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -32,15 +33,21 @@ interface DownloadItemDao {
     suspend fun deleteAll()
 
     /**
-     * Active downloads. Status 0=Queued, 1=Downloading, 2=Paused, 6=Preparing.
-     *
-     * Preparing is included so a provisional slot claim stays VISIBLE while its
-     * metadata fetch is in flight. Leaving it out would make a book the user
-     * just asked for vanish from the Downloads screen for the length of a
-     * network round trip, which reads as the tap having done nothing.
+     * Every download row whose book is still cached, with that book's cover and
+     * downloaded flag, for the Downloads screen. Rows for a book that left the
+     * database drop out, as they always have. Which rows land in the active and
+     * completed lists is decided in Kotlin by `splitDownloadRows`.
      */
-    @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1, 2, 6) ORDER BY StartedAt DESC")
-    fun observeActive(): Flow<List<DownloadItemEntity>>
+    @Query(
+        """
+        SELECT d.*,
+               COALESCE(ab.LocalCoverPath, ab.CoverPath) AS BookCoverPath,
+               ab.IsDownloaded AS BookIsDownloaded
+        FROM DownloadItems d
+        INNER JOIN AudioBooks ab ON ab.Id = d.AudioBookId
+        """
+    )
+    fun observeAllWithBooks(): Flow<List<DownloadRowWithBook>>
 
     /**
      * Downloadable items for the drain worker: Queued (0) or interrupted
@@ -53,8 +60,4 @@ interface DownloadItemDao {
      */
     @Query("SELECT * FROM DownloadItems WHERE Status IN (0, 1) ORDER BY StartedAt ASC")
     suspend fun getDownloadable(): List<DownloadItemEntity>
-
-    /** Get completed downloads. Status 3=Completed */
-    @Query("SELECT * FROM DownloadItems WHERE Status = 3 ORDER BY CompletedAt DESC")
-    fun observeCompleted(): Flow<List<DownloadItemEntity>>
 }

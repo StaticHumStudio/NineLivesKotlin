@@ -43,6 +43,10 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getByIds(ids: List<String>): List<AudioBookEntity>
 
+    /** Every stored localPath except [excludeId]'s, for the shared-folder check on cancel. */
+    @Query("SELECT LocalPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != ''")
+    suspend fun getLocalPathsExcept(excludeId: String): List<String>
+
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     fun observeById(id: String): Flow<AudioBookEntity?>
 

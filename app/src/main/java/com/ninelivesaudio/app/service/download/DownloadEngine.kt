@@ -296,28 +296,37 @@ class DownloadEngine @Inject constructor(
         return File(basePath, folderName)
     }
 
+    /**
+     * Where [audioBook]'s download folder is under the current settings, for
+     * cancel cleanup. Resolves exactly like [getDownloadPath] but creates
+     * nothing.
+     */
+    internal fun downloadLocationFor(audioBook: AudioBook): DownloadLocation {
+        val (root, appOwned) = resolveDownloadRoot(
+            configuredPath = settingsManager.currentSettings.downloadPath,
+            defaultRoot = defaultBasePath(),
+        )
+        val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
+        return DownloadLocation(root = root, folder = File(root, folderName), rootIsAppOwned = appOwned)
+    }
+
     /** Base storage directory for all downloads. */
     private fun getBasePath(): File {
         // Respect user-configured path when possible, with path traversal validation.
         val configuredPath = settingsManager.currentSettings.downloadPath.trim()
-        if (configuredPath.isNotEmpty()) {
-            try {
-                val candidate = File(configuredPath).canonicalFile
-                // Reject paths targeting sensitive system directories
-                val forbidden = listOf("/system", "/data/data", "/data/user", "/proc", "/dev")
-                val isSafe = forbidden.none { candidate.absolutePath.startsWith(it) }
-                if (isSafe) {
-                    return candidate.also { it.mkdirs() }
-                }
-                Log.w(TAG, "getBasePath: Configured path rejected (targets system dir): $configuredPath")
-            } catch (e: Exception) {
-                Log.w(TAG, "getBasePath: Failed to resolve configured path: $configuredPath", e)
-            }
+        val fallback = defaultBasePath()
+        val (root, _) = resolveDownloadRoot(configuredPath, fallback)
+        // The fallback instance itself comes back only when the configured path lost.
+        if (configuredPath.isNotEmpty() && root === fallback) {
+            Log.w(TAG, "getBasePath: Configured path rejected or unresolvable: $configuredPath")
         }
+        return root.also { it.mkdirs() }
+    }
 
-        // Fallback to app-specific external storage.
+    /** App-specific external storage, the fallback root. */
+    private fun defaultBasePath(): File {
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
-        return File(musicDir, "Audiobookshelf").also { it.mkdirs() }
+        return File(musicDir, "Audiobookshelf")
     }
 }
 

@@ -1407,7 +1407,8 @@ internal suspend fun arrangeShelf(
 /**
  * Groups shelf books. [books] must already be in [sortMode] order (the shelf
  * sorts once before grouping), and each group keeps that order, so groups are
- * not sorted again.
+ * not sorted again. The one exception is a series in Series view, which reads
+ * in [seriesReadingOrder].
  */
 internal fun buildGroupedSections(
     books: List<AudioBook>,
@@ -1423,10 +1424,52 @@ internal fun buildGroupedSections(
         keys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }
 
-    return grouped.entries
+    val sections = grouped.entries
         .map { (key, values) -> SectionSortEntry(GroupedSection(key = key, title = key, books = values)) }
         .sortedWith(groupedSectionComparator(sortMode))
         .map { it.section }
+    if (viewMode != ViewMode.SERIES) return sections
+
+    // Only now, after the groups are ordered by their books in shelf order,
+    // does each series switch to reading order. A Recently Added shelf still
+    // lists the series with the newest book first. Books with no series are
+    // not a series, so they keep the shelf order.
+    return sections.map { section ->
+        if (section.key == UNKNOWN_SERIES_GROUP) section
+        else section.copy(books = seriesReadingOrder(section.books))
+    }
+}
+
+/**
+ * A series' books in reading order (issue #63): by sequence, compared as
+ * numbers, so 2 comes before 10 and 1.5 sits between 1 and 2. A book with no
+ * sequence, or one that is not a plain number, goes last. Ties go by title,
+ * and books that still tie keep the order they came in.
+ */
+internal fun seriesReadingOrder(books: List<AudioBook>): List<AudioBook> {
+    if (books.size < 2) return books
+    return books
+        .map { SeriesOrderEntry(it) }
+        .sortedWith(compareBy<SeriesOrderEntry, Double?>(nullsLast()) { it.sequence }.thenBy { it.titleKey })
+        .map { it.book }
+}
+
+private val PLAIN_SEQUENCE_NUMBER = Regex("""\d+(?:[.,]\d+)?""")
+
+/**
+ * A series sequence as a number: "10", "1.5", or "1,5" as some tags write
+ * it. Null for anything else ("Book 3", "1-3", blank), which sorts last.
+ */
+internal fun seriesSequenceNumber(sequence: String?): Double? {
+    val text = sequence?.trim() ?: return null
+    if (!PLAIN_SEQUENCE_NUMBER.matches(text)) return null
+    return text.replace(',', '.').toDoubleOrNull()
+}
+
+/** A book with its reading order keys worked out once, not on every compare. */
+private class SeriesOrderEntry(val book: AudioBook) {
+    val sequence: Double? = seriesSequenceNumber(book.seriesSequence)
+    val titleKey: String = book.title.lowercase()
 }
 
 /** Grouped views start collapsed when they have more groups than this. */

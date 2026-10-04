@@ -866,6 +866,18 @@ class PlaybackManager @Inject constructor(
                 )
             ) return@withNewLoadRequest false
 
+            // Nothing pings while the app is in the background, so a car
+            // session can start on a stale "unreachable". Probe once before
+            // the load refuses a streamed book on it, the way restore does.
+            if (
+                shouldProbeServerBeforeRestore(
+                    book = book,
+                    connectionStatus = connectivityMonitor.connectionStatus.value,
+                )
+            ) {
+                connectivityMonitor.checkServerReachable()
+            }
+
             withContext(Dispatchers.Main) {
                 loadAudioBookOwned(loadRequest, book, skipServiceStart = true)
             }

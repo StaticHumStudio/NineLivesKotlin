@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
@@ -61,6 +62,10 @@ class ConnectivityMonitor @Inject constructor(
 
     // Track when the app went to background for debouncing foreground recovery
     @Volatile private var backgroundedAt: Long = 0L
+
+    // Set from the process lifecycle (NineLivesApp). The periodic ping only
+    // runs while this is true.
+    private val appInForeground = MutableStateFlow(false)
 
     // Emitted when the app returns from a meaningful background period
     private val _appResumedFromBackground = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -166,20 +171,25 @@ class ConnectivityMonitor @Inject constructor(
         // Initial state check
         checkCurrentConnectivity()
 
-        // Start the periodic server ping: every 60 seconds, or 15 while the
-        // network is up and the server is not answering, so a server that
-        // comes back is noticed soon.
+        // Start the periodic server ping, foreground only: every 60 seconds,
+        // or 15 while the network is up and the server is not answering, so a
+        // server that comes back is noticed soon. collectLatest cancels the
+        // loop the moment the app leaves the foreground. In the background
+        // the network callbacks still re-check on every network change, and
+        // the playback progress push marks the server reachable when it lands
+        // (see reportServerAnswered), so nothing needs a timer there.
         pingJob?.cancel()
         pingJob = scope.launch {
-            while (isActive) {
-                delay(nextPingDelayMs(isOnline = _isOnline.value, isServerReachable = _isServerReachable.value))
+            runForegroundPing(
+                appInForeground = appInForeground,
+                nextDelayMs = { nextPingDelayMs(isOnline = _isOnline.value, isServerReachable = _isServerReachable.value) },
                 // Route through launchReachabilityCheck so the periodic ping
                 // shares the single-flight cancellation with the callback- and
                 // foreground-driven checks. Calling checkServerReachable()
                 // directly let two checks race and the slower (stale) one win
                 // the last write to _isServerReachable.
-                launchReachabilityCheck().join()
-            }
+                check = { launchReachabilityCheck().join() },
+            )
         }
     }
 
@@ -273,6 +283,20 @@ class ConnectivityMonitor @Inject constructor(
             }
         }
 
+    /**
+     * A real request to the server just succeeded (a playback progress push).
+     * That proves reachability better than a /ping, and with no ping in the
+     * background it is how a server marked unreachable comes back while the
+     * app is not visible, which in turn flushes the offline progress queue
+     * and lets Android Auto stream again. A failed request proves nothing,
+     * so there is no counterpart: only a probe marks the server unreachable.
+     */
+    fun reportServerAnswered() {
+        if (!serverAnswerMarksReachable(_isOnline.value, _isServerReachable.value)) return
+        _isServerReachable.value = true
+        updateConnectionStatus()
+    }
+
     // ─── Sync State (updated by SyncManager) ─────────────────────────────
 
     fun setSyncing(syncing: Boolean) {
@@ -281,6 +305,15 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     // ─── App Lifecycle (foreground / background) ─────────────────────────
+
+    /**
+     * The app came to the foreground (true) or left it (false), from the
+     * process lifecycle so it covers every activity together. The periodic
+     * ping runs only in the foreground.
+     */
+    fun setAppForeground(inForeground: Boolean) {
+        appInForeground.value = inForeground
+    }
 
     /**
      * Called when the app moves to the background (Activity.onStop).
@@ -297,7 +330,8 @@ class ConnectivityMonitor @Inject constructor(
      * pool are often dead but not yet detected — making all API calls fail
      * until the pool cycles. Fix: evict idle connections immediately, then
      * force a server reachability check so the rest of the app knows the
-     * connection state within seconds instead of waiting up to 60s.
+     * connection state within seconds. Nothing pings while the app is in the
+     * background, so this check is what refreshes a stale state.
      */
     fun onAppForegrounded() {
         // Never backgrounded yet (first foreground after cold start): there are
@@ -318,7 +352,7 @@ class ConnectivityMonitor @Inject constructor(
             Log.w(TAG, "onAppForegrounded: evictAll failed: ${e.message}")
         }
 
-        // Force immediate server check (don't wait for the 60s timer)
+        // Force immediate server check (the periodic ping was off in the background)
         launchReachabilityCheck()
 
         // Notify observers (PlaybackManager) that we're back from background
@@ -400,6 +434,32 @@ internal suspend fun probeServerWithRetry(
     if (!stillOnline()) return false
     return probe(retryBudgetMs)
 }
+
+/**
+ * The periodic ping loop. It runs only while [appInForeground] is true and
+ * stops the moment it turns false, so nothing pings in the background.
+ */
+internal suspend fun runForegroundPing(
+    appInForeground: StateFlow<Boolean>,
+    nextDelayMs: () -> Long,
+    sleep: suspend (Long) -> Unit = { delay(it) },
+    check: suspend () -> Unit,
+) {
+    appInForeground.collectLatest { inForeground ->
+        if (!inForeground) return@collectLatest
+        while (true) {
+            sleep(nextDelayMs())
+            check()
+        }
+    }
+}
+
+/**
+ * A successful server request marks the server reachable only while the OS
+ * reports a network, and only when it is not already marked reachable.
+ */
+internal fun serverAnswerMarksReachable(isOnline: Boolean, isServerReachable: Boolean): Boolean =
+    isOnline && !isServerReachable
 
 /** How long the periodic ping waits before its next probe. */
 internal fun nextPingDelayMs(isOnline: Boolean, isServerReachable: Boolean): Long =

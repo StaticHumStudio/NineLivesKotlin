@@ -598,6 +598,9 @@ class SyncManager @Inject constructor(
 
         if (pushed) {
             playbackThrottleOwner.recordSuccess(itemId, safeCurrentTime, now)
+            // Nothing pings in the background, so a push that lands is what
+            // tells a background session the server is back.
+            connectivityMonitor.reportServerAnswered()
         }
     }
 

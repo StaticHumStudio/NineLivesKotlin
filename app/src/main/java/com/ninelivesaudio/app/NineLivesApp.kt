@@ -131,11 +131,18 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // waits a moment past the last activity so a rotation is not a trip
         // to the background. Registered here, before settings load, so the
         // first foreground entry is never missed: the flag is state, and the
-        // timer reads it whenever SyncManager.start() gets to it.
+        // timer reads it whenever SyncManager.start() gets to it. The server
+        // ping follows the same flag, so nothing polls in the background.
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
-                override fun onStart(owner: LifecycleOwner) = syncManager.setAppForeground(true)
-                override fun onStop(owner: LifecycleOwner) = syncManager.setAppForeground(false)
+                override fun onStart(owner: LifecycleOwner) {
+                    syncManager.setAppForeground(true)
+                    connectivityMonitor.setAppForeground(true)
+                }
+                override fun onStop(owner: LifecycleOwner) {
+                    syncManager.setAppForeground(false)
+                    connectivityMonitor.setAppForeground(false)
+                }
             }
         )
 

@@ -192,6 +192,29 @@ internal fun incrementalCountsAgree(
 ): Boolean = previousCount + newBookCount == serverTotal
 
 /**
+ * How many of the fetched books the last good sync's count left out. A book
+ * added after the stored newest one cannot be in that count, even when the
+ * cache already holds it: an earlier check whose counts disagreed saved it,
+ * or a progress pull, or a full download that stopped short. Counting by
+ * cache presence alone let the retry after "one removed, one added" read
+ * 100 + 0 = 100 and call the shelf current with the removed book still on
+ * it. A book inside the overlap window counts only when the cache lacks it.
+ */
+internal fun newBooksSinceWatermark(
+    watermark: LibrarySyncWatermark,
+    fetched: List<AudioBook>,
+    alreadyCached: Set<String>,
+): Int {
+    val storedNewest = watermark.newestAddedAt
+    return fetched.distinctBy { it.id }.count { book ->
+        val added = book.addedAt
+        book.id !in alreadyCached ||
+            storedNewest == null ||
+            (added != null && added > storedNewest && book.id != watermark.newestItemId)
+    }
+}
+
+/**
  * Running totals of a full download, kept page by page so the books
  * themselves never have to be held: how many distinct books, the newest by
  * added date, and whether any book came without an added date.

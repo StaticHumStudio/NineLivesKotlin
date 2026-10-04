@@ -151,6 +151,23 @@ class LibrarySyncPlannerTest {
     }
 
     @Test
+    fun `a retry after one removed and one added still disagrees when the added book is already cached`() {
+        // Server deleted one book and added li_new, keeping 100. The first
+        // check saved li_new and deferred. The retry finds it cached.
+        val fetched = listOf(AudioBook(id = "li_new", addedAt = 9_000L), AudioBook(id = "li_newest", addedAt = 5_000L))
+        val newCount = newBooksSinceWatermark(watermark(), fetched, alreadyCached = setOf("li_new", "li_newest"))
+        assertEquals(1, newCount)
+        assertFalse(incrementalCountsAgree(previousCount = 100, newBookCount = newCount, serverTotal = 100))
+    }
+
+    @Test
+    fun `a book inside the overlap window counts as new only when the cache lacks it`() {
+        val overlap = listOf(AudioBook(id = "li_late", addedAt = 4_990L))
+        assertEquals(0, newBooksSinceWatermark(watermark(), overlap, alreadyCached = setOf("li_late")))
+        assertEquals(1, newBooksSinceWatermark(watermark(), overlap, alreadyCached = emptySet()))
+    }
+
+    @Test
     fun `an incremental sync moves the watermark to the server's newest book`() {
         val fetched = listOf(AudioBook(id = "li_new", addedAt = 9_000L), AudioBook(id = "li_newest", addedAt = 5_000L))
         val next = watermarkAfterIncremental(watermark(lastFullSyncAtMs = 7L), fetched, serverTotal = 101, nowMs = 50L)

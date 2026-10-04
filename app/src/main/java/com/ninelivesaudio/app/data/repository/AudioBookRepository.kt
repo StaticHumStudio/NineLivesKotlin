@@ -330,7 +330,7 @@ class AudioBookRepository @Inject constructor(
         val alreadyCached = fetchByIdChunks(books.map { it.id }) { ids ->
             audioBookDao.getServerIdsInLibrary(libraryId, ids)
         }.toHashSet()
-        val newBookCount = books.count { it.id !in alreadyCached }
+        val newBookCount = newBooksSinceWatermark(watermark, books, alreadyCached)
         if (books.isNotEmpty()) {
             val merged = mergeForSave(books)
             // Added books are saved even when the counts disagree below: they
@@ -339,6 +339,10 @@ class AudioBookRepository @Inject constructor(
             _booksSaved.tryEmit(libraryId)
         }
         if (!incrementalCountsAgree(watermark.itemCount, newBookCount, value.total)) {
+            // The books just saved are not in the watermark's count, so it no
+            // longer describes the cache. Forgetting it keeps every later
+            // check on the full download until one completes.
+            watermarkStore.remove(key, libraryId)
             return fallBackToFullLocked(
                 libraryId,
                 "server has ${value.total} books, expected ${watermark.itemCount} + $newBookCount new",

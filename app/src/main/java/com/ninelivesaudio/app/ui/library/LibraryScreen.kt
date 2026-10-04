@@ -45,6 +45,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.components.BookCoverImage
+import com.ninelivesaudio.app.ui.components.THUMBNAIL_COVER_WIDTH_PX
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
@@ -794,6 +795,7 @@ private fun ArchiveBookListItem(
                         modifier = Modifier.fillMaxSize(),
                         title = book.title,
                         bookId = book.id,
+                        thumbnailWidthPx = THUMBNAIL_COVER_WIDTH_PX,
                     )
                 }
 

@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.BookCoverImage
+import com.ninelivesaudio.app.ui.components.THUMBNAIL_COVER_WIDTH_PX
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.util.toDisplaySize
 
@@ -174,6 +175,7 @@ private fun ActiveDownloadCard(
                         modifier = Modifier.fillMaxSize(),
                         title = download.title,
                         bookId = download.audioBookId,
+                        thumbnailWidthPx = THUMBNAIL_COVER_WIDTH_PX,
                     )
                 }
 
@@ -346,6 +348,7 @@ private fun CompletedDownloadCard(
                     modifier = Modifier.fillMaxSize(),
                     title = download.title,
                     bookId = download.audioBookId,
+                    thumbnailWidthPx = THUMBNAIL_COVER_WIDTH_PX,
                 )
             }
 

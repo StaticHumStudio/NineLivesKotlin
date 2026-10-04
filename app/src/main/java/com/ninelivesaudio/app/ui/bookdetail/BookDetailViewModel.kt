@@ -15,6 +15,7 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -423,8 +424,7 @@ class BookDetailViewModel @Inject constructor(
                         it.copy(
                             downloadState = previous,
                             downloadProgress = 0,
-                            downloadNotice = "Free keeps one downloaded book at a time. " +
-                                "Delete the one you have, or unlock for unlimited offline books.",
+                            downloadNotice = FreeTier.DOWNLOAD_SLOT_NOTICE,
                             downloadNoticeOffersUnlock = true,
                         )
                     }

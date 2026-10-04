@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.ui.downloads
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -61,6 +62,20 @@ fun DownloadsScreen(
                 contentPadding = PaddingValues(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                uiState.notice?.let { message ->
+                    item {
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = NineLivesTheme.colors.archiveTextMuted,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = viewModel::dismissNotice)
+                                .padding(vertical = 8.dp),
+                        )
+                    }
+                }
+
                 // ── Active Downloads Section ──────────────────────────
                 if (uiState.activeDownloads.isNotEmpty()) {
                     item {

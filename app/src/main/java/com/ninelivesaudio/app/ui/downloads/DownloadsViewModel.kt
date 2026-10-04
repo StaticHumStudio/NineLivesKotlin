@@ -7,6 +7,7 @@ import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadItem
+import com.ninelivesaudio.app.entitlement.FreeTier
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.DownloadManager
@@ -37,6 +38,8 @@ class DownloadsViewModel @Inject constructor(
         val showEmptyState: Boolean = true,
         val connectionStatus: ConnectionStatus = ConnectionStatus.OFFLINE,
         val isLocalMode: Boolean = false,
+        /** Why the last Resume or Retry did not start, or null. */
+        val notice: String? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -152,8 +155,13 @@ class DownloadsViewModel @Inject constructor(
 
     fun resumeDownload(downloadId: String) {
         viewModelScope.launch {
-            downloadManager.resumeDownload(downloadId)
+            val result = downloadManager.resumeDownload(downloadId)
+            _uiState.update { it.copy(notice = resumeNotice(result)) }
         }
+    }
+
+    fun dismissNotice() {
+        _uiState.update { it.copy(notice = null) }
     }
 
     fun cancelDownload(downloadId: String) {
@@ -174,4 +182,14 @@ class DownloadsViewModel @Inject constructor(
             downloadManager.queueDownload(audioBook)
         }
     }
+}
+
+/**
+ * A Retry the free slot refuses has to say so. It used to requeue anyway and
+ * sit in Queued forever with no word.
+ */
+internal fun resumeNotice(result: DownloadManager.ResumeResult): String? = when (result) {
+    DownloadManager.ResumeResult.BLOCKED_BY_FREE_SLOT -> FreeTier.DOWNLOAD_SLOT_NOTICE
+    DownloadManager.ResumeResult.RESUMED,
+    DownloadManager.ResumeResult.NOT_RESUMABLE -> null
 }

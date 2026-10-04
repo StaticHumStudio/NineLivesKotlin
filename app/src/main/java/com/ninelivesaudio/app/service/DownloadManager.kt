@@ -27,6 +27,8 @@ import com.ninelivesaudio.app.service.download.finishInOwnerScope
 import com.ninelivesaudio.app.service.download.lookUpInChunks
 import com.ninelivesaudio.app.service.download.pauseKeepsCompletedRow
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
+import com.ninelivesaudio.app.service.download.ResumeDecision
+import com.ninelivesaudio.app.service.download.decideResume
 import com.ninelivesaudio.app.service.download.selectNextDownload
 import com.ninelivesaudio.app.service.download.writeAfterEngineStops
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -530,17 +532,33 @@ class DownloadManager @Inject constructor(
     }
 
     /** Resume a paused/failed download by re-queuing it and ensuring the drain runs. */
-    suspend fun resumeDownload(downloadId: String) {
+    /** How a Resume or Retry tap went. */
+    enum class ResumeResult { RESUMED, BLOCKED_BY_FREE_SLOT, NOT_RESUMABLE }
+
+    suspend fun resumeDownload(downloadId: String): ResumeResult {
         // One critical section from the read to the drain start, so a cancel
         // either sees the Queued row or deletes it before this reads it.
         rowMutex.withLock {
-            val entity = downloadItemDao.getById(downloadId) ?: return
-            val item = entity.toDomain()
-            if (item.status != DownloadStatus.Paused && item.status != DownloadStatus.Failed) return
-
-            // Reset to Queued. The engine skips already-finished files on re-run.
-            downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
-            if (!downloadsPaused) enqueueDrainHoldingRowLock(replace = false)
+            val entity = downloadItemDao.getById(downloadId) ?: return ResumeResult.NOT_RESUMABLE
+            val decision = slotMutex.withLock {
+                val decided = decideResume(entity.toDomain().status) {
+                    slotStore.canClaim(entity.audioBookId)
+                }
+                if (decided == ResumeDecision.REQUEUE) {
+                    // Reset to Queued. The engine skips already-finished files on re-run.
+                    downloadItemDao.upsert(entity.copy(status = DownloadStatus.Queued.ordinal))
+                    if (slotStore.slotApplies) slotStore.persistedWinner = entity.audioBookId
+                }
+                decided
+            }
+            return when (decision) {
+                ResumeDecision.REQUEUE -> {
+                    if (!downloadsPaused) enqueueDrainHoldingRowLock(replace = false)
+                    ResumeResult.RESUMED
+                }
+                ResumeDecision.BLOCKED_BY_FREE_SLOT -> ResumeResult.BLOCKED_BY_FREE_SLOT
+                ResumeDecision.IGNORE -> ResumeResult.NOT_RESUMABLE
+            }
         }
     }
 

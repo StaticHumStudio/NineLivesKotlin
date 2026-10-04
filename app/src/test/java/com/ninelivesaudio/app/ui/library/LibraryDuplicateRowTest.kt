@@ -39,32 +39,36 @@ class LibraryDuplicateRowTest {
     fun `an author line that repeats a name lists the book once`() {
         val books = listOf(
             book("a", "A", "John Smith, John Smith"),
-            book("b", "B", "John Smith, john  smith"),
+            book("b", "B", "John Smith, John  Smith"),
             book("c", "C", " John Smith ,  JOHN SMITH"),
         )
 
         val sections = buildGroupedSections(books, ViewMode.AUTHOR, SortMode.TITLE_AZ)
 
-        assertEquals(listOf("John Smith"), sections.map { it.key })
-        assertEquals(listOf("a", "b", "c"), sections.single().books.map { it.id })
-        assertNoRepeatedRows(flattenGroupedItems(sections, mapOf("John Smith" to true)))
+        assertEquals(setOf("John Smith", "JOHN SMITH"), sections.map { it.key }.toSet())
+        assertEquals(listOf("a", "b", "c"), sections.single { it.key == "John Smith" }.books.map { it.id })
+        assertEquals(listOf("c"), sections.single { it.key == "JOHN SMITH" }.books.map { it.id })
+        assertNoRepeatedRows(flattenGroupedItems(sections, mapOf("John Smith" to true, "JOHN SMITH" to true)))
     }
 
     @Test
-    fun `names that differ only in capitals or spacing are one group`() {
+    fun `spacing variants are one group and capitals stay apart`() {
         val books = listOf(
             book("a", "A", "Ursula K. Le Guin"),
-            book("b", "B", "ursula k. le guin"),
-            book("c", "C", "Ursula  K.  Le Guin, Neil Gaiman"),
-            book("d", "D", "NEIL GAIMAN"),
+            book("b", "B", "Ursula  K.  Le Guin, Neil Gaiman"),
+            book("c", "C", "Saga Author", series = "Saga"),
+            book("d", "D", "Saga Author", series = "SAGA"),
         )
 
-        val sections = buildGroupedSections(books, ViewMode.AUTHOR, SortMode.TITLE_AZ)
+        val authors = buildGroupedSections(books, ViewMode.AUTHOR, SortMode.TITLE_AZ)
+        assertEquals(listOf("a", "b"), authors.single { it.key == "Ursula K. Le Guin" }.books.map { it.id })
+        assertEquals(listOf("b"), authors.single { it.key == "Neil Gaiman" }.books.map { it.id })
 
-        // The first spelling seen names the group.
-        assertEquals(listOf("Neil Gaiman", "Ursula K. Le Guin"), sections.map { it.key })
-        assertEquals(listOf("c", "d"), sections[0].books.map { it.id })
-        assertEquals(listOf("a", "b", "c"), sections[1].books.map { it.id })
+        // Two series whose names differ only in capitals are two series, so
+        // their reading orders never interleave.
+        val series = buildGroupedSections(books, ViewMode.SERIES, SortMode.TITLE_AZ)
+        assertEquals(listOf("c"), series.single { it.key == "Saga" }.books.map { it.id })
+        assertEquals(listOf("d"), series.single { it.key == "SAGA" }.books.map { it.id })
     }
 
     @Test
@@ -83,8 +87,8 @@ class LibraryDuplicateRowTest {
             }
         }
         assertEquals(
-            listOf("Fantasy", "Sci Fi", "Uncategorized Genre"),
-            buildGroupedSections(books, ViewMode.GENRE, SortMode.TITLE_AZ).map { it.key },
+            setOf("Fantasy", "fantasy", "FANTASY", "Sci Fi", "Uncategorized Genre"),
+            buildGroupedSections(books, ViewMode.GENRE, SortMode.TITLE_AZ).map { it.key }.toSet(),
         )
     }
 

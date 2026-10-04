@@ -1431,17 +1431,17 @@ internal fun buildGroupedSections(
     if (viewMode == ViewMode.ALL) return emptyList()
 
     // Genre view uses multi-placement: a book appears in every genre group it belongs to.
-    // Names that differ only in capitals or spacing ("John Smith", "john  smith")
-    // are one group, named by the first spelling seen. So no two groups share
-    // a key, and a book is in each group at most once.
+    // A group's key is its name with runs of spaces made one ("John  Smith" is
+    // "John Smith"). Capitals stay distinct, so "Saga" and "SAGA" remain two
+    // series, and the key never depends on which book sorts first. A book is in
+    // each group at most once.
     val grouped = linkedMapOf<String, MutableList<AudioBook>>()
-    val keyByFoldedName = HashMap<String, String>()
     val bookKeys = LinkedHashSet<String>()
     books.forEach { book ->
         bookKeys.clear()
         groupingKeysForBook(book, viewMode).forEach { name ->
             val spelling = collapseSpaces(name)
-            if (spelling.isNotEmpty()) bookKeys += keyByFoldedName.getOrPut(spelling.lowercase()) { spelling }
+            if (spelling.isNotEmpty()) bookKeys += spelling
         }
         bookKeys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }

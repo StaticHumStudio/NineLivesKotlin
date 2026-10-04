@@ -507,6 +507,10 @@ class LibraryViewModel @Inject constructor(
             // The item load below reuses this probe so a dead server costs one
             // 5s wait on a cold start, not two back to back.
             var serverReachable: Boolean? = null
+            // Show the saved shelf before the /ping probe and the library list
+            // fetch. A gone server costs a 5s probe per check, and the gate
+            // runs them one after another (issue #53).
+            if (!isLocalMode) showSavedShelfBeforeNetwork(settings)
             val libs = if (isLocalMode) {
                 libraryRepository.getLocalLibraries()
             } else {
@@ -585,6 +589,27 @@ class LibraryViewModel @Inject constructor(
                 _uiState.update { it.copy(isLoading = false) }
             }
         }
+    }
+
+    /**
+     * Publishes the cached shelf of the saved library selection, if it is
+     * cached. The load that follows still resolves and persists the real
+     * selection and replaces this shelf.
+     */
+    private suspend fun showSavedShelfBeforeNetwork(settings: AppSettings) {
+        val cachedLibraries = visibleCachedLibraries(
+            settings = settings,
+            cached = libraryRepository.getAudiobookshelf(),
+        )
+        val saved = cachedLibraries.firstOrNull { it.id == settings.activeLibraryId } ?: return
+        _uiState.update {
+            it.withLibrarySelection(
+                libraries = cachedLibraries,
+                selectedLibrary = saved,
+                isLocalMode = false,
+            )
+        }
+        applyFilter()?.join()
     }
 
     private suspend fun loadAudioBooks(

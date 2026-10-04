@@ -67,10 +67,16 @@ internal suspend fun <T> autoBrowsePage(
 ): List<T> {
     val libraryId = settings.activeLibraryId ?: return emptyList()
     if (page < 0 || pageSize <= 0) return emptyList()
+    // A page bigger than the cap is read as one capped list. Capping the
+    // limit but not the offset would skip the books between the cap and the
+    // next page start, so later pages of an oversized size are empty instead.
+    if (pageSize > AUTO_BROWSE_MAX_PAGE_SIZE) {
+        if (page > 0) return emptyList()
+        return load(libraryId, settings.appMode == AppMode.LOCAL, AUTO_BROWSE_MAX_PAGE_SIZE, 0)
+    }
     val offset = page.toLong() * pageSize.toLong()
     if (offset > Int.MAX_VALUE) return emptyList()
-    val limit = minOf(pageSize, AUTO_BROWSE_MAX_PAGE_SIZE)
-    return load(libraryId, settings.appMode == AppMode.LOCAL, limit, offset.toInt())
+    return load(libraryId, settings.appMode == AppMode.LOCAL, pageSize, offset.toInt())
 }
 
 /**

@@ -54,6 +54,14 @@ class AutoBrowsePageTest {
     }
 
     @Test
+    fun `an oversized page never skips books past the cap`() = runBlocking {
+        // Capping the limit but not the offset used to read books 1 to 500
+        // then 1001 to 1500, so 501 to 1000 were never listed.
+        assertEquals(Ask("lib", false, AUTO_BROWSE_MAX_PAGE_SIZE, 0), ask(server, page = 0, pageSize = 1000))
+        assertNull(ask(server, page = 1, pageSize = 1000))
+    }
+
+    @Test
     fun `nonsense paging reads nothing`() = runBlocking {
         assertNull(ask(server, page = -1, pageSize = 50))
         assertNull(ask(server, page = 0, pageSize = 0))

@@ -550,9 +550,7 @@ class SyncManager @Inject constructor(
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
-        // Only auto-mark as finished if position is within 1 second of the end.
-        // Exact >= comparison can fire prematurely during seeks near the end.
-        val computedFinished = isFinished || (safeDuration > 0.0 && safeDuration - safeCurrentTime < 1.0)
+        val computedFinished = isFinished || positionCountsAsFinished(safeCurrentTime, safeDuration)
         val isLocalMode = settingsManager.currentSettings.appMode == AppMode.LOCAL
         val now = System.currentTimeMillis()
         val shouldSync = !isLocalMode && shouldPushPlaybackPosition(
@@ -1095,4 +1093,15 @@ internal suspend fun <T> readAndWriteShelfProgressIfCurrent(
     if (!isCurrent()) return false
     write(current)
     return true
+}
+
+/**
+ * A saved position within 1 second of the end counts as finished. Exact >=
+ * comparison can fire prematurely during seeks near the end. Every local
+ * position save uses this one rule, so a later save of the same position
+ * never marks the book unfinished again.
+ */
+internal fun positionCountsAsFinished(currentTimeSec: Double, durationSec: Double): Boolean {
+    val safeDuration = durationSec.coerceAtLeast(0.0)
+    return safeDuration > 0.0 && safeDuration - currentTimeSec.coerceAtLeast(0.0) < 1.0
 }

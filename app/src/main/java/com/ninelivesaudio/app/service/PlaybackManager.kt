@@ -3079,11 +3079,17 @@ class PlaybackManager @Inject constructor(
         )
 
     private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot) {
+        // Same rule as a seek's save, so a pause save carrying a position at
+        // the very end keeps the book finished instead of undoing it.
+        val finished = positionCountsAsFinished(
+            currentTimeSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+            durationSec = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+        )
         val terminal = terminalPlaybackSnapshot(
             bookId = snapshot.bookId,
             position = snapshot.position,
             duration = snapshot.duration,
-            isFinished = false,
+            isFinished = finished,
             serverSessionId = snapshot.serverSessionId,
             timeListened = snapshot.serverTimeListened,
             serverListening = snapshot.serverListening,
@@ -3098,7 +3104,7 @@ class PlaybackManager @Inject constructor(
                 progressRepository.savePushOrEnqueueProgress(
                     itemId = snapshot.bookId,
                     currentTime = posSec,
-                    isFinished = false,
+                    isFinished = finished,
                     duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
                     pushToServer = false,
                     onPersisted = {

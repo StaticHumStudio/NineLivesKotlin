@@ -15,7 +15,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
@@ -51,17 +50,7 @@ fun LeftNavRail(
                 item = item,
                 isSelected = isSelected,
                 onClick = {
-                    navController.navigate(item.route) {
-                        // Each tab keeps its screen, scroll, and loaded shelf
-                        // while another tab is open. Without this, leaving the
-                        // Library threw it away and a big library re-downloaded
-                        // on every return.
-                        popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
-                        }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
+                    navController.navigateToTab(item.route)
                 }
             )
             Spacer(modifier = Modifier.height(8.dp))

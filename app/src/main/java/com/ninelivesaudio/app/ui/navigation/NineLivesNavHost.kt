@@ -3,7 +3,6 @@ package com.ninelivesaudio.app.ui.navigation
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -61,10 +60,7 @@ fun NineLivesNavHost(
                 val route = when (destination) {
                     OnboardingDestination.SETTINGS -> Routes.SETTINGS
                 }
-                navController.navigate(route) {
-                    popUpTo(Routes.WELCOME) { inclusive = true }
-                    launchSingleTop = true
-                }
+                navController.finishOnboarding(route)
             }
             WelcomeScreen(
                 onChooseLocal = {
@@ -211,7 +207,7 @@ fun NineLivesNavHost(
                 },
                 onNavigateToPlayer = {
                     navController.navigate(Routes.PLAYER) {
-                        popUpTo(navController.graph.findStartDestination().id) {
+                        popUpTo(TAB_ROOT_ROUTE) {
                             inclusive = false
                         }
                         launchSingleTop = true

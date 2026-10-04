@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service.download
 
+import com.ninelivesaudio.app.domain.model.DownloadStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -239,6 +240,72 @@ class DownloadDeleteTest {
         val root = root()
         val decision = delete(root, File(root, "Gone - Gone"), listOf("01.mp3"))
         assertEquals(CancelCleanupDecision.Keep(CancelKeepReason.NO_FOLDER), decision)
+    }
+
+    // ─── Downloads that still own a folder ──────────────────────────────────
+
+    private fun row(bookId: String, status: DownloadStatus) = DownloadOwnerRow(bookId, status.ordinal)
+
+    @Test
+    fun `an edition whose row says Completed before its local copy is saved still owns the folder`() {
+        // The engine writes Completed, then fetches the cover, then saves
+        // localPath. Deleting the other edition in that window must not
+        // count this one as finished.
+        val owners = unfinishedDownloadOwners(
+            rows = listOf(row("A", DownloadStatus.Completed), row("B", DownloadStatus.Completed)),
+            booksWithLocalCopy = setOf("A"),
+            excludeBookId = "A",
+            engineBookId = null,
+        )
+        assertEquals(listOf("B"), owners)
+    }
+
+    @Test
+    fun `the book the engine is on owns its folder even with no row`() {
+        val owners = unfinishedDownloadOwners(
+            rows = emptyList(),
+            booksWithLocalCopy = emptySet(),
+            excludeBookId = "A",
+            engineBookId = "B",
+        )
+        assertEquals(listOf("B"), owners)
+    }
+
+    @Test
+    fun `unfinished rows own their folder and finished ones with a local copy do not`() {
+        val owners = unfinishedDownloadOwners(
+            rows = listOf(
+                row("A", DownloadStatus.Queued),
+                row("B", DownloadStatus.Paused),
+                row("C", DownloadStatus.Failed),
+                row("D", DownloadStatus.Completed),
+                row("E", DownloadStatus.Downloading),
+            ),
+            booksWithLocalCopy = setOf("D"),
+            excludeBookId = "A",
+            engineBookId = "A",
+        )
+        assertEquals(listOf("B", "C", "E"), owners)
+    }
+
+    @Test
+    fun `deleting one edition while the other is finishing keeps the other's audio`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3", "02.mp3")
+        val owners = unfinishedDownloadOwners(
+            rows = listOf(row("B", DownloadStatus.Completed)),
+            booksWithLocalCopy = emptySet(),
+            excludeBookId = "A",
+            engineBookId = "B",
+        )
+        // B has no localPath yet, so it is not a sharer. Only its ownership protects it.
+        val ownerFolders = owners.map { folder }
+
+        val decision = delete(root, folder, listOf("01.mp3", "02.mp3"), otherDownloadFolders = ownerFolders)
+
+        assertEquals(CancelCleanupDecision.Keep(CancelKeepReason.SHARED), decision)
+        assertTrue(File(folder, "01.mp3").exists())
+        assertTrue(File(folder, "02.mp3").exists())
     }
 
     // ─── Which root a stored path belongs to ─────────────────────────────────

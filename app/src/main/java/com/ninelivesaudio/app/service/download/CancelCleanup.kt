@@ -371,6 +371,37 @@ private fun decideDownloadDelete(
     return CancelCleanupDecision.Delete(folder, plainFiles.filter { it.name in targets })
 }
 
+/** One download row, as the ownership check needs it. */
+internal data class DownloadOwnerRow(val audioBookId: String, val status: Int)
+
+/**
+ * Books other than [excludeBookId] that may still be writing to their folder,
+ * so a delete must treat that folder as taken (see `otherDownloadFolders` on
+ * [deleteDownloadFiles]).
+ *
+ * Any row short of Completed counts. So does a Completed row whose book is not
+ * in [booksWithLocalCopy] (marked downloaded with a stored localPath): the
+ * engine writes Completed, then fetches the cover, and only then saves the
+ * localPath, so in that window the book has audio on disk and no stored path
+ * that would make it a sharer. The book the engine is on ([engineBookId])
+ * always counts, row or not. Any doubt keeps the files.
+ */
+internal fun unfinishedDownloadOwners(
+    rows: List<DownloadOwnerRow>,
+    booksWithLocalCopy: Set<String>,
+    excludeBookId: String,
+    engineBookId: String?,
+): List<String> {
+    val owners = rows
+        .filter { row ->
+            row.status != DownloadStatus.Completed.ordinal || row.audioBookId !in booksWithLocalCopy
+        }
+        .map { it.audioBookId }
+    return (owners + listOfNotNull(engineBookId))
+        .filter { it != excludeBookId }
+        .distinct()
+}
+
 /** The cover the engine saves next to the audio. */
 private const val COVER_FILE_NAME = "cover.jpg"
 

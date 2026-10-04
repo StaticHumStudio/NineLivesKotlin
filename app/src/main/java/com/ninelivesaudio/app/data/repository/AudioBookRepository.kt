@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.ninelivesaudio.app.data.local.AppDatabase
+import com.ninelivesaudio.app.data.local.containsLikePattern
+import com.ninelivesaudio.app.data.local.escapeLike
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -142,7 +144,7 @@ class AudioBookRepository @Inject constructor(
     suspend fun search(query: String): List<AudioBook> {
         val normalized = query.trim()
         if (normalized.isEmpty()) return getAll()
-        return audioBookDao.search(normalized).map { it.toDomain() }
+        return audioBookDao.search(escapeLike(normalized)).map { it.toDomain() }
     }
 
     /** Get recently played audiobooks for Nine Lives home screen. */
@@ -208,14 +210,9 @@ class AudioBookRepository @Inject constructor(
         searchQuery: String = "",
     ): List<AudioBook> {
         val sql = buildLibrarySql(tab, hideFinished, downloadedOnly, searchQuery.isNotBlank())
+        val args = buildLibrarySqlArgs(libraryId, searchQuery)
 
-        val args = mutableListOf<Any>(libraryId)
-        if (searchQuery.isNotBlank()) {
-            val pattern = "%${searchQuery}%"
-            args.addAll(listOf(pattern, pattern, pattern, pattern))
-        }
-
-        val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args.toTypedArray()))
+        val results = audioBookDao.getFilteredBooks(SimpleSQLiteQuery(sql, args))
         // Shelf books carry no description, audio files, or tags. They are
         // for showing and navigating, never for saving back. See toShelfBook.
         return results.mapCooperatively { it.toShelfBook() }
@@ -1055,11 +1052,23 @@ internal fun buildLibrarySql(
         append(" AND ab.IsDownloaded = 1")
     }
 
-    // Search
+    // Search. The bound patterns are escaped (see buildLibrarySqlArgs), so
+    // "%" and "_" typed in the search box match themselves.
     if (hasSearch) {
-        append(" AND (ab.Title LIKE ? OR ab.Author LIKE ? OR ab.SeriesName LIKE ? OR ab.Narrator LIKE ?)")
+        append(" AND (ab.Title LIKE ? ESCAPE '\\' OR ab.Author LIKE ? ESCAPE '\\'")
+        append(" OR ab.SeriesName LIKE ? ESCAPE '\\' OR ab.Narrator LIKE ? ESCAPE '\\')")
     }
 
     // No ORDER BY: every caller sorts in Kotlin (the Library's sortBooks, the
     // Auto browse lists), so sorting here too was paid twice.
+}
+
+/**
+ * The arguments for [buildLibrarySql]: the library, then one escaped pattern
+ * per searched column when there is a search.
+ */
+internal fun buildLibrarySqlArgs(libraryId: String, searchQuery: String): Array<Any> {
+    if (searchQuery.isBlank()) return arrayOf(libraryId)
+    val pattern = containsLikePattern(searchQuery)
+    return arrayOf(libraryId, pattern, pattern, pattern, pattern)
 }

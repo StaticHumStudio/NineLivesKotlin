@@ -9,6 +9,7 @@ import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.repository.buildLibrarySql
+import com.ninelivesaudio.app.data.repository.buildLibrarySqlArgs
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import kotlinx.coroutines.runBlocking
@@ -75,6 +76,32 @@ class ShelfProjectionInstrumentedTest {
         assertEquals(former, shelf.associateBy { it.id })
         assertEquals(setOf("a", "b"), shelf.map { it.id }.toSet())
         assertEquals(1, shelf.single { it.id == "b" }.chapters.size)
+    }
+
+    @Test
+    fun percentAndUnderscoreMatchOnlyThemselves() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsertAll(
+            listOf(
+                book("pct", "100% Pure"),
+                book("num", "100 Days"),
+                book("under", "a_b"),
+                book("any", "axb"),
+            )
+        )
+
+        suspend fun shelfSearch(query: String) = dao.getFilteredBooks(
+            SimpleSQLiteQuery(
+                buildLibrarySql(tab = 0, hideFinished = false, downloadedOnly = false, hasSearch = true),
+                buildLibrarySqlArgs(LIBRARY, query),
+            )
+        ).map { it.id }.toSet()
+
+        assertEquals(setOf("pct"), shelfSearch("%"))
+        assertEquals(setOf("under"), shelfSearch("_"))
+        assertEquals(setOf("pct", "num"), shelfSearch("100"))
+        assertEquals(setOf("pct"), dao.search(escapeLike("%")).map { it.id }.toSet())
+        assertEquals(setOf("under"), dao.search(escapeLike("_")).map { it.id }.toSet())
     }
 
     private fun book(

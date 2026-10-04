@@ -1,11 +1,15 @@
 package com.ninelivesaudio.app.service
 
+import com.ninelivesaudio.app.data.local.entity.BookProgressState
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.domain.model.Library
 import com.ninelivesaudio.app.domain.model.SyncResult
+import com.ninelivesaudio.app.domain.model.UserProgress
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The sync timer runs only in the foreground: a check on every entry (unless
@@ -94,5 +98,44 @@ class ForegroundSyncPolicyTest {
     fun `background syncs skip podcast libraries`() {
         assertTrue(isSyncedLibrary(Library(id = "a", mediaType = "book")))
         assertFalse(isSyncedLibrary(Library(id = "p", mediaType = "podcast")))
+    }
+
+    // ─── Progress pull ────────────────────────────────────────────────────
+
+    @Test
+    fun `only the most recently listened unknown books are fetched one by one`() {
+        val progress = (1..40).map { i -> UserProgress(libraryItemId = "li_$i", lastUpdate = i.toLong()) } +
+            UserProgress(libraryItemId = "li_known", lastUpdate = 1_000L)
+        val picked = unknownBooksToFetch(progress, knownIds = setOf("li_known"), cap = 3)
+        assertEquals(setOf("li_40", "li_39", "li_38"), picked)
+    }
+
+    @Test
+    fun `a progress record that matches the cache is skipped`() {
+        val row = PlaybackProgressEntity(audioBookId = "a", positionSeconds = 120.0, isFinished = 0, updatedAt = "t1")
+        val book = BookProgressState(id = "a", currentTimeSeconds = 120.2, progress = 0.25, isFinished = 0)
+        assertTrue(serverProgressIsAlreadyLocal(120.0, 0.25, false, "t1", row, book))
+        assertTrue(serverProgressIsAlreadyLocal(120.0, 0.25, false, "t1", row, localBook = null))
+    }
+
+    @Test
+    fun `a progress record that moved anything is imported`() {
+        val row = PlaybackProgressEntity(audioBookId = "a", positionSeconds = 120.0, isFinished = 0, updatedAt = "t1")
+        val book = BookProgressState(id = "a", currentTimeSeconds = 120.0, progress = 0.25, isFinished = 0)
+        assertFalse(serverProgressIsAlreadyLocal(300.0, 0.25, false, "t1", row, book))
+        assertFalse(serverProgressIsAlreadyLocal(120.0, 0.25, true, "t1", row, book))
+        assertFalse(serverProgressIsAlreadyLocal(120.0, 0.25, false, "t2", row, book))
+        assertFalse(serverProgressIsAlreadyLocal(120.0, 0.30, false, "t1", row, book))
+        assertFalse(serverProgressIsAlreadyLocal(120.0, 0.25, false, "t1", localRow = null, localBook = book))
+    }
+
+    @Test
+    fun `unknown ids exclude blanks and repeats`() {
+        val progress = listOf(
+            UserProgress(libraryItemId = "", currentTime = 1.seconds),
+            UserProgress(libraryItemId = "x", lastUpdate = 2L),
+            UserProgress(libraryItemId = "x", lastUpdate = 1L),
+        )
+        assertEquals(setOf("x"), unknownBooksToFetch(progress, knownIds = emptySet()))
     }
 }

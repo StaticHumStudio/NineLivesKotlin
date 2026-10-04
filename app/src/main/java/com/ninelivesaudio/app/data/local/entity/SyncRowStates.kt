@@ -18,3 +18,12 @@ data class SyncMergeState(
     @ColumnInfo(name = "IsFinished") val isFinished: Int = 0,
     @ColumnInfo(name = "ArchivedAt") val archivedAt: Long? = null,
 )
+
+/** A cached book's shelf progress, for deciding whether a server progress pull changes anything. */
+data class BookProgressState(
+    @ColumnInfo(name = "Id") val id: String,
+    @ColumnInfo(name = "CurrentTimeSeconds") val currentTimeSeconds: Double = 0.0,
+    @ColumnInfo(name = "Progress") val progress: Double = 0.0,
+    @ColumnInfo(name = "IsFinished") val isFinished: Int = 0,
+    @ColumnInfo(name = "DurationSeconds") val durationSeconds: Double = 0.0,
+)

@@ -7,6 +7,8 @@ import android.util.Log
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
+import com.ninelivesaudio.app.data.local.entity.BookProgressState
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -32,6 +34,7 @@ private const val TAG = "SyncManager"
 private const val MIN_POSITION_SYNC_INTERVAL_MS = 30_000L
 private const val MIN_POSITION_DELTA = 2.0
 private const val MIN_PROGRESS_DELTA = 0.01
+private const val PROGRESS_LOOKUP_CHUNK = 500
 
 /** A full sync of every library, or the change check that does the least work needed. */
 internal enum class SyncMode { FULL, CHECK }
@@ -62,6 +65,7 @@ class SyncManager @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
+    private val playbackProgressDao: PlaybackProgressDao,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -401,6 +405,12 @@ class SyncManager @Inject constructor(
     /**
      * Sync progress from the server.
      * Server is source of truth (except for actively playing items).
+     *
+     * Local state is read in batches up front, a record that already matches
+     * it is skipped, and an import updates only the book's progress columns.
+     * Books the cache has never seen are looked up one by one only for the
+     * most recently listened few (see [unknownBooksToFetch]). The library
+     * sync brings the rest, and their progress rows import either way.
      */
     private suspend fun syncProgress() {
         try {
@@ -408,17 +418,33 @@ class SyncManager @Inject constructor(
             val serverProgressList = progressRepository.fetchAllProgressFromServer()
             if (serverProgressList.isEmpty()) return
 
+            val ids = serverProgressList.map { it.libraryItemId }.distinct()
+            val books = HashMap<String, BookProgressState>()
+            val rows = HashMap<String, PlaybackProgressEntity>()
+            for (chunk in ids.chunked(PROGRESS_LOOKUP_CHUNK)) {
+                audioBookDao.getProgressStates(chunk).associateByTo(books) { it.id }
+                playbackProgressDao.getByAudioBookIds(chunk).associateByTo(rows) { it.audioBookId }
+            }
+            val fetchIndividually = unknownBooksToFetch(serverProgressList, books.keys)
+
             for (progress in serverProgressList) {
                 // Active playback and queued local writes own progress. In
                 // particular, never compare server and phone wall clocks to
                 // decide whether an unsent offline write survives.
                 try {
-                    var book = audioBookDao.getById(progress.libraryItemId)
-                    if (book == null) {
-                        val remoteBook = audioBookRepository.fetchFromServer(progress.libraryItemId)
+                    val itemId = progress.libraryItemId
+                    var book = books[itemId]
+                    if (book == null && itemId in fetchIndividually) {
+                        val remoteBook = audioBookRepository.fetchFromServer(itemId)
                         if (remoteBook != null) {
                             audioBookDao.upsert(remoteBook.toEntity())
-                            book = audioBookDao.getById(progress.libraryItemId)
+                            book = BookProgressState(
+                                id = itemId,
+                                currentTimeSeconds = remoteBook.currentTime.inWholeMilliseconds / 1000.0,
+                                progress = remoteBook.progress,
+                                isFinished = if (remoteBook.isFinished) 1 else 0,
+                                durationSeconds = remoteBook.duration.inWholeMilliseconds / 1000.0,
+                            ).also { books[itemId] = it }
                         }
                     }
 
@@ -433,35 +459,47 @@ class SyncManager @Inject constructor(
                     }
 
                     val updatedAtStr = progress.lastUpdate?.toIso8601()
+                    if (serverProgressIsAlreadyLocal(
+                            positionSeconds = positionSeconds,
+                            progress = progress.progress,
+                            isFinished = progress.isFinished,
+                            updatedAt = updatedAtStr,
+                            localRow = rows[itemId],
+                            localBook = book,
+                        )
+                    ) continue
 
                     // The repository checks the queue while holding the same
                     // per-book ownership used by enqueue and flush. A pending
                     // local write wins regardless of server clock skew.
-                    val imported = progressRepository.importServerProgressIfNoPending(
+                    val bookKnown = book != null
+                    progressRepository.importServerProgressIfNoPending(
                         PlaybackProgressEntity(
-                            audioBookId = progress.libraryItemId,
+                            audioBookId = itemId,
                             positionSeconds = positionSeconds,
                             isFinished = if (progress.isFinished) 1 else 0,
                             updatedAt = updatedAtStr,
                         ),
                         importToken = importToken,
                         onImported = {
-                            if (book != null) {
-                                audioBookDao.upsert(
-                                    book.copy(
-                                        currentTimeSeconds = positionSeconds,
-                                        progress = progress.progress,
-                                        isFinished = if (progress.isFinished) 1 else 0,
-                                    )
+                            if (bookKnown) {
+                                audioBookDao.updateProgress(
+                                    id = itemId,
+                                    currentTimeSeconds = positionSeconds,
+                                    progress = progress.progress,
+                                    isFinished = if (progress.isFinished) 1 else 0,
                                 )
                             }
                         },
                     )
-                    if (!imported) continue
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     // Continue with next item
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // Non-fatal
         }

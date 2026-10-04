@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.BookProgressState
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
@@ -50,6 +51,10 @@ interface AudioBookDao {
             "FROM AudioBooks WHERE Id IN (:ids)"
     )
     suspend fun getSyncMergeStates(ids: List<String>): List<SyncMergeState>
+
+    /** Shelf progress for up to 500 IDs, for the progress pull's "anything changed?" check. */
+    @Query("SELECT Id, CurrentTimeSeconds, Progress, IsFinished, DurationSeconds FROM AudioBooks WHERE Id IN (:ids)")
+    suspend fun getProgressStates(ids: List<String>): List<BookProgressState>
 
     /** How many SERVER books one library has cached, downloads included. */
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0")

@@ -15,6 +15,10 @@ interface PlaybackProgressDao {
     @Query("SELECT * FROM PlaybackProgress WHERE AudioBookId = :audioBookId")
     suspend fun getByAudioBookId(audioBookId: String): PlaybackProgressEntity?
 
+    /** Saved positions for up to 500 books at once. */
+    @Query("SELECT * FROM PlaybackProgress WHERE AudioBookId IN (:audioBookIds)")
+    suspend fun getByAudioBookIds(audioBookIds: List<String>): List<PlaybackProgressEntity>
+
     @Query("SELECT PositionSeconds, IsFinished FROM PlaybackProgress WHERE AudioBookId = :audioBookId")
     suspend fun getPositionAndFinished(audioBookId: String): PositionResult?
 

@@ -8,11 +8,11 @@ import com.ninelivesaudio.app.domain.util.toEpochMillis
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * One Library shelf row: every column a shelf, a group, or an Auto browse row
- * shows, without the heavy ones. Description is most of a server row's
- * weight (about 1.9 KB a book on a big library), and the audio file and tag
- * lists are never shown on a shelf, so reading `ab.*` for 50,000 books
- * decoded about 115 MB per filter change for nothing.
+ * One Library shelf row: every column a shelf or a group row shows, without
+ * the heavy ones. Description is most of a server row's weight (about 1.9 KB
+ * a book on a big library), and the audio file and tag lists are never shown
+ * on a shelf, so reading `ab.*` for 50,000 books decoded about 115 MB per
+ * filter change for nothing.
  *
  * ChaptersJson stays because the row's "Ch x/y" label needs it, and it is
  * "[]" for every list-synced server book anyway.

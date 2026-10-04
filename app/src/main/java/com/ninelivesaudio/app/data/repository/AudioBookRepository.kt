@@ -5,7 +5,6 @@ import androidx.room.withTransaction
 import androidx.sqlite.db.SimpleSQLiteQuery
 import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.containsLikePattern
-import com.ninelivesaudio.app.data.local.escapeLike
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -112,10 +111,6 @@ class AudioBookRepository @Inject constructor(
     fun observeById(id: String): Flow<AudioBook?> =
         audioBookDao.observeById(id).map { it?.toDomain() }
 
-    /** Get all audiobooks from local DB (one-shot). */
-    suspend fun getAll(): List<AudioBook> =
-        audioBookDao.getAll().map { it.toDomain() }
-
     /** Get audiobooks by library (one-shot). */
     suspend fun getByLibrary(libraryId: String): List<AudioBook> =
         audioBookDao.getByLibrary(libraryId).map { it.toDomain() }
@@ -139,13 +134,6 @@ class AudioBookRepository @Inject constructor(
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =
         audioBookDao.getById(id)?.toDomain()
-
-    /** Search audiobooks by title or author. */
-    suspend fun search(query: String): List<AudioBook> {
-        val normalized = query.trim()
-        if (normalized.isEmpty()) return getAll()
-        return audioBookDao.search(escapeLike(normalized)).map { it.toDomain() }
-    }
 
     /** Get recently played audiobooks for Nine Lives home screen. */
     suspend fun getRecentlyPlayed(limit: Int = 9): List<Pair<AudioBook, Long>> =
@@ -1059,8 +1047,8 @@ internal fun buildLibrarySql(
         append(" OR ab.SeriesName LIKE ? ESCAPE '\\' OR ab.Narrator LIKE ? ESCAPE '\\')")
     }
 
-    // No ORDER BY: every caller sorts in Kotlin (the Library's sortBooks, the
-    // Auto browse lists), so sorting here too was paid twice.
+    // No ORDER BY: the Library sorts in Kotlin (sortBooks), so sorting here
+    // too was paid twice. Android Auto reads its own paged queries.
 }
 
 /**

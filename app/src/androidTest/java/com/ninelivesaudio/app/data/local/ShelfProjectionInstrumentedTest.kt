@@ -100,8 +100,6 @@ class ShelfProjectionInstrumentedTest {
         assertEquals(setOf("pct"), shelfSearch("%"))
         assertEquals(setOf("under"), shelfSearch("_"))
         assertEquals(setOf("pct", "num"), shelfSearch("100"))
-        assertEquals(setOf("pct"), dao.search(escapeLike("%")).map { it.id }.toSet())
-        assertEquals(setOf("under"), dao.search(escapeLike("_")).map { it.id }.toSet())
     }
 
     private fun book(

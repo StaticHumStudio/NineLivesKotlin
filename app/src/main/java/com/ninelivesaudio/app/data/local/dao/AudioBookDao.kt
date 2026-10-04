@@ -328,15 +328,6 @@ interface AudioBookDao {
     """)
     suspend fun getByLibraryWithLastPlayed(libraryId: String): List<RecentlyPlayedResult>
 
-    /** Search audiobooks by title or author. [query] must be escaped with escapeLike. */
-    @Query("""
-        SELECT * FROM AudioBooks
-        WHERE Title LIKE '%' || :query || '%' ESCAPE '\'
-           OR Author LIKE '%' || :query || '%' ESCAPE '\'
-        ORDER BY Title
-    """)
-    suspend fun search(query: String): List<AudioBookEntity>
-
     /** Update just the progress fields on an audiobook. */
     @Query("UPDATE AudioBooks SET CurrentTimeSeconds = :currentTimeSeconds, Progress = :progress, IsFinished = :isFinished WHERE Id = :id")
     suspend fun updateProgress(id: String, currentTimeSeconds: Double, progress: Double, isFinished: Int)

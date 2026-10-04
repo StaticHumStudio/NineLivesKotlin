@@ -142,6 +142,8 @@ class NineLivesApp : Application(), ImageLoaderFactory {
                 override fun onStop(owner: LifecycleOwner) {
                     syncManager.setAppForeground(false)
                     connectivityMonitor.setAppForeground(false)
+                    // A playing book saves its position now, not 10 seconds on.
+                    playbackManager.onAppBackgrounded()
                 }
             }
         )

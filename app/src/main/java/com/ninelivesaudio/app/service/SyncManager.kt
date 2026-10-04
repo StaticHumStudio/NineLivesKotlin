@@ -85,6 +85,7 @@ class SyncManager @Inject constructor(
     private val appInForeground = MutableStateFlow(false)
 
     private val playbackThrottleOwner = PlaybackThrottleOwner()
+    private val localPositionCadence = LocalPositionWriteCadence()
 
     // ─── Events ──────────────────────────────────────────────────────────────
 
@@ -530,14 +531,22 @@ class SyncManager @Inject constructor(
         }
 
     /**
-     * Report playback position with throttling.
-     * Always saves locally. Only pushes to server if throttle conditions are met.
+     * Report a playback position sampled by the player's 500 ms poll.
+     *
+     * Saves locally at most every [LOCAL_POSITION_WRITE_INTERVAL_MS], or at
+     * once when [force] is set (a seek, a chapter change, the first sample of
+     * a play, the app leaving the foreground, teardown), when the book is
+     * finished, or when the server push is due. Pause and stop save through
+     * their own terminal paths. A crash loses at most about 10 seconds, which
+     * the resume rewind covers. The server push keeps its own throttle
+     * ([shouldPushPlaybackPosition]) and only goes out with a local save.
      */
     suspend fun reportPlaybackPosition(
         itemId: String,
         currentTime: Double,
         duration: Double,
         isFinished: Boolean,
+        force: Boolean = false,
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
@@ -554,25 +563,34 @@ class SyncManager @Inject constructor(
             now = now,
         )
 
+        val nowMonotonic = monotonicNowMs()
+        val cadence = localPositionCadence.snapshot(itemId)
+        val pushToServer = shouldSync && connectivityMonitor.isOnline.value
+        if (
+            !shouldWriteLocalPosition(
+                cadence = cadence,
+                nowMs = nowMonotonic,
+                force = force,
+                isFinished = computedFinished,
+                pushToServer = pushToServer,
+            )
+        ) return
+
+        // Only the progress columns. The old full-row REPLACE rewrote the
+        // book's description and blobs twice a second.
         val updateShelf: suspend () -> Unit = {
-            readAndWriteShelfProgressIfCurrent(
-                isCurrent = { true },
-                read = { audioBookDao.getById(itemId) },
-                write = { book ->
-                    if (book != null) {
-                        audioBookDao.upsert(
-                            book.copy(
-                                currentTimeSeconds = safeCurrentTime,
-                                progress = shelfProgress(
-                                    currentTime = safeCurrentTime,
-                                    duration = safeDuration,
-                                    isFinished = computedFinished,
-                                    existingProgress = book.progress,
-                                ),
-                                isFinished = if (computedFinished) 1 else 0,
-                            ),
-                        )
-                    }
+            writeShelfProgressColumns(
+                currentTime = safeCurrentTime,
+                duration = safeDuration,
+                isFinished = computedFinished,
+                readExistingProgress = { audioBookDao.getById(itemId)?.progress ?: 0.0 },
+                update = { time, progress, finished ->
+                    audioBookDao.updateProgress(
+                        id = itemId,
+                        currentTimeSeconds = time,
+                        progress = progress,
+                        isFinished = finished,
+                    )
                 },
             )
         }
@@ -591,10 +609,15 @@ class SyncManager @Inject constructor(
                 currentTime = safeCurrentTime,
                 isFinished = computedFinished,
                 duration = safeDuration,
-                pushToServer = shouldSync && connectivityMonitor.isOnline.value,
+                pushToServer = pushToServer,
                 onPersisted = updateShelf,
             )
         }
+        localPositionCadence.recordWrite(
+            itemId = itemId,
+            atMs = nowMonotonic,
+            pushFailed = pushToServer && !pushed,
+        )
 
         if (pushed) {
             playbackThrottleOwner.recordSuccess(itemId, safeCurrentTime, now)
@@ -938,6 +961,79 @@ internal suspend fun runSyncAttempt(
         onLockReleasing()
         unlock()
     }
+}
+
+/** How often the 500 ms playback poll saves the position locally. */
+internal const val LOCAL_POSITION_WRITE_INTERVAL_MS = 10_000L
+
+internal data class LocalPositionCadenceSnapshot(
+    /** Monotonic time of the last local save, null before the first one. */
+    val lastWriteAtMs: Long? = null,
+    /** The server push that went out with the last save failed. */
+    val lastPushFailed: Boolean = false,
+)
+
+internal class LocalPositionWriteCadence {
+    private val lock = Any()
+    private val states = mutableMapOf<String, LocalPositionCadenceSnapshot>()
+
+    fun snapshot(itemId: String): LocalPositionCadenceSnapshot = synchronized(lock) {
+        states[itemId] ?: LocalPositionCadenceSnapshot()
+    }
+
+    fun recordWrite(itemId: String, atMs: Long, pushFailed: Boolean) {
+        synchronized(lock) {
+            states[itemId] = LocalPositionCadenceSnapshot(atMs, pushFailed)
+        }
+    }
+}
+
+/**
+ * Whether a polled position is saved locally now.
+ *
+ * Saves on [force], a finished book, a due server push, the first sample, or
+ * once [LOCAL_POSITION_WRITE_INTERVAL_MS] has passed. A due push skips the
+ * wait only when the previous push landed: the push throttle stays due
+ * until a push succeeds, so a server refusing connections would otherwise
+ * bring back a save (and a failed request) every 500 ms. After a failure
+ * the retry rides the 10 second save.
+ */
+internal fun shouldWriteLocalPosition(
+    cadence: LocalPositionCadenceSnapshot,
+    nowMs: Long,
+    force: Boolean,
+    isFinished: Boolean,
+    pushToServer: Boolean,
+): Boolean {
+    if (force || isFinished) return true
+    val lastWriteAt = cadence.lastWriteAtMs ?: return true
+    if (pushToServer && !cadence.lastPushFailed) return true
+    return nowMs - lastWriteAt >= LOCAL_POSITION_WRITE_INTERVAL_MS || nowMs < lastWriteAt
+}
+
+/**
+ * Write a playback position into the shelf row's progress columns only.
+ * Reads the stored progress only when the duration is unknown and the old
+ * value has to stand.
+ */
+internal suspend fun writeShelfProgressColumns(
+    currentTime: Double,
+    duration: Double,
+    isFinished: Boolean,
+    readExistingProgress: suspend () -> Double,
+    update: suspend (currentTime: Double, progress: Double, isFinished: Int) -> Unit,
+) {
+    val existingProgress = if (!isFinished && duration <= 0.0) readExistingProgress() else 0.0
+    update(
+        currentTime,
+        shelfProgress(
+            currentTime = currentTime,
+            duration = duration,
+            isFinished = isFinished,
+            existingProgress = existingProgress,
+        ),
+        if (isFinished) 1 else 0,
+    )
 }
 
 internal data class PlaybackThrottleSnapshot(

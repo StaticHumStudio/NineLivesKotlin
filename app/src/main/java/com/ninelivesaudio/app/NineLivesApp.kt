@@ -183,8 +183,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // Re-resolve the download slot whenever entitlement is or becomes free.
         // Deliberately includes the initial emission rather than transitions
         // only, so a downgrade that happened while the app was dead is still
-        // handled. Resolution early-returns when there is nothing over cap, so
-        // the common case costs one query and never touches the worker.
+        // handled. Resolution reads only download rows and downloaded books,
+        // a few small queries, and early-returns when there is nothing over
+        // cap, so the common case never touches the worker.
         appScope.launch {
             entitlementRepository.state
                 .map { it.isUnlocked }

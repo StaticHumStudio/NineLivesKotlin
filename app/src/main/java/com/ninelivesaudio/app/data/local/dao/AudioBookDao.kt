@@ -13,6 +13,7 @@ import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
+import com.ninelivesaudio.app.data.local.entity.SlotBookRow
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -234,6 +235,14 @@ interface AudioBookDao {
         """
     )
     suspend fun countAutoSearch(libraryId: String, isLocal: Int, pattern: String, cap: Int): Int
+
+    /** Slot fields of every downloaded book, in any library. */
+    @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE IsDownloaded = 1")
+    suspend fun getDownloadedSlotRows(): List<SlotBookRow>
+
+    /** Slot fields for up to 500 books by id. */
+    @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE Id IN (:ids)")
+    suspend fun getSlotRowsByIds(ids: List<String>): List<SlotBookRow>
 
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()

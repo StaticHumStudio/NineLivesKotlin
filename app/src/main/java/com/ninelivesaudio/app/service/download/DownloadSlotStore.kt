@@ -4,6 +4,8 @@ import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
+import com.ninelivesaudio.app.data.local.entity.SlotBookRow
+import com.ninelivesaudio.app.domain.model.DownloadItem
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.entitlement.DownloadSlotResolver
 import com.ninelivesaudio.app.entitlement.EntitlementCachePrefs
@@ -64,36 +66,20 @@ class DownloadSlotStore @Inject constructor(
         val rows = downloadItemDao.getAll().map { it.toDomain() }
         val rowsByBook = rows.groupBy { it.audioBookId }
 
-        val offlineBooks = audioBookDao.getAll()
-            .map { it.toDomain() }
-            .filter { it.isDownloaded || rowsByBook.containsKey(it.id) }
+        // Only downloaded books and books with a download row can hold the
+        // slot, so only those rows are read, and only their slot fields.
+        val books = loadSlotBooks(
+            rowBookIds = rowsByBook.keys,
+            getDownloaded = audioBookDao::getDownloadedSlotRows,
+            getByIds = audioBookDao::getSlotRowsByIds,
+        )
 
-        // Keyed off AudioBooks rather than download rows, so a claim whose book
-        // record has gone is naturally reported as unusable rather than being
-        // silently dropped from the candidate set.
-        val bookIds = (offlineBooks.map { it.id } + rowsByBook.keys).distinct()
-
-        bookIds.map { bookId ->
-            val book = offlineBooks.firstOrNull { it.id == bookId }
-            // The newest row wins when duplicates exist. The pre-existing queue
-            // race can already have left more than one row per book on upgraded
-            // installs, and no dedupe migration runs.
-            val row = rowsByBook[bookId]
-                ?.maxByOrNull { it.startedAt ?: Long.MIN_VALUE }
-
-            SlotCandidate(
-                audioBookId = bookId,
-                isLocal = book?.isLocal ?: false,
-                hasAudioBookRecord = book != null,
-                downloadStatus = row?.status,
-                isDownloaded = book?.isDownloaded ?: false,
-                hasLocalPath = !book?.localPath.isNullOrBlank(),
-                filesExist = filesExist(book?.localPath),
-                progressUpdatedAt = progressMillis(bookId),
-                completedAt = row?.completedAt,
-                startedAt = row?.startedAt,
-            )
-        }
+        assembleSlotCandidates(
+            rowsByBook = rowsByBook,
+            books = books,
+            filesExist = ::filesExist,
+            progressMillis = { progressMillis(it) },
+        )
     }
 
     /** Resolve, persist and return the winner. */
@@ -142,6 +128,66 @@ class DownloadSlotStore @Inject constructor(
     private suspend fun progressMillis(audioBookId: String): Long? {
         val raw = playbackProgressDao.getByAudioBookId(audioBookId)?.updatedAt ?: return null
         return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()
+    }
+}
+
+/** Largest id list bound in one slot lookup, safely under SQLite's 999. */
+private const val SLOT_LOOKUP_CHUNK = 500
+
+/**
+ * The AudioBooks rows that can matter to the slot: every downloaded book plus
+ * any book named by a download row. Keyed by id. Never reads the rest of the
+ * library.
+ */
+internal suspend fun loadSlotBooks(
+    rowBookIds: Collection<String>,
+    getDownloaded: suspend () -> List<SlotBookRow>,
+    getByIds: suspend (List<String>) -> List<SlotBookRow>,
+): Map<String, SlotBookRow> {
+    val books = LinkedHashMap<String, SlotBookRow>()
+    getDownloaded().forEach { books[it.id] = it }
+    val missing = rowBookIds.filterNot { it in books }.distinct()
+    for (chunk in missing.chunked(SLOT_LOOKUP_CHUNK)) {
+        getByIds(chunk).forEach { books[it.id] = it }
+    }
+    return books
+}
+
+/**
+ * One candidate per book that is downloaded or has a download row.
+ *
+ * Keyed off AudioBooks as well as download rows, so a claim whose book record
+ * has gone is reported as unusable rather than silently dropped.
+ */
+internal suspend fun assembleSlotCandidates(
+    rowsByBook: Map<String, List<DownloadItem>>,
+    books: Map<String, SlotBookRow>,
+    filesExist: (String?) -> Boolean,
+    progressMillis: suspend (String) -> Long?,
+): List<SlotCandidate> {
+    val offlineBooks = books.values.filter { it.isDownloaded == 1 || rowsByBook.containsKey(it.id) }
+    val offlineById = offlineBooks.associateBy { it.id }
+    val bookIds = (offlineBooks.map { it.id } + rowsByBook.keys).distinct()
+
+    return bookIds.map { bookId ->
+        val book = offlineById[bookId]
+        // The newest row wins when duplicates exist. The pre-existing queue
+        // race can already have left more than one row per book on upgraded
+        // installs, and no dedupe migration runs.
+        val row = rowsByBook[bookId]?.maxByOrNull { it.startedAt ?: Long.MIN_VALUE }
+
+        SlotCandidate(
+            audioBookId = bookId,
+            isLocal = book?.isLocal == 1,
+            hasAudioBookRecord = book != null,
+            downloadStatus = row?.status,
+            isDownloaded = book?.isDownloaded == 1,
+            hasLocalPath = !book?.localPath.isNullOrBlank(),
+            filesExist = filesExist(book?.localPath),
+            progressUpdatedAt = progressMillis(bookId),
+            completedAt = row?.completedAt,
+            startedAt = row?.startedAt,
+        )
     }
 }
 

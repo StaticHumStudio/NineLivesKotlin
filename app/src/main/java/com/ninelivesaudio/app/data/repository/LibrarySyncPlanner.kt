@@ -20,11 +20,15 @@ internal const val FULL_REFRESH_MAX_AGE_MS = 24 * 60 * 60_000L
 
 /**
  * How far before the stored newest book an "added since" fetch reaches back.
- * Books that land in the same moment, or a server clock that ticks coarsely,
- * can put a book we never saw just under the newest one we did. Re-fetching
- * that sliver is cheap and idempotent.
+ * A server scan can stamp a book's added time a moment before another book
+ * that commits first, so a sync can see the later one and not the earlier.
+ * Re-fetching that sliver is idempotent. It is only an optimisation: a book
+ * missed anyway shows up in the count check and triggers a full download.
+ * Kept short because a bulk import adds hundreds of books a few seconds
+ * apart, and every one inside the window is downloaded again on each check
+ * that finds something new.
  */
-internal const val INCREMENTAL_OVERLAP_MS = 5 * 60_000L
+internal const val INCREMENTAL_OVERLAP_MS = 60_000L
 
 /**
  * Page size for the "added since" fetch. Smaller than the full download's 100

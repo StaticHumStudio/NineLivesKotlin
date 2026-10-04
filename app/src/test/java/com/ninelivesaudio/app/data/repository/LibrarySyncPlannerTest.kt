@@ -138,8 +138,8 @@ class LibrarySyncPlannerTest {
     // ─── The added-since fetch and its deletion check ─────────────────────
 
     @Test
-    fun `the cutoff reaches five minutes before the stored newest book`() {
-        assertEquals(5_000L - INCREMENTAL_OVERLAP_MS, incrementalCutoff(watermark(newestAddedAt = 5_000L)))
+    fun `the cutoff reaches one minute before the stored newest book`() {
+        assertEquals(5_000L - 60_000L, incrementalCutoff(watermark(newestAddedAt = 5_000L)))
         assertEquals(Long.MIN_VALUE, incrementalCutoff(watermark(newestAddedAt = null)))
     }
 

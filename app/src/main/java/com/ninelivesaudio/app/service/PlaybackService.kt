@@ -427,9 +427,9 @@ class PlaybackService : MediaLibraryService() {
             // Trigger async search; results delivered via onGetSearchResult
             serviceScope.launch(Dispatchers.IO) {
                 try {
-                    val results = mediaBrowseTree.search(query)
-                    Log.d(TAG, "onSearch: query='$query' → ${results.size} results")
-                    session.notifySearchResultChanged(browser, query, results.size, params)
+                    val count = mediaBrowseTree.searchCount(query)
+                    Log.d(TAG, "onSearch: query='$query' → $count results")
+                    session.notifySearchResultChanged(browser, query, count, params)
                 } catch (e: Exception) {
                     Log.e(TAG, "onSearch($query) failed: ${e.message}", e)
                 }
@@ -453,9 +453,7 @@ class PlaybackService : MediaLibraryService() {
             }
             return serviceScope.future(Dispatchers.IO) {
                 try {
-                    val results = mediaBrowseTree.search(query)
-                        .drop(page * pageSize)
-                        .take(pageSize)
+                    val results = mediaBrowseTree.search(query, page, pageSize)
                     Log.d(TAG, "onGetSearchResult: query='$query' → ${results.size} results")
                     LibraryResult.ofItemList(ImmutableList.copyOf(results), params)
                 } catch (e: Exception) {

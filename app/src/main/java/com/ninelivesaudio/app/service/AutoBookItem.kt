@@ -71,3 +71,57 @@ internal suspend fun <T> autoBrowsePage(
     val limit = minOf(pageSize, AUTO_BROWSE_MAX_PAGE_SIZE)
     return load(libraryId, settings.appMode == AppMode.LOCAL, limit, offset.toInt())
 }
+
+/**
+ * Most search hits Auto ever lists. A one letter query in a big library would
+ * otherwise build a row and fetch a cover for thousands of books.
+ */
+internal const val AUTO_SEARCH_RESULT_CAP = 100
+
+/**
+ * [query] as a LIKE "contains" pattern with backslash escapes, so `%`, `_`
+ * and `\` match themselves. Null for a blank query, which searches nothing.
+ */
+internal fun autoSearchPattern(query: String): String? {
+    val trimmed = query.trim()
+    if (trimmed.isEmpty()) return null
+    val escaped = buildString(trimmed.length + 8) {
+        for (char in trimmed) {
+            if (char == '\\' || char == '%' || char == '_') append('\\')
+            append(char)
+        }
+    }
+    return "%$escaped%"
+}
+
+/**
+ * One page of Auto search hits in the active library and source, never past
+ * [AUTO_SEARCH_RESULT_CAP]. A blank query or no active library reads nothing.
+ */
+internal suspend fun <T> autoSearchPage(
+    settings: AppSettings,
+    query: String,
+    page: Int,
+    pageSize: Int,
+    load: suspend (libraryId: String, isLocal: Boolean, pattern: String, limit: Int, offset: Int) -> List<T>,
+): List<T> {
+    val libraryId = settings.activeLibraryId ?: return emptyList()
+    val pattern = autoSearchPattern(query) ?: return emptyList()
+    if (page < 0 || pageSize <= 0) return emptyList()
+    val offset = page.toLong() * pageSize.toLong()
+    if (offset >= AUTO_SEARCH_RESULT_CAP) return emptyList()
+    val limit = minOf(pageSize.toLong(), AUTO_SEARCH_RESULT_CAP - offset).toInt()
+    return load(libraryId, settings.appMode == AppMode.LOCAL, pattern, limit, offset.toInt())
+}
+
+/** How many hits [autoSearchPage] can list for [query], at most [AUTO_SEARCH_RESULT_CAP]. */
+internal suspend fun autoSearchCount(
+    settings: AppSettings,
+    query: String,
+    count: suspend (libraryId: String, isLocal: Boolean, pattern: String, cap: Int) -> Int,
+): Int {
+    val libraryId = settings.activeLibraryId ?: return 0
+    val pattern = autoSearchPattern(query) ?: return 0
+    return count(libraryId, settings.appMode == AppMode.LOCAL, pattern, AUTO_SEARCH_RESULT_CAP)
+        .coerceIn(0, AUTO_SEARCH_RESULT_CAP)
+}

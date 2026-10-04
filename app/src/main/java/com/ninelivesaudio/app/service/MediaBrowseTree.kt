@@ -14,6 +14,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.ui.components.thumbnailCoverUrl
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -212,12 +213,28 @@ class MediaBrowseTree @Inject constructor(
         }
     }
 
-    /** Search books by title/author. */
-    suspend fun search(query: String): List<MediaItem> {
+    /**
+     * How many books match [query] by title or author in the active library
+     * and source, at most [AUTO_SEARCH_RESULT_CAP]. Counts in SQL, so no rows
+     * are built and no covers are fetched.
+     */
+    suspend fun searchCount(query: String): Int {
+        apiService.awaitAuthReady()
+        val settings = resolveActiveScope()
+        if (!canBrowseAuto(settings, apiService.isAuthenticated)) return 0
+        return autoSearchCount(settings, query, audioBookRepository::countAutoSearch)
+    }
+
+    /**
+     * One page of search hits, read from SQL. Rows and cover fetches happen
+     * for this page only. A blank query finds nothing rather than the whole
+     * library.
+     */
+    suspend fun search(query: String, page: Int, pageSize: Int): List<MediaItem> {
         apiService.awaitAuthReady()
         val settings = resolveActiveScope()
         if (!canBrowseAuto(settings, apiService.isAuthenticated)) return emptyList()
-        return browseBooksForAuto(audioBookRepository.search(query), settings)
+        return autoSearchPage(settings, query, page, pageSize, audioBookRepository::searchAutoPage)
             .map { bookToMediaItem(it.toAutoBookItem()) }
     }
 
@@ -399,7 +416,7 @@ class MediaBrowseTree @Inject constructor(
             }
         }
 
-        val remoteUrl = book.coverPath?.takeIf { it.startsWith("http") } ?: return null
+        val remoteUrl = autoArtworkRemoteUrl(book.coverPath, ARTWORK_MAX_DIMENSION) ?: return null
         // A factory rather than a single execute(): ArtworkCodec may need to
         // re-issue the request on a rare bounds-mark overrun (see its kdoc).
         val remoteOpener = {
@@ -642,6 +659,14 @@ internal class ArtworkFetchEpoch(
         const val MAX_EPOCH_AGE_MS = 300_000L // 5 minutes
     }
 }
+
+/**
+ * The server cover address an Auto row fetches, asking for [widthPx] wide.
+ * Without a width Audiobookshelf sends the original, often several MB, only
+ * for it to be shrunk to browse size here. Null for anything not http(s).
+ */
+internal fun autoArtworkRemoteUrl(coverPath: String?, widthPx: Int): String? =
+    coverPath?.takeIf { it.startsWith("http") }?.let { thumbnailCoverUrl(it, widthPx) }
 
 internal fun browseBooksForAuto(
     books: List<AudioBook>,

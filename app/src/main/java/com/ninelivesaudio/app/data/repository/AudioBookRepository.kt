@@ -701,6 +701,20 @@ class AudioBookRepository @Inject constructor(
     /** One page of Android Auto's Downloaded list, A to Z, light rows. */
     suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Boolean, limit: Int, offset: Int): List<AutoBrowseRow> =
         audioBookDao.getAutoDownloadedPage(libraryId, if (isLocal) 1 else 0, limit, offset)
+
+    /** One page of Android Auto search hits for an escaped LIKE [pattern], light rows. */
+    suspend fun searchAutoPage(
+        libraryId: String,
+        isLocal: Boolean,
+        pattern: String,
+        limit: Int,
+        offset: Int,
+    ): List<AutoBrowseRow> =
+        audioBookDao.searchAutoPage(libraryId, if (isLocal) 1 else 0, pattern, limit, offset)
+
+    /** How many Android Auto search hits [pattern] has, counting no further than [cap]. */
+    suspend fun countAutoSearch(libraryId: String, isLocal: Boolean, pattern: String, cap: Int): Int =
+        audioBookDao.countAutoSearch(libraryId, if (isLocal) 1 else 0, pattern, cap)
 }
 
 private const val MAXIMUM_AUDIOBOOK_LOOKUP_BIND_COUNT = 500

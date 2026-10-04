@@ -205,6 +205,36 @@ interface AudioBookDao {
     )
     suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
 
+    /**
+     * One page of Android Auto search hits in one library and source: title or
+     * author contains [pattern], an escaped LIKE pattern (backslash escapes).
+     */
+    @Query(
+        """
+        SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator,
+            CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
+        FROM AudioBooks
+        WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
+            AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+        ORDER BY Title COLLATE NOCASE, Id
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun searchAutoPage(libraryId: String, isLocal: Int, pattern: String, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /** How many rows [searchAutoPage] can return, counting no further than [cap]. */
+    @Query(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM AudioBooks
+            WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
+                AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+            LIMIT :cap
+        )
+        """
+    )
+    suspend fun countAutoSearch(libraryId: String, isLocal: Int, pattern: String, cap: Int): Int
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 

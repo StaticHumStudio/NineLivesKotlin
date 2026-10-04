@@ -77,6 +77,34 @@ class AutoBrowseQueryInstrumentedTest {
         assertEquals((0 until 9).map { "same-$it" }, paged)
     }
 
+    @Test
+    fun searchStaysInScopeMatchesWildcardsLiterallyAndCounts() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsertAll(
+            listOf(
+                book(id = "pct", title = "100% Wolf"),
+                book(id = "plain", title = "100 Wolves"),
+                book(id = "under", title = "a_b"),
+                book(id = "underless", title = "axb"),
+                book(id = "by-author", title = "Other").copy(author = "Wolfgang"),
+                book(id = "archived", title = "Wolf Archived", archivedAt = 1L),
+                book(id = "other-library", title = "Wolf Elsewhere", libraryId = "other"),
+                book(id = "local", title = "Wolf Local", isLocal = 1),
+            ),
+        )
+
+        fun ids(rows: List<com.ninelivesaudio.app.data.local.entity.AutoBrowseRow>) = rows.map { it.id }
+
+        assertEquals(listOf("pct"), ids(dao.searchAutoPage(LIBRARY, 0, autoSearchPattern("100%")!!, 100, 0)))
+        assertEquals(listOf("under"), ids(dao.searchAutoPage(LIBRARY, 0, autoSearchPattern("a_b")!!, 100, 0)))
+        assertEquals(
+            listOf("pct", "by-author"),
+            ids(dao.searchAutoPage(LIBRARY, 0, autoSearchPattern("wolf")!!, 100, 0)),
+        )
+        assertEquals(2, dao.countAutoSearch(LIBRARY, 0, autoSearchPattern("wolf")!!, 100))
+        assertEquals(1, dao.countAutoSearch(LIBRARY, 0, autoSearchPattern("wolf")!!, 1))
+    }
+
     private suspend fun seed() {
         // Mixed case and distinct titles, so NOCASE and lowercase() agree on order.
         val titles = (0 until 40).map { index ->

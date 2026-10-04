@@ -78,9 +78,9 @@ Android 11+ (API 30).
 
 ## What's New (Release Notes)
 
-v2.1.5
+v2.1.6
 
-Bug fixes for spotty servers. Your library now catches up on its own when your Audiobookshelf server comes back, offline starts show your saved books fast, and downloaded books play right away. Plus fixes for download pause and cancel, re-downloading, and self-signed certificates.
+Built for big libraries. The Library opens instantly with your saved books, coming back to it downloads nothing, and sync only fetches what changed while the app is open. Big refreshes wait for Wi-Fi. Also: your library catches up when your server returns, offline starts are fast, cancelled downloads clean up, downloads keep their chapters, and covers survive switching between home and VPN addresses.
 
 v2.1.4
 

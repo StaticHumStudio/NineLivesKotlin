@@ -16,9 +16,24 @@ object ChangelogData {
 
     val releases = listOf(
         ChangelogRelease(
-            version = "2.1.5",
+            version = "2.1.6",
             dateLabel = "Current",
             sections = listOf(
+                ChangelogSection(
+                    header = "Improved",
+                    entries = listOf(
+                        "Big libraries open instantly with your saved books and refresh quietly behind them.",
+                        "Coming back to the Library no longer downloads it again.",
+                        "Sync only fetches what changed, and only while the app is open.",
+                        "Big refreshes wait for Wi-Fi.",
+                        "Big Series and Author views start collapsed.",
+                        "Home, Dossier, and Android Auto stay quick with thousands of books.",
+                        "Playback saves your place every 10 seconds, easier on the battery.",
+                        "Covers load as lighter thumbnails.",
+                        "Book details list chapters for every server book.",
+                        "Failed downloads stay on the Downloads screen with Retry.",
+                    ),
+                ),
                 ChangelogSection(
                     header = "Fixed",
                     entries = listOf(
@@ -30,6 +45,16 @@ object ChangelogData {
                         "A deleted download can be downloaded again.",
                         "Pause, cancel, and delete stick while a book is downloading.",
                         "The self-signed certificate setting works without a restart.",
+                        "Cancelled downloads clean up their files.",
+                        "Downloads keep their chapters and track order offline.",
+                        "Downloaded books no longer vanish from Downloads.",
+                        "A folder scan finishes even if you leave Settings.",
+                        "Tabs no longer pile up after first setup.",
+                        "Home no longer asks for a folder you already added.",
+                        "The app reconnects on its own after a network change in the background.",
+                        "One slow server check no longer empties your shelf.",
+                        "Covers keep working after switching between home and VPN addresses.",
+                        "Usernames with spaces can be typed.",
                     ),
                 ),
             ),

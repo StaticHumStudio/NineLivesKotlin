@@ -14,6 +14,7 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,6 +59,8 @@ import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.CornerSigils
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyHost
 import com.ninelivesaudio.app.ui.animation.unhinged.anomalies.AnomalyTriggerContext
@@ -69,6 +72,9 @@ import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
 import com.ninelivesaudio.app.ui.theme.unhinged.*
+
+/** Room under the last row for the mini player, which the letter rail also stops short of. */
+private val LIBRARY_LIST_BOTTOM_PADDING = 100.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -248,19 +254,39 @@ fun LibraryScreen(
                         }
                     }
                     else -> {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = 18.dp,
-                                end = 18.dp,
-                                top = 0.dp,
-                                bottom = 100.dp,
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            (shelfDecision as? LibraryShelfDecision.ShowShelf)
-                                ?.warning
-                                ?.let { warning ->
+                        val listState = rememberLazyListState()
+                        val syncWarning = (shelfDecision as? LibraryShelfDecision.ShowShelf)?.warning
+                        val flatShelf = uiState.effectiveViewMode == ViewMode.ALL
+
+                        // Where each letter starts, worked out off the main thread
+                        // once per list change. Scrolling and dragging the rail only
+                        // look this up, so a shelf of 8,000 books costs nothing per frame.
+                        val flatBooks = uiState.filteredBooks
+                        val groupedItems = uiState.groupedListItems
+                        val sortMode = uiState.sortMode
+                        // Keyed on the list itself, not its contents, so a new list
+                        // is one reference check here and never a compare of 8,000 books.
+                        val shelfKey = IdentityKey(if (flatShelf) flatBooks else groupedItems)
+                        val letterIndex by produceState(LetterIndex.Empty, shelfKey, flatShelf, sortMode) {
+                            value = withContext(Dispatchers.Default) {
+                                if (flatShelf) flatLetterIndex(flatBooks, sortMode)
+                                else groupedLetterIndex(groupedItems, sortMode)
+                            }
+                        }
+
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 18.dp,
+                                    end = 18.dp,
+                                    top = 0.dp,
+                                    bottom = LIBRARY_LIST_BOTTOM_PADDING,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                syncWarning?.let { warning ->
                                     item(key = "sync-warning") {
                                         SyncWarningBanner(
                                             result = warning,
@@ -268,48 +294,57 @@ fun LibraryScreen(
                                         )
                                     }
                                 }
-                            // The mode in effect, not the stored choice: a grouped view
-                            // whose unlock was lost shows the flat shelf.
-                            if (uiState.effectiveViewMode == ViewMode.ALL) {
-                                // Flat list in ALL mode
-                                itemsIndexed(
-                                    items = uiState.filteredBooks,
-                                    key = { _, book -> book.id },
-                                ) { index, book ->
-                                    ArchiveBookListItem(
-                                        book = book,
-                                        index = index,
-                                        whisperEpoch = whisperEpoch,
-                                        onClick = { onNavigateToBookDetail(book.id) },
-                                    )
-                                }
-                            } else {
-                                // Grouped expandable list in SERIES / AUTHOR / GENRE modes
-                                itemsIndexed(
-                                    items = uiState.groupedListItems,
-                                    key = { _, item ->
-                                        when (item) {
-                                            is LibraryListItem.GroupHeader -> "header-${item.groupKey}"
-                                            is LibraryListItem.BookRow -> "book-${item.groupKey}-${item.book.id}"
-                                        }
-                                    },
-                                ) { index, item ->
-                                    when (item) {
-                                        is LibraryListItem.GroupHeader -> GroupHeaderRow(
-                                            title = item.title,
-                                            count = item.count,
-                                            isExpanded = item.isExpanded,
-                                            onClick = { viewModel.onGroupExpansionToggled(item.groupKey) },
-                                        )
-                                        is LibraryListItem.BookRow -> ArchiveBookListItem(
-                                            book = item.book,
+                                // The mode in effect, not the stored choice: a grouped view
+                                // whose unlock was lost shows the flat shelf.
+                                if (uiState.effectiveViewMode == ViewMode.ALL) {
+                                    // Flat list in ALL mode
+                                    itemsIndexed(
+                                        items = uiState.filteredBooks,
+                                        key = { _, book -> book.id },
+                                    ) { index, book ->
+                                        ArchiveBookListItem(
+                                            book = book,
                                             index = index,
                                             whisperEpoch = whisperEpoch,
-                                            onClick = { onNavigateToBookDetail(item.book.id) },
+                                            onClick = { onNavigateToBookDetail(book.id) },
                                         )
+                                    }
+                                } else {
+                                    // Grouped expandable list in SERIES / AUTHOR / GENRE modes
+                                    itemsIndexed(
+                                        items = uiState.groupedListItems,
+                                        key = { _, item ->
+                                            when (item) {
+                                                is LibraryListItem.GroupHeader -> "header-${item.groupKey}"
+                                                is LibraryListItem.BookRow -> "book-${item.groupKey}-${item.book.id}"
+                                            }
+                                        },
+                                    ) { index, item ->
+                                        when (item) {
+                                            is LibraryListItem.GroupHeader -> GroupHeaderRow(
+                                                title = item.title,
+                                                count = item.count,
+                                                isExpanded = item.isExpanded,
+                                                onClick = { viewModel.onGroupExpansionToggled(item.groupKey) },
+                                            )
+                                            is LibraryListItem.BookRow -> ArchiveBookListItem(
+                                                book = item.book,
+                                                index = index,
+                                                whisperEpoch = whisperEpoch,
+                                                onClick = { onNavigateToBookDetail(item.book.id) },
+                                            )
+                                        }
                                     }
                                 }
                             }
+
+                            LetterIndexRail(
+                                index = letterIndex,
+                                listState = listState,
+                                // The banner is the one list item ahead of the shelf rows.
+                                leadingItemCount = if (syncWarning != null) 1 else 0,
+                                bottomInset = LIBRARY_LIST_BOTTOM_PADDING,
+                            )
                         }
                     }
                 }

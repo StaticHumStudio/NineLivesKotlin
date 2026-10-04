@@ -105,6 +105,24 @@ class AutoBrowseQueryInstrumentedTest {
         assertEquals(1, dao.countAutoSearch(LIBRARY, 0, autoSearchPattern("wolf")!!, 1))
     }
 
+    @Test
+    fun searchIgnoresAccentsAndCase() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsertAll(
+            listOf(
+                book(id = "emile", title = "Émile"),
+                book(id = "dune", title = "DUNE"),
+                book(id = "other", title = "Other"),
+            ),
+        )
+
+        fun ids(rows: List<com.ninelivesaudio.app.data.local.entity.AutoBrowseRow>) = rows.map { it.id }
+
+        assertEquals(listOf("emile"), ids(dao.searchAutoPage(LIBRARY, 0, autoSearchPattern("emile")!!, 100, 0)))
+        assertEquals(listOf("dune"), ids(dao.searchAutoPage(LIBRARY, 0, autoSearchPattern("Dune")!!, 100, 0)))
+        assertEquals(1, dao.countAutoSearch(LIBRARY, 0, autoSearchPattern("EMILE")!!, 100))
+    }
+
     private suspend fun seed() {
         // Mixed case and distinct titles, so NOCASE and lowercase() agree on order.
         val titles = (0 until 40).map { index ->

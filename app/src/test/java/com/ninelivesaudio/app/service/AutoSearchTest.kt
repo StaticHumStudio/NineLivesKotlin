@@ -36,6 +36,12 @@ class AutoSearchTest {
     }
 
     @Test
+    fun `the pattern is folded the way the search column is`() {
+        assertEquals("%emile%", autoSearchPattern("Émile"))
+        assertEquals("%dune%", autoSearchPattern("DUNE"))
+    }
+
+    @Test
     fun `a blank query searches nothing`() = runBlocking {
         assertNull(autoSearchPattern(""))
         assertNull(autoSearchPattern("   "))

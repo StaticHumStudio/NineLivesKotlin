@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.ninelivesaudio.app.data.local.bookSearchText
 
 @Entity(
     tableName = "AudioBooks",
@@ -79,4 +80,15 @@ data class AudioBookEntity(
 
     @ColumnInfo(name = "ChaptersJson")
     val chaptersJson: String? = null,
-)
+) {
+    /**
+     * Title, author, series and narrator folded for search (see
+     * [bookSearchText]). Worked out from those fields whenever a row is
+     * built, a copy included, so every write fills it and no caller can
+     * forget to. Room sets it on read only to hand back the stored value, so
+     * a change to how search folds text needs a migration that backfills
+     * every row again, the way 9 to 10 does.
+     */
+    @ColumnInfo(name = "SearchText", defaultValue = "''")
+    var searchText: String = bookSearchText(title, author, seriesName, narrator)
+}

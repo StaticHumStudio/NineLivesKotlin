@@ -218,8 +218,9 @@ interface AudioBookDao {
     suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
 
     /**
-     * One page of Android Auto search hits in one library and source: title or
-     * author contains [pattern], an escaped LIKE pattern (backslash escapes).
+     * One page of Android Auto search hits in one library and source: the
+     * folded search column (title, author, series, narrator) contains
+     * [pattern], a folded and escaped LIKE pattern (backslash escapes).
      */
     @Query(
         """
@@ -227,7 +228,7 @@ interface AudioBookDao {
             CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson
         FROM AudioBooks
         WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
-            AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+            AND SearchText LIKE :pattern ESCAPE '\'
         ORDER BY Title COLLATE NOCASE, Id
         LIMIT :limit OFFSET :offset
         """
@@ -240,7 +241,7 @@ interface AudioBookDao {
         SELECT COUNT(*) FROM (
             SELECT 1 FROM AudioBooks
             WHERE LibraryId = :libraryId AND IsLocal = :isLocal AND ArchivedAt IS NULL
-                AND (Title LIKE :pattern ESCAPE '\' OR Author LIKE :pattern ESCAPE '\')
+                AND SearchText LIKE :pattern ESCAPE '\'
             LIMIT :cap
         )
         """

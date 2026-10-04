@@ -33,6 +33,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -711,17 +715,36 @@ private fun LibraryFiltersRow(
 
 // ─── Group Header Row ────────────────────────────────────────────────────
 
+/** What TalkBack says a group header is: open or closed. */
+internal fun groupHeaderStateDescription(isExpanded: Boolean): String =
+    if (isExpanded) "Expanded" else "Collapsed"
+
+/** What TalkBack says a tap on a group header does. */
+internal fun groupHeaderClickLabel(isExpanded: Boolean): String =
+    if (isExpanded) "Collapse group" else "Expand group"
+
 @Composable
-private fun GroupHeaderRow(
+internal fun GroupHeaderRow(
     title: String,
     count: Int,
     isExpanded: Boolean,
     onClick: () -> Unit,
 ) {
+    // A heading, so TalkBack can jump group to group, that says whether it is
+    // open and what a tap does. Thousands of groups were otherwise one long
+    // run of unlabeled buttons.
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .semantics(mergeDescendants = true) {
+                heading()
+                stateDescription = groupHeaderStateDescription(isExpanded)
+            }
+            .clickable(
+                onClickLabel = groupHeaderClickLabel(isExpanded),
+                role = Role.Button,
+                onClick = onClick,
+            ),
         shape = RoundedCornerShape(10.dp),
         color = NineLivesTheme.colors.archiveVoidElevated,
         border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),

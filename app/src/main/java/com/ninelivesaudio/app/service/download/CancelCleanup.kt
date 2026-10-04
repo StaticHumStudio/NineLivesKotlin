@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service.download
 
+import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.DownloadStatus
 import java.io.File
 import java.io.IOException
@@ -45,6 +46,24 @@ internal fun resolveDownloadRoot(configuredPath: String, defaultRoot: File): Pai
         }
     }
     return defaultRoot to true
+}
+
+/**
+ * The folder [book]'s download writes to under [root] (#49).
+ *
+ * New downloads get their own "Author - Title [id]" folder. A download that
+ * started before that naming ([startedWriting]: its row has bytes on record)
+ * and has not written into its own folder keeps going in its old shared
+ * "Author - Title" folder, so its finished tracks are not stranded. The engine
+ * creates the folder it picks before writing a byte, so once a download has
+ * started here its own folder exists and wins from then on. Delete and cancel
+ * use this same rule to find the folder another download may be writing.
+ */
+internal fun bookDownloadFolder(root: File, book: AudioBook, startedWriting: Boolean): File {
+    val own = File(root, itemDownloadFolderName(book.author, book.title, book.id))
+    if (!startedWriting || own.exists()) return own
+    val legacy = File(root, downloadFolderName(book.author, book.title, book.id))
+    return if (legacy.isDirectory) legacy else own
 }
 
 /** System dirs a configured download path may never point into. */
@@ -93,6 +112,12 @@ internal enum class CancelKeepReason {
 
     /** A path could not be resolved, so overlap cannot be ruled out. */
     UNRESOLVABLE,
+
+    /**
+     * A delete in a user-picked root has no track list to name this book's
+     * files by, so none of them can be told from the user's own.
+     */
+    NO_TRACK_LIST,
 }
 
 internal sealed interface CancelCleanupDecision {
@@ -271,7 +296,6 @@ internal fun deleteLocationFor(storedPath: String, configuredPath: String, defau
  * remove it. Uses the same rules as cancel cleanup and never recurses.
  *
  * Kept whole when:
- * - the root is a user-picked download folder,
  * - the folder is not a real direct child of the root (a symlink, the root
  *   itself, `..`, or anything that resolves elsewhere),
  * - the folder does not exist,
@@ -287,6 +311,11 @@ internal fun deleteLocationFor(storedPath: String, configuredPath: String, defau
  * nobody shares it and it holds only plain files, every file goes and then the
  * folder. A subfolder or link inside is never followed, so with one present
  * only this book's own files and its cover go.
+ *
+ * A user-picked root may hold the user's own files, so there only this book's
+ * own named files, their `.part` leftovers and its cover go, never anything
+ * else, and the folder only once that leaves it empty. The root itself is
+ * never touched.
  */
 internal fun deleteDownloadFiles(
     location: DownloadLocation,
@@ -299,14 +328,21 @@ internal fun deleteDownloadFiles(
     return decision
 }
 
+/**
+ * Whether a delete has to leave the book marked downloaded: its files stayed
+ * because they could not be proven this book's, and dropping the record would
+ * strand them out of reach. A missing folder, or a path the engine never wrote
+ * (null), leaves nothing behind.
+ */
+internal fun deleteKeepsLocalCopy(decision: CancelCleanupDecision?): Boolean =
+    decision is CancelCleanupDecision.Keep && decision.reason != CancelKeepReason.NO_FOLDER
+
 private fun decideDownloadDelete(
     location: DownloadLocation,
     ownFileNames: List<String>,
     sharers: List<FolderSharer>,
     otherDownloadFolders: List<File>,
 ): CancelCleanupDecision {
-    if (!location.rootIsAppOwned) return CancelCleanupDecision.Keep(CancelKeepReason.USER_FOLDER)
-
     val folder = when (val contained = containedFolder(location)) {
         is Containment.Inside -> contained.folder
         is Containment.Refused -> return CancelCleanupDecision.Keep(contained.reason)
@@ -338,8 +374,12 @@ private fun decideDownloadDelete(
         ?: return CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)
     val plainFiles = children.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.map(Path::toFile)
 
-    if (sameFolder.isEmpty() && plainFiles.size == children.size) {
+    if (location.rootIsAppOwned && sameFolder.isEmpty() && plainFiles.size == children.size) {
         return CancelCleanupDecision.Delete(folder, plainFiles)
+    }
+    // In a user-picked root only named files go, so with no names nothing is ours to take.
+    if (!location.rootIsAppOwned && ownFileNames.isEmpty()) {
+        return CancelCleanupDecision.Keep(CancelKeepReason.NO_TRACK_LIST)
     }
 
     val claimedByOthers = sameFolder.flatMapTo(HashSet()) { it.fileNames.orEmpty() }
@@ -352,7 +392,12 @@ private fun decideDownloadDelete(
 }
 
 /** One download row, as the ownership check needs it. */
-internal data class DownloadOwnerRow(val audioBookId: String, val status: Int)
+internal data class DownloadOwnerRow(
+    val audioBookId: String,
+    val status: Int,
+    /** Bytes on record. Above zero, the download has started writing (see [bookDownloadFolder]). */
+    val downloadedBytes: Long = 0,
+)
 
 /**
  * Books other than [excludeBookId] that may still be writing to their folder,

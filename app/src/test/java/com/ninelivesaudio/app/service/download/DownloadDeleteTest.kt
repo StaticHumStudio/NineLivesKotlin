@@ -170,15 +170,80 @@ class DownloadDeleteTest {
     // ─── User-picked folder ──────────────────────────────────────────────────
 
     @Test
-    fun `a user-picked root keeps every file`() {
+    fun `a user-picked root loses this book's own files and its emptied folder`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3", "02.mp3", "02.mp3.part", "cover.jpg")
+
+        delete(root, folder, listOf("01.mp3", "02.mp3"), appOwned = false)
+
+        assertFalse("the book's files stayed in a user-picked root", folder.exists())
+        assertTrue(root.exists())
+    }
+
+    @Test
+    fun `a user-picked root keeps anything the book does not name`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3", "my notes.txt", "bonus.mp3")
+        File(root, "loose.mp3").writeBytes(byteArrayOf(9))
+
+        delete(root, folder, listOf("01.mp3"), appOwned = false)
+
+        assertFalse(File(folder, "01.mp3").exists())
+        assertTrue(File(folder, "my notes.txt").exists())
+        assertTrue(File(folder, "bonus.mp3").exists())
+        assertTrue(File(root, "loose.mp3").exists())
+    }
+
+    @Test
+    fun `a user-picked root keeps the files another edition shares`() {
+        val root = root()
+        val folder = bookFolder(root, "01.mp3", "02.mp3", "cover.jpg")
+        val other = FolderSharer(folder.absolutePath, listOf("02.mp3"))
+
+        delete(root, folder, listOf("01.mp3", "02.mp3"), appOwned = false, sharers = listOf(other))
+
+        assertFalse(File(folder, "01.mp3").exists())
+        assertTrue(File(folder, "02.mp3").exists())
+        assertTrue(File(folder, "cover.jpg").exists())
+    }
+
+    @Test
+    fun `a user-picked root with no track list keeps everything`() {
         val root = root()
         val folder = bookFolder(root, "01.mp3", "cover.jpg")
 
-        val decision = delete(root, folder, listOf("01.mp3"), appOwned = false)
+        val decision = delete(root, folder, emptyList(), appOwned = false)
 
-        assertEquals(CancelCleanupDecision.Keep(CancelKeepReason.USER_FOLDER), decision)
+        assertEquals(CancelCleanupDecision.Keep(CancelKeepReason.NO_TRACK_LIST), decision)
         assertTrue(File(folder, "01.mp3").exists())
-        assertTrue(File(folder, "cover.jpg").exists())
+        assertTrue(deleteKeepsLocalCopy(decision))
+    }
+
+    @Test
+    fun `a user-picked root itself is never deleted`() {
+        val root = root()
+        File(root, "01.mp3").writeBytes(byteArrayOf(6))
+
+        val decision = delete(root, root, listOf("01.mp3"), appOwned = false)
+
+        assertEquals(CancelCleanupDecision.Keep(CancelKeepReason.OUTSIDE_ROOT), decision)
+        assertTrue(File(root, "01.mp3").exists())
+    }
+
+    // ─── What the record does after a delete ─────────────────────────────────
+
+    @Test
+    fun `files kept for any doubt keep the book marked downloaded`() {
+        assertTrue(deleteKeepsLocalCopy(CancelCleanupDecision.Keep(CancelKeepReason.SHARED)))
+        assertTrue(deleteKeepsLocalCopy(CancelCleanupDecision.Keep(CancelKeepReason.OUTSIDE_ROOT)))
+        assertTrue(deleteKeepsLocalCopy(CancelCleanupDecision.Keep(CancelKeepReason.UNRESOLVABLE)))
+    }
+
+    @Test
+    fun `a delete that went through or found nothing clears the record`() {
+        assertFalse(deleteKeepsLocalCopy(CancelCleanupDecision.Delete(File("x"), emptyList())))
+        assertFalse(deleteKeepsLocalCopy(CancelCleanupDecision.Keep(CancelKeepReason.NO_FOLDER)))
+        assertFalse(deleteKeepsLocalCopy(null))
     }
 
     // ─── Root containment ────────────────────────────────────────────────────

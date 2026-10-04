@@ -66,7 +66,9 @@ class DownloadEngine @Inject constructor(
         audioBook: AudioBook,
         onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
     ): DownloadItem? {
-        val downloadDir = getDownloadPath(audioBook)
+        // The row as it is now, not as the drain read it before waiting its turn.
+        val bytesOnRecord = downloadItemDao.getById(item.id)?.downloadedBytes ?: item.downloadedBytes
+        val downloadDir = getDownloadPath(audioBook, startedWriting = bytesOnRecord > 0)
         val claimed = ownership.claim(
             downloadId = item.id,
             audioBookId = audioBook.id,
@@ -329,25 +331,22 @@ class DownloadEngine @Inject constructor(
 
     // ─── File Paths ──────────────────────────────────────────────────────────
 
-    /** Get download directory for an audiobook. */
-    private fun getDownloadPath(audioBook: AudioBook): File {
-        val basePath = getBasePath()
-        val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
-        return File(basePath, folderName)
-    }
+    /** Get download directory for an audiobook. See [bookDownloadFolder]. */
+    private fun getDownloadPath(audioBook: AudioBook, startedWriting: Boolean): File =
+        bookDownloadFolder(getBasePath(), audioBook, startedWriting)
 
     /**
      * Where [audioBook]'s download folder is under the current settings, for
-     * cancel cleanup. Resolves exactly like [getDownloadPath] but creates
+     * delete and cancel. Resolves exactly like [getDownloadPath] but creates
      * nothing.
      */
-    internal fun downloadLocationFor(audioBook: AudioBook): DownloadLocation {
+    internal fun downloadLocationFor(audioBook: AudioBook, startedWriting: Boolean): DownloadLocation {
         val (root, appOwned) = resolveDownloadRoot(
             configuredPath = settingsManager.currentSettings.downloadPath,
             defaultRoot = defaultBasePath(),
         )
-        val folderName = downloadFolderName(audioBook.author, audioBook.title, audioBook.id)
-        return DownloadLocation(root = root, folder = File(root, folderName), rootIsAppOwned = appOwned)
+        val folder = bookDownloadFolder(root, audioBook, startedWriting)
+        return DownloadLocation(root = root, folder = folder, rootIsAppOwned = appOwned)
     }
 
     /**

@@ -36,6 +36,7 @@ import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
 import com.ninelivesaudio.app.service.download.runEngineExclusively
 import com.ninelivesaudio.app.service.download.removeCancelledPartialFiles
 import com.ninelivesaudio.app.service.download.removeDownloadedBookFiles
+import com.ninelivesaudio.app.service.download.deleteKeepsLocalCopy
 import com.ninelivesaudio.app.service.download.DownloadOwnerRow
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -733,7 +734,7 @@ class DownloadManager @Inject constructor(
                 downloadItemDao.deleteById(downloadId)
                 dropMeteredOverride(downloadId)
                 if (entity != null && cancelMayTouchFiles(entity.status, stop.wasDownloading, stop.stopConfirmed)) {
-                    removeCancelledPartialFiles(entity.audioBookId)
+                    removeCancelledPartialFiles(entity.audioBookId, startedWriting = entity.downloadedBytes > 0)
                 }
                 stop.wasDownloading
             }
@@ -759,9 +760,9 @@ class DownloadManager @Inject constructor(
      * gone. See [removeCancelledPartialFiles]. Best effort: a failure here
      * never fails the cancel.
      */
-    private suspend fun removeCancelledPartialFiles(audioBookId: String) {
+    private suspend fun removeCancelledPartialFiles(audioBookId: String, startedWriting: Boolean) {
         try {
-            when (val decision = removeCancelledPartialFiles(folderReads, ownership, audioBookId)) {
+            when (val decision = removeCancelledPartialFiles(folderReads, ownership, audioBookId, startedWriting)) {
                 null -> Unit
                 is CancelCleanupDecision.Keep ->
                     android.util.Log.d("DownloadManager", "cancel cleanup kept files: ${decision.reason}")
@@ -775,10 +776,14 @@ class DownloadManager @Inject constructor(
         }
     }
 
-    /** Delete a download's files and DB record. */
-    suspend fun deleteDownload(audioBookId: String): Unit = finishInOwnerScope(scope) {
+    /**
+     * Delete a download's files and DB record. False when its files could not
+     * be proven this book's, so they stayed and the book stays downloaded.
+     */
+    suspend fun deleteDownload(audioBookId: String): Boolean = finishInOwnerScope(scope) {
         // Held through the file deletion like cancel, so no resume or drain
         // start lands on this book while its files are being judged.
+        var removed = true
         val wasDownloading = rowMutex.withLock {
             ownership.actOnceEngineIsOff(
                 audioBookId = audioBookId,
@@ -787,7 +792,7 @@ class DownloadManager @Inject constructor(
                 },
                 stopEngine = { stopDrainAndAwait() },
             ) { stop ->
-                deleteDownloadedFilesAndRows(audioBookId, downloadItemDao.getByAudioBookId(audioBookId)?.id)
+                removed = deleteDownloadedFilesAndRows(audioBookId, downloadItemDao.getByAudioBookId(audioBookId)?.id)
                 stop.wasDownloading
             }
         }
@@ -795,18 +800,20 @@ class DownloadManager @Inject constructor(
             // Restart the drain for whatever else is queued.
             enqueueDrain(replace = true)
         }
+        removed
     }
 
-    private suspend fun deleteDownloadedFilesAndRows(audioBookId: String, downloadId: String?) {
+    private suspend fun deleteDownloadedFilesAndRows(audioBookId: String, downloadId: String?): Boolean {
         // Read the book only now, after any engine on it has stopped, so a
         // completion that landed during the stop is the state being undone.
         // Use the actual localPath stored on the audiobook — this matches the path
-        // set by the engine (basePath/Author - Title), not basePath/audioBookId.
+        // set by the engine (an "Author - Title [id]" folder, or "Author - Title" for older downloads).
         val bookEntity = audioBookDao.getById(audioBookId)
 
         val localPath = bookEntity?.localPath
-        if (!localPath.isNullOrEmpty()) {
-            removeDownloadedFiles(bookEntity.toDomain(), localPath)
+        if (!localPath.isNullOrEmpty() && !removeDownloadedFiles(bookEntity.toDomain(), localPath)) {
+            // The files stayed, so the record that reaches them stays too.
+            return false
         }
 
         if (bookEntity != null) {
@@ -818,29 +825,32 @@ class DownloadManager @Inject constructor(
             downloadItemDao.deleteById(downloadId)
             dropMeteredOverride(downloadId)
         }
+        return true
     }
 
     /**
      * Delete [book]'s downloaded files from [localPath] and nothing else (#49).
      * Runs inside [DownloadOwnership.actOnceEngineIsOff]. See
-     * [removeDownloadedBookFiles]. Best effort: a failure here leaves files
-     * behind but never fails the delete.
+     * [removeDownloadedBookFiles]. False when files stayed because they could
+     * not be proven this book's (see [deleteKeepsLocalCopy]), or the check failed.
      */
-    private suspend fun removeDownloadedFiles(book: AudioBook, localPath: String) {
+    private suspend fun removeDownloadedFiles(book: AudioBook, localPath: String): Boolean =
         try {
-            when (val decision = removeDownloadedBookFiles(folderReads, ownership, book, localPath)) {
+            val decision = removeDownloadedBookFiles(folderReads, ownership, book, localPath)
+            when (decision) {
                 null -> Unit
                 is CancelCleanupDecision.Keep ->
                     android.util.Log.d("DownloadManager", "delete kept files: ${decision.reason}")
                 is CancelCleanupDecision.Delete ->
                     android.util.Log.d("DownloadManager", "delete removed ${decision.files.size} files")
             }
+            !deleteKeepsLocalCopy(decision)
         } catch (cancellation: kotlinx.coroutines.CancellationException) {
             throw cancellation
         } catch (e: Exception) {
             android.util.Log.w("DownloadManager", "delete left files: ${e.message}")
+            false
         }
-    }
 
     /** Room and the engine's path rules, as delete and cancel read them. */
     private val folderReads = object : FolderReads {
@@ -851,8 +861,9 @@ class DownloadManager @Inject constructor(
             audioBookDao.getFilePathBookIdsExcept(audioBookId)
         override suspend fun localPathsExcept(audioBookId: String) = audioBookDao.getLocalPathsExcept(audioBookId)
         override suspend fun downloadRows() =
-            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status) }
-        override fun plannedLocation(book: AudioBook) = engine.downloadLocationFor(book)
+            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status, it.downloadedBytes) }
+        override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
+            engine.downloadLocationFor(book, startedWriting)
         override fun storedLocation(localPath: String) = engine.storedDownloadLocation(localPath)
     }
 

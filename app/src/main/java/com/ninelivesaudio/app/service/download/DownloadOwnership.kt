@@ -137,8 +137,11 @@ internal interface FolderReads {
     /** Every other book's stored localPath. */
     suspend fun localPathsExcept(audioBookId: String): List<String>
     suspend fun downloadRows(): List<DownloadOwnerRow>
-    /** Where [book] would download to under the current settings. */
-    fun plannedLocation(book: AudioBook): DownloadLocation
+    /**
+     * Where [book] downloads to under the current settings. [startedWriting]
+     * is whether its row has bytes on record, see [bookDownloadFolder].
+     */
+    fun plannedLocation(book: AudioBook, startedWriting: Boolean): DownloadLocation
     /** Where a stored localPath sits, or null when the engine never wrote it. */
     fun storedLocation(localPath: String): DownloadLocation?
 }
@@ -148,7 +151,8 @@ internal interface FolderReads {
  * Call it inside [DownloadOwnership.actOnceEngineIsOff], so what it reads
  * cannot change before the files go.
  *
- * Two editions with the same author and title share one folder, so the other
+ * Two editions with the same author and title shared one folder before each
+ * download got its own (and those folders are still around), so the other
  * books stored there come along with their track lists, and only this book's
  * own files go. A folder another download may still be writing keeps
  * everything: any unfinished row's folder (see [unfinishedDownloadOwners]) and
@@ -175,17 +179,19 @@ internal suspend fun removeDownloadedBookFiles(
     val withLocalCopy = candidates.values
         .filter { it.isDownloaded && !it.localPath.isNullOrEmpty() }
         .mapTo(HashSet()) { it.id }
+    val started = rows.filter { it.downloadedBytes > 0 }.mapTo(HashSet()) { it.audioBookId }
     val otherFolders = unfinishedDownloadOwners(rows, withLocalCopy, book.id)
         // No book row means nothing the engine could be writing for it.
         .mapNotNull { candidates[it] }
-        .map { reads.plannedLocation(it).folder } +
+        .map { reads.plannedLocation(it, it.id in started).folder } +
         listOfNotNull(claim?.folder)
     return deleteDownloadFiles(location, downloadedFileNames(book.audioFiles), sharers, otherFolders)
 }
 
 /**
  * Delete the partial folder a cancelled download of [audioBookId] left behind
- * (#51), after its row is gone. Call it inside
+ * (#51), after its row is gone. [startedWriting] is whether that row had bytes
+ * on record, which picks the folder (see [bookDownloadFolder]). Call it inside
  * [DownloadOwnership.actOnceEngineIsOff], so what it reads cannot change before
  * the files go. The rules live in [decideCancelCleanup] and keep the files on
  * any doubt, including when another book or download points at the same
@@ -195,16 +201,19 @@ internal suspend fun removeCancelledPartialFiles(
     reads: FolderReads,
     ownership: DownloadOwnership,
     audioBookId: String,
+    startedWriting: Boolean,
 ): CancelCleanupDecision? {
     val claim = ownership.engineClaim
     // The engine still on this book means its stop never confirmed.
     if (claim?.audioBookId == audioBookId) return CancelCleanupDecision.Keep(CancelKeepReason.SHARED)
     val book = reads.book(audioBookId) ?: return null
-    val location = reads.plannedLocation(book)
+    val location = reads.plannedLocation(book, startedWriting)
     val otherBookPaths = reads.localPathsExcept(audioBookId)
     // Every download row still around, mapped to the folder it would write to.
-    val rowBookIds = reads.downloadRows().map { it.audioBookId }.distinct()
-    val otherFolders = reads.books(rowBookIds).map { reads.plannedLocation(it).folder } + listOfNotNull(claim?.folder)
+    val rows = reads.downloadRows()
+    val started = rows.filter { it.downloadedBytes > 0 }.mapTo(HashSet()) { it.audioBookId }
+    val otherFolders = reads.books(rows.map { it.audioBookId }.distinct())
+        .map { reads.plannedLocation(it, it.id in started).folder } + listOfNotNull(claim?.folder)
     val bookIsDownloaded = book.isDownloaded || !book.localPath.isNullOrEmpty()
 
     val decision = decideCancelCleanup(location, bookIsDownloaded, otherBookPaths, otherFolders)

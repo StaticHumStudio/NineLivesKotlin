@@ -60,6 +60,71 @@ class DownloadPoliciesTest {
         assertEquals("A_B - C_D", downloadFolderName("A/B", "C:D", "id1"))
     }
 
+    // ─── itemDownloadFolderName (#49) ─────────────────────────────────────
+
+    @Test
+    fun `new folder name puts the title first and the item id in brackets at the end`() {
+        assertEquals(
+            "Jane Doe - My Book [b7c1d2e3]",
+            itemDownloadFolderName("Jane Doe", "My Book", "5f0c2a9e-3b1d-4c8e-9a7f-1e2db7c1d2e3"),
+        )
+    }
+
+    @Test
+    fun `two editions of one title get different folders`() {
+        val first = itemDownloadFolderName("Herman Melville", "Moby-Dick", "li_8gch9ve09orgn4fdz8")
+        val second = itemDownloadFolderName("Herman Melville", "Moby-Dick", "li_2kq0x7mbn1aa3plw4c")
+        assertTrue(first != second)
+        assertTrue(first != downloadFolderName("Herman Melville", "Moby-Dick", "li_8gch9ve09orgn4fdz8"))
+    }
+
+    @Test
+    fun `new folder name is stable for the same item`() {
+        assertEquals(
+            itemDownloadFolderName("A", "B", "li_8gch9ve09orgn4fdz8"),
+            itemDownloadFolderName("A", "B", "li_8gch9ve09orgn4fdz8"),
+        )
+    }
+
+    @Test
+    fun `short id keeps only letters and digits from the id`() {
+        assertEquals("abc12345", shortItemId("x/y:z*abc-123?45"))
+        assertEquals("ab", shortItemId("a/b"))
+    }
+
+    @Test
+    fun `short id falls back to a hash when the id has no letters or digits`() {
+        assertEquals(Integer.toHexString("--".hashCode()), shortItemId("--"))
+        assertEquals("[${shortItemId("")}]", itemDownloadFolderName("", "", ""))
+    }
+
+    @Test
+    fun `new folder name sanitizes odd characters`() {
+        val name = itemDownloadFolderName("A/B", "C:D*E?\"F<G>|H\\I", "li_8gch9ve09orgn4fdz8")
+        assertEquals("A_B - C_D_E__F_G__H_I [rgn4fdz8]", name)
+    }
+
+    @Test
+    fun `new folder name without author or title is just the id`() {
+        assertEquals("[rgn4fdz8]", itemDownloadFolderName("Unknown Author", "  ", "li_8gch9ve09orgn4fdz8"))
+    }
+
+    @Test
+    fun `a long title is cut to fit and the id survives`() {
+        val name = itemDownloadFolderName("Author", "x".repeat(400), "li_8gch9ve09orgn4fdz8")
+        assertTrue(name.endsWith(" [rgn4fdz8]"))
+        assertTrue(name.toByteArray(Charsets.UTF_8).size <= MAX_FOLDER_NAME_BYTES)
+    }
+
+    @Test
+    fun `a long multibyte title fits the byte limit without splitting a character`() {
+        // Three bytes each in UTF-8, plus one emoji (a surrogate pair, four bytes) at every step.
+        val name = itemDownloadFolderName("作者", "長い題名📚".repeat(60), "li_8gch9ve09orgn4fdz8")
+        assertTrue(name.endsWith(" [rgn4fdz8]"))
+        assertTrue(name.toByteArray(Charsets.UTF_8).size <= MAX_FOLDER_NAME_BYTES)
+        assertEquals(name, String(name.toByteArray(Charsets.UTF_8), Charsets.UTF_8))
+    }
+
     // ─── estimateTotalBytes ───────────────────────────────────────────────
 
     @Test

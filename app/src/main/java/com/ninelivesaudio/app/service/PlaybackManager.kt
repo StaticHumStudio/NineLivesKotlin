@@ -264,8 +264,15 @@ internal class PlaybackProgressOwner {
     private val ownerLock = Any()
     private val mutexes = mutableMapOf<String, Mutex>()
     private val snapshotGenerations = mutableMapOf<String, Long>()
+    // Bumped by a paused seek. A snapshot taken before it holds an older
+    // position, but its listening time is still good.
+    private val positionGenerations = mutableMapOf<String, Long>()
 
-    data class SnapshotToken(val bookId: String, val generation: Long)
+    data class SnapshotToken(
+        val bookId: String,
+        val generation: Long,
+        val positionGeneration: Long = 0L,
+    )
 
     private fun mutexFor(bookId: String): Mutex = synchronized(ownerLock) {
         mutexes.getOrPut(bookId, ::Mutex)
@@ -274,8 +281,20 @@ internal class PlaybackProgressOwner {
     fun snapshotToken(bookId: String): SnapshotToken = synchronized(ownerLock) {
         val generation = (snapshotGenerations[bookId] ?: 0L) + 1L
         snapshotGenerations[bookId] = generation
-        SnapshotToken(bookId, generation)
+        SnapshotToken(bookId, generation, positionGenerations[bookId] ?: 0L)
     }
+
+    fun invalidateSnapshotPositions(bookId: String) {
+        synchronized(ownerLock) {
+            positionGenerations[bookId] = (positionGenerations[bookId] ?: 0L) + 1L
+        }
+    }
+
+    private fun isCurrent(token: SnapshotToken): Boolean =
+        token.generation == snapshotGenerations[token.bookId]
+
+    private fun positionIsCurrent(token: SnapshotToken): Boolean =
+        token.positionGeneration == (positionGenerations[token.bookId] ?: 0L)
 
     fun invalidateSnapshots(bookId: String) {
         synchronized(ownerLock) {
@@ -290,11 +309,23 @@ internal class PlaybackProgressOwner {
     suspend fun <T> sync(bookId: String, block: suspend () -> T): T =
         mutexFor(bookId).withLock { block() }
 
-    suspend fun syncSnapshot(token: SnapshotToken, block: suspend () -> Unit) {
+    /**
+     * Runs [block] if nothing has retired [token]. If only a paused seek has
+     * (its position is older than the seek's), [onPositionSuperseded] runs
+     * instead, so the snapshot's listening time is still saved without its
+     * old position.
+     */
+    suspend fun syncSnapshot(
+        token: SnapshotToken,
+        onPositionSuperseded: (suspend () -> Unit)? = null,
+        block: suspend () -> Unit,
+    ) {
         mutexFor(token.bookId).withLock {
-            if (synchronized(ownerLock) { token.generation == snapshotGenerations[token.bookId] }) {
-                block()
+            val (current, positionCurrent) = synchronized(ownerLock) {
+                isCurrent(token) to positionIsCurrent(token)
             }
+            if (!current) return@withLock
+            if (positionCurrent) block() else onPositionSuperseded?.invoke()
         }
     }
 
@@ -304,7 +335,7 @@ internal class PlaybackProgressOwner {
         flushProgress: suspend () -> Unit,
     ) {
         mutexFor(token.bookId).withLock {
-            if (synchronized(ownerLock) { token.generation == snapshotGenerations[token.bookId] }) {
+            if (synchronized(ownerLock) { isCurrent(token) && positionIsCurrent(token) }) {
                 flushProgress()
                 syncTerminal()
             }
@@ -314,16 +345,17 @@ internal class PlaybackProgressOwner {
 
 /**
  * Save a seek made while paused. A pause save still waiting for the book's
- * lock captured the position from before this seek, so it is dropped first,
- * on the caller's thread, before this save is queued. Otherwise a delayed
- * pause save could land after this one and put the old position back.
+ * lock captured the position from before this seek, so its position write is
+ * retired first, on the caller's thread, before this save is queued.
+ * Otherwise a delayed pause save could land after this one and put the old
+ * position back. Its listening time still gets saved.
  */
 internal fun PlaybackProgressOwner.launchPausedSeekSave(
     scope: CoroutineScope,
     bookId: String,
     save: suspend () -> Unit,
 ): Job {
-    invalidateSnapshots(bookId)
+    invalidateSnapshotPositions(bookId)
     return scope.launch {
         try {
             report(bookId) { save() }
@@ -1045,7 +1077,17 @@ class PlaybackManager @Inject constructor(
                 if (snapshot != null) {
                     val snapshotToken = playbackProgressOwner.snapshotToken(snapshot.bookId)
                     scope.launch(Dispatchers.IO) {
-                        playbackProgressOwner.syncSnapshot(snapshotToken) {
+                        playbackProgressOwner.syncSnapshot(
+                            token = snapshotToken,
+                            // A paused seek landed first. Save the listening
+                            // time against the seek's position, never this
+                            // snapshot's older one.
+                            onPositionSuperseded = {
+                                latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.let { (_, position) ->
+                                    syncPlaybackProgress(snapshot.copy(position = position))
+                                }
+                            },
+                        ) {
                             syncPlaybackProgress(snapshot)
                         }
                     }
@@ -1131,6 +1173,9 @@ class PlaybackManager @Inject constructor(
     private var currentLocalSessionId: Long? = null
     private var localSessionAccumSec: Double = 0.0
     private var pendingPauseSnapshot: PlaybackProgressSnapshot? = null
+    // The book and position of the last seek made while paused, read by a
+    // pause save that the seek overtook.
+    @Volatile private var latestPausedSeek: Pair<String, Duration>? = null
     // Cap to ignore long gaps (background, doze) between heartbeats. 60s ≫ the 12s normal interval.
     private val localSessionMaxTickSec: Double = 60.0
 
@@ -2683,6 +2728,7 @@ class PlaybackManager @Inject constructor(
         if (player.mediaItemCount == 0) return
         val position = getCurrentPosition()
         val duration = _duration.value
+        latestPausedSeek = book.id to position
         playbackProgressOwner.launchPausedSeekSave(scope, book.id) {
             syncManager.reportPlaybackPosition(
                 itemId = book.id,

@@ -226,6 +226,28 @@ class PlaybackProgressOwnerTest {
     }
 
     @Test
+    fun `a paused seek retires the pause save's position but keeps its listening time`() = runBlocking {
+        val owner = PlaybackProgressOwner()
+        val effects = mutableListOf<String>()
+
+        // Paused at 100 s with listening time to record. The save is queued.
+        val pauseToken = owner.snapshotToken("book-a")
+        owner.launchPausedSeekSave(this, "book-a") { effects += "seek-position" }.join()
+        owner.syncSnapshot(pauseToken, onPositionSuperseded = { effects += "pause-listening" }) {
+            effects += "pause-position"
+        }
+        // Resuming retires the whole snapshot, listening time included, since
+        // playback carries that time forward itself.
+        val resumedToken = owner.snapshotToken("book-a")
+        owner.invalidateSnapshots("book-a")
+        owner.syncSnapshot(resumedToken, onPositionSuperseded = { effects += "stale-listening" }) {
+            effects += "stale-position"
+        }
+
+        assertEquals(listOf("seek-position", "pause-listening"), effects)
+    }
+
+    @Test
     fun `a pause save already writing finishes before the paused seek saves`() = runBlocking {
         val owner = PlaybackProgressOwner()
         val writes = mutableListOf<Duration>()

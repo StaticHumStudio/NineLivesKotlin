@@ -308,6 +308,10 @@ class LibraryViewModel @Inject constructor(
         val searchQuery: String = "",
         val viewMode: ViewMode = ViewMode.ALL,
         val sortMode: SortMode = SortMode.RECENTLY_PLAYED,
+        // No picker sets or applies these yet. The distinct-groups query that
+        // filled availableGroups ran on every grouped refilter (Genre view
+        // decoded every distinct genre list) and nothing rendered it, so it
+        // is gone until a picker exists.
         val selectedGroupFilter: String? = null,
         val availableGroups: List<String> = emptyList(),
         val groupedSections: List<GroupedSection> = emptyList(),
@@ -950,21 +954,12 @@ class LibraryViewModel @Inject constructor(
 
     private data class FilterResult(
         val books: List<AudioBook>,
-        val availableGroups: List<String>,
         val groupedSections: List<GroupedSection>,
         val totalBookCount: Int,
     )
 
     private suspend fun buildFilterResult(snapshot: FilterSnapshot): FilterResult? {
         val libraryId = snapshot.request.libraryId
-
-        val groups = when (snapshot.viewMode) {
-            ViewMode.SERIES -> audioBookRepository.getDistinctSeries(libraryId)
-            ViewMode.AUTHOR -> audioBookRepository.getDistinctAuthors(libraryId)
-            ViewMode.GENRE -> audioBookRepository.getDistinctGenres(libraryId)
-            ViewMode.ALL -> emptyList()
-        }
-        if (!filterPublication.isCurrent(snapshot.request)) return null
 
         // Push filters to SQL — only load the books that match
         val tab = when (snapshot.selectedTab) {
@@ -1021,7 +1016,6 @@ class LibraryViewModel @Inject constructor(
 
         return FilterResult(
             books = sortedBooks,
-            availableGroups = groups,
             groupedSections = groupedSections,
             totalBookCount = totalCount,
         )
@@ -1036,7 +1030,6 @@ class LibraryViewModel @Inject constructor(
                 .apply { addAll(groupKeys - previousKeys) }
             it.copy(
                 filteredBooks = result.books,
-                availableGroups = result.availableGroups,
                 groupedSections = result.groupedSections,
                 expandedGroups = expandedGroups,
                 totalBookCount = result.totalBookCount,

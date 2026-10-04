@@ -43,7 +43,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -234,30 +233,6 @@ class AudioBookRepository @Inject constructor(
 
     suspend fun countRecentlyPlayedForAuto(libraryId: String, isLocal: Boolean): Int =
         audioBookDao.countRecentlyPlayedByLibrary(libraryId, if (isLocal) 1 else 0)
-
-    /** Get distinct series names for a library. */
-    suspend fun getDistinctSeries(libraryId: String): List<String> =
-        audioBookDao.getDistinctSeries(libraryId)
-
-    /** Get distinct authors for a library. */
-    suspend fun getDistinctAuthors(libraryId: String): List<String> =
-        audioBookDao.getDistinctAuthors(libraryId)
-
-    /** Get distinct genres for a library (parsed from JSON arrays). */
-    suspend fun getDistinctGenres(libraryId: String): List<String> {
-        val jsonStrings = audioBookDao.getDistinctGenresJson(libraryId)
-        return jsonStrings
-            .flatMap { json ->
-                try {
-                    Json.decodeFromString<List<String>>(json)
-                } catch (_: Exception) {
-                    emptyList()
-                }
-            }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .sorted()
-    }
 
     /**
      * Download every item in a library and save it, a page at a time. This is

@@ -166,7 +166,6 @@ private class DelayedLibraryFilterDao {
         when (method.name) {
             "getFilteredBooks" -> filteredBooks(args)
             "countByLibrary" -> 2
-            "getDistinctSeries", "getDistinctAuthors", "getDistinctGenresJson" -> emptyList<String>()
             "observeLocalCatalog" -> flowOf(emptyList<LocalCatalogEntry>())
             "toString" -> "DelayedLibraryFilterDao"
             "hashCode" -> System.identityHashCode(this)

@@ -211,8 +211,10 @@ class PendingProgressQueueOwnerTest {
     fun `failed session sync retains its pending fallback`() = runBlocking {
         var acknowledged = false
 
-        val delivered = acknowledgePendingFallbackOnSuccess(
-            deliver = { false },
+        val delivered = deliverSessionProgress(
+            isFinished = false,
+            syncSession = { false },
+            pushFinished = { error("an unfinished save never pushes the finished flag") },
             acknowledge = { acknowledged = true },
         )
 
@@ -224,8 +226,10 @@ class PendingProgressQueueOwnerTest {
     fun `successful session sync acknowledges its pending fallback`() = runBlocking {
         var acknowledged = false
 
-        val delivered = acknowledgePendingFallbackOnSuccess(
-            deliver = { true },
+        val delivered = deliverSessionProgress(
+            isFinished = false,
+            syncSession = { true },
+            pushFinished = { error("an unfinished save never pushes the finished flag") },
             acknowledge = { acknowledged = true },
         )
 

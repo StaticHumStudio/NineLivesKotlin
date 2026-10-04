@@ -11,11 +11,14 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
@@ -253,7 +256,12 @@ class ConnectivityMonitor @Inject constructor(
         pingJob = scope.launch {
             runForegroundPing(
                 appInForeground = appInForeground,
-                nextDelayMs = { nextPingDelayMs(isOnline = _isOnline.value, isServerReachable = _isServerReachable.value) },
+                // Restarts the wait whenever the status changes the interval,
+                // so a server that just went unreachable is re-probed 15
+                // seconds later, not at the end of the 60 already running.
+                intervalMs = combine(_isOnline, _isServerReachable) { online, reachable ->
+                    nextPingDelayMs(isOnline = online, isServerReachable = reachable)
+                },
                 // Route through launchReachabilityCheck so the periodic ping
                 // shares the single-flight cancellation with the callback- and
                 // foreground-driven checks. Calling checkServerReachable()
@@ -563,18 +571,25 @@ internal suspend fun probeServerWithRetry(
 /**
  * The periodic ping loop. It runs only while [appInForeground] is true and
  * stops the moment it turns false, so nothing pings in the background.
+ *
+ * Each wait is [intervalMs]'s latest value, and a new value restarts the
+ * wait in progress. The loop used to pick its delay before sleeping, so a
+ * server that went unreachable during a 60 second wait was first re-probed
+ * up to 60 seconds later instead of 15.
  */
 internal suspend fun runForegroundPing(
     appInForeground: StateFlow<Boolean>,
-    nextDelayMs: () -> Long,
+    intervalMs: Flow<Long>,
     sleep: suspend (Long) -> Unit = { delay(it) },
     check: suspend () -> Unit,
 ) {
     appInForeground.collectLatest { inForeground ->
         if (!inForeground) return@collectLatest
-        while (true) {
-            sleep(nextDelayMs())
-            check()
+        intervalMs.distinctUntilChanged().collectLatest { interval ->
+            while (true) {
+                sleep(interval)
+                check()
+            }
         }
     }
 }

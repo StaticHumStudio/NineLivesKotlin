@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.service
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -24,7 +25,7 @@ class ForegroundPingTest {
         val loop = launch(start = CoroutineStart.UNDISPATCHED) {
             runForegroundPing(
                 appInForeground = foreground,
-                nextDelayMs = { PING_INTERVAL_MS },
+                intervalMs = MutableStateFlow(PING_INTERVAL_MS),
                 sleep = { ticks.receive() },
                 check = { checks += 1 },
             )
@@ -62,19 +63,53 @@ class ForegroundPingTest {
         val foreground = MutableStateFlow(true)
         val ticks = Channel<Unit>()
         val waits = mutableListOf<Long>()
-        var reachable = true
+        val reachable = MutableStateFlow(true)
         val loop = launch(start = CoroutineStart.UNDISPATCHED) {
             runForegroundPing(
                 appInForeground = foreground,
-                nextDelayMs = { nextPingDelayMs(isOnline = true, isServerReachable = reachable) },
+                intervalMs = reachable.map { nextPingDelayMs(isOnline = true, isServerReachable = it) },
                 sleep = { waits += it; ticks.receive() },
-                check = { reachable = false },
+                check = { reachable.value = false },
             )
         }
         settle()
+        assertEquals(listOf(PING_INTERVAL_MS), waits)
         ticks.send(Unit)
         settle()
-        assertEquals(listOf(PING_INTERVAL_MS, PING_RETRY_INTERVAL_MS), waits)
+        // The wait running after a failed check is the 15 s retry. A 60 s
+        // wait the status change cancels at once may show up before it.
+        assertEquals(PING_RETRY_INTERVAL_MS, waits.last())
+        loop.cancel()
+    }
+
+    @Test
+    fun `the server going unreachable mid-wait restarts the wait at the retry interval`() = runBlocking {
+        val foreground = MutableStateFlow(true)
+        val ticks = Channel<Unit>()
+        val waits = mutableListOf<Long>()
+        var checks = 0
+        val reachable = MutableStateFlow(true)
+        val loop = launch(start = CoroutineStart.UNDISPATCHED) {
+            runForegroundPing(
+                appInForeground = foreground,
+                intervalMs = reachable.map { nextPingDelayMs(isOnline = true, isServerReachable = it) },
+                sleep = { waits += it; ticks.receive() },
+                check = { checks += 1 },
+            )
+        }
+        settle()
+        assertEquals(listOf(PING_INTERVAL_MS), waits)
+
+        // Another probe (a 502 from the foreground check) marks it unreachable
+        // while the 60 second wait is running.
+        reachable.value = false
+        settle()
+        assertEquals("the 60 s wait is dropped, not waited out", listOf(PING_INTERVAL_MS, PING_RETRY_INTERVAL_MS), waits)
+        assertEquals(0, checks)
+
+        ticks.send(Unit)
+        settle()
+        assertEquals("the re-probe comes after the 15 s wait", 1, checks)
         loop.cancel()
     }
 

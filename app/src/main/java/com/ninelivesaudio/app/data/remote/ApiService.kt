@@ -1025,32 +1025,66 @@ class ApiService @Inject constructor(
 
     // ─── Bookmarks ───────────────────────────────────────────────────────
 
-    suspend fun getBookmarks(itemId: String): List<Bookmark> = withContext(Dispatchers.IO) {
-        try {
-            val response = api.getMe()
-            if (!response.isSuccessful) return@withContext emptyList()
+    private val meBookmarksCache = MeBookmarksCache()
 
-            response.body()?.bookmarks
-                ?.filter { it.libraryItemId == itemId }
-                ?.sortedBy { it.time }
-                ?.map { b ->
-                    Bookmark(
-                        id = b.id,
-                        libraryItemId = b.libraryItemId,
-                        title = b.title,
-                        time = b.time,
-                        createdAt = b.createdAt,
-                    )
-                } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
+    /**
+     * One book's bookmarks. Uses the per-book route when the server has it and
+     * falls back to a briefly cached /api/me on older servers, because /api/me
+     * carries every progress row the account owns (megabytes at a big library).
+     */
+    suspend fun getBookmarks(itemId: String): RemoteResult<List<Bookmark>> = withContext(Dispatchers.IO) {
+        loadItemBookmarks(
+            itemId = itemId,
+            sessionKey = "$authGeneration|${settingsManager.currentSettings.serverUrl}",
+            cache = meBookmarksCache,
+            fetchItem = ::fetchItemBookmarks,
+            fetchAll = ::fetchAllBookmarksFromMe,
+        )
     }
+
+    private suspend fun fetchItemBookmarks(itemId: String): ItemBookmarksOutcome {
+        val response = try {
+            api.getItemBookmarks(itemId)
+        } catch (e: kotlinx.serialization.SerializationException) {
+            // A server between the route landing and its 2.36.0 shape, or a
+            // proxy page. Either way the /api/me fallback still works.
+            return ItemBookmarksOutcome.Unsupported
+        }
+        if (response.code() == 404 || response.code() == 405) {
+            response.errorBody()?.close()
+            return ItemBookmarksOutcome.Unsupported
+        }
+        if (!response.isSuccessful) {
+            response.errorBody()?.close()
+            return ItemBookmarksOutcome.Failed("HTTP ${response.code()} loading bookmarks")
+        }
+        val body = response.body() ?: return ItemBookmarksOutcome.Failed("Empty bookmarks body")
+        return ItemBookmarksOutcome.Found(body.bookmarks.map { it.toBookmark() })
+    }
+
+    private suspend fun fetchAllBookmarksFromMe(): RemoteResult<List<Bookmark>> {
+        val response = api.getMe()
+        if (!response.isSuccessful) {
+            response.errorBody()?.close()
+            return RemoteResult.Failed("HTTP ${response.code()} loading bookmarks")
+        }
+        val body = response.body() ?: return RemoteResult.Failed("Empty profile body")
+        return RemoteResult.Ok(body.bookmarks.orEmpty().map { it.toBookmark() })
+    }
+
+    private fun ApiBookmark.toBookmark(): Bookmark = Bookmark(
+        id = id,
+        libraryItemId = libraryItemId,
+        title = title,
+        time = time,
+        createdAt = createdAt,
+    )
 
     suspend fun createBookmark(itemId: String, title: String, time: Double): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val response = api.createBookmark(itemId, CreateBookmarkRequest(title, time))
+                if (response.isSuccessful) meBookmarksCache.invalidate()
                 response.isSuccessful
             } catch (e: Exception) {
                 false
@@ -1061,6 +1095,7 @@ class ApiService @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 val response = api.deleteBookmark(itemId, time)
+                if (response.isSuccessful) meBookmarksCache.invalidate()
                 response.isSuccessful
             } catch (e: Exception) {
                 false

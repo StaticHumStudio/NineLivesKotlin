@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.data.repository
 import com.ninelivesaudio.app.data.local.dao.LocalBookmarkDao
 import com.ninelivesaudio.app.data.local.entity.LocalBookmarkEntity
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Bookmark
 import com.ninelivesaudio.app.service.SettingsManager
@@ -16,7 +17,8 @@ import javax.inject.Singleton
  * player when the user marks a moment in a scanned-local file.
  *
  * In AUDIOBOOKSHELF mode, delegates to ApiService which round-trips
- * /api/me/item/{itemId}/bookmark.
+ * the per-book bookmark route (or a cached /api/me on older servers) and
+ * /api/me/item/{itemId}/bookmark for changes.
  *
  * The repository owns the dispatch so callers (PlayerViewModel etc.) don't
  * need to know which backend is live — they just call get/create/delete with
@@ -28,9 +30,10 @@ class BookmarkRepository @Inject constructor(
     private val bookmarkDao: LocalBookmarkDao,
     private val settingsManager: SettingsManager,
 ) {
-    suspend fun getBookmarks(itemId: String): List<Bookmark> {
+    /** A failure stays a failure, so the player can say so instead of showing no bookmarks. */
+    suspend fun getBookmarks(itemId: String): RemoteResult<List<Bookmark>> {
         return if (isLocal()) {
-            bookmarkDao.getByAudioBookId(itemId).map { it.toDomain() }
+            RemoteResult.Ok(bookmarkDao.getByAudioBookId(itemId).map { it.toDomain() })
         } else {
             apiService.getBookmarks(itemId)
         }

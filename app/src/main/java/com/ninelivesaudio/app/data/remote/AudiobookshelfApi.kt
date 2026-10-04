@@ -116,6 +116,10 @@ interface AudiobookshelfApi {
 
     // ─── Bookmarks ───────────────────────────────────────────────────────
 
+    /** One book's bookmarks. Audiobookshelf 2.36.0 and later, older servers answer 404. */
+    @GET("api/me/bookmarks/{itemId}")
+    suspend fun getItemBookmarks(@Path("itemId") itemId: String): Response<ApiItemBookmarksResponse>
+
     @POST("api/me/item/{itemId}/bookmark")
     suspend fun createBookmark(
         @Path("itemId") itemId: String,

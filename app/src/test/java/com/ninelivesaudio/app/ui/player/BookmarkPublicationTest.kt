@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.ui.player
 
+import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.Bookmark
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -10,6 +11,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BookmarkPublicationTest {
@@ -22,7 +25,7 @@ class BookmarkPublicationTest {
         val publication = BookmarkPublication()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val aStarted = CompletableDeferred<Unit>()
-        val releaseA = CompletableDeferred<List<Bookmark>>()
+        val releaseA = CompletableDeferred<RemoteResult<List<Bookmark>>>()
         var visible = emptyList<Bookmark>()
 
         val aRequest = publication.replace("book-a")
@@ -32,17 +35,17 @@ class BookmarkPublicationTest {
                 aStarted.complete(Unit)
                 releaseA.await()
             }
-        }) { visible = it })
+        }) { visible = bookmarkListState(visible, it).bookmarks })
         aStarted.await()
 
         val bRequest = publication.replace("book-b")
-        val bJob = requireNotNull(publication.launch(scope, bRequest, { bBookmarks }) { visible = it })
+        val bJob = requireNotNull(publication.launch(scope, bRequest, { RemoteResult.Ok(bBookmarks) }) { visible = bookmarkListState(visible, it).bookmarks })
         bJob.join()
         assertEquals(bBookmarks, visible)
 
         // This simulates a repository that catches cancellation and still
         // returns its already-started A response.
-        releaseA.complete(aBookmarks)
+        releaseA.complete(RemoteResult.Ok(aBookmarks))
         aJob.join()
         assertEquals(bBookmarks, visible)
         scope.cancel()
@@ -63,11 +66,11 @@ class BookmarkPublicationTest {
                 releaseA.await()
             }
             error("A failed after B became current")
-        }) { visible = it })
+        }) { visible = bookmarkListState(visible, it).bookmarks })
         aStarted.await()
 
         val bRequest = publication.replace("book-b")
-        val bJob = requireNotNull(publication.launch(scope, bRequest, { bBookmarks }) { visible = it })
+        val bJob = requireNotNull(publication.launch(scope, bRequest, { RemoteResult.Ok(bBookmarks) }) { visible = bookmarkListState(visible, it).bookmarks })
         bJob.join()
         assertEquals(bBookmarks, visible)
 
@@ -75,5 +78,32 @@ class BookmarkPublicationTest {
         aJob.join()
         assertEquals(bBookmarks, visible)
         scope.cancel()
+    }
+
+    @Test
+    fun `a thrown load publishes a failure, not an empty list`() = runBlocking {
+        val publication = BookmarkPublication()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var published: RemoteResult<List<Bookmark>>? = null
+
+        val request = publication.replace("book-a")
+        requireNotNull(publication.launch(scope, request, { error("socket closed") }) { published = it }).join()
+
+        assertTrue(published is RemoteResult.Failed)
+        scope.cancel()
+    }
+
+    @Test
+    fun `a failed refresh keeps the bookmarks on screen and flags the failure`() {
+        val state = bookmarkListState(aBookmarks, RemoteResult.Failed("timeout"))
+        assertEquals(aBookmarks, state.bookmarks)
+        assertTrue(state.loadFailed)
+    }
+
+    @Test
+    fun `a good load clears the failure flag`() {
+        val state = bookmarkListState(aBookmarks, RemoteResult.Ok(bBookmarks))
+        assertEquals(bBookmarks, state.bookmarks)
+        assertFalse(state.loadFailed)
     }
 }

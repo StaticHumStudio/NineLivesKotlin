@@ -304,6 +304,10 @@ class SettingsViewModel @Inject constructor(
     data class PendingSweep(val type: SweepType, val count: Int)
 
     private val _uiState = MutableStateFlow(UiState())
+
+    /** The server libraries Room last emitted, for names only (#81). */
+    @Volatile
+    private var latestCachedLibraries: List<Library> = emptyList()
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
     private val authUiGeneration = AuthUiGenerationCoordinator()
     private val authUiOperationMutex = Mutex()
@@ -363,6 +367,9 @@ class SettingsViewModel @Inject constructor(
         // loadLibraries().
         viewModelScope.launch {
             libraryRepository.observeAudiobookshelf().collect { cached ->
+                // Set before the update so a loadLibraries() that publishes
+                // after this point still carries these names.
+                latestCachedLibraries = cached
                 _uiState.update { state ->
                     val libraries = withCachedLibraryNames(state.libraries, cached)
                     if (libraries == state.libraries) return@update state
@@ -1532,9 +1539,12 @@ class SettingsViewModel @Inject constructor(
             }
 
             _uiState.update {
+                // A rename the collector saw while this load ran wins over the
+                // older snapshot this load started from (#81).
+                val named = withCachedLibraryNames(libs, latestCachedLibraries)
                 it.copy(
-                    libraries = libs,
-                    selectedLibrary = selected,
+                    libraries = named,
+                    selectedLibrary = selected?.let { s -> named.firstOrNull { l -> l.id == s.id } ?: s },
                 )
             }
         } catch (_: Exception) {

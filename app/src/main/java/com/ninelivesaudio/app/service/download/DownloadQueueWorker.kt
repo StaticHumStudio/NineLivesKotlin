@@ -50,8 +50,16 @@ class DownloadQueueWorker(
         EntryPointAccessors.fromApplication(applicationContext, Deps::class.java)
     }
 
+    /**
+     * Whether this drain was enqueued to wait for Wi-Fi. A request from before
+     * the Wi-Fi only setting carries no input and reads false, so with the
+     * setting on it only takes books sent over mobile data.
+     */
+    private val unmetered: Boolean
+        get() = inputData.getBoolean(KEY_DRAIN_UNMETERED, false)
+
     override suspend fun doWork(): Result = try {
-        deps.downloadManager().onDrainStarted()
+        deps.downloadManager().onDrainStarted(unmetered)
         drain()
     } finally {
         // Cleared on EVERY exit path, including cancellation. Entitlement-drop
@@ -87,7 +95,14 @@ class DownloadQueueWorker(
             // orders by age, so an unfiltered list would meet a PRESERVED loser
             // first and start downloading a book the free tier cannot keep.
             val active = manager.filterToSlotWinner(dao.getDownloadable().map { it.toDomain() })
-            val item = selectNextDownload(active) ?: break
+            // With Wi-Fi only on, a drain running on any connection takes only
+            // books the user sent over mobile data. When nothing it may start
+            // is left, the manager hands the rest to a drain that waits for Wi-Fi.
+            val item = selectNextDownload(manager.runnableOnDrain(active, unmetered))
+            if (item == null) {
+                if (manager.finishDrainOrContinue(unmetered)) continue
+                break
+            }
             android.util.Log.d(TAG, "next id=${item.id} status=${item.status} title=${item.title}")
 
             val bookEntity = books.getById(item.audioBookId)
@@ -116,7 +131,7 @@ class DownloadQueueWorker(
             // get dropped and the bar appears frozen / far behind.
             var lastNotifiedPercent = -1
             // Cancel cleanup checks this last thing before deleting files.
-            manager.onEngineStarted(item.audioBookId)
+            manager.onEngineStarted(item.audioBookId, item.id)
             val result = try {
                 withContext(Dispatchers.IO) {
                     engine.download(item, book) { id, downloaded, total ->
@@ -139,7 +154,7 @@ class DownloadQueueWorker(
             android.util.Log.d(TAG, "done id=${item.id} result=${result.status}")
         }
 
-        android.util.Log.d(TAG, "drain END (queue empty)")
+        android.util.Log.d(TAG, "drain END (nothing left this drain may start)")
         // Best-effort: drop the ongoing notification when there is nothing left.
         // (Skipped when paused, where the standalone paused notification stands in.)
         if (!manager.isDownloadsPaused()) {

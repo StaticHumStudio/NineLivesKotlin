@@ -83,9 +83,20 @@ class EntitlementCachePrefs @Inject constructor(
         get() = prefs.getBoolean(KEY_DOWNLOADS_PAUSED, false)
         set(value) = prefs.edit().putBoolean(KEY_DOWNLOADS_PAUSED, value).apply()
 
+    /**
+     * Download row ids the user sent over mobile data while "Download on Wi-Fi
+     * only" is on (#79). Kept here rather than on the row, so it needs no
+     * schema change, and device-local for the same reason as the pause.
+     */
+    var meteredOverrideDownloadIds: Set<String>
+        // Copied out: the set getStringSet returns must never be modified.
+        get() = prefs.getStringSet(KEY_METERED_OVERRIDES, null)?.toSet() ?: emptySet()
+        set(value) = prefs.edit().putStringSet(KEY_METERED_OVERRIDES, value.toSet()).apply()
+
     companion object {
         const val FILE_NAME = "nine_lives_entitlement_cache"
         const val KEY_DOWNLOADS_PAUSED = "downloads_paused"
+        const val KEY_METERED_OVERRIDES = "metered_override_download_ids"
         const val KEY_SLOT_WINNER = "slot_winner_audiobook_id"
         const val KEY_PLAY_UNLOCK = "play_unlock_cached"
         const val KEY_FORCE_FREE = "force_free"

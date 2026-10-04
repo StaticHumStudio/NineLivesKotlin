@@ -1,10 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import android.content.Context
-import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
@@ -33,14 +30,24 @@ import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.ResumeDecision
 import com.ninelivesaudio.app.service.download.decideResume
 import com.ninelivesaudio.app.service.download.selectNextDownload
+import com.ninelivesaudio.app.service.download.drainRequest
+import com.ninelivesaudio.app.service.download.drainWaitsForUnmetered
+import com.ninelivesaudio.app.service.download.drainWorkPolicy
+import com.ninelivesaudio.app.service.download.liveOverrides
+import com.ninelivesaudio.app.service.download.mayDownloadOnDrain
+import com.ninelivesaudio.app.service.download.overrideRestartsDrain
+import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
 import com.ninelivesaudio.app.service.download.writeAfterEngineStops
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.guava.await
@@ -146,8 +153,16 @@ class DownloadManager @Inject constructor(
     @Volatile
     private var drainRunning = false
 
+    /**
+     * Whether the running drain was enqueued to wait for Wi-Fi. Only
+     * meaningful while [drainRunning]. See [mayDownloadOnDrain].
+     */
+    @Volatile
+    private var drainUnmetered = false
+
     /** Called by [DownloadQueueWorker] on entry to doWork(). */
-    fun onDrainStarted() {
+    fun onDrainStarted(unmetered: Boolean) {
+        drainUnmetered = unmetered
         drainRunning = true
     }
 
@@ -163,14 +178,130 @@ class DownloadManager @Inject constructor(
     @Volatile
     private var engineBookId: String? = null
 
+    /** The download row the engine is on, for the Wi-Fi only rule. */
+    @Volatile
+    private var engineDownloadId: String? = null
+
     /** Called by [DownloadQueueWorker] right before it runs the engine on a book. */
-    fun onEngineStarted(audioBookId: String) {
+    fun onEngineStarted(audioBookId: String, downloadId: String) {
         engineBookId = audioBookId
+        engineDownloadId = downloadId
     }
 
     /** Called by [DownloadQueueWorker] from a finally once the engine returns or throws. */
     fun onEngineStopped() {
         engineBookId = null
+        engineDownloadId = null
+    }
+
+    // ─── Wi-Fi only (#79) ────────────────────────────────────────────────────
+
+    private val wifiOnly: Boolean
+        get() = settingsManager.currentSettings.downloadOnWifiOnly
+
+    private val _meteredOverrides by lazy { MutableStateFlow(slotStore.meteredOverrides) }
+
+    /**
+     * Download ids the user sent over mobile data while Wi-Fi only is on.
+     * Each one runs on any connection until it finishes, is cancelled or is
+     * deleted. The setting itself never changes.
+     */
+    val meteredOverrides: StateFlow<Set<String>> get() = _meteredOverrides.asStateFlow()
+
+    private fun writeOverrides(ids: Set<String>) {
+        if (ids == _meteredOverrides.value) return
+        slotStore.meteredOverrides = ids
+        _meteredOverrides.value = ids
+    }
+
+    private fun dropMeteredOverride(downloadId: String) {
+        writeOverrides(_meteredOverrides.value - downloadId)
+    }
+
+    /** Overrides with a row still behind them. Finished rows let theirs go. */
+    private suspend fun prunedOverrides(): Set<String> {
+        val liveIds = downloadItemDao.getAll()
+            .filter { it.status != DownloadStatus.Completed.ordinal }
+            .map { it.id }
+        return liveOverrides(_meteredOverrides.value, liveIds).also(::writeOverrides)
+    }
+
+    /**
+     * Start a download that is waiting for Wi-Fi over mobile data, once,
+     * without touching the setting. False when the row is gone or is not
+     * waiting to download.
+     */
+    suspend fun startOnMobileData(downloadId: String): Boolean = finishInOwnerScope(scope) {
+        rowMutex.withLock {
+            val entity = downloadItemDao.getById(downloadId) ?: return@withLock false
+            val status = entity.toDomain().status
+            if (status != DownloadStatus.Queued && status != DownloadStatus.Downloading) return@withLock false
+            writeOverrides(_meteredOverrides.value + downloadId)
+            if (overrideRestartsDrain(drainRunning, drainUnmetered)) restartDrainHoldingRowLock()
+            true
+        }
+    }
+
+    /** The books this drain may start right now. See [mayDownloadOnDrain]. */
+    fun runnableOnDrain(items: List<DownloadItem>, drainUnmetered: Boolean): List<DownloadItem> {
+        val wifiOnly = wifiOnly
+        val overrides = _meteredOverrides.value
+        return items.filter { mayDownloadOnDrain(wifiOnly, drainUnmetered, it.id in overrides) }
+    }
+
+    /**
+     * Called by the drain when it has nothing it may start. True when
+     * something runnable showed up after all, so the drain goes round again.
+     *
+     * Otherwise whatever is left is waiting for Wi-Fi, and a follow-up drain
+     * that waits for an unmetered network is appended behind this one. Under
+     * [rowMutex], so a mobile data override cannot slip in between this
+     * decision and the drain exiting: once this returns false the drain counts
+     * as stopped, and an override replaces it rather than joining it.
+     */
+    suspend fun finishDrainOrContinue(drainUnmetered: Boolean): Boolean = rowMutex.withLock {
+        if (downloadsPaused) return@withLock false
+        val left = filterToSlotWinner(downloadItemDao.getDownloadable().map { it.toDomain() })
+        if (left.isEmpty()) return@withLock false
+        if (selectNextDownload(runnableOnDrain(left, drainUnmetered)) != null) return@withLock true
+
+        // The engine is off for good in this drain, so it can stop counting
+        // as running before doWork() actually returns.
+        drainRunning = false
+        android.util.Log.d("DownloadManager", "drain idle: ${left.size} waiting for Wi-Fi")
+        workManager.enqueueUniqueWork(
+            DOWNLOAD_WORK_NAME,
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            drainRequest(waitForUnmetered = true),
+        )
+        false
+    }
+
+    /**
+     * Apply a flip of the Wi-Fi only setting to work already queued. See
+     * [wifiRuleChangeRestartsDrain] for what restarts. Respects a paused
+     * queue, and does nothing with nothing to download.
+     */
+    suspend fun onWifiOnlyChanged(): Unit = finishInOwnerScope(scope) {
+        rowMutex.withLock {
+            if (downloadsPaused) return@withLock
+            if (downloadItemDao.getDownloadable().isEmpty()) return@withLock
+            val engineRowOverridden = engineDownloadId?.let { it in _meteredOverrides.value } ?: false
+            if (wifiRuleChangeRestartsDrain(wifiOnly, drainRunning, drainUnmetered, engineRowOverridden)) {
+                restartDrainHoldingRowLock()
+            }
+        }
+    }
+
+    /**
+     * Stop any running drain, confirmed, and start a fresh one under the
+     * current rule. The stop comes first so two engines never share a book's
+     * `.part` file. Caller holds [rowMutex].
+     */
+    private suspend fun restartDrainHoldingRowLock() {
+        if (downloadsPaused) return
+        if (drainRunning) stopDrainAndAwait()
+        enqueueDrainHoldingRowLock(replace = true)
     }
 
     /**
@@ -219,7 +350,11 @@ class DownloadManager @Inject constructor(
      * "Queued..." forever with nothing to correct it.
      */
     sealed interface QueueResult {
-        data class Queued(val item: DownloadItem) : QueueResult
+        /**
+         * [waitingForWifi] is true when Wi-Fi only holds it back right now, so
+         * the caller can say so instead of showing a download that never moves.
+         */
+        data class Queued(val item: DownloadItem, val waitingForWifi: Boolean = false) : QueueResult
 
         /**
          * The free tier already holds its one offline book.
@@ -361,7 +496,10 @@ class DownloadManager @Inject constructor(
             // Respect a paused queue: the book waits until the user resumes.
             if (!downloadsPaused) enqueueDrain(replace = false)
 
-            return QueueResult.Queued(downloadItem)
+            return QueueResult.Queued(
+                item = downloadItem,
+                waitingForWifi = wifiOnly && connectivityMonitor.isMetered.value,
+            )
 
         } finally {
             // NonCancellable is load-bearing. This whole function runs in the
@@ -592,6 +730,7 @@ class DownloadManager @Inject constructor(
             var stopConfirmed = false
             writeAfterEngineStops(downloading, { stopConfirmed = stopDrainAndAwait() }) {
                 downloadItemDao.deleteById(downloadId)
+                dropMeteredOverride(downloadId)
                 // Still before any drain restart below, so nothing is writing here.
                 if (entity != null && cancelMayTouchFiles(entity.status, downloading, stopConfirmed)) {
                     removeCancelledPartialFiles(entity.audioBookId)
@@ -702,6 +841,7 @@ class DownloadManager @Inject constructor(
         }
         if (downloadId != null) {
             downloadItemDao.deleteById(downloadId)
+            dropMeteredOverride(downloadId)
         }
     }
 
@@ -787,9 +927,11 @@ class DownloadManager @Inject constructor(
     /**
      * Ensure the single download-queue worker is running.
      *
-     * [replace] = false (KEEP): used when adding work. If a drain worker is
-     * already running it keeps going and picks up the new Queued row on its next
-     * loop; otherwise a fresh one starts.
+     * [replace] = false: used when adding work. If a drain worker is already
+     * running in this process it keeps going (KEEP) and picks up the new Queued
+     * row on its next loop. Otherwise any idle drain still waiting on its
+     * network constraint is swapped (REPLACE) for one under the current Wi-Fi
+     * only rule. See [drainWorkPolicy].
      *
      * [replace] = true (REPLACE): used when pausing/cancelling the active book.
      * It cancels the running drain (stopping the engine on the current book) and
@@ -802,7 +944,7 @@ class DownloadManager @Inject constructor(
     }
 
     /** [enqueueDrain] for a caller that already holds [rowMutex]. */
-    private fun enqueueDrainHoldingRowLock(replace: Boolean) {
+    private suspend fun enqueueDrainHoldingRowLock(replace: Boolean) {
         // One gate for every automatic restart. pauseDownload, cancelDownload
         // and deleteDownload all restart the drain on their own, and none of
         // them knew about a queue-level pause, so any of them would silently
@@ -810,15 +952,16 @@ class DownloadManager @Inject constructor(
         // deliberate path is unaffected.
         if (downloadsPaused) return
 
-        val request = OneTimeWorkRequestBuilder<DownloadQueueWorker>()
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            .build()
-        val policy = if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
-        android.util.Log.d("DownloadManager", "enqueueDrain policy=${if (replace) "REPLACE" else "KEEP"}")
-        workManager.enqueueUniqueWork(DOWNLOAD_WORK_NAME, policy, request)
+        // Every entry point lands here (Book Detail, Downloads, the paused
+        // notification's Resume, entitlement changes), so all of them get the
+        // Wi-Fi only rule. A queued book sent over mobile data lets the drain
+        // run on any connection, and that drain takes only such books.
+        val overrides = prunedOverrides()
+        val overrideQueued = overrides.isNotEmpty() &&
+            downloadItemDao.getDownloadable().any { it.id in overrides }
+        val waitForUnmetered = drainWaitsForUnmetered(wifiOnly, overrideQueued)
+        val policy = drainWorkPolicy(replace, drainRunning)
+        android.util.Log.d("DownloadManager", "enqueueDrain policy=$policy unmetered=$waitForUnmetered")
+        workManager.enqueueUniqueWork(DOWNLOAD_WORK_NAME, policy, drainRequest(waitForUnmetered))
     }
 }

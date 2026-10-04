@@ -74,10 +74,10 @@ fun NineLivesNavHost(
 
         composable(Routes.HOME) {
             HomeScreen(
+                // Tab targets go through navigateToTab so the tab comes back as
+                // the user left it instead of as a fresh second copy.
                 onNavigateToLibrary = {
-                    navController.navigate(Routes.LIBRARY) {
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.LIBRARY)
                 },
                 onNavigateToBookDetail = { bookId ->
                     navController.navigate(Routes.bookDetail(bookId))
@@ -93,9 +93,7 @@ fun NineLivesNavHost(
                     }
                 },
                 onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.SETTINGS)
                 },
             )
         }
@@ -201,17 +199,10 @@ fun NineLivesNavHost(
                 bookId = bookId,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.SETTINGS)
                 },
                 onNavigateToPlayer = {
-                    navController.navigate(Routes.PLAYER) {
-                        popUpTo(TAB_ROOT_ROUTE) {
-                            inclusive = false
-                        }
-                        launchSingleTop = true
-                    }
+                    navController.navigateToTab(Routes.PLAYER)
                 }
             )
         }

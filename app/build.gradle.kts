@@ -21,8 +21,8 @@ android {
         applicationId = "com.ninelivesaudio.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 215
-        versionName = "2.1.5"
+        versionCode = 216
+        versionName = "2.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

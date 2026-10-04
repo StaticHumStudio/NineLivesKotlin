@@ -10,8 +10,10 @@ import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.data.remote.describeFailure
 import com.ninelivesaudio.app.data.remote.valueOrEmpty
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.LibraryRefreshOutcome
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ReconciledServerLibraryList
+import com.ninelivesaudio.app.data.repository.itemCountResult
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -24,6 +26,7 @@ import com.ninelivesaudio.app.service.PersistedSyncOutcome
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
 import com.ninelivesaudio.app.service.buildShelfSyncReport
+import com.ninelivesaudio.app.service.buildShelfSyncReportFromCount
 import com.ninelivesaudio.app.service.lastSyncForCurrentServer
 import com.ninelivesaudio.app.service.persistActiveLibrarySelection
 import com.ninelivesaudio.app.service.persistSyncOutcome
@@ -79,6 +82,7 @@ data class GroupedSection(
     val books: List<AudioBook>,
 )
 
+private const val SHELF_REREAD_THROTTLE_MS = 1_000L
 private const val UNKNOWN_SERIES_GROUP = "Standalone/Unknown Series"
 private const val UNKNOWN_AUTHOR_GROUP = "Unknown Author"
 private const val UNKNOWN_GENRE_GROUP = "Uncategorized Genre"
@@ -445,14 +449,30 @@ class LibraryViewModel @Inject constructor(
                 }
         }
 
-        // The timer's progress-only ticks write no sync record, so the
-        // collector above never sees them. Re-read the saved shelf so
+        // A check that found the book list unchanged writes no sync record,
+        // so the collector above never sees it. Re-read the saved shelf so
         // progress pulled from the server shows while the tab is open.
         viewModelScope.launch {
             syncManager.progressPulled.collect {
                 val state = _uiState.value
                 if (shelfLoadedFor != null && !state.isLoading && !state.isLocalMode) applyFilter()
             }
+        }
+
+        // A full download saves a page at a time, so a big library's first
+        // load fills in as pages land instead of after the last one. At most
+        // one re-read per second or so, whoever started the download.
+        viewModelScope.launch {
+            audioBookRepository.booksSaved
+                .filter { libraryId ->
+                    val state = _uiState.value
+                    shelfLoadedFor != null && !state.isLocalMode && state.selectedLibrary?.id == libraryId
+                }
+                .conflate()
+                .collect {
+                    applyFilter()?.join()
+                    delay(SHELF_REREAD_THROTTLE_MS)
+                }
         }
 
         // LOCAL mode has no sync record, so watch the local catalog itself.
@@ -512,7 +532,13 @@ class LibraryViewModel @Inject constructor(
 
     // ─── Loading ──────────────────────────────────────────────────────────
 
-    private suspend fun loadLibraries(keepPendingPick: Boolean = false) {
+    /**
+     * [explicit] is a refresh the user asked for (pull to refresh, Retry):
+     * the selected library downloads in full. Otherwise (first load, a
+     * return, a reload after a background sync) it only asks the server what
+     * changed. See [loadAudioBooks].
+     */
+    private suspend fun loadLibraries(keepPendingPick: Boolean = false, explicit: Boolean = false) {
         shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         localCatalogBaseline.await()
@@ -582,13 +608,18 @@ class LibraryViewModel @Inject constructor(
             }
             filterPublication.invalidate()
 
-            val itemResult = selected?.let {
-                loadAudioBooks(it.id, persistResult = false, serverReachable = serverReachable)
+            val itemLoad = selected?.let {
+                loadAudioBooks(it.id, persistResult = false, serverReachable = serverReachable, explicit = explicit)
             }
-            if (!isLocalMode) {
-                buildShelfSyncReport(libraryResult, selected, itemResult)?.let { report ->
+            val itemResult = itemLoad?.result
+            // A check that found nothing new, or a download put off until
+            // unmetered, has no news for the record. A library list failure
+            // still does.
+            val recordWorthy = itemLoad == null || itemLoad.recordWorthy || libraryResult !is RemoteResult.Ok
+            if (!isLocalMode && recordWorthy) {
+                buildShelfSyncReportFromCount(libraryResult, selected, itemResult)?.let { report ->
                     val selectedLibraryFetchResult = selected?.let {
-                        buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)?.result
+                        buildShelfSyncReportFromCount(libraries = null, selectedLibrary = it, items = itemResult)?.result
                     }
                     persistLastSync(
                         report = report,
@@ -630,12 +661,20 @@ class LibraryViewModel @Inject constructor(
         applyFilter()?.join()
     }
 
+    /**
+     * Shows the saved shelf, then brings it up to date: a full download when
+     * [explicit], otherwise the change check, which may find nothing, fetch
+     * only added books, or fall back to a full download (deferred on a
+     * metered network). A check is shared with SyncManager's if both run at
+     * once, as is a full download.
+     */
     private suspend fun loadAudioBooks(
         libraryId: String,
         persistResult: Boolean = true,
         serverReachable: Boolean? = null,
-    ): RemoteResult<List<AudioBook>>? {
-        var itemResult: RemoteResult<List<AudioBook>>? = null
+        explicit: Boolean = false,
+    ): ShelfItemLoad? {
+        var itemLoad: ShelfItemLoad? = null
         try {
             val serverUrlAtStart = settingsManager.currentSettings.serverUrl
             val selected = _uiState.value.selectedLibrary
@@ -653,15 +692,26 @@ class LibraryViewModel @Inject constructor(
                     isOnline = connectivityMonitor.isOnline.value,
                 ) && (serverReachable ?: connectivityMonitor.checkServerReachable())
             ) {
-                itemResult = refreshSelectedLibraryItems(
-                    libraryId = libraryId,
-                    fetchRemote = audioBookRepository::syncLibraryItems,
-                )
+                val load = if (explicit) {
+                    ShelfItemLoad(
+                        result = refreshSelectedLibraryItems(
+                            libraryId = libraryId,
+                            fetchRemote = audioBookRepository::syncLibraryItems,
+                        ),
+                        recordWorthy = true,
+                    )
+                } else {
+                    checkSelectedLibraryItems(libraryId) { id ->
+                        audioBookRepository.refreshLibraryItemsIfChanged(id, connectivityMonitor.refreshIsMetered())
+                    }
+                }
+                itemLoad = load
+                val itemResult = load.result
                 // The selected library's own outcome, tracked separately
                 // from the whole-account aggregate lastSyncResult (issue
                 // #14, PR #30 review, finding A) — see decideLibraryShelf.
                 val ownShelfReport = selected?.let {
-                    buildShelfSyncReport(libraries = null, selectedLibrary = it, items = itemResult)
+                    buildShelfSyncReportFromCount(libraries = null, selectedLibrary = it, items = itemResult)
                 }
                 _uiState.update {
                     it.copy(
@@ -670,7 +720,7 @@ class LibraryViewModel @Inject constructor(
                         selectedLibraryFetchPersisted = false,
                     )
                 }
-                if (persistResult && ownShelfReport != null) {
+                if (persistResult && load.recordWorthy && ownShelfReport != null) {
                     persistLastSync(
                         report = ownShelfReport,
                         serverUrlAtStart = serverUrlAtStart,
@@ -689,7 +739,7 @@ class LibraryViewModel @Inject constructor(
                 it.copy(errorMessage = "Failed to load audiobooks: ${e.message}")
             }
         }
-        return itemResult
+        return itemLoad
     }
 
     private suspend fun persistLastSync(
@@ -758,7 +808,8 @@ class LibraryViewModel @Inject constructor(
             }
             if (pendingLibraryPickId == library.id) pendingLibraryPickId = null
             shelfLoadedFor = settingsManager.currentSettings.shelfIdentity()
-            // Full resync for the newly selected library
+            // Brings the newly selected library up to date: a full download
+            // the first time, only what changed after that.
             loadAudioBooks(library.id)
             _uiState.update { it.copy(isLoading = false) }
         }
@@ -825,17 +876,18 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** Pull to refresh and every Retry button: the selected library downloads in full. */
     fun refresh() {
         libraryLoadLaunch.launch(viewModelScope) {
             _uiState.update { it.copy(isRefreshing = true) }
-            loadLibrariesOwningRefresh()
+            loadLibrariesOwningRefresh(explicit = true)
         }
     }
 
     /** Load, then clear the refresh spinner unless a newer load took over the lane. */
-    private suspend fun loadLibrariesOwningRefresh(keepPendingPick: Boolean = false) {
+    private suspend fun loadLibrariesOwningRefresh(keepPendingPick: Boolean = false, explicit: Boolean = false) {
         try {
-            loadLibraries(keepPendingPick)
+            loadLibraries(keepPendingPick, explicit)
         } finally {
             updateLibraryLoadStateIfActive {
                 _uiState.update { it.copy(isRefreshing = false) }
@@ -1039,15 +1091,44 @@ internal suspend fun refreshRemoteLibraryList(
     )
 }
 
-internal suspend fun refreshSelectedLibraryItems(
+internal suspend fun <T> refreshSelectedLibraryItems(
     libraryId: String,
-    fetchRemote: suspend (String) -> RemoteResult<List<AudioBook>>,
-): RemoteResult<List<AudioBook>> = try {
+    fetchRemote: suspend (String) -> RemoteResult<T>,
+): RemoteResult<T> = try {
     fetchRemote(libraryId)
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
     RemoteResult.Failed(describeFailure(e))
+}
+
+/**
+ * What the selected library's load brought back: its book count result (null
+ * when there is no verdict, as for a download waiting on an unmetered
+ * network) and whether that is news worth a sync record. A check that found
+ * nothing new is a fine verdict for this screen but not a new record.
+ */
+internal data class ShelfItemLoad(
+    val result: RemoteResult<Int>?,
+    val recordWorthy: Boolean,
+)
+
+/** The change check for the selected library, as a [ShelfItemLoad]. A thrown failure reads as a failed check. */
+internal suspend fun checkSelectedLibraryItems(
+    libraryId: String,
+    check: suspend (String) -> LibraryRefreshOutcome,
+): ShelfItemLoad {
+    val outcome = try {
+        check(libraryId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        LibraryRefreshOutcome.CheckFailed(describeFailure(e))
+    }
+    return ShelfItemLoad(
+        result = outcome.itemCountResult(),
+        recordWorthy = outcome !is LibraryRefreshOutcome.Unchanged && outcome !is LibraryRefreshOutcome.Deferred,
+    )
 }
 
 internal fun rethrowLibraryLoadCancellation(error: Exception) {

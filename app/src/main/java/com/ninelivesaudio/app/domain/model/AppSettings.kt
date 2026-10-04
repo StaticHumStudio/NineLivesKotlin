@@ -51,6 +51,13 @@ data class AppSettings(
     // Per-install high water mark for persisted sync outcomes. Ordering a
     // verdict by wall time lets a clock rollback reject every later sync.
     val lastSyncOutcomeSequence: Long = 0L,
+    // Where each library's book list stood after its last good sync, so a
+    // cold start can ask the server "anything new?" instead of downloading
+    // every book again. Kept here rather than in Room: no schema migration,
+    // it rides the same durable document as lastSync, and it is written only
+    // after the books it describes are already saved, so a crash can only
+    // leave it older than the shelf, never ahead of it.
+    val librarySyncWatermarks: List<LibrarySyncWatermark> = emptyList(),
 ) {
     /** The selected library for the current source mode. The two modes never share a fallback. */
     val activeLibraryId: String?
@@ -91,6 +98,26 @@ data class LastSyncRecord(
     // before this field existed is treated as belonging to no known server
     // (never matches a real serverUrl) rather than crashing on missing JSON.
     val serverUrl: String = "",
+)
+
+/**
+ * One library's book list as of its last complete sync, for one server and
+ * account. [newestAddedAt] and [newestItemId] are the most recently added
+ * book the server had then (null for an empty library), [itemCount] is how
+ * many books it reported, and [lastFullSyncAtMs] is the wall clock time of
+ * the last full download, which bounds how long a metadata edit can go
+ * unseen (the server cannot be asked for edited books, only added ones).
+ */
+@Serializable
+data class LibrarySyncWatermark(
+    val serverUrl: String,
+    val username: String,
+    val libraryId: String,
+    val newestAddedAt: Long? = null,
+    val newestItemId: String? = null,
+    val itemCount: Int = 0,
+    val lastFullSyncAtMs: Long = 0L,
+    val updatedAtMs: Long = 0L,
 )
 
 @Serializable

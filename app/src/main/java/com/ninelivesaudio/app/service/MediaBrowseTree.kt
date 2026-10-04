@@ -594,12 +594,12 @@ internal class ArtworkFetchBurstTracker {
  * syncNow() bails on the reachability probe, so the epoch stops clearing for
  * the whole drive.
  *
- * [MAX_EPOCH_AGE_MS] deliberately mirrors SyncManager.DEFAULT_SYNC_INTERVAL_MS.
- * In ABS mode syncCompleted is already effectively a 5-minute heartbeat (it
- * emits on every sync pass that clears the pre-checks, whether or not
- * anything actually changed), and that is the configuration verified clean on
- * a real head unit. So the floor does not invent a new traffic profile, it
- * gives LOCAL and offline modes the one that was already proven.
+ * [MAX_EPOCH_AGE_MS] keeps the 5-minute cadence the old background sync
+ * timer gave syncCompleted, the configuration verified clean on a real head
+ * unit. That timer now runs only while the phone app is in the foreground
+ * (every 15 minutes), and a car session usually has the phone screen off, so
+ * this floor is now what keeps the epoch moving in every mode, not just LOCAL
+ * and offline.
  */
 internal class ArtworkFetchEpoch(
     private val nowMs: () -> Long = System::currentTimeMillis,

@@ -183,7 +183,9 @@ class HomeViewModel @Inject constructor(
                     settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF
                 },
                 refreshIsOnline = connectivityMonitor::refreshIsOnlineFromSystem,
-                syncNow = syncManager::syncNow,
+                // A reconnect asks each library what changed rather than
+                // downloading them all again. Sync Now still does the full pass.
+                syncNow = { syncManager.checkNow() },
             )
         }
     }

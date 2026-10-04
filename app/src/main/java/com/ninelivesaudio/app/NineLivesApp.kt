@@ -2,6 +2,9 @@ package com.ninelivesaudio.app
 
 import android.app.Application
 import android.content.Context
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -121,6 +124,19 @@ class NineLivesApp : Application(), ImageLoaderFactory {
         // on launch, and a lazily created manager would only exist once some
         // screen happened to ask for it.
         billingManager.start()
+
+        // The library check timer runs only while the app is visible. The
+        // process lifecycle covers every activity together, and its stop
+        // waits a moment past the last activity so a rotation is not a trip
+        // to the background. Registered here, before settings load, so the
+        // first foreground entry is never missed: the flag is state, and the
+        // timer reads it whenever SyncManager.start() gets to it.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) = syncManager.setAppForeground(true)
+                override fun onStop(owner: LifecycleOwner) = syncManager.setAppForeground(false)
+            }
+        )
 
         // Load settings from disk FIRST, then bring up everything that depends
         // on them. Order matters: the server URL and auth token must be in

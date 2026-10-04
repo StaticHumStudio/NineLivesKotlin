@@ -14,15 +14,26 @@ class LibraryItemFetchSerializationTest {
 
     private fun book(id: String) = AudioBook(id = id, title = id)
 
+    /** A fetch that hands its whole response over as one page, then reports how many books it had. */
+    private fun pagesOf(
+        fetchItems: suspend () -> RemoteResult<List<AudioBook>>,
+    ): suspend (suspend (List<AudioBook>) -> Unit) -> RemoteResult<Int> = { onPage ->
+        when (val result = fetchItems()) {
+            is RemoteResult.Ok -> { onPage(result.value); RemoteResult.Ok(result.value.size) }
+            is RemoteResult.Partial -> { onPage(result.value); RemoteResult.Partial(result.value.size, result.reason) }
+            is RemoteResult.Failed -> result
+        }
+    }
+
     private fun fakeSync(
         mutex: Mutex,
         cache: MutableList<String>,
         fetchItems: suspend () -> RemoteResult<List<AudioBook>>,
-    ): suspend () -> RemoteResult<List<AudioBook>> = {
+    ): suspend () -> RemoteResult<Int> = {
         runSerializedLibraryItemSync(
             mutex = mutex,
             libraryId = "lib-a",
-            fetchItems = fetchItems,
+            fetchPages = pagesOf(fetchItems),
             mergeItems = { it },
             upsertAll = { books -> books.forEach { if (it.id !in cache) cache.add(it.id) } },
             cachedNonDownloadedIds = { cache.toList() },
@@ -99,7 +110,7 @@ class LibraryItemFetchSerializationTest {
             runSerializedLibraryItemSync(
                 mutex = mutex,
                 libraryId = "lib-a",
-                fetchItems = { RemoteResult.Ok(listOf(book("current-book"))) },
+                fetchPages = pagesOf { RemoteResult.Ok(listOf(book("current-book"))) },
                 mergeItems = { it },
                 upsertAll = { books ->
                     cache.addAll(books.map { it.id })

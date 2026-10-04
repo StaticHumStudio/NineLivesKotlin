@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.sqlite.db.SupportSQLiteQuery
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
@@ -42,6 +43,21 @@ interface AudioBookDao {
     /** Batch lookup by IDs — used by syncLibraryItems to preserve download state. */
     @Query("SELECT * FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getByIds(ids: List<String>): List<AudioBookEntity>
+
+    /** Only the local-only fields a server sync keeps, for up to 500 IDs at a time. */
+    @Query(
+        "SELECT Id, IsDownloaded, LocalPath, LocalCoverPath, CurrentTimeSeconds, Progress, IsFinished, ArchivedAt " +
+            "FROM AudioBooks WHERE Id IN (:ids)"
+    )
+    suspend fun getSyncMergeStates(ids: List<String>): List<SyncMergeState>
+
+    /** How many SERVER books one library has cached, downloads included. */
+    @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0")
+    suspend fun countServerBooksByLibrary(libraryId: String): Int
+
+    /** Which of up to 500 IDs are already cached as SERVER books of this library. */
+    @Query("SELECT Id FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0 AND Id IN (:ids)")
+    suspend fun getServerIdsInLibrary(libraryId: String, ids: List<String>): List<String>
 
     /** Every stored localPath except [excludeId]'s, for the shared-folder check on cancel. */
     @Query("SELECT LocalPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath IS NOT NULL AND LocalPath != ''")

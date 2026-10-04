@@ -1629,6 +1629,11 @@ internal fun syncNowOutcome(result: SyncNowResult): SyncNowOutcome = when (resul
         successMessage = null,
         errorMessage = "Sync did not run. Check your connection and try again.",
     )
+    // Only a background check returns this. Sync Now always runs a full sync.
+    SyncAttempt.CHECKED_NOTHING_TO_RECORD -> SyncNowOutcome(
+        successMessage = "Library is up to date",
+        errorMessage = null,
+    )
     SyncAttempt.DISCARDED_SERVER_CHANGED -> SyncNowOutcome(
         successMessage = null,
         errorMessage = "The server changed while syncing. Sync again to refresh the new server.",

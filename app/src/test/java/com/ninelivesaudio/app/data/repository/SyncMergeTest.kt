@@ -132,6 +132,43 @@ class SyncMergeTest {
         assertEquals(remote.chapters, merged.chapters)
     }
 
+    @Test
+    fun `the lean merge reads whole rows only for downloaded books missing tracks`() = kotlinx.coroutines.runBlocking {
+        val downloaded = downloadedDetailedBook().toEntity()
+        val plain = localEntity(isDownloaded = 0, localPath = null, localCoverPath = null, currentTimeSeconds = 50.0, progress = 0.5)
+            .copy(id = "2")
+        val fullRowLookups = mutableListOf<List<String>>()
+
+        val merged = mergeSyncedBooksLean(
+            remote = listOf(
+                AudioBook(id = "1", title = "Server title"),
+                AudioBook(id = "2", title = "Other"),
+                AudioBook(id = "3", title = "New"),
+            ),
+            getMergeStates = { ids -> listOf(downloaded, plain).filter { it.id in ids }.map { it.toSyncMergeState() } },
+            getFullRows = { ids -> fullRowLookups += ids; listOf(downloaded).filter { it.id in ids } },
+        )
+
+        assertEquals(listOf(listOf("1")), fullRowLookups)
+        assertEquals(downloadedDetailedBook().audioFiles, merged[0].audioFiles)
+        assertEquals(downloadedDetailedBook().chapters, merged[0].chapters)
+        assertTrue(merged[0].isDownloaded)
+        assertEquals(50.0, merged[1].currentTime.inWholeMilliseconds / 1000.0, 0.0001)
+        assertEquals(AudioBook(id = "3", title = "New"), merged[2])
+    }
+
+    @Test
+    fun `the lean merge matches the whole-row merge`() {
+        val local = localEntity(currentTimeSeconds = 90.0, progress = 0.4, isFinished = 0, archivedAt = 7L)
+        val remote = AudioBook(
+            id = "1",
+            title = "Server",
+            audioFiles = listOf(AudioFile(id = "a", index = 0, filename = "a.mp3")),
+            chapters = listOf(Chapter(id = 1, start = 0.0, end = 5.0, title = "One")),
+        )
+        assertEquals(mergeSyncedBook(remote, local), mergeSyncedBook(remote, local.toSyncMergeState(), detail = null))
+    }
+
     private fun downloadedDetailedBook() = AudioBook(
         id = "1",
         title = "Downloaded title",

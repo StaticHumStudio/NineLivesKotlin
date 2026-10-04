@@ -72,6 +72,16 @@ class ConnectivityMonitor @Inject constructor(
     private val _isOnline = MutableStateFlow(false)
     val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
 
+    // Unknown counts as metered, so nothing big waits on a guess of free data.
+    private val _isMetered = MutableStateFlow(true)
+
+    /**
+     * Whether the active network may cost the user money (cell data, a
+     * hotspot, Wi-Fi marked metered). Background full library downloads wait
+     * while this is true. Re-read from the OS on every network callback.
+     */
+    val isMetered: StateFlow<Boolean> = _isMetered.asStateFlow()
+
     private val _isServerReachable = MutableStateFlow(false)
     val isServerReachable: StateFlow<Boolean> = _isServerReachable.asStateFlow()
 
@@ -91,6 +101,7 @@ class ConnectivityMonitor @Inject constructor(
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
+            refreshIsMetered()
             _isOnline.value = true
             updateConnectionStatus()
             // Check server reachability on reconnect (deduplicated)
@@ -98,6 +109,7 @@ class ConnectivityMonitor @Inject constructor(
         }
 
         override fun onLost(network: Network) {
+            refreshIsMetered()
             // Check if we still have any active network
             val activeNetwork = connectivityManager.activeNetwork
             val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
@@ -111,6 +123,8 @@ class ConnectivityMonitor @Inject constructor(
         }
 
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            // Fires when Wi-Fi is marked metered or not, too.
+            refreshIsMetered()
             val hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             if (_isOnline.value != hasInternet) {
                 _isOnline.value = hasInternet
@@ -205,7 +219,19 @@ class ConnectivityMonitor @Inject constructor(
         val activeNetwork = connectivityManager.activeNetwork
         val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
         _isOnline.value = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        refreshIsMetered()
         updateConnectionStatus()
+    }
+
+    /** Re-reads the default network's metered state from the OS. */
+    fun refreshIsMetered(): Boolean {
+        val metered = try {
+            connectivityManager.isActiveNetworkMetered
+        } catch (_: Exception) {
+            true
+        }
+        _isMetered.value = metered
+        return metered
     }
 
     suspend fun checkServerReachable(): Boolean = reachabilityCheckGate.run()

@@ -15,6 +15,7 @@ import com.ninelivesaudio.app.data.local.entity.LibraryEntity
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.RecentlyPlayedResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
+import com.ninelivesaudio.app.data.repository.LibrarySyncWatermarkStore
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.Library
@@ -125,6 +126,7 @@ private class LibraryViewModelFixture(app: NineLivesApp, database: AppDatabase) 
         localBookmarkDao = emptyDao(),
         playbackProgressDao = emptyDao(),
         database = database,
+        watermarkStore = LibrarySyncWatermarkStore(app.settingsManager),
     )
     private val libraryRepository = LibraryRepository(
         libraryDao = localLibraryDao(),

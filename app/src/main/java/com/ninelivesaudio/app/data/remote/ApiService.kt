@@ -676,38 +676,6 @@ class ApiService @Inject constructor(
     // ─── Library Items (Paginated batch load) ────────────────────────────
 
     /**
-     * Every item in a library, paginated. A page that fails part-way through
-     * yields [RemoteResult.Partial]: the books already fetched are still worth
-     * showing, but the caller has to know the shelf stopped short rather than
-     * ended. The same is true when a page merely comes back empty or shorter
-     * than [limit] while the server's own reported total says more exist —
-     * [runPaginatedFetch] is what decides that (issue #14, PR #30 review,
-     * finding B); only actually reaching the reported total is a genuine Ok.
-     */
-    suspend fun getLibraryItems(libraryId: String, limit: Int = 100): RemoteResult<List<AudioBook>> =
-        withContext(Dispatchers.IO) {
-            runPaginatedFetch(
-                limit = limit,
-                maxPages = LIBRARY_ITEMS_PAGE_CAP,
-                onPageFailure = { page, e -> Log.w(TAG, "getLibraryItems($libraryId) failed at page $page", e) },
-            ) { page ->
-                val response = api.getLibraryItems(libraryId, limit, page)
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "getLibraryItems($libraryId): HTTP ${response.code()} at page $page")
-                    return@runPaginatedFetch PageOutcome.Stopped("page $page: HTTP ${response.code()}")
-                }
-
-                val body = response.body()
-                if (body == null) {
-                    Log.w(TAG, "getLibraryItems($libraryId): no body at page $page")
-                    return@runPaginatedFetch PageOutcome.Stopped("page $page: empty body")
-                }
-
-                PageOutcome.Page(body.results.map { mapToAudioBook(it, libraryId) }, body.total)
-            }
-        }
-
-    /**
      * Every item in a library, paginated, handed to [onPage] a page at a time
      * so the caller can save each page as it lands instead of holding the
      * whole shelf in memory. Returns the count of distinct books delivered.

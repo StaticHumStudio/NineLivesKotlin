@@ -136,8 +136,8 @@ class PlaybackService : MediaLibraryService() {
                     // Start a fresh browse-artwork epoch so every book is
                     // eligible for another fetch attempt. Note this emits on
                     // every sync pass that clears SyncManager's pre-checks,
-                    // changed data or not, so in ABS mode it behaves as a
-                    // ~5-minute heartbeat rather than a strict change signal.
+                    // changed data or not (a foreground check every 15
+                    // minutes), so it is a heartbeat, not a change signal.
                     // That is deliberate and harmless: a working set that fits
                     // the cache re-queries into hits and fetches nothing.
                     mediaBrowseTree.invalidateArtworkEpoch()

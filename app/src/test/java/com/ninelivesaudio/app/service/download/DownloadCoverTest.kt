@@ -1,12 +1,23 @@
 package com.ninelivesaudio.app.service.download
 
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.MediaType
+import okhttp3.ResponseBody
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.BufferedSource
+import okio.buffer
+import okio.source
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A downloaded book persists its cover next to its audio so the cover renders
@@ -38,5 +49,42 @@ class DownloadCoverTest {
 
         assertTrue(file.exists())
         assertArrayEquals(byteArrayOf(9), file.readBytes())
+    }
+
+    // ─── The cover never holds up a finished download (#86) ──────────────────
+
+    private fun stallingBody(stream: StallingStream) = object : ResponseBody() {
+        private val source = stream.source().buffer()
+        override fun contentType(): MediaType? = null
+        override fun contentLength(): Long = -1
+        override fun source(): BufferedSource = source
+    }
+
+    @Test
+    fun `a cover that stalls gives up at its deadline`() = runBlocking {
+        val stream = StallingStream()
+
+        val bytes = withTimeout(5.seconds) { readCoverWithin(200.milliseconds) { stallingBody(stream) } }
+
+        assertNull(bytes)
+        assertTrue("the stalled cover body was left open", stream.closed)
+    }
+
+    @Test
+    fun `a cover that arrives in time is returned`() = runBlocking {
+        val bytes = readCoverWithin(5.seconds) { byteArrayOf(1, 2, 3).toResponseBody() }
+
+        assertArrayEquals(byteArrayOf(1, 2, 3), bytes)
+    }
+
+    @Test
+    fun `an empty cover counts as none`() = runBlocking {
+        assertNull(readCoverWithin(5.seconds) { ByteArray(0).toResponseBody() })
+    }
+
+    @Test
+    fun `a cover request that fails counts as none`() = runBlocking {
+        assertNull(readCoverWithin(5.seconds) { throw java.io.IOException("unreachable") })
+        assertNull(readCoverWithin(5.seconds) { null })
     }
 }

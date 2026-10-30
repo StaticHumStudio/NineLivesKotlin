@@ -2,6 +2,7 @@ package com.ninelivesaudio.app.data.remote
 
 import com.ninelivesaudio.app.data.remote.dto.*
 import okhttp3.ResponseBody
+import retrofit2.Call
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -83,13 +84,17 @@ interface AudiobookshelfApi {
         @Query("height") height: Int? = null,
     ): Response<ResponseBody>
 
-    /** Stream audio file for download. */
+    /**
+     * Stream audio file for download. A call rather than a suspend request,
+     * so the download engine can cancel it mid-read: cancelling the call is
+     * the one thing that frees a read stuck on a stalled server.
+     */
     @Streaming
     @GET("api/items/{itemId}/file/{fileIno}")
-    suspend fun getAudioFileStream(
+    fun getAudioFileStream(
         @Path("itemId") itemId: String,
         @Path("fileIno") fileIno: String,
-    ): Response<ResponseBody>
+    ): Call<ResponseBody>
 
     // ─── Playback Session ────────────────────────────────────────────────
 

@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
+import androidx.room.withTransaction
+import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -19,12 +21,18 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.ResponseBody
+import java.io.Closeable
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -45,6 +53,7 @@ class DownloadEngine @Inject constructor(
     private val api: AudiobookshelfApi,
     private val settingsManager: SettingsManager,
     private val ownership: DownloadOwnership,
+    private val database: AppDatabase,
 ) {
     companion object {
         private const val TAG = "DownloadEngine"
@@ -170,47 +179,58 @@ class DownloadEngine @Inject constructor(
                         throw Exception("Missing audio file identifier for $fileName")
                     }
 
-                    val response = api.getAudioFileStream(book.id, audioFile.ino)
-                    if (!response.isSuccessful || response.body() == null) {
-                        // Close the (error) body so the streaming connection is
-                        // returned to the pool instead of leaking a socket/fd on
-                        // every failed attempt (e.g. 401 after token expiry).
-                        response.errorBody()?.close()
-                        response.body()?.close()
-                        throw Exception("HTTP ${response.code()}: Failed to download $fileName")
-                    }
+                    // A cancel (pause, cancel, delete, a stopped drain) cancels
+                    // the call, which frees a read stuck on a stalled server at
+                    // once instead of at the read timeout. See closeOnCancel.
+                    val call = api.getAudioFileStream(book.id, audioFile.ino)
+                    val rowStillOurs = closeOnCancel(Closeable { call.cancel() }) {
+                        val response = call.execute()
+                        val body = response.body()
+                        if (!response.isSuccessful || body == null) {
+                            // Close the (error) body so the streaming connection is
+                            // returned to the pool instead of leaking a socket/fd on
+                            // every failed attempt (e.g. 401 after token expiry).
+                            response.errorBody()?.close()
+                            body?.close()
+                            throw Exception("HTTP ${response.code()}: Failed to download $fileName")
+                        }
 
-                    response.body()?.use { body ->
-                        partPath.outputStream().buffered().use { output ->
-                            body.byteStream().use { input ->
-                                val buffer = ByteArray(BUFFER_SIZE)
-                                var bytesRead: Int
+                        body.use {
+                            partPath.outputStream().buffered().use { output ->
+                                body.byteStream().use { input ->
+                                    val buffer = ByteArray(BUFFER_SIZE)
+                                    var bytesRead: Int
 
-                                while (input.read(buffer).also { bytesRead = it } > 0) {
-                                    currentCoroutineContext().ensureActive()
-                                    output.write(buffer, 0, bytesRead)
-                                    downloadedBytes += bytesRead
+                                    while (input.read(buffer).also { bytesRead = it } > 0) {
+                                        currentCoroutineContext().ensureActive()
+                                        output.write(buffer, 0, bytesRead)
+                                        downloadedBytes += bytesRead
 
-                                    // Throttled progress updates (time + byte delta)
-                                    val now = System.currentTimeMillis()
-                                    val bytesDelta = downloadedBytes - lastPersistedBytes
-                                    val timeDelta = now - lastPersistedAt
+                                        // Throttled progress updates (time + byte delta)
+                                        val now = System.currentTimeMillis()
+                                        val bytesDelta = downloadedBytes - lastPersistedBytes
+                                        val timeDelta = now - lastPersistedAt
 
-                                    if (shouldPersistProgress(bytesDelta, timeDelta)) {
-                                        download = download.copy(downloadedBytes = downloadedBytes)
-                                        if (!recordProgress(downloadedBytes, totalBytes)) {
-                                            // The row moved on while this engine ran on.
-                                            // Leave nothing half written behind.
-                                            partPath.delete()
-                                            return null
+                                        if (shouldPersistProgress(bytesDelta, timeDelta)) {
+                                            download = download.copy(downloadedBytes = downloadedBytes)
+                                            if (!recordProgress(downloadedBytes, totalBytes)) {
+                                                return@closeOnCancel false
+                                            }
+                                            onProgress(download.id, downloadedBytes, totalBytes)
+                                            lastPersistedBytes = downloadedBytes
+                                            lastPersistedAt = now
                                         }
-                                        onProgress(download.id, downloadedBytes, totalBytes)
-                                        lastPersistedBytes = downloadedBytes
-                                        lastPersistedAt = now
                                     }
                                 }
                             }
                         }
+                        true
+                    }
+                    if (!rowStillOurs) {
+                        // The row moved on while this engine ran on. Leave
+                        // nothing half written behind.
+                        partPath.delete()
+                        return null
                     }
 
                     // Atomic rename .part → final
@@ -266,8 +286,9 @@ class DownloadEngine @Inject constructor(
         }
 
         // Persist the cover next to the audio so it renders offline. Best-effort:
-        // a cover failure must never fail an otherwise-complete download. A
-        // network call, so it runs before the completion commit, not inside it.
+        // a cover failure must never fail an otherwise-complete download, and a
+        // stalled one gives up at its deadline. A network call, so it runs
+        // before the completion commit, not inside it.
         val localCoverUri = persistCover(book, downloadDir)
 
         // All files downloaded successfully
@@ -282,20 +303,27 @@ class DownloadEngine @Inject constructor(
         // and keep the track list and chapters that were just downloaded.
         // List-synced rows hold an empty manifest, and offline playback falls
         // back to sorting files by name without one.
+        //
+        // One Room transaction: an interruption never leaves Completed without
+        // the local copy, and a library sync's save (also one transaction per
+        // page) lands wholly before or wholly after it, so neither undoes the
+        // other. The ownership lock is taken first, the transaction inside it.
         val committed = ownership.commitCompletion(
             rowExists = { downloadItemDao.getById(completed.id) != null },
         ) {
-            downloadItemDao.upsert(completed.toEntity())
-            val bookEntity = audioBookDao.getById(audioBook.id)
-            if (bookEntity != null) {
-                audioBookDao.upsert(
-                    completedDownloadBook(
-                        row = bookEntity.toDomain(),
-                        downloaded = book,
-                        localPath = downloadDir.absolutePath,
-                        localCoverUri = localCoverUri,
-                    ).toEntity()
-                )
+            database.withTransaction {
+                downloadItemDao.upsert(completed.toEntity())
+                val bookEntity = audioBookDao.getById(audioBook.id)
+                if (bookEntity != null) {
+                    audioBookDao.upsert(
+                        completedDownloadBook(
+                            row = bookEntity.toDomain(),
+                            downloaded = book,
+                            localPath = downloadDir.absolutePath,
+                            localCoverUri = localCoverUri,
+                        ).toEntity()
+                    )
+                }
             }
         }
         // Cancelled or deleted while finishing: nothing was written back.
@@ -304,24 +332,28 @@ class DownloadEngine @Inject constructor(
 
     /**
      * Download and save the book cover into its download dir so it shows with no
-     * network. Returns the file:// URI, or null on any failure — the cover is
-     * optional and must not break a completed download.
+     * network. Returns the file:// URI, or null on any failure or when the
+     * cover takes longer than [COVER_FETCH_DEADLINE]. The cover is optional and
+     * must never break or hold up a completed download.
      */
     private suspend fun persistCover(book: AudioBook, downloadDir: File): String? {
         if (book.coverPath.isNullOrEmpty()) return null
-        return try {
+        val bytes = readCoverWithin(COVER_FETCH_DEADLINE) {
             val response = api.getCoverImage(book.id)
-            if (!response.isSuccessful) {
+            if (response.isSuccessful) {
+                response.body()
+            } else {
                 response.errorBody()?.close()
                 response.body()?.close()
-                return null
+                null
             }
-            val body = response.body() ?: return null
-            val bytes = body.use { it.bytes() }
-            if (bytes.isEmpty()) return null
+        }
+        if (bytes == null) {
+            Log.w(TAG, "persistCover: no cover saved for ${book.id}")
+            return null
+        }
+        return try {
             Uri.fromFile(writeCoverFile(bytes, downloadDir)).toString()
-        } catch (cancellation: CancellationException) {
-            throw cancellation
         } catch (e: Exception) {
             Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
             null
@@ -398,6 +430,34 @@ class DownloadEngine @Inject constructor(
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
         return File(musicDir, "Audiobookshelf")
     }
+}
+
+/** How long a finished download waits for its cover before finishing without it. */
+internal val COVER_FETCH_DEADLINE: Duration = 15.seconds
+
+/**
+ * The cover's bytes, read within [deadline] from the body [open] returns.
+ * Null when the deadline passes first, when [open] or the read fails, or
+ * when the cover is empty. The body is closed on every path. Runs on
+ * Dispatchers.IO, since the read blocks.
+ *
+ * The cover request is not streamed, so in the app a stalled server holds up
+ * [open] itself, and the deadline cancels that request. A body that stalls
+ * while it is read is closed at the deadline too (see [closeOnCancel]).
+ */
+internal suspend fun readCoverWithin(deadline: Duration, open: suspend () -> ResponseBody?): ByteArray? {
+    val bytes = try {
+        withContext(Dispatchers.IO) {
+            withTimeoutOrNull(deadline) {
+                open()?.use { body -> closeOnCancel(body) { body.bytes() } }
+            }
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Exception) {
+        null
+    }
+    return bytes?.takeIf { it.isNotEmpty() }
 }
 
 /**

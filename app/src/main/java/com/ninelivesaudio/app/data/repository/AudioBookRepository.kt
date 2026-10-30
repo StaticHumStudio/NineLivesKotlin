@@ -321,16 +321,15 @@ class AudioBookRepository @Inject constructor(
         }.toHashSet()
         val newBookCount = newBooksSinceWatermark(watermark, books, alreadyCached)
         if (books.isNotEmpty()) {
-            val merged = mergeForSave(books)
             // Added books are saved even when the counts disagree below: they
             // are real, and the full download that follows prunes, not this.
             // Never into a cache another account has taken over meanwhile:
             // the account check and the save are one step no sign-in splits.
-            val entities = withContext(Dispatchers.Default) { merged.map { it.toEntity() } }
+            // Merged inside the save's transaction, like the full download.
             val saved = withContext(NonCancellable) {
-                watermarkStore.runIfCurrent(identity) { audioBookDao.upsertAll(entities) }
+                mergeAndSaveIfCurrent(books, ::mergeForSave, ::saveMerged, writeIfCurrentInTransaction(identity))
             }
-            if (!saved) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
+            if (saved == null) return LibraryRefreshOutcome.CheckFailed(SYNC_ACCOUNT_CHANGED)
             _booksSaved.tryEmit(libraryId)
         }
         if (newBookCount == null || !incrementalCountsAgree(watermark.itemCount, newBookCount, value.total)) {
@@ -401,7 +400,7 @@ class AudioBookRepository @Inject constructor(
                 tally.add(books)
                 _booksSaved.tryEmit(libraryId)
             },
-            writeIfCurrent = { write -> watermarkStore.runIfCurrent(identity, write) },
+            writeIfCurrent = writeIfCurrentInTransaction(identity),
         )
         // Another account signed in mid-download. Nothing more was written,
         // and this account's watermark and failure count stay as they were.
@@ -421,20 +420,33 @@ class AudioBookRepository @Inject constructor(
         return LibraryRefreshOutcome.Full(result)
     }
 
-    // Thousands of books are merged and JSON-encoded here, so keep it off the
-    // main thread the Library calls from.
+    /**
+     * A sync write that runs only while [identity] is still signed in (see
+     * [LibrarySyncWatermarkStore.runIfCurrent]), as one Room transaction.
+     *
+     * Each page's merge runs inside it together with the save (see
+     * [mergeAndSaveIfCurrent]), so the local copy fields it keeps are the ones
+     * in the row at save time. A download that finishes, or a delete that
+     * lands, while the page downloads is then never undone by the save (#85):
+     * SQLite has one writer, so the completion or the delete lands wholly
+     * before the merge reads or wholly after the save. The Kotlin lock is
+     * taken first and the transaction inside it, never the other way round.
+     */
+    private fun writeIfCurrentInTransaction(identity: LibrarySyncIdentity): suspend (suspend () -> Unit) -> Boolean =
+        { write -> watermarkStore.runIfCurrent(identity) { database.withTransaction { write() } } }
+
+    // Runs inside the sync's write transaction, on its thread. Pages are at
+    // most a few hundred books, so the merge stays short.
     private suspend fun mergeForSave(remote: List<AudioBook>): List<AudioBook> =
-        withContext(Dispatchers.Default) {
-            mergeSyncedBooksLean(
-                remote,
-                audioBookDao::getSyncMergeStates,
-                audioBookDao::getByIds,
-                playbackProgressDao::getByAudioBookIds,
-            )
-        }
+        mergeSyncedBooksLean(
+            remote,
+            audioBookDao::getSyncMergeStates,
+            audioBookDao::getByIds,
+            playbackProgressDao::getByAudioBookIds,
+        )
 
     private suspend fun saveMerged(books: List<AudioBook>) {
-        audioBookDao.upsertAll(withContext(Dispatchers.Default) { books.map { it.toEntity() } })
+        audioBookDao.upsertAll(books.map { it.toEntity() })
     }
 
     private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000L
@@ -795,10 +807,11 @@ internal suspend fun pruneServerLibraryTo(
  *
  * [writeIfCurrent] runs a write only while the account the pass runs for is
  * still signed in, checking and writing as one step that no sign-in can
- * split (see [LibrarySyncWatermarkStore.runIfCurrent]). Each save and the
- * prune go through it, and once it refuses the pass stops, writes nothing
- * more, and fails with [SYNC_ACCOUNT_CHANGED]: the cache now belongs to
- * someone else, whose own sync fills and prunes it.
+ * split (see [LibrarySyncWatermarkStore.runIfCurrent]). In the app it is also
+ * one Room transaction. Each page's merge and save (see
+ * [mergeAndSaveIfCurrent]) and the prune go through it, and once it refuses
+ * the pass stops, writes nothing more, and fails with [SYNC_ACCOUNT_CHANGED]:
+ * the cache now belongs to someone else, whose own sync fills and prunes it.
  */
 internal suspend fun runLibraryItemSyncPass(
     libraryId: String,
@@ -814,13 +827,11 @@ internal suspend fun runLibraryItemSyncPass(
     val keptIds = HashSet<String>()
     val result = try {
         fetchPages { page ->
-            val merged = mergeItems(page)
-            val saved = withContext(NonCancellable) {
-                writeIfCurrent { if (merged.isNotEmpty()) upsertAll(merged) }
-            }
             // Thrown to stop the download: the rest is for an account that
             // is no longer signed in.
-            if (!saved) throw SyncAccountChangedException()
+            val merged = withContext(NonCancellable) {
+                mergeAndSaveIfCurrent(page, mergeItems, upsertAll, writeIfCurrent)
+            } ?: throw SyncAccountChangedException()
             merged.mapTo(keptIds) { it.id }
             onPageSaved(merged)
         }
@@ -848,6 +859,33 @@ internal suspend fun runLibraryItemSyncPass(
         if (!pruned) return RemoteResult.Failed(SYNC_ACCOUNT_CHANGED)
     }
     return result
+}
+
+/**
+ * Merge [page] over the cached rows and save it, both inside one
+ * [writeIfCurrent] call (#85).
+ *
+ * The merge keeps each downloaded book's local copy fields (download flag,
+ * path, cover) from the row it reads. Reading before the write step and
+ * saving inside it let a download that finished in between be wiped, and a
+ * delete in between be undone. Inside the step, the rows it reads are the
+ * rows it overwrites.
+ *
+ * Returns the books saved, or null when [writeIfCurrent] refused (the
+ * account changed), in which case nothing was merged or written.
+ */
+internal suspend fun mergeAndSaveIfCurrent(
+    page: List<AudioBook>,
+    mergeItems: suspend (List<AudioBook>) -> List<AudioBook>,
+    upsertAll: suspend (List<AudioBook>) -> Unit,
+    writeIfCurrent: suspend (write: suspend () -> Unit) -> Boolean,
+): List<AudioBook>? {
+    var merged: List<AudioBook> = emptyList()
+    val saved = writeIfCurrent {
+        merged = mergeItems(page)
+        if (merged.isNotEmpty()) upsertAll(merged)
+    }
+    return if (saved) merged else null
 }
 
 /** Why a sync stopped: the account it ran for is no longer the signed-in one. */

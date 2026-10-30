@@ -827,8 +827,10 @@ class DownloadManager @Inject constructor(
 
         if (bookEntity != null) {
             // The cover.jpg either went with the folder or belongs to another
-            // edition now, so this book stops pointing at it either way.
-            audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
+            // edition now, so this book stops pointing at it either way. Only
+            // those columns change, so a sync or a position save that landed
+            // since the read above stays (#85).
+            audioBookDao.clearLocalCopy(audioBookId)
         }
         if (downloadId != null) {
             downloadItemDao.deleteById(downloadId)

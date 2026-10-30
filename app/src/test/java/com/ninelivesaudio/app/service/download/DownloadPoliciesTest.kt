@@ -5,7 +5,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -15,6 +18,9 @@ import kotlin.time.Duration.Companion.seconds
  * on-device survival pass, consistent with the rest of this app's I/O.
  */
 class DownloadPoliciesTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     // ─── sanitizeDownloadFileName ─────────────────────────────────────────
 
@@ -254,5 +260,18 @@ class DownloadPoliciesTest {
 
         assertTrue(name.toByteArray(Charsets.UTF_8).size <= MAX_FOLDER_NAME_BYTES)
         assertTrue(name.endsWith("[4f1c2e1a9b3d4c558e7f0a1b2c3d4e5f]"))
+    }
+
+    @Test
+    fun `a track named only dots or nothing gets a numbered name inside the folder`() {
+        val dir = tempFolder.newFolder("book")
+        val names = resolveDownloadFileNames(
+            listOf("..", ".", "...", "   ").mapIndexed { i, name -> audioFile(name, i) },
+        )
+
+        names.forEach { name ->
+            assertEquals("\"$name\" leaves the folder", dir.canonicalFile, File(dir, name).canonicalFile.parentFile)
+        }
+        assertEquals(4, names.toSet().size)
     }
 }

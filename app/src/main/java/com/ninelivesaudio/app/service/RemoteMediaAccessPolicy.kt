@@ -4,6 +4,7 @@ import com.ninelivesaudio.app.data.remote.validatedServerBaseUrl
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.service.ConnectivityMonitor.ConnectionStatus
 import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
+import com.ninelivesaudio.app.service.download.trackFileInside
 import java.io.File
 import java.net.URI
 
@@ -79,8 +80,9 @@ private fun File.containsPlayableAudio(book: AudioBook): Boolean {
     val canonicalPaths = book.audioFiles.mapNotNull { it.localPath }.takeIf { it.isNotEmpty() }
     if (canonicalPaths != null) {
         return canonicalPaths.all { path ->
-            val track = File(path)
-            track.isFile && track.length() > 0L
+            // Inside a book folder, a recorded path has to sit in that folder.
+            val track = if (isDirectory) trackFileInside(this, path) else File(path)
+            track != null && track.isFile && track.length() > 0L
         }
     }
     // Resolve names the same way the download engine writes them, or a book with

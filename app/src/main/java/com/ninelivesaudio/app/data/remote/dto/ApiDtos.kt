@@ -96,6 +96,15 @@ data class ApiAuthor(
     val name: String? = null,
 )
 
+/**
+ * GET /api/libraries/{id}/authors. Null [authors] means the reply had no
+ * author list at all, which is a failure, not an empty library.
+ */
+@Serializable
+data class LibraryAuthorsResponse(
+    val authors: List<ApiAuthor>? = null,
+)
+
 @Serializable
 data class ApiSeries(
     val id: String? = null,

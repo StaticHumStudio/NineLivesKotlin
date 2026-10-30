@@ -38,6 +38,9 @@ import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
+import com.ninelivesaudio.app.service.download.DownloadManifestBackfill
+import com.ninelivesaudio.app.service.download.MANIFEST_BACKFILL_TIMEOUT
+import com.ninelivesaudio.app.service.download.needsManifestBackfill
 import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
 import com.ninelivesaudio.app.service.download.trackFileInside
 import com.ninelivesaudio.app.MainActivity
@@ -760,6 +763,7 @@ class PlaybackManager @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val sessionRepository: ListeningSessionRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
+    private val manifestBackfillLazy: Lazy<DownloadManifestBackfill>,
     private val connectivityMonitor: ConnectivityMonitor,
     private val okHttpClient: OkHttpClient,
     private val localFolderAccess: LocalFolderAccess,
@@ -1404,6 +1408,32 @@ class PlaybackManager @Inject constructor(
                     LoadSessionOpen.DEFER -> Unit
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+            }
+
+            // A download from 2.1.5 or earlier has no track list, so it plays in
+            // file name order with no chapters. While the server is reachable,
+            // take its list once, but only if it matches the files on disk. The
+            // wait is capped, and the download plays as it is on any doubt (#35).
+            if (
+                remoteAccess.usesLocalTracks() &&
+                needsManifestBackfill(effectiveBook) &&
+                connectivityMonitor.connectionStatus.value.let {
+                    it == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+                        it == ConnectivityMonitor.ConnectionStatus.SYNCING
+                }
+            ) {
+                val filled = withTimeoutOrNull(MANIFEST_BACKFILL_TIMEOUT) {
+                    manifestBackfillLazy.get().backfill(effectiveBook)
+                }
+                if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+                if (filled != null) {
+                    effectiveBook = effectiveBook.copy(audioFiles = filled.audioFiles, chapters = filled.chapters)
+                    _currentBook.value = effectiveBook
+                    if (cachedChapters.isEmpty() && filled.chapters.isNotEmpty()) {
+                        cachedChapters = filled.chapters.sortedBy { it.start }
+                        _chapters.value = cachedChapters
+                    }
+                }
             }
 
             // If no session audio tracks AND no local audio files, fetch full book details

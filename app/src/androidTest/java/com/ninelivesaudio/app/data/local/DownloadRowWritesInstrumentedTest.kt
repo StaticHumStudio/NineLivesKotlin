@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.data.local
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -72,5 +73,38 @@ class DownloadRowWritesInstrumentedTest {
         dao.clearLocalCopy("gone")
 
         assertNull(dao.getById("gone"))
+    }
+
+    private val newTracks = """[{"Id":"a","Ino":"a","Index":0,"Duration":60.0,"Filename":"01.mp3","LocalPath":"/d/A/01.mp3"}]"""
+    private val newChapters = """[{"Id":0,"Start":0.0,"End":60.0,"Title":"One"}]"""
+
+    @Test
+    fun theBackfillLandsOnADownloadedRowWithAnEmptyManifest() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsert(AudioBookEntity(id = "A", libraryId = "lib", title = "T", audioFilesJson = "[]", isDownloaded = 1, localPath = "/d/A"))
+
+        val changed = dao.backfillDownloadManifest("A", "/d/A", newTracks, newChapters)
+
+        assertEquals(1, changed)
+        val row = dao.getById("A")!!.toDomain()
+        assertEquals(listOf("/d/A/01.mp3"), row.audioFiles.map { it.localPath })
+        assertEquals(listOf("One"), row.chapters.map { it.title })
+    }
+
+    @Test
+    fun theBackfillNeverLandsOnARowThatWasDeletedMovedOrAlreadyHasAManifest() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsert(AudioBookEntity(id = "deleted", libraryId = "lib", title = "T", audioFilesJson = "[]", isDownloaded = 0))
+        dao.upsert(AudioBookEntity(id = "moved", libraryId = "lib", title = "T", audioFilesJson = "[]", isDownloaded = 1, localPath = "/d/other"))
+        dao.upsert(AudioBookEntity(id = "has", libraryId = "lib", title = "T", audioFilesJson = tracksJson, isDownloaded = 1, localPath = "/d/has"))
+
+        assertEquals(0, dao.backfillDownloadManifest("deleted", "/d/deleted", newTracks, newChapters))
+        assertEquals(0, dao.backfillDownloadManifest("moved", "/d/moved", newTracks, newChapters))
+        assertEquals(0, dao.backfillDownloadManifest("has", "/d/has", newTracks, newChapters))
+        assertEquals(0, dao.backfillDownloadManifest("missing", "/d/x", newTracks, newChapters))
+
+        assertEquals("[]", dao.getById("deleted")!!.audioFilesJson)
+        assertEquals("[]", dao.getById("moved")!!.audioFilesJson)
+        assertEquals(tracksJson, dao.getById("has")!!.audioFilesJson)
     }
 }

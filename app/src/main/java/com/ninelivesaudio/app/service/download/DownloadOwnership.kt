@@ -219,9 +219,11 @@ internal suspend fun pauseOnceEngineIsOff(
  * Compared canonically, and a path that will not resolve counts as held,
  * since any doubt keeps folders apart.
  *
- * A download with no bytes on record has written nothing anywhere yet, so it
- * holds no folder. It picks its own when it claims. Counting it would push
- * a paused download out of the folder its finished tracks sit in.
+ * A download with no bytes on record has finished no track anywhere (the
+ * engine records a track's bytes before the track appears, see
+ * [commitTrackFile]), so it holds no folder and picks its own when it
+ * claims. Counting it would push a paused download out of the folder its
+ * finished tracks sit in.
  */
 internal suspend fun folderHeldByAnotherBook(reads: FolderReads, audioBookId: String, folder: File): Boolean {
     val target = canonicalOrNull(folder) ?: return true

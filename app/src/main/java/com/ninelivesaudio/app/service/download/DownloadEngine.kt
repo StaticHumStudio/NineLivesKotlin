@@ -237,19 +237,16 @@ class DownloadEngine @Inject constructor(
                         return null
                     }
 
-                    // Atomic rename .part → final
-                    if (finalPath.exists()) finalPath.delete()
-                    val renamed = partPath.renameTo(finalPath)
-                    if (!renamed) {
-                        throw Exception("Failed to finalize $fileName")
-                    }
-                    fileSuccess = true
-
-                    // Always flush progress after each completed file. A row that
-                    // moved on stops the engine here, keeping the finished file
-                    // for whatever cancel or delete decides.
+                    // Record the bytes, then rename .part to the final name, so a
+                    // finished track never sits on disk with no bytes on record
+                    // (see commitTrackFile). A row that moved on stops the engine
+                    // here, and the track never appears.
                     download = download.copy(downloadedBytes = downloadedBytes)
-                    if (!recordProgress(downloadedBytes, totalBytes)) return null
+                    val committed = commitTrackFile(partPath, finalPath) {
+                        recordProgress(downloadedBytes, totalBytes)
+                    }
+                    if (!committed) return null
+                    fileSuccess = true
                     onProgress(download.id, downloadedBytes, totalBytes)
                     lastPersistedBytes = downloadedBytes
                     lastPersistedAt = System.currentTimeMillis()
@@ -463,6 +460,27 @@ class DownloadEngine @Inject constructor(
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
         return File(musicDir, "Audiobookshelf")
     }
+}
+
+/**
+ * Turn a fully streamed [partFile] into [finalFile], once [recordBytes] has
+ * put its bytes on the download row. Returns false, with the partial file
+ * deleted and no final file, when [recordBytes] is refused because the row
+ * moved on. Throws when the rename fails, so the engine retries the track.
+ *
+ * Recording first means a finished track is never on disk while its row
+ * still reads zero bytes. A download with no bytes on record has then never
+ * finished a track anywhere, which is what lets the folder pick ignore it
+ * (see [folderHeldByAnotherBook]).
+ */
+internal suspend fun commitTrackFile(partFile: File, finalFile: File, recordBytes: suspend () -> Boolean): Boolean {
+    if (!recordBytes()) {
+        partFile.delete()
+        return false
+    }
+    if (finalFile.exists()) finalFile.delete()
+    if (!partFile.renameTo(finalFile)) throw java.io.IOException("Failed to finalize ${finalFile.name}")
+    return true
 }
 
 /** How long a finished download waits for its cover before finishing without it. */

@@ -141,7 +141,7 @@ class PlaybackService : MediaLibraryService() {
                     // That is deliberate and harmless: a working set that fits
                     // the cache re-queries into hits and fetches nothing.
                     mediaBrowseTree.invalidateArtworkEpoch()
-                    notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync())
+                    notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync(mediaBrowseTree.browsedFolderIds()))
                 } catch (e: Exception) {
                     Log.e(TAG, "syncCompleted collector: failed to refresh Auto browse parents", e)
                 }
@@ -162,7 +162,7 @@ class PlaybackService : MediaLibraryService() {
                         // source or library changed, so start a fresh
                         // browse-artwork epoch.
                         mediaBrowseTree.invalidateArtworkEpoch()
-                        notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSourceChange())
+                        notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSourceChange(mediaBrowseTree.browsedFolderIds()))
                     } catch (e: Exception) {
                         Log.e(TAG, "source-change collector: failed to refresh Auto browse parents", e)
                     }
@@ -178,7 +178,7 @@ class PlaybackService : MediaLibraryService() {
         serviceScope.launch {
             mediaBrowseTree.artworkUpdated.collect {
                 try {
-                    notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync())
+                    notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSync(mediaBrowseTree.browsedFolderIds()))
                 } catch (e: Exception) {
                     Log.e(TAG, "artworkUpdated collector: failed to refresh Auto browse parents", e)
                 }

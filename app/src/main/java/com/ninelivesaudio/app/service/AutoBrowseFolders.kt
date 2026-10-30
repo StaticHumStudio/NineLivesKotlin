@@ -271,3 +271,23 @@ private fun autoFolderSubtitle(key: String, count: Int, locale: Locale): String 
     val books = if (count == 1) "$number book" else "$number books"
     return if (key == NUMBER_SIGN_LABEL) "Numbers and symbols, $books" else books
 }
+
+/**
+ * The last [cap] folder ids Auto opened, newest first. A sync or landing art
+ * notifies these along with the three shelves, so a folder a driver is in
+ * repaints instead of keeping stale rows or text-only art.
+ */
+internal class RecentAutoFolders(private val cap: Int = 8) {
+    private val lock = Any()
+    private val ids = ArrayDeque<String>()
+
+    fun record(mediaId: String) {
+        synchronized(lock) {
+            ids.remove(mediaId)
+            ids.addFirst(mediaId)
+            while (ids.size > cap) ids.removeLast()
+        }
+    }
+
+    fun snapshot(): List<String> = synchronized(lock) { ids.toList() }
+}

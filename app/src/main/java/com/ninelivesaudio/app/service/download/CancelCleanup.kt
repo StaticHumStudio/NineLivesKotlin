@@ -58,8 +58,14 @@ internal fun resolveDownloadRoot(configuredPath: String, defaultRoot: File): Pai
  * creates the folder it picks before writing a byte, so once a download has
  * started here its own folder exists and wins from then on. Delete and cancel
  * use this same rule to find the folder another download may be writing.
+ *
+ * A download sent to its full id folder, because another edition held the
+ * short one (see [pickDownloadFolder]), finds that folder first whenever it
+ * exists, so resume, cancel and delete go where it really wrote.
  */
 internal fun bookDownloadFolder(root: File, book: AudioBook, startedWriting: Boolean): File {
+    val full = File(root, fullItemDownloadFolderName(book.author, book.title, book.id))
+    if (full.isDirectory) return full
     val own = File(root, itemDownloadFolderName(book.author, book.title, book.id))
     if (!startedWriting || own.exists()) return own
     val legacy = File(root, downloadFolderName(book.author, book.title, book.id))
@@ -240,7 +246,7 @@ internal suspend fun <T> lookUpInChunks(
     return results
 }
 
-private fun canonicalOrNull(file: File): File? = try {
+internal fun canonicalOrNull(file: File): File? = try {
     file.canonicalFile
 } catch (_: IOException) {
     null
@@ -249,7 +255,7 @@ private fun canonicalOrNull(file: File): File? = try {
 }
 
 /** A stored localPath as a File: plain paths and file:// URIs. Null for anything else. */
-private fun bookPathAsFile(raw: String): File? {
+internal fun bookPathAsFile(raw: String): File? {
     val value = raw.trim()
     if (value.isEmpty()) return null
     if (value.startsWith("file:", ignoreCase = true)) {

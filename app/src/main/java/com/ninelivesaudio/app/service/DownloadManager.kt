@@ -1,7 +1,6 @@
 package com.ninelivesaudio.app.service
 
 import android.content.Context
-import android.os.storage.StorageManager
 import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkManager
 import com.ninelivesaudio.app.data.local.converter.toDomain
@@ -21,7 +20,6 @@ import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import com.ninelivesaudio.app.service.download.finishInOwnerScope
-import com.ninelivesaudio.app.service.download.lookUpInChunks
 import com.ninelivesaudio.app.service.download.pauseOnceEngineIsOff
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.ResumeDecision
@@ -37,9 +35,7 @@ import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
 import com.ninelivesaudio.app.service.download.runEngineExclusively
 import com.ninelivesaudio.app.service.download.removeCancelledPartialFiles
 import com.ninelivesaudio.app.service.download.removeDownloadedBookFiles
-import com.ninelivesaudio.app.service.download.safDocumentFile
 import com.ninelivesaudio.app.service.download.deleteKeepsLocalCopy
-import com.ninelivesaudio.app.service.download.DownloadOwnerRow
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -865,35 +861,8 @@ class DownloadManager @Inject constructor(
             false
         }
 
-    /** Room and the engine's path rules, as delete and cancel read them. */
-    private val folderReads = object : FolderReads {
-        override suspend fun book(id: String) = audioBookDao.getById(id)?.toDomain()
-        override suspend fun books(ids: List<String>) =
-            lookUpInChunks(ids) { audioBookDao.getByIds(it) }.map { it.toDomain() }
-        override suspend fun filePathBookIdsExcept(audioBookId: String) =
-            audioBookDao.getFilePathBookIdsExcept(audioBookId)
-        override suspend fun localPathsExcept(audioBookId: String) = audioBookDao.getLocalPathsExcept(audioBookId)
-        override suspend fun downloadRows() =
-            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status, it.downloadedBytes) }
-        override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
-            engine.downloadLocationFor(book, startedWriting)
-        override fun storedLocation(localPath: String) = engine.storedDownloadLocation(localPath)
-        override suspend fun contentPathsExcept(audioBookId: String) =
-            audioBookDao.getContentPathRowsExcept(audioBookId)
-                .mapNotNull { row -> row.localPath?.let { row.id to it } }
-                .toMap()
-        override fun contentTrackFile(uri: String) = safDocumentFile(uri, ::storageVolumeRoot)
-    }
-
-    /** Where a storage volume is mounted: `primary` or an SD card's uuid. */
-    private fun storageVolumeRoot(volumeId: String): java.io.File? {
-        val storage = context.getSystemService(StorageManager::class.java) ?: return null
-        return if (volumeId == "primary") {
-            storage.primaryStorageVolume.directory
-        } else {
-            storage.storageVolumes.firstOrNull { it.uuid.equals(volumeId, ignoreCase = true) }?.directory
-        }
-    }
+    /** Room and the engine's path rules, as delete and cancel read them. The engine's own. */
+    private val folderReads: FolderReads get() = engine.folderReads
 
     /** Check if a book is downloaded. */
     suspend fun isBookDownloaded(audioBookId: String): Boolean {

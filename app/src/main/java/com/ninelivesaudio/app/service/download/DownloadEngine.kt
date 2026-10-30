@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.service.download
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.os.storage.StorageManager
 import android.util.Log
 import androidx.room.withTransaction
 import com.ninelivesaudio.app.data.local.AppDatabase
@@ -80,16 +81,19 @@ class DownloadEngine @Inject constructor(
     ): DownloadItem? {
         // The row as it is now, not as the drain read it before waiting its turn.
         val bytesOnRecord = downloadItemDao.getById(item.id)?.downloadedBytes ?: item.downloadedBytes
-        val downloadDir = getDownloadPath(audioBook, startedWriting = bytesOnRecord > 0)
+        // Creates the root, and logs a configured path that was refused.
+        getBasePath()
+        // The folder is picked under the ownership lock, so no other book can
+        // take or give up the short-id folder between the check and the claim.
         val claimed = ownership.claim(
             downloadId = item.id,
             audioBookId = audioBook.id,
-            folder = downloadDir,
+            pickFolder = { pickDownloadFolder(folderReads, audioBook, startedWriting = bytesOnRecord > 0) },
             readRow = { downloadItemDao.getById(item.id)?.toDomain() },
             writeRow = { downloadItemDao.upsert(it.toEntity()) },
         ) ?: return null
         return try {
-            downloadInto(downloadDir, claimed, audioBook, onProgress)
+            downloadInto(claimed.folder, claimed.row, audioBook, onProgress)
         } finally {
             ownership.release()
         }
@@ -383,14 +387,43 @@ class DownloadEngine @Inject constructor(
 
     // ─── File Paths ──────────────────────────────────────────────────────────
 
-    /** Get download directory for an audiobook. See [bookDownloadFolder]. */
-    private fun getDownloadPath(audioBook: AudioBook, startedWriting: Boolean): File =
-        bookDownloadFolder(getBasePath(), audioBook, startedWriting)
+    /**
+     * Room and the path rules, as the folder pick, delete and cancel read
+     * them. See [FolderReads].
+     */
+    internal val folderReads: FolderReads = object : FolderReads {
+        override suspend fun book(id: String) = audioBookDao.getById(id)?.toDomain()
+        override suspend fun books(ids: List<String>) =
+            lookUpInChunks(ids) { audioBookDao.getByIds(it) }.map { it.toDomain() }
+        override suspend fun filePathBookIdsExcept(audioBookId: String) =
+            audioBookDao.getFilePathBookIdsExcept(audioBookId)
+        override suspend fun localPathsExcept(audioBookId: String) = audioBookDao.getLocalPathsExcept(audioBookId)
+        override suspend fun downloadRows() =
+            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status, it.downloadedBytes) }
+        override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
+            downloadLocationFor(book, startedWriting)
+        override fun storedLocation(localPath: String) = storedDownloadLocation(localPath)
+        override suspend fun contentPathsExcept(audioBookId: String) =
+            audioBookDao.getContentPathRowsExcept(audioBookId)
+                .mapNotNull { row -> row.localPath?.let { row.id to it } }
+                .toMap()
+        override fun contentTrackFile(uri: String) = safDocumentFile(uri, ::storageVolumeRoot)
+    }
+
+    /** Where a storage volume is mounted: `primary` or an SD card's uuid. */
+    private fun storageVolumeRoot(volumeId: String): File? {
+        val storage = context.getSystemService(StorageManager::class.java) ?: return null
+        return if (volumeId == "primary") {
+            storage.primaryStorageVolume.directory
+        } else {
+            storage.storageVolumes.firstOrNull { it.uuid.equals(volumeId, ignoreCase = true) }?.directory
+        }
+    }
 
     /**
      * Where [audioBook]'s download folder is under the current settings, for
-     * delete and cancel. Resolves exactly like [getDownloadPath] but creates
-     * nothing.
+     * the folder pick, delete and cancel. Resolves the root like [getBasePath]
+     * but creates nothing.
      */
     internal fun downloadLocationFor(audioBook: AudioBook, startedWriting: Boolean): DownloadLocation {
         val (root, appOwned) = resolveDownloadRoot(

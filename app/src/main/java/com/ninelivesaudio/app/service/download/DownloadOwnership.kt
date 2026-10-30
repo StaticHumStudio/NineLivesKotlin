@@ -16,6 +16,9 @@ import javax.inject.Singleton
 /** The book the engine is downloading right now, and the folder it writes to. */
 internal data class EngineClaim(val audioBookId: String, val downloadId: String, val folder: File)
 
+/** What a successful [DownloadOwnership.claim] hands the engine: its row and its folder. */
+internal data class Claimed(val row: DownloadItem, val folder: File)
+
 /** How [DownloadOwnership.actOnceEngineIsOff] dealt with the engine. */
 internal data class EngineStop(
     /** The engine was (or may have been) on the book, so it was stopped first. */
@@ -58,27 +61,31 @@ class DownloadOwnership @Inject constructor() {
     val engineDownloadId: String? get() = current?.downloadId
 
     /**
-     * The engine claims [downloadId] and [folder]: under the lock it reads the
-     * row fresh and, only while it is still Queued or Downloading, writes it
-     * back as Downloading. Returns that row, or null when the row is gone or
-     * moved on, in which case nothing is written and nothing is claimed. A
-     * cancelled engine never claims.
+     * The engine claims [downloadId] and the folder [pickFolder] chooses: under
+     * the lock it reads the row fresh and, only while it is still Queued or
+     * Downloading, picks the folder and writes the row back as Downloading.
+     * Picking under the lock means no delete, cancel or other claim changes
+     * who holds a folder between the choice and the claim (see
+     * [pickDownloadFolder]). Returns the row and the folder, or null when the
+     * row is gone or moved on, in which case nothing is written and nothing is
+     * claimed. A cancelled engine never claims.
      */
     internal suspend fun claim(
         downloadId: String,
         audioBookId: String,
-        folder: File,
+        pickFolder: suspend () -> File,
         readRow: suspend () -> DownloadItem?,
         writeRow: suspend (DownloadItem) -> Unit,
-    ): DownloadItem? = lock.withLock {
+    ): Claimed? = lock.withLock {
         currentCoroutineContext().ensureActive()
         val fresh = readRow()
             ?.takeIf { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
             ?: return@withLock null
+        val folder = pickFolder()
         val downloading = fresh.copy(status = DownloadStatus.Downloading)
         writeRow(downloading)
         current = EngineClaim(audioBookId, downloadId, folder)
-        downloading
+        Claimed(downloading, folder)
     }
 
     /**
@@ -205,8 +212,52 @@ internal suspend fun pauseOnceEngineIsOff(
 }
 
 /**
- * What delete and cancel read to judge a folder. DownloadManager backs it with
- * Room and the engine's path rules.
+ * Whether [folder] belongs to a book other than [audioBookId]: another book's
+ * stored file path is that folder, or another download row would write
+ * there (see [FolderReads.plannedLocation]). Compared canonically, and a path
+ * that will not resolve counts as held, since any doubt keeps folders apart.
+ */
+internal suspend fun folderHeldByAnotherBook(reads: FolderReads, audioBookId: String, folder: File): Boolean {
+    val target = canonicalOrNull(folder) ?: return true
+    for (raw in reads.localPathsExcept(audioBookId)) {
+        // Content URIs (local folder imports) name no folder of the engine's.
+        val other = bookPathAsFile(raw) ?: continue
+        if ((canonicalOrNull(other) ?: return true) == target) return true
+    }
+    val rows = reads.downloadRows().filter { it.audioBookId != audioBookId }
+    if (rows.isEmpty()) return false
+    val started = rows.filter { it.downloadedBytes > 0 }.mapTo(HashSet()) { it.audioBookId }
+    for (other in reads.books(rows.map { it.audioBookId }.distinct())) {
+        val planned = reads.plannedLocation(other, other.id in started).folder
+        if ((canonicalOrNull(planned) ?: return true) == target) return true
+    }
+    return false
+}
+
+/**
+ * The folder a download of [book] writes to (#88). Normally the one
+ * [bookDownloadFolder] names. New folders carry the last eight letters and
+ * digits of the item id, so two editions with the same author and title whose
+ * ids end alike would share one. When that short-id folder already exists
+ * and another book holds it ([folderHeldByAnotherBook]), the download goes to
+ * the sibling named with the full id instead, which [bookDownloadFolder]
+ * prefers from then on. A short-id folder this book left itself (a paused or
+ * cancelled partial) is reused as before.
+ *
+ * Reads the database and the disk, never the network. Run it as the claim's
+ * folder pick, under the ownership lock.
+ */
+internal suspend fun pickDownloadFolder(reads: FolderReads, book: AudioBook, startedWriting: Boolean): File {
+    val planned = reads.plannedLocation(book, startedWriting).folder
+    if (planned.name != itemDownloadFolderName(book.author, book.title, book.id)) return planned
+    if (!planned.isDirectory) return planned
+    if (!folderHeldByAnotherBook(reads, book.id, planned)) return planned
+    return File(planned.parentFile, fullItemDownloadFolderName(book.author, book.title, book.id))
+}
+
+/**
+ * What delete and cancel read to judge a folder. The engine backs it with
+ * Room and its path rules.
  */
 internal interface FolderReads {
     suspend fun book(id: String): AudioBook?

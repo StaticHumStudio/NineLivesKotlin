@@ -239,4 +239,20 @@ class DownloadPoliciesTest {
         id = "f$index", ino = "i$index", index = index,
         duration = 1.seconds, filename = filename,
     )
+
+    @Test
+    fun `the full id folder name keeps every letter and digit of the id`() {
+        val name = fullItemDownloadFolderName("Herman Melville", "Moby-Dick", "li_bbbb_12345678")
+
+        assertEquals("Herman Melville - Moby-Dick [libbbb12345678]", name)
+        assertNotEquals(itemDownloadFolderName("Herman Melville", "Moby-Dick", "li_bbbb_12345678"), name)
+    }
+
+    @Test
+    fun `a long title still fits with the full id`() {
+        val name = fullItemDownloadFolderName("Author", "x".repeat(400), "4f1c2e1a-9b3d-4c55-8e7f-0a1b2c3d4e5f")
+
+        assertTrue(name.toByteArray(Charsets.UTF_8).size <= MAX_FOLDER_NAME_BYTES)
+        assertTrue(name.endsWith("[4f1c2e1a9b3d4c558e7f0a1b2c3d4e5f]"))
+    }
 }

@@ -78,13 +78,21 @@ class DownloadOwnershipTest {
     }
 
     private suspend fun DownloadOwnership.claimFor(reads: FakeReads, downloadId: String, folder: File) =
+        claimFor(reads, downloadId) { folder }
+
+    /** The engine's claim, picking its folder under the lock with [pickFolder]. */
+    private suspend fun DownloadOwnership.claimFor(
+        reads: FakeReads,
+        downloadId: String,
+        pickFolder: suspend () -> File,
+    ): DownloadItem? =
         claim(
             downloadId = downloadId,
             audioBookId = reads.rows[downloadId]?.audioBookId ?: downloadId.removePrefix("d"),
-            folder = folder,
+            pickFolder = pickFolder,
             readRow = { reads.rows[downloadId] },
             writeRow = { reads.rows[it.id] = it },
-        )
+        )?.row
 
     /** The engine's completion from its in-memory [row], as DownloadEngine writes it. */
     private suspend fun DownloadOwnership.finish(reads: FakeReads, row: DownloadItem, folder: File): Boolean {
@@ -194,7 +202,7 @@ class DownloadOwnershipTest {
         val claimed = ownership.claim(
             downloadId = "dA",
             audioBookId = "A",
-            folder = File(root, "A"),
+            pickFolder = { File(root, "A") },
             readRow = {
                 val row = reads.rows["dA"]
                 cancel = launch {
@@ -767,5 +775,102 @@ class DownloadOwnershipTest {
         assertFalse(File(dir, "01.mp3").exists())
         assertTrue(File(dir, "02.mp3").exists())
         assertTrue(File(dir, "cover.jpg").exists())
+    }
+
+    // ─── Look-alike ids (#88) ────────────────────────────────────────────────
+
+    /** Two editions whose ids end in the same eight letters and digits. */
+    private val idA = AudioBook(id = "li_aaaa_12345678", title = "Moby-Dick", author = "Herman Melville")
+    private val idB = idA.copy(id = "li_bbbb_12345678")
+
+    /** A downloaded into its short-id folder, B queued as dB. */
+    private fun lookAlikes(root: File): Pair<FakeReads, File> {
+        val reads = FakeReads(root)
+        val aDir = folder(root, itemDownloadFolderName(idA.author, idA.title, idA.id), "01.mp3")
+        reads.books[idA.id] = idA.copy(isDownloaded = true, localPath = aDir.absolutePath, audioFiles = listOf(track("01.mp3")))
+        reads.books[idB.id] = idB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        return reads to aDir
+    }
+
+    @Test
+    fun `two editions whose ids end alike download into separate folders`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val (reads, aDir) = lookAlikes(root)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertNotEquals(aDir, ownership.engineClaim!!.folder)
+        assertEquals(root, ownership.engineClaim!!.folder.parentFile)
+    }
+
+    @Test
+    fun `a redirected download resumes and cancels in its own folder`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val (reads, aDir) = lookAlikes(root)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+        val claimed = ownership.engineClaim!!.folder
+        claimed.mkdirs()
+        File(claimed, "01.mp3.part").writeBytes(byteArrayOf(1))
+
+        // Resume, cancel and delete find the folder the download really went to.
+        assertEquals(claimed, bookDownloadFolder(root, idB, startedWriting = true))
+        assertEquals(claimed, bookDownloadFolder(root, idB, startedWriting = false))
+
+        ownership.release()
+        ownership.noEngineOn(idB.id) {
+            reads.rows.remove("dB")
+            removeCancelledPartialFiles(reads, ownership, idB.id, startedWriting = true)
+        }
+
+        assertFalse("B's cancelled partial folder was left behind", claimed.exists())
+        assertTrue("A's audio went with B's cancel", File(aDir, "01.mp3").exists())
+    }
+
+    @Test
+    fun `an edition alone keeps the short folder`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        reads.books[idB.id] = idB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertEquals(itemDownloadFolderName(idB.author, idB.title, idB.id), ownership.engineClaim!!.folder.name)
+    }
+
+    @Test
+    fun `an edition's own earlier partial is not a reason to move`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        reads.books[idB.id] = idB
+        // B wrote a track here before it was paused, then was resumed.
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued, downloadedBytes = 3)
+        val own = folder(root, itemDownloadFolderName(idB.author, idB.title, idB.id), "01.mp3")
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = true) })
+
+        assertEquals(own, ownership.engineClaim!!.folder)
+    }
+
+    @Test
+    fun `a short folder another edition is still downloading into sends the second one to its own`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        // A paused partway, no stored path yet. Only its row says it writes here.
+        val aDir = folder(root, itemDownloadFolderName(idA.author, idA.title, idA.id), "01.mp3", "02.mp3.part")
+        reads.books[idA.id] = idA
+        reads.books[idB.id] = idB
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = idA.id, status = DownloadStatus.Paused, downloadedBytes = 3)
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertNotEquals(aDir, ownership.engineClaim!!.folder)
     }
 }

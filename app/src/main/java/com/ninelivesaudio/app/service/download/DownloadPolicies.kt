@@ -47,6 +47,13 @@ private fun authorTitle(author: String, title: String): String {
 /** Characters of the item id a download folder's name ends with. */
 private const val SHORT_ITEM_ID_LENGTH = 8
 
+/**
+ * Most characters of the item id a full id folder name keeps. ABS ids are a
+ * UUID (32 letters and digits) or `li_` plus a short random tail, so this
+ * keeps every one of them and still leaves the title room.
+ */
+private const val FULL_ITEM_ID_LENGTH = 64
+
 /** UTF-8 bytes a download folder's name may use. Android filesystems cap a name at 255. */
 internal const val MAX_FOLDER_NAME_BYTES = 200
 
@@ -55,9 +62,12 @@ internal const val MAX_FOLDER_NAME_BYTES = 200
  * characters (a UUID, or `li_` plus random letters), so eight of them tell two
  * editions of one title apart. An id with no letters or digits uses its hash.
  */
-internal fun shortItemId(itemId: String): String =
+internal fun shortItemId(itemId: String): String = itemIdTail(itemId, SHORT_ITEM_ID_LENGTH)
+
+/** The last [length] letters and digits of [itemId], or its hash when it has none. */
+private fun itemIdTail(itemId: String, length: Int): String =
     itemId.filter { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' }
-        .takeLast(SHORT_ITEM_ID_LENGTH)
+        .takeLast(length)
         .ifEmpty { Integer.toHexString(itemId.hashCode()) }
 
 /**
@@ -66,8 +76,19 @@ internal fun shortItemId(itemId: String): String =
  * of each other's folder (#49). The title is cut so the whole name fits
  * [MAX_FOLDER_NAME_BYTES], and the id always survives.
  */
-internal fun itemDownloadFolderName(author: String, title: String, itemId: String): String {
-    val suffix = "[${shortItemId(itemId)}]"
+internal fun itemDownloadFolderName(author: String, title: String, itemId: String): String =
+    folderNameWithId(author, title, itemIdTail(itemId, SHORT_ITEM_ID_LENGTH))
+
+/**
+ * [itemDownloadFolderName] with every letter and digit of the item id in the
+ * brackets. Used only when another edition already holds the short-id folder
+ * (two ids ending in the same eight characters, see [pickDownloadFolder]).
+ */
+internal fun fullItemDownloadFolderName(author: String, title: String, itemId: String): String =
+    folderNameWithId(author, title, itemIdTail(itemId, FULL_ITEM_ID_LENGTH))
+
+private fun folderNameWithId(author: String, title: String, idPart: String): String {
+    val suffix = "[$idPart]"
     val room = MAX_FOLDER_NAME_BYTES - suffix.length - 1
     val base = takeUtf8Bytes(sanitizeDownloadFileName(authorTitle(author, title)), room).trimEnd()
     return if (base.isEmpty()) suffix else "$base $suffix"

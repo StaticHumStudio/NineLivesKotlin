@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
@@ -123,13 +124,9 @@ class AudioBookRepository @Inject constructor(
     suspend fun getLocalBooks(): List<AudioBook> =
         audioBookDao.getBySource(isLocal = 1).map { it.toDomain() }
 
-    /** Get audiobooks by library with last-played timestamps enriched. */
-    suspend fun getByLibraryWithLastPlayed(libraryId: String): List<AudioBook> =
-        audioBookDao.getByLibraryWithLastPlayed(libraryId).map { result ->
-            result.audioBook.toDomain().copy(
-                lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
-            )
-        }
+    /** Whether the book holds a downloaded copy, following deletes and completions. */
+    fun observeIsDownloaded(id: String): Flow<Boolean> =
+        audioBookDao.observeIsDownloaded(id).map { (it ?: 0) != 0 }.distinctUntilChanged()
 
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =

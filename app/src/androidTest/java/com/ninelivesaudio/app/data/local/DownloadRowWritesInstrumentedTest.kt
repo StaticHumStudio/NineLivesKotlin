@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -106,5 +107,18 @@ class DownloadRowWritesInstrumentedTest {
         assertEquals("[]", dao.getById("deleted")!!.audioFilesJson)
         assertEquals("[]", dao.getById("moved")!!.audioFilesJson)
         assertEquals(tracksJson, dao.getById("has")!!.audioFilesJson)
+    }
+
+    @Test
+    fun theDownloadedFlagFlowFollowsADelete() = runBlocking {
+        val dao = database.audioBookDao()
+        dao.upsert(AudioBookEntity(id = "A", libraryId = "lib", title = "T", isDownloaded = 1, localPath = "/d/A"))
+
+        assertEquals(1, dao.observeIsDownloaded("A").first())
+
+        dao.clearLocalCopy("A")
+
+        assertEquals(0, dao.observeIsDownloaded("A").first())
+        assertNull(dao.observeIsDownloaded("missing").first())
     }
 }

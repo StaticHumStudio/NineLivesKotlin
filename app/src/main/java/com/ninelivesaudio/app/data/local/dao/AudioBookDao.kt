@@ -199,6 +199,10 @@ interface AudioBookDao {
     )
     suspend fun backfillDownloadManifest(id: String, localPath: String, audioFilesJson: String, chaptersJson: String): Int
 
+    /** The book's downloaded flag as it changes. Null when the row is gone. */
+    @Query("SELECT IsDownloaded FROM AudioBooks WHERE Id = :id")
+    fun observeIsDownloaded(id: String): Flow<Int?>
+
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
     suspend fun updateCoverPath(id: String, coverPath: String)
 
@@ -432,6 +436,7 @@ interface AudioBookDao {
     fun observeRecentlyPlayedByLibrary(libraryId: String, limit: Int = 9): Flow<List<RecentlyPlayedResult>>
 
     /** Get all audiobooks for a library with their last-played timestamp. */
+    @Transaction // one snapshot, like getFilteredBooks
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab

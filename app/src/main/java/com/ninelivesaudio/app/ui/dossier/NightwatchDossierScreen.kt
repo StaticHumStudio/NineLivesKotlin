@@ -47,6 +47,7 @@ import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -888,6 +889,9 @@ private fun DossierShareSection(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val capture = rememberShareCardCapture()
+    // What sat behind the card when the share copied screen pixels, so the
+    // exported corners keep that look instead of turning see-through.
+    val exportBackground = NineLivesTheme.colors.archiveVoidDeep
     var isSharing by remember { mutableStateOf(false) }
 
     SectionHeader("Share")
@@ -914,13 +918,16 @@ private fun DossierShareSection(
             isSharing = true
             scope.launch {
                 try {
-                    val bitmap = capture.capture()
+                    val bitmap = capture.capture(background = exportBackground)
                     if (bitmap != null) {
                         shareBitmap(context, bitmap)
                     } else {
                         Toast.makeText(context, "Capture failed – please try again", Toast.LENGTH_SHORT)
                             .show()
                     }
+                } catch (e: CancellationException) {
+                    // The screen went away mid share (a rotation, say). Not a failure.
+                    throw e
                 } catch (e: Exception) {
                     Log.e("DossierShare", "Share failed", e)
                     Toast.makeText(context, "Share failed – please try again", Toast.LENGTH_SHORT)

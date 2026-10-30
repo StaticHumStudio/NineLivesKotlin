@@ -1,15 +1,18 @@
 package com.ninelivesaudio.app.ui.dossier
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.graphics.toArgb
 
 /**
  * Turns the Dossier share card into an image, whole, wherever it sits on screen.
@@ -24,22 +27,36 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
  *
  * [GraphicsLayer.toImageBitmap] renders the recording through the hardware
  * renderer, so it sees the whole card, never what covers it, and draws hardware
- * bitmaps fine. Corners outside the card's rounded shape come out transparent.
+ * bitmaps fine. The export is then laid on a solid background, because chat
+ * apps and Instagram paint the transparent corners outside the card's rounded
+ * shape white.
  */
 @Stable
 internal class ShareCardCapture(internal val layer: GraphicsLayer) {
 
     /**
-     * The card as a software ARGB_8888 bitmap, ready for PNG encoding, or null
-     * when the card has not been drawn yet. Call on the main thread.
+     * The card as an opaque software ARGB_8888 bitmap on [background], ready for
+     * PNG encoding, or null when the card has not been drawn yet. Call on the
+     * main thread.
      */
-    suspend fun capture(): Bitmap? {
+    suspend fun capture(background: Color): Bitmap? {
         if (layer.isReleased || layer.size.width == 0 || layer.size.height == 0) return null
         val rendered = layer.toImageBitmap().asAndroidBitmap()
-        if (rendered.config != Bitmap.Config.HARDWARE) return rendered
-        val software = rendered.copy(Bitmap.Config.ARGB_8888, false)
-        rendered.recycle()
-        return software
+        // A software canvas cannot draw a hardware bitmap, so copy it out first.
+        val software = if (rendered.config == Bitmap.Config.HARDWARE) {
+            rendered.copy(Bitmap.Config.ARGB_8888, false).also { rendered.recycle() } ?: return null
+        } else {
+            rendered
+        }
+        val opaque = Bitmap.createBitmap(software.width, software.height, Bitmap.Config.ARGB_8888)
+        Canvas(opaque).apply {
+            drawColor(background.copy(alpha = 1f).toArgb())
+            drawBitmap(software, 0f, 0f, null)
+        }
+        software.recycle()
+        // Every pixel is now opaque, so the PNG is written without an alpha channel.
+        opaque.setHasAlpha(false)
+        return opaque
     }
 }
 

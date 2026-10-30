@@ -13,9 +13,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -26,6 +29,7 @@ import com.ninelivesaudio.app.ui.theme.NineLivesAudioTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Rule
@@ -54,6 +58,7 @@ class ShareCardCaptureTest {
     private fun captureScrolledCard(
         overlay: Boolean = false,
         hardwareImage: Bitmap? = null,
+        rounded: Boolean = false,
     ): Bitmap {
         lateinit var capture: ShareCardCapture
         lateinit var listState: LazyListState
@@ -75,6 +80,7 @@ class ShareCardCaptureTest {
                                         .fillMaxWidth()
                                         .height(700.dp)
                                         .recordInto(capture)
+                                        .then(if (rounded) Modifier.clip(RoundedCornerShape(16.dp)) else Modifier)
                                         .background(Color.Blue)
                                         .testTag("card"),
                                 ) {
@@ -96,7 +102,7 @@ class ShareCardCaptureTest {
         }
         composeRule.runOnIdle { runBlocking { listState.scrollToItem(1, scrollPx) } }
         composeRule.waitForIdle()
-        val bitmap = runBlocking(Dispatchers.Main) { capture.capture() }
+        val bitmap = runBlocking(Dispatchers.Main) { capture.capture(background = EXPORT_BACKGROUND) }
         assertNotNull("the capture produced no image", bitmap)
         return bitmap!!
     }
@@ -141,5 +147,24 @@ class ShareCardCaptureTest {
 
         assertNotEquals(Bitmap.Config.HARDWARE, bitmap.config)
         assertEquals(android.graphics.Color.RED, bitmap.getPixel(dpToPx(32), dpToPx(32)))
+    }
+
+    /**
+     * Chat apps and Instagram paint transparent pixels white, so the card's
+     * rounded corners are filled with the Dossier background instead of
+     * being left see-through.
+     */
+    @Test
+    fun theRoundedCornersAreOpaqueInTheExport() {
+        val bitmap = captureScrolledCard(rounded = true)
+
+        assertEquals(EXPORT_BACKGROUND.toArgb(), bitmap.getPixel(0, 0))
+        assertEquals(EXPORT_BACKGROUND.toArgb(), bitmap.getPixel(bitmap.width - 1, bitmap.height - 1))
+        assertEquals(android.graphics.Color.BLUE, bitmap.getPixel(bitmap.width / 2, bitmap.height / 2))
+        assertFalse("the export should be marked opaque", bitmap.hasAlpha())
+    }
+
+    private companion object {
+        val EXPORT_BACKGROUND = Color(0xFF102030)
     }
 }

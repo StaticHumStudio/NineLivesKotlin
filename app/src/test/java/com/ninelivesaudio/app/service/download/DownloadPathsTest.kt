@@ -57,7 +57,7 @@ class DownloadPathsTest {
     fun `another provider's uri names no file`() {
         assertNull(
             safDocumentFile(
-                "content://com.android.providers.downloads.documents/document/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2F01.mp3",
+                "content://com.android.providers.media.documents/document/audio%3A1234",
                 ::volumes,
             ),
         )
@@ -84,5 +84,25 @@ class DownloadPathsTest {
     @Test
     fun `a tree uri with no document names no file`() {
         assertNull(safDocumentFile("content://com.android.externalstorage.documents/tree/primary%3AAB", ::volumes))
+    }
+
+    @Test
+    fun `a downloads provider raw uri names its file`() {
+        val uri = "content://com.android.providers.downloads.documents/tree/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2FAB" +
+            "/document/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2FAB%2FBook%2F01.mp3"
+
+        assertEquals(File("/storage/emulated/0/Download/AB/Book/01.mp3"), safDocumentFile(uri, ::volumes))
+    }
+
+    @Test
+    fun `a downloads provider id that is not a raw path names no file`() {
+        assertNull(safDocumentFile("content://com.android.providers.downloads.documents/document/msf%3A1234", ::volumes))
+        assertNull(safDocumentFile("content://com.android.providers.downloads.documents/document/1234", ::volumes))
+        assertNull(
+            safDocumentFile(
+                "content://com.android.providers.downloads.documents/document/raw%3A%2Fstorage%2F..%2Fdata%2F01.mp3",
+                ::volumes,
+            ),
+        )
     }
 }

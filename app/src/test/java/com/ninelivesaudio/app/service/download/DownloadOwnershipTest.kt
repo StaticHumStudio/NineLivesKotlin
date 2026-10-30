@@ -873,4 +873,42 @@ class DownloadOwnershipTest {
 
         assertNotEquals(aDir, ownership.engineClaim!!.folder)
     }
+
+    @Test
+    fun `a paused edition resumes in its own short folder while a look-alike only waits in the queue`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        // A wrote a track into its short folder before it was paused. B is
+        // queued and has written nothing anywhere yet.
+        val aDir = folder(root, itemDownloadFolderName(idA.author, idA.title, idA.id), "01.mp3")
+        reads.books[idA.id] = idA
+        reads.books[idB.id] = idB
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = idA.id, status = DownloadStatus.Queued, downloadedBytes = 3)
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued, startedAt = 2)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dA") { pickDownloadFolder(reads, idA, startedWriting = true) })
+
+        assertEquals("A left its own finished track behind", aDir, ownership.engineClaim!!.folder)
+    }
+
+    @Test
+    fun `a short folder a local import plays from sends a look-alike to its own`() = runBlocking {
+        val storageRoot = tempFolder.newFolder("storage")
+        val root = File(storageRoot, "AB").apply { mkdirs() }
+        val reads = FakeReads(root, appRoot = tempFolder.newFolder("app")).apply { this.storageRoot = storageRoot }
+        // A's download was deleted, but its tracks stayed for the local
+        // import of the same folder. No book row stores that folder now.
+        val shortName = itemDownloadFolderName(idA.author, idA.title, idA.id)
+        val aDir = folder(root, shortName, "01.mp3")
+        reads.books[idA.id] = idA
+        reads.books["local_L"] = localImport("local_L", shortName, "01.mp3")
+        reads.books[idB.id] = idB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertNotEquals("B would take the import's audio as its own", aDir, ownership.engineClaim!!.folder)
+    }
 }

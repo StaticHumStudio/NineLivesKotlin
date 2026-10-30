@@ -212,24 +212,36 @@ internal suspend fun pauseOnceEngineIsOff(
 }
 
 /**
- * Whether [folder] belongs to a book other than [audioBookId]: another book's
- * stored file path is that folder, or another download row would write
- * there (see [FolderReads.plannedLocation]). Compared canonically, and a path
- * that will not resolve counts as held, since any doubt keeps folders apart.
+ * Whether [folder], an existing download folder, holds another book's audio:
+ * another book's stored file path is that folder, another download that has
+ * started writing writes there (see [FolderReads.plannedLocation]), or a
+ * local folder import plays tracks from it (see [localImportSharers]).
+ * Compared canonically, and a path that will not resolve counts as held,
+ * since any doubt keeps folders apart.
+ *
+ * A download with no bytes on record has written nothing anywhere yet, so it
+ * holds no folder. It picks its own when it claims. Counting it would push
+ * a paused download out of the folder its finished tracks sit in.
  */
 internal suspend fun folderHeldByAnotherBook(reads: FolderReads, audioBookId: String, folder: File): Boolean {
     val target = canonicalOrNull(folder) ?: return true
     for (raw in reads.localPathsExcept(audioBookId)) {
-        // Content URIs (local folder imports) name no folder of the engine's.
+        // Content URIs (local folder imports) are checked below.
         val other = bookPathAsFile(raw) ?: continue
         if ((canonicalOrNull(other) ?: return true) == target) return true
     }
-    val rows = reads.downloadRows().filter { it.audioBookId != audioBookId }
-    if (rows.isEmpty()) return false
-    val started = rows.filter { it.downloadedBytes > 0 }.mapTo(HashSet()) { it.audioBookId }
-    for (other in reads.books(rows.map { it.audioBookId }.distinct())) {
-        val planned = reads.plannedLocation(other, other.id in started).folder
+    val started = reads.downloadRows()
+        .filter { it.audioBookId != audioBookId && it.downloadedBytes > 0 }
+        .map { it.audioBookId }
+        .distinct()
+    for (other in reads.books(started)) {
+        val planned = reads.plannedLocation(other, startedWriting = true).folder
         if ((canonicalOrNull(planned) ?: return true) == target) return true
+    }
+    val root = folder.parentFile ?: return true
+    val imports = localImportSharers(reads, audioBookId, DownloadLocation(root, folder, rootIsAppOwned = false))
+    for (sharer in imports) {
+        if ((canonicalOrNull(File(sharer.path)) ?: return true) == target) return true
     }
     return false
 }

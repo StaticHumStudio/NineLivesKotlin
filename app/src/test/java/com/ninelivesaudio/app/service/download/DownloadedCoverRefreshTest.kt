@@ -14,6 +14,8 @@ import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.File
 
 /**
@@ -137,7 +139,8 @@ class DownloadedCoverRefreshTest {
         )
 
         assertEquals(20, replaced)
-        assertEquals((0 until 20).map { "s$it" }, fetched)
+        assertEquals(20, fetched.toSet().size)
+        assertTrue(fetched.all { it.startsWith("s") })
         assertTrue(written.all { it.second == 10_000L })
     }
 
@@ -194,7 +197,7 @@ class DownloadedCoverRefreshTest {
         ownership.claimBook("X")
         var ran = false
 
-        assertNull(ownership.whenEngineIsNotOn("X") { ran = true; true })
+        assertNull(ownership.whenEngineIsNotOn("X", File(tempFolder.root, "elsewhere")) { ran = true; true })
         assertFalse(ran)
     }
 
@@ -203,9 +206,119 @@ class DownloadedCoverRefreshTest {
         val ownership = DownloadOwnership()
         ownership.claimBook("X")
 
-        assertEquals("Y done", ownership.whenEngineIsNotOn("Y") { "Y done" })
+        assertEquals("Y done", ownership.whenEngineIsNotOn("Y", File(tempFolder.root, "Y")) { "Y done" })
 
         ownership.release()
-        assertEquals("X done", ownership.whenEngineIsNotOn("X") { "X done" })
+        assertEquals("X done", ownership.whenEngineIsNotOn("X", File(tempFolder.root, "X")) { "X done" })
+    }
+
+    @Test
+    fun `a cover refresh skips a folder the engine is writing for another book`() = runBlocking {
+        // Two editions that started before each book got its own folder share one.
+        val ownership = DownloadOwnership()
+        ownership.claimBook("X")
+        var ran = false
+
+        assertNull(ownership.whenEngineIsNotOn("Y", File(tempFolder.root, "X/")) { ran = true; true })
+        assertFalse(ran)
+    }
+
+    // ─── Codex round 1 ───────────────────────────────────────────────────
+
+    @Test
+    fun `persistent failures cannot starve the other stale covers`() = runBlocking {
+        val rows = List(30) { row("s$it") }
+        val attempted = mutableSetOf<String>()
+        val random = kotlin.random.Random(7)
+        repeat(6) {
+            refreshSavedCovers(
+                rows = rows,
+                savedModifiedMs = { null },
+                fetchCover = { id -> attempted += id; if (id.removePrefix("s").toInt() < 20) null else byteArrayOf(1) },
+                replace = { _, _, _ -> true },
+                random = random,
+            )
+        }
+        assertTrue("later rows never tried: $attempted", (20 until 30).any { "s$it" in attempted })
+    }
+
+    @Test
+    fun `a cover downloaded again during the fetch is not overwritten`() {
+        val snapshot = row("a", ts = 10_000)
+        // Deleted and downloaded again while the old fetch ran: same paths, a fresh file.
+        assertFalse(shouldWriteRefreshedCover(snapshot, snapshot, currentSavedModifiedMs = 50_000))
+        // The server cover moved on again: the fetched bytes are already old.
+        assertFalse(shouldWriteRefreshedCover(snapshot, row("a", ts = 20_000), currentSavedModifiedMs = 5_000))
+        // The download is gone or moved.
+        assertFalse(shouldWriteRefreshedCover(snapshot, null, currentSavedModifiedMs = 5_000))
+        assertFalse(shouldWriteRefreshedCover(snapshot, snapshot.copy(localPath = "/elsewhere"), currentSavedModifiedMs = 5_000))
+        // Nothing changed: write.
+        assertTrue(shouldWriteRefreshedCover(snapshot, snapshot, currentSavedModifiedMs = 5_000))
+        assertTrue(shouldWriteRefreshedCover(snapshot, snapshot, currentSavedModifiedMs = null))
+    }
+
+    private fun clientAnswering(contentType: String, body: ByteArray, seen: (okhttp3.Call) -> Unit = {}) =
+        okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+            seen(chain.call())
+            okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(200).message("fixture")
+                .body(body.toResponseBody(contentType.toMediaType())).build()
+        }.build()
+
+    private val jpegish = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 1, 2)
+    private val looksLikeJpeg: (ByteArray) -> Boolean = { it.size >= 2 && it[0] == 0xFF.toByte() && it[1] == 0xD8.toByte() }
+
+    @Test
+    fun `an image comes back whole`() = runBlocking {
+        val bytes = fetchSavedCoverBytes(clientAnswering("image/jpeg", jpegish), "https://abs.test/api/items/a/cover?ts=5", 5_000, looksLikeJpeg)
+        assertArrayEquals(jpegish, bytes)
+    }
+
+    @Test
+    fun `an html page answered with 200 never replaces a cover`() = runBlocking {
+        val html = "<html>sign in</html>".toByteArray()
+        assertNull(fetchSavedCoverBytes(clientAnswering("text/html", html), "https://abs.test/api/items/a/cover", 5_000, looksLikeJpeg))
+        // A proxy that lies about the type is caught by the decode check.
+        assertNull(fetchSavedCoverBytes(clientAnswering("image/jpeg", html), "https://abs.test/api/items/a/cover", 5_000, looksLikeJpeg))
+    }
+
+    @Test
+    fun `each cover fetch carries what is left of the deadline`() = runBlocking {
+        var timeoutNanos = 0L
+        fetchSavedCoverBytes(
+            clientAnswering("image/jpeg", jpegish) { timeoutNanos = it.timeout().timeoutNanos() },
+            "https://abs.test/api/items/a/cover", 1_234, looksLikeJpeg,
+        )
+        assertEquals(1_234_000_000L, timeoutNanos)
+    }
+
+    @Test
+    fun `a cancelled refresh cancels the request in flight`() = runBlocking {
+        var cancelled = false
+        val stuck = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+            val until = System.currentTimeMillis() + 10_000
+            while (!chain.call().isCanceled() && System.currentTimeMillis() < until) Thread.sleep(10)
+            cancelled = chain.call().isCanceled()
+            throw java.io.IOException("Canceled")
+        }.build()
+        val started = System.currentTimeMillis()
+
+        val result = kotlinx.coroutines.withTimeoutOrNull(200) {
+            fetchSavedCoverBytes(stuck, "https://abs.test/api/items/a/cover", 60_000, looksLikeJpeg)
+        }
+
+        assertNull(result)
+        assertTrue("took ${System.currentTimeMillis() - started} ms", System.currentTimeMillis() - started < 3_000)
+        val deadline = System.currentTimeMillis() + 3_000
+        while (!cancelled && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        assertTrue(cancelled)
+    }
+
+    @Test
+    fun `a non http cover address is never fetched`() = runBlocking {
+        var asked = false
+        val client = clientAnswering("image/jpeg", jpegish) { asked = true }
+        assertNull(fetchSavedCoverBytes(client, "file:///d/cover.jpg", 5_000, looksLikeJpeg))
+        assertFalse(asked)
     }
 }

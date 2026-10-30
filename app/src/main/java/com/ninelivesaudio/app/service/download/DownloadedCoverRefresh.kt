@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service.download
 
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.DownloadedCoverRow
@@ -7,14 +8,23 @@ import com.ninelivesaudio.app.data.remote.coverVersionOf
 import com.ninelivesaudio.app.service.BoundedInputStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.URI
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.random.Random
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,6 +46,9 @@ internal const val SAVED_COVER_MTIME_SLACK_MS = 2_000L
 
 /** The whole refresh pass gives up after this, so a slow server never holds a sync open. */
 private const val SAVED_COVER_REFRESH_TIMEOUT_MS = 30_000L
+
+/** Most one cover request may take, within what is left of the pass. */
+private const val SAVED_COVER_FETCH_TIMEOUT_MS = 15_000L
 
 private const val SAVED_COVER_FILE_NAME = "cover.jpg"
 
@@ -101,8 +114,9 @@ internal fun replaceCoverFileAtomically(target: File, bytes: ByteArray, versionM
 }
 
 /**
- * One refresh pass: every stale row (see [savedCoverNeedsRefresh]), at most
- * [maxBooks], fetched with [fetchCover] and written with [replace]. A failed
+ * One refresh pass: stale rows (see [savedCoverNeedsRefresh]), at most
+ * [maxBooks] picked at random, fetched with [fetchCover] and written with
+ * [replace]. A failed
  * fetch or write skips that book only and is reported to [onFailure]. Cancellation is never swallowed.
  * Returns how many covers were replaced.
  */
@@ -113,12 +127,17 @@ internal suspend fun refreshSavedCovers(
     replace: suspend (row: DownloadedCoverRow, bytes: ByteArray, versionMs: Long) -> Boolean,
     maxBooks: Int = SAVED_COVER_REFRESH_MAX_BOOKS,
     onFailure: (bookId: String, reason: String) -> Unit = { _, _ -> },
+    random: Random = Random.Default,
 ): Int {
+    // A random pick of the stale rows, so a few covers that keep failing
+    // can never hold every pass and starve the rest.
     val stale = rows
         .filter { savedCoverNeedsRefresh(it.coverPath, it.localCoverPath, savedModifiedMs(it)) }
+        .shuffled(random)
         .take(maxBooks)
     var replaced = 0
     for (row in stale) {
+        currentCoroutineContext().ensureActive()
         val version = coverVersionOf(row.coverPath) ?: continue
         val bytes = try {
             fetchCover(row.id)
@@ -142,6 +161,76 @@ internal suspend fun refreshSavedCovers(
     return replaced
 }
 
+/**
+ * Whether bytes fetched for [snapshot] may still be written, decided again
+ * under the ownership lock: the book is still downloaded ([current] not
+ * null) with the same cover version, folder and saved cover, and its saved
+ * cover is still stale. A book deleted and downloaded again while the fetch
+ * ran has a fresh cover and keeps it.
+ */
+internal fun shouldWriteRefreshedCover(
+    snapshot: DownloadedCoverRow,
+    current: DownloadedCoverRow?,
+    currentSavedModifiedMs: Long?,
+): Boolean =
+    current != null && current == snapshot &&
+        savedCoverNeedsRefresh(current.coverPath, current.localCoverPath, currentSavedModifiedMs)
+
+/**
+ * The cover at [url], or null. Only http(s). The whole call is bounded by
+ * [timeoutMs] and cancelling the caller cancels the request, so a slow
+ * server never holds a sync open. A body over [SAVED_COVER_MAX_BYTES], one
+ * that is not an image type, or one [isImage] cannot read (a sign in page
+ * answered with 200) is refused, so a working offline cover is never
+ * replaced with something that will not draw.
+ */
+internal suspend fun fetchSavedCoverBytes(
+    client: OkHttpClient,
+    url: String?,
+    timeoutMs: Long,
+    isImage: (ByteArray) -> Boolean,
+): ByteArray? {
+    if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return null
+    if (timeoutMs <= 0) return null
+    val call = client.newCall(Request.Builder().url(url).build())
+    call.timeout().timeout(timeoutMs, TimeUnit.MILLISECONDS)
+    val bytes = suspendCancellableCoroutine<ByteArray?> { continuation ->
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                continuation.resume(null)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val body = try {
+                    response.use { readCoverBody(it) }
+                } catch (e: IOException) {
+                    null
+                }
+                continuation.resume(body)
+            }
+        })
+    } ?: return null
+    return bytes.takeIf(isImage)
+}
+
+private fun readCoverBody(response: Response): ByteArray? {
+    if (!response.isSuccessful) return null
+    val body = response.body ?: return null
+    val type = body.contentType()
+    if (type != null && type.type != "image") return null
+    if (body.contentLength() > SAVED_COVER_MAX_BYTES) return null
+    val bytes = BoundedInputStream(body.byteStream(), SAVED_COVER_MAX_BYTES + 1).use { it.readBytes() }
+    return bytes.takeIf { it.isNotEmpty() && it.size <= SAVED_COVER_MAX_BYTES }
+}
+
+/** Whether [bytes] read as an image, decoding only the bounds. */
+private fun decodesAsImage(bytes: ByteArray): Boolean {
+    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    return options.outWidth > 0 && options.outHeight > 0
+}
+
 private const val TAG = "DownloadedCoverRefresh"
 
 /**
@@ -159,6 +248,7 @@ class DownloadedCoverRefresher @Inject constructor(
     /** Replace stale saved covers. Gives up after 30 s. Never throws except cancellation. */
     suspend fun refreshStale(): Int {
         var replaced = 0
+        val deadline = System.currentTimeMillis() + SAVED_COVER_REFRESH_TIMEOUT_MS
         try {
             withTimeoutOrNull(SAVED_COVER_REFRESH_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
@@ -173,7 +263,15 @@ class DownloadedCoverRefresher @Inject constructor(
                                 ?.lastModified()
                                 ?.takeIf { it > 0L }
                         },
-                        fetchCover = { bookId -> fetchCover(coverPaths[bookId]) },
+                        fetchCover = { bookId ->
+                            val left = deadline - System.currentTimeMillis()
+                            fetchSavedCoverBytes(
+                                client = okHttpClient,
+                                url = coverPaths[bookId],
+                                timeoutMs = minOf(left, SAVED_COVER_FETCH_TIMEOUT_MS),
+                                isImage = ::decodesAsImage,
+                            )
+                        },
                         replace = { row, bytes, version ->
                             replaceIfStillDownloaded(row, bytes, version).also { if (it) replaced++ }
                         },
@@ -191,27 +289,20 @@ class DownloadedCoverRefresher @Inject constructor(
 
     /**
      * Writes only while the book is still downloaded to the same folder with
-     * the same saved cover, and the engine is not on it.
+     * the same saved cover and cover version, its cover is still stale, and
+     * the engine is not on the book or its folder.
      */
-    private suspend fun replaceIfStillDownloaded(row: DownloadedCoverRow, bytes: ByteArray, version: Long): Boolean =
-        ownership.whenEngineIsNotOn(row.id) {
-            val fresh = audioBookDao.getById(row.id) ?: return@whenEngineIsNotOn false
-            if (fresh.isDownloaded != 1 || fresh.archivedAt != null) return@whenEngineIsNotOn false
-            if (fresh.localPath != row.localPath || fresh.localCoverPath != row.localCoverPath) return@whenEngineIsNotOn false
-            val target = savedCoverFileIn(fresh.localCoverPath, fresh.localPath) ?: return@whenEngineIsNotOn false
+    private suspend fun replaceIfStillDownloaded(row: DownloadedCoverRow, bytes: ByteArray, version: Long): Boolean {
+        val target = savedCoverFileIn(row.localCoverPath, row.localPath) ?: return false
+        val folder = target.parentFile ?: return false
+        return ownership.whenEngineIsNotOn(row.id, folder) {
+            val fresh = audioBookDao.getById(row.id)
+            val current = fresh
+                ?.takeIf { it.isLocal == 0 && it.isDownloaded == 1 && it.archivedAt == null }
+                ?.let { DownloadedCoverRow(it.id, it.coverPath, it.localCoverPath, it.localPath) }
+            val savedModified = target.takeIf { it.isFile }?.lastModified()?.takeIf { it > 0L }
+            if (!shouldWriteRefreshedCover(row, current, savedModified)) return@whenEngineIsNotOn false
             replaceCoverFileAtomically(target, bytes, version)
         } ?: false
-
-    /** The cover at the row's versioned server address, refused over [SAVED_COVER_MAX_BYTES]. */
-    private fun fetchCover(coverPath: String?): ByteArray? {
-        val url = coverPath?.takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: return null
-        val response = okHttpClient.newCall(Request.Builder().url(url).build()).execute()
-        response.use {
-            if (!it.isSuccessful) return null
-            val body = it.body ?: return null
-            if (body.contentLength() > SAVED_COVER_MAX_BYTES) return null
-            val bytes = BoundedInputStream(body.byteStream(), SAVED_COVER_MAX_BYTES + 1).use { stream -> stream.readBytes() }
-            return bytes.takeIf { b -> b.isNotEmpty() && b.size <= SAVED_COVER_MAX_BYTES }
-        }
     }
 }

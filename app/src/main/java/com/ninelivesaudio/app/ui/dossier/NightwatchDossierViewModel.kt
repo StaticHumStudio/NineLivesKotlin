@@ -334,20 +334,15 @@ class NightwatchDossierViewModel @Inject constructor(
             }
 
             try {
-                val history = dossierHistoryPresentation(sessionRepository.getAllSessions())
-                history.unavailableMessage?.let { message ->
-                    publishHistoryUnavailable(message)
-                    return@launch
-                }
-                val allSessions = history.sessions
-
                 // Time period window, clamped by entitlement.
                 //
                 // Clamped HERE rather than at the chips, because the chips only
                 // control what can be tapped. A selection made while unlocked
                 // survives the downgrade in ViewModel state, so gating the
                 // control alone would leave a free install quietly reading a
-                // year of history behind a greyed chip.
+                // year of history behind a greyed chip. It runs before any
+                // session is requested, because the clamped period's start is
+                // how far back the history pages.
                 val period = FreeTier.effectiveDossierPeriod(
                     _uiState.value.selectedPeriod,
                     entitlements.current.isUnlocked,
@@ -359,6 +354,15 @@ class NightwatchDossierViewModel @Inject constructor(
                 }
                 val cutoffMillis = period.cutoffMillis()
                 val endMillis = period.endMillis()
+
+                // Pages until the period is covered (issue #65), so a long
+                // window is no longer cut off at the newest 1,000 sessions.
+                val history = dossierHistoryPresentation(sessionRepository.getSessionsSince(cutoffMillis))
+                history.unavailableMessage?.let { message ->
+                    publishHistoryUnavailable(message)
+                    return@launch
+                }
+                val allSessions = history.sessions
                 val windowSessions = allSessions.filter { it.startedAt in cutoffMillis..endMillis }
 
                 // Only the books this window listened to, looked up by id and

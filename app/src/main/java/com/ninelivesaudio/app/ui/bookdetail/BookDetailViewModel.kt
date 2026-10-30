@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.remote.RemoteResult
+import com.ninelivesaudio.app.data.remote.bookHistoryStart
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
@@ -506,7 +507,10 @@ class BookDetailViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val presentation = historyPresentation(
-                    listeningSessionRepository.getSessionsForBook(bookId),
+                    listeningSessionRepository.getSessionsForBook(
+                        bookId,
+                        bookHistoryStart(_uiState.value.book?.addedAt),
+                    ),
                 )
                 _uiState.update {
                     it.copy(

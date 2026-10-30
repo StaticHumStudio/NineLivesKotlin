@@ -28,25 +28,30 @@ class ListeningSessionRepository @Inject constructor(
     private val apiService: ApiService,
     private val settingsManager: SettingsManager,
 ) {
-    suspend fun getAllSessions(): RemoteResult<List<ListeningSession>> {
+    /**
+     * At least every session that started at or after [fromMillis]. Older ones
+     * may come along (LOCAL mode returns every row, as it always has), so the
+     * caller still filters to its own window.
+     */
+    suspend fun getSessionsSince(fromMillis: Long): RemoteResult<List<ListeningSession>> {
         return if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
             RemoteResult.Ok(sessionDao.getAll().map { it.toDomain() })
         } else {
-            apiService.getAllListeningSessions()
+            apiService.getListeningSessionsSince(fromMillis)
         }
     }
 
     /**
      * Sessions scoped to a single book — backs the Book Detail "Listening history"
-     * panel. LOCAL mode reads from Room. AUDIOBOOKSHELF mode retrieves the complete
-     * paginated server history, then scopes it because the supported endpoint has
-     * no verified item-id query.
+     * panel. LOCAL mode reads from Room. AUDIOBOOKSHELF mode pages the server
+     * history back to [fromMillis] (all of it when null), then scopes it because
+     * the supported endpoint has no verified item-id query.
      */
-    suspend fun getSessionsForBook(audioBookId: String): RemoteResult<List<ListeningSession>> {
+    suspend fun getSessionsForBook(audioBookId: String, fromMillis: Long?): RemoteResult<List<ListeningSession>> {
         return if (settingsManager.currentSettings.appMode == AppMode.LOCAL) {
             RemoteResult.Ok(sessionDao.getByAudioBookId(audioBookId).map { it.toDomain() })
         } else {
-            apiService.getListeningSessions(audioBookId)
+            apiService.getListeningSessions(audioBookId, fromMillis)
         }
     }
 

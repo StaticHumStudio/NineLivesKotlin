@@ -281,4 +281,29 @@ class PaginatedFetchTest {
         assertEquals(RemoteResult.Ok(emptyList<String>()), result)
     }
 
+    @Test
+    fun `a page that covers the caller's window ends the fetch as Ok before the reported total`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 2, maxPages = 100, coveredBy = { "d" in it }) { page ->
+            when (page) {
+                0 -> PageOutcome.Page(listOf("a", "b"), total = 10)
+                1 -> PageOutcome.Page(listOf("c", "d"), total = 10)
+                else -> unreachablePage("covered after page 1")
+            }
+        }
+
+        assertEquals(RemoteResult.Ok(listOf("a", "b", "c", "d")), result)
+    }
+
+    @Test
+    fun `a page that is not covered keeps the usual end rules`() = runBlocking {
+        val result = runPaginatedFetch<String>(limit = 2, maxPages = 100, coveredBy = { false }) { page ->
+            when (page) {
+                0 -> PageOutcome.Page(listOf("a", "b"), total = 3)
+                1 -> PageOutcome.Page(listOf("c"), total = 3)
+                else -> unreachablePage("ended at the reported total")
+            }
+        }
+
+        assertEquals(RemoteResult.Ok(listOf("a", "b", "c")), result)
+    }
 }

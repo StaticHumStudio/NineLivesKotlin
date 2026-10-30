@@ -89,12 +89,20 @@ internal sealed class PageOutcome<T> {
  * `catch (Exception)` also catches CancellationException, which would turn
  * a deliberately cancelled sync into a persisted Partial/Failed instead of
  * letting structured concurrency unwind.
+ *
+ * [coveredBy] lets a caller that only needs part of the collection stop
+ * early. It sees each page as the server sent it (before de-duplication),
+ * after that page's new rows were kept, and returning true ends the fetch
+ * as Ok. Ok then means "the caller has everything it asked for", not "the
+ * collection ended". Listening history uses it to stop once a page reaches
+ * past the start of the period on screen (issue #65).
  */
 internal suspend fun <T> runPaginatedFetch(
     limit: Int,
     maxPages: Int,
     onPageFailure: (page: Int, e: Exception) -> Unit = { _, _ -> },
     itemKey: ((T) -> String)? = null,
+    coveredBy: ((page: List<T>) -> Boolean)? = null,
     fetchPage: suspend (page: Int) -> PageOutcome<T>,
 ): RemoteResult<List<T>> {
     val allItems = mutableListOf<T>()
@@ -104,6 +112,7 @@ internal suspend fun <T> runPaginatedFetch(
             maxPages = maxPages,
             onPageFailure = onPageFailure,
             itemKey = itemKey,
+            coveredBy = coveredBy,
             onPage = { allItems.addAll(it) },
             fetchPage = fetchPage,
         )
@@ -132,13 +141,15 @@ private fun paginationCountResult(fetched: Int, total: Int, currentPage: Int): R
  * rules are the same code, so Ok still means the reported total was reached.
  * A big library's sync saves each page as it lands instead of keeping every
  * book in memory until the last page, and a page that throws in [onPage]
- * stops the fetch short exactly like a failed request.
+ * stops the fetch short exactly like a failed request. [coveredBy] works
+ * as in [runPaginatedFetch].
  */
 internal suspend fun <T> runPaginatedFetchStreaming(
     limit: Int,
     maxPages: Int,
     onPageFailure: (page: Int, e: Exception) -> Unit = { _, _ -> },
     itemKey: ((T) -> String)? = null,
+    coveredBy: ((page: List<T>) -> Boolean)? = null,
     onPage: suspend (List<T>) -> Unit,
     fetchPage: suspend (page: Int) -> PageOutcome<T>,
 ): RemoteResult<Int> {
@@ -195,6 +206,9 @@ internal suspend fun <T> runPaginatedFetchStreaming(
                     }
                     onPage(newResults)
                     fetched += newResults.size
+                    if (coveredBy?.invoke(outcome.results) == true) {
+                        return RemoteResult.Ok(fetched)
+                    }
                     if (
                         (highestReportedTotal > 0 && fetched >= highestReportedTotal) ||
                         outcome.results.size < limit ||

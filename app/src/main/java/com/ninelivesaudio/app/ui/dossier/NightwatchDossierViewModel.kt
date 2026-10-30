@@ -366,7 +366,6 @@ class NightwatchDossierViewModel @Inject constructor(
                     _uiState.update { it.copy(selectedPeriod = period) }
                 }
                 val cutoffMillis = period.cutoffMillis()
-                val endMillis = period.endMillis()
 
                 // Pages until the period is covered (issue #65), so a long
                 // window is no longer cut off at the newest 1,000 sessions.
@@ -376,6 +375,9 @@ class NightwatchDossierViewModel @Inject constructor(
                     return@launch
                 }
                 val allSessions = history.sessions
+                // Read after the fetch, as before: a long history takes a while,
+                // and a session that started meanwhile still belongs to "now".
+                val endMillis = period.endMillis()
                 val windowSessions = allSessions.filter { it.startedAt in cutoffMillis..endMillis }
 
                 // Only the books this window listened to, looked up by id and

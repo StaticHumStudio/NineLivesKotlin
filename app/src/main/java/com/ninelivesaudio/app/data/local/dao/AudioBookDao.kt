@@ -175,6 +175,14 @@ interface AudioBookDao {
     )
 
     /** Repoint a book's cover to a durable path (persisting a SAF folder cover). */
+    /**
+     * Forget a book's local copy after its download is deleted: only the three
+     * local copy columns change. Writing back a whole row read before the
+     * files went would undo a sync or a position save that landed meanwhile.
+     */
+    @Query("UPDATE AudioBooks SET IsDownloaded = 0, LocalPath = NULL, LocalCoverPath = NULL WHERE Id = :id")
+    suspend fun clearLocalCopy(id: String)
+
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
     suspend fun updateCoverPath(id: String, coverPath: String)
 
@@ -256,6 +264,14 @@ interface AudioBookDao {
     /** Slot fields for up to 500 books by id. */
     @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getSlotRowsByIds(ids: List<String>): List<SlotBookRow>
+
+    /**
+     * Every other book whose stored localPath is a content URI: the local
+     * folder imports. Deleting a server download checks them so it never takes
+     * audio an import plays from the same folder (#88).
+     */
+    @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath LIKE 'content:%'")
+    suspend fun getContentPathRowsExcept(excludeId: String): List<SlotBookRow>
 
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()

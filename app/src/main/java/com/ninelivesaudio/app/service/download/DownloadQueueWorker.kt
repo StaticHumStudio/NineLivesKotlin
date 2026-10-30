@@ -10,7 +10,6 @@ import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.DownloadItemDao
 import com.ninelivesaudio.app.data.remote.ApiService
-import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.EntryPoint
@@ -42,6 +41,7 @@ class DownloadQueueWorker(
         fun downloadItemDao(): DownloadItemDao
         fun audioBookDao(): AudioBookDao
         fun downloadManager(): DownloadManager
+        fun downloadOwnership(): DownloadOwnership
         fun settingsManager(): SettingsManager
         fun apiService(): ApiService
     }
@@ -62,10 +62,10 @@ class DownloadQueueWorker(
         deps.downloadManager().onDrainStarted(unmetered)
         drain()
     } finally {
-        // Cleared on EVERY exit path, including cancellation. Entitlement-drop
-        // resolution waits on this before writing losing rows, because
-        // DownloadEngine writes unconditionally from a stale object and would
-        // otherwise clobber them straight back to Downloading.
+        // Cleared on EVERY exit path, including cancellation. Pauses and the
+        // entitlement drop wait on this to know the engine has stopped. Even
+        // when that wait times out, the engine's writes go through
+        // DownloadOwnership and land only while the row is still its own.
         deps.downloadManager().onDrainStopped()
     }
 
@@ -85,6 +85,7 @@ class DownloadQueueWorker(
         val books = deps.audioBookDao()
         val engine = deps.downloadEngine()
         val manager = deps.downloadManager()
+        val ownership = deps.downloadOwnership()
 
         while (true) {
             if (manager.isDownloadsPaused()) {
@@ -108,13 +109,20 @@ class DownloadQueueWorker(
             val bookEntity = books.getById(item.audioBookId)
             if (bookEntity == null) {
                 // No audiobook to download; mark Failed so we don't loop on it.
+                // Written onto the row as it is now, and only while it is still
+                // waiting to download: the user may have cancelled it since the
+                // read above. Under the engine lock, so no older engine is still
+                // on another book and the write is never refused for that.
                 android.util.Log.d(TAG, "book missing for id=${item.id} -> Failed")
-                dao.upsert(
-                    item.copy(
-                        status = DownloadStatus.Failed,
+                manager.runEngine {
+                    ownership.recordFailure(
+                        downloadId = item.id,
                         errorMessage = "Audiobook not found",
-                    ).toEntity()
-                )
+                        downloadedBytes = item.downloadedBytes,
+                        readRow = { dao.getById(item.id)?.toDomain() },
+                        writeRow = { dao.upsert(it.toEntity()) },
+                    )
+                }
                 continue
             }
             val book = bookEntity.toDomain()

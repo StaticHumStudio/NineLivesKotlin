@@ -3,7 +3,10 @@ package com.ninelivesaudio.app.service.download
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.os.storage.StorageManager
 import android.util.Log
+import androidx.room.withTransaction
+import com.ninelivesaudio.app.data.local.AppDatabase
 import com.ninelivesaudio.app.data.local.converter.toDomain
 import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
@@ -19,12 +22,18 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.service.SettingsManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.ResponseBody
+import java.io.Closeable
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -45,6 +54,7 @@ class DownloadEngine @Inject constructor(
     private val api: AudiobookshelfApi,
     private val settingsManager: SettingsManager,
     private val ownership: DownloadOwnership,
+    private val database: AppDatabase,
 ) {
     companion object {
         private const val TAG = "DownloadEngine"
@@ -58,8 +68,11 @@ class DownloadEngine @Inject constructor(
      * caller owns any completion/failure event emission.
      *
      * Returns null without touching anything when the row is gone or no longer
-     * Queued or Downloading by the time the engine claims it. The claim and the
-     * completion go through [DownloadOwnership], see the rule there.
+     * Queued or Downloading by the time the engine claims it. Also null when
+     * the row moved on mid-download (cancelled, paused, deleted, queued again):
+     * the engine then deletes its current `.part` file and stops, writing
+     * nothing more. The claim, every row write and the completion go through
+     * [DownloadOwnership], see the rule there.
      */
     suspend fun download(
         item: DownloadItem,
@@ -68,16 +81,19 @@ class DownloadEngine @Inject constructor(
     ): DownloadItem? {
         // The row as it is now, not as the drain read it before waiting its turn.
         val bytesOnRecord = downloadItemDao.getById(item.id)?.downloadedBytes ?: item.downloadedBytes
-        val downloadDir = getDownloadPath(audioBook, startedWriting = bytesOnRecord > 0)
+        // Creates the root, and logs a configured path that was refused.
+        getBasePath()
+        // The folder is picked under the ownership lock, so no other book can
+        // take or give up the short-id folder between the check and the claim.
         val claimed = ownership.claim(
             downloadId = item.id,
             audioBookId = audioBook.id,
-            folder = downloadDir,
+            pickFolder = { pickDownloadFolder(folderReads, audioBook, startedWriting = bytesOnRecord > 0) },
             readRow = { downloadItemDao.getById(item.id)?.toDomain() },
             writeRow = { downloadItemDao.upsert(it.toEntity()) },
         ) ?: return null
         return try {
-            downloadInto(downloadDir, claimed, audioBook, onProgress)
+            downloadInto(claimed.folder, claimed.row, audioBook, onProgress)
         } finally {
             ownership.release()
         }
@@ -88,9 +104,19 @@ class DownloadEngine @Inject constructor(
         item: DownloadItem,
         audioBook: AudioBook,
         onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
-    ): DownloadItem {
+    ): DownloadItem? {
         // Already written as Downloading by the claim.
         var download = item
+        val readRow: suspend () -> DownloadItem? = { downloadItemDao.getById(item.id)?.toDomain() }
+        val writeRow: suspend (DownloadItem) -> Unit = { downloadItemDao.upsert(it.toEntity()) }
+
+        // Progress lands on the row as it is now, and only while it is still
+        // this engine's. False means the row moved on, so the engine stops.
+        suspend fun recordProgress(bytes: Long, total: Long): Boolean =
+            ownership.recordProgress(item.id, bytes, total, readRow, writeRow)
+
+        suspend fun recordFailure(message: String, bytes: Long): Boolean =
+            ownership.recordFailure(item.id, message, bytes, readRow, writeRow)
 
         // Create download directory
         downloadDir.mkdirs()
@@ -107,7 +133,7 @@ class DownloadEngine @Inject constructor(
                 status = DownloadStatus.Failed,
                 errorMessage = "No audio files available for download",
             )
-            downloadItemDao.upsert(download.toEntity())
+            if (!recordFailure(download.errorMessage!!, download.downloadedBytes)) return null
             return download
         }
 
@@ -157,55 +183,70 @@ class DownloadEngine @Inject constructor(
                         throw Exception("Missing audio file identifier for $fileName")
                     }
 
-                    val response = api.getAudioFileStream(book.id, audioFile.ino)
-                    if (!response.isSuccessful || response.body() == null) {
-                        // Close the (error) body so the streaming connection is
-                        // returned to the pool instead of leaking a socket/fd on
-                        // every failed attempt (e.g. 401 after token expiry).
-                        response.errorBody()?.close()
-                        response.body()?.close()
-                        throw Exception("HTTP ${response.code()}: Failed to download $fileName")
-                    }
+                    // A cancel (pause, cancel, delete, a stopped drain) cancels
+                    // the call, which frees a read stuck on a stalled server at
+                    // once instead of at the read timeout. See closeOnCancel.
+                    val call = api.getAudioFileStream(book.id, audioFile.ino)
+                    val rowStillOurs = closeOnCancel(Closeable { call.cancel() }) {
+                        val response = call.execute()
+                        val body = response.body()
+                        if (!response.isSuccessful || body == null) {
+                            // Close the (error) body so the streaming connection is
+                            // returned to the pool instead of leaking a socket/fd on
+                            // every failed attempt (e.g. 401 after token expiry).
+                            response.errorBody()?.close()
+                            body?.close()
+                            throw Exception("HTTP ${response.code()}: Failed to download $fileName")
+                        }
 
-                    response.body()?.use { body ->
-                        partPath.outputStream().buffered().use { output ->
-                            body.byteStream().use { input ->
-                                val buffer = ByteArray(BUFFER_SIZE)
-                                var bytesRead: Int
+                        body.use {
+                            partPath.outputStream().buffered().use { output ->
+                                body.byteStream().use { input ->
+                                    val buffer = ByteArray(BUFFER_SIZE)
+                                    var bytesRead: Int
 
-                                while (input.read(buffer).also { bytesRead = it } > 0) {
-                                    currentCoroutineContext().ensureActive()
-                                    output.write(buffer, 0, bytesRead)
-                                    downloadedBytes += bytesRead
+                                    while (input.read(buffer).also { bytesRead = it } > 0) {
+                                        currentCoroutineContext().ensureActive()
+                                        output.write(buffer, 0, bytesRead)
+                                        downloadedBytes += bytesRead
 
-                                    // Throttled progress updates (time + byte delta)
-                                    val now = System.currentTimeMillis()
-                                    val bytesDelta = downloadedBytes - lastPersistedBytes
-                                    val timeDelta = now - lastPersistedAt
+                                        // Throttled progress updates (time + byte delta)
+                                        val now = System.currentTimeMillis()
+                                        val bytesDelta = downloadedBytes - lastPersistedBytes
+                                        val timeDelta = now - lastPersistedAt
 
-                                    if (shouldPersistProgress(bytesDelta, timeDelta)) {
-                                        download = download.copy(downloadedBytes = downloadedBytes)
-                                        downloadItemDao.upsert(download.toEntity())
-                                        onProgress(download.id, downloadedBytes, totalBytes)
-                                        lastPersistedBytes = downloadedBytes
-                                        lastPersistedAt = now
+                                        if (shouldPersistProgress(bytesDelta, timeDelta)) {
+                                            download = download.copy(downloadedBytes = downloadedBytes)
+                                            if (!recordProgress(downloadedBytes, totalBytes)) {
+                                                return@closeOnCancel false
+                                            }
+                                            onProgress(download.id, downloadedBytes, totalBytes)
+                                            lastPersistedBytes = downloadedBytes
+                                            lastPersistedAt = now
+                                        }
                                     }
                                 }
                             }
                         }
+                        true
+                    }
+                    if (!rowStillOurs) {
+                        // The row moved on while this engine ran on. Leave
+                        // nothing half written behind.
+                        partPath.delete()
+                        return null
                     }
 
-                    // Atomic rename .part → final
-                    if (finalPath.exists()) finalPath.delete()
-                    val renamed = partPath.renameTo(finalPath)
-                    if (!renamed) {
-                        throw Exception("Failed to finalize $fileName")
-                    }
-                    fileSuccess = true
-
-                    // Always flush progress after each completed file.
+                    // Record the bytes, then rename .part to the final name, so a
+                    // finished track never sits on disk with no bytes on record
+                    // (see commitTrackFile). A row that moved on stops the engine
+                    // here, and the track never appears.
                     download = download.copy(downloadedBytes = downloadedBytes)
-                    downloadItemDao.upsert(download.toEntity())
+                    val committed = commitTrackFile(partPath, finalPath) {
+                        recordProgress(downloadedBytes, totalBytes)
+                    }
+                    if (!committed) return null
+                    fileSuccess = true
                     onProgress(download.id, downloadedBytes, totalBytes)
                     lastPersistedBytes = downloadedBytes
                     lastPersistedAt = System.currentTimeMillis()
@@ -238,7 +279,7 @@ class DownloadEngine @Inject constructor(
                             errorMessage = "$fileName: ${e.message}",
                             downloadedBytes = downloadedBytes,
                         )
-                        downloadItemDao.upsert(download.toEntity())
+                        if (!recordFailure(download.errorMessage!!, downloadedBytes)) return null
                         return download
                     }
                 }
@@ -246,8 +287,9 @@ class DownloadEngine @Inject constructor(
         }
 
         // Persist the cover next to the audio so it renders offline. Best-effort:
-        // a cover failure must never fail an otherwise-complete download. A
-        // network call, so it runs before the completion commit, not inside it.
+        // a cover failure must never fail an otherwise-complete download, and a
+        // stalled one gives up at its deadline. A network call, so it runs
+        // before the completion commit, not inside it.
         val localCoverUri = persistCover(book, downloadDir)
 
         // All files downloaded successfully
@@ -262,20 +304,27 @@ class DownloadEngine @Inject constructor(
         // and keep the track list and chapters that were just downloaded.
         // List-synced rows hold an empty manifest, and offline playback falls
         // back to sorting files by name without one.
+        //
+        // One Room transaction: an interruption never leaves Completed without
+        // the local copy, and a library sync's save (also one transaction per
+        // page) lands wholly before or wholly after it, so neither undoes the
+        // other. The ownership lock is taken first, the transaction inside it.
         val committed = ownership.commitCompletion(
             rowExists = { downloadItemDao.getById(completed.id) != null },
         ) {
-            downloadItemDao.upsert(completed.toEntity())
-            val bookEntity = audioBookDao.getById(audioBook.id)
-            if (bookEntity != null) {
-                audioBookDao.upsert(
-                    completedDownloadBook(
-                        row = bookEntity.toDomain(),
-                        downloaded = book,
-                        localPath = downloadDir.absolutePath,
-                        localCoverUri = localCoverUri,
-                    ).toEntity()
-                )
+            database.withTransaction {
+                downloadItemDao.upsert(completed.toEntity())
+                val bookEntity = audioBookDao.getById(audioBook.id)
+                if (bookEntity != null) {
+                    audioBookDao.upsert(
+                        completedDownloadBook(
+                            row = bookEntity.toDomain(),
+                            downloaded = book,
+                            localPath = downloadDir.absolutePath,
+                            localCoverUri = localCoverUri,
+                        ).toEntity()
+                    )
+                }
             }
         }
         // Cancelled or deleted while finishing: nothing was written back.
@@ -284,24 +333,28 @@ class DownloadEngine @Inject constructor(
 
     /**
      * Download and save the book cover into its download dir so it shows with no
-     * network. Returns the file:// URI, or null on any failure — the cover is
-     * optional and must not break a completed download.
+     * network. Returns the file:// URI, or null on any failure or when the
+     * cover takes longer than [COVER_FETCH_DEADLINE]. The cover is optional and
+     * must never break or hold up a completed download.
      */
     private suspend fun persistCover(book: AudioBook, downloadDir: File): String? {
         if (book.coverPath.isNullOrEmpty()) return null
-        return try {
+        val bytes = readCoverWithin(COVER_FETCH_DEADLINE) {
             val response = api.getCoverImage(book.id)
-            if (!response.isSuccessful) {
+            if (response.isSuccessful) {
+                response.body()
+            } else {
                 response.errorBody()?.close()
                 response.body()?.close()
-                return null
+                null
             }
-            val body = response.body() ?: return null
-            val bytes = body.use { it.bytes() }
-            if (bytes.isEmpty()) return null
+        }
+        if (bytes == null) {
+            Log.w(TAG, "persistCover: no cover saved for ${book.id}")
+            return null
+        }
+        return try {
             Uri.fromFile(writeCoverFile(bytes, downloadDir)).toString()
-        } catch (cancellation: CancellationException) {
-            throw cancellation
         } catch (e: Exception) {
             Log.w(TAG, "persistCover: cover save failed for ${book.id}: ${e.message}")
             null
@@ -331,14 +384,43 @@ class DownloadEngine @Inject constructor(
 
     // ─── File Paths ──────────────────────────────────────────────────────────
 
-    /** Get download directory for an audiobook. See [bookDownloadFolder]. */
-    private fun getDownloadPath(audioBook: AudioBook, startedWriting: Boolean): File =
-        bookDownloadFolder(getBasePath(), audioBook, startedWriting)
+    /**
+     * Room and the path rules, as the folder pick, delete and cancel read
+     * them. See [FolderReads].
+     */
+    internal val folderReads: FolderReads = object : FolderReads {
+        override suspend fun book(id: String) = audioBookDao.getById(id)?.toDomain()
+        override suspend fun books(ids: List<String>) =
+            lookUpInChunks(ids) { audioBookDao.getByIds(it) }.map { it.toDomain() }
+        override suspend fun filePathBookIdsExcept(audioBookId: String) =
+            audioBookDao.getFilePathBookIdsExcept(audioBookId)
+        override suspend fun localPathsExcept(audioBookId: String) = audioBookDao.getLocalPathsExcept(audioBookId)
+        override suspend fun downloadRows() =
+            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status, it.downloadedBytes) }
+        override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
+            downloadLocationFor(book, startedWriting)
+        override fun storedLocation(localPath: String) = storedDownloadLocation(localPath)
+        override suspend fun contentPathsExcept(audioBookId: String) =
+            audioBookDao.getContentPathRowsExcept(audioBookId)
+                .mapNotNull { row -> row.localPath?.let { row.id to it } }
+                .toMap()
+        override fun contentTrackFile(uri: String) = safDocumentFile(uri, ::storageVolumeRoot)
+    }
+
+    /** Where a storage volume is mounted: `primary` or an SD card's uuid. */
+    private fun storageVolumeRoot(volumeId: String): File? {
+        val storage = context.getSystemService(StorageManager::class.java) ?: return null
+        return if (volumeId == "primary") {
+            storage.primaryStorageVolume.directory
+        } else {
+            storage.storageVolumes.firstOrNull { it.uuid.equals(volumeId, ignoreCase = true) }?.directory
+        }
+    }
 
     /**
      * Where [audioBook]'s download folder is under the current settings, for
-     * delete and cancel. Resolves exactly like [getDownloadPath] but creates
-     * nothing.
+     * the folder pick, delete and cancel. Resolves the root like [getBasePath]
+     * but creates nothing.
      */
     internal fun downloadLocationFor(audioBook: AudioBook, startedWriting: Boolean): DownloadLocation {
         val (root, appOwned) = resolveDownloadRoot(
@@ -378,6 +460,55 @@ class DownloadEngine @Inject constructor(
         val musicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
         return File(musicDir, "Audiobookshelf")
     }
+}
+
+/**
+ * Turn a fully streamed [partFile] into [finalFile], once [recordBytes] has
+ * put its bytes on the download row. Returns false, with the partial file
+ * deleted and no final file, when [recordBytes] is refused because the row
+ * moved on. Throws when the rename fails, so the engine retries the track.
+ *
+ * Recording first means a finished track is never on disk while its row
+ * still reads zero bytes. A download with no bytes on record has then never
+ * finished a track anywhere, which is what lets the folder pick ignore it
+ * (see [folderHeldByAnotherBook]).
+ */
+internal suspend fun commitTrackFile(partFile: File, finalFile: File, recordBytes: suspend () -> Boolean): Boolean {
+    if (!recordBytes()) {
+        partFile.delete()
+        return false
+    }
+    if (finalFile.exists()) finalFile.delete()
+    if (!partFile.renameTo(finalFile)) throw java.io.IOException("Failed to finalize ${finalFile.name}")
+    return true
+}
+
+/** How long a finished download waits for its cover before finishing without it. */
+internal val COVER_FETCH_DEADLINE: Duration = 15.seconds
+
+/**
+ * The cover's bytes, read within [deadline] from the body [open] returns.
+ * Null when the deadline passes first, when [open] or the read fails, or
+ * when the cover is empty. The body is closed on every path. Runs on
+ * Dispatchers.IO, since the read blocks.
+ *
+ * The cover request is not streamed, so in the app a stalled server holds up
+ * [open] itself, and the deadline cancels that request. A body that stalls
+ * while it is read is closed at the deadline too (see [closeOnCancel]).
+ */
+internal suspend fun readCoverWithin(deadline: Duration, open: suspend () -> ResponseBody?): ByteArray? {
+    val bytes = try {
+        withContext(Dispatchers.IO) {
+            withTimeoutOrNull(deadline) {
+                open()?.use { body -> closeOnCancel(body) { body.bytes() } }
+            }
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Exception) {
+        null
+    }
+    return bytes?.takeIf { it.isNotEmpty() }
 }
 
 /**

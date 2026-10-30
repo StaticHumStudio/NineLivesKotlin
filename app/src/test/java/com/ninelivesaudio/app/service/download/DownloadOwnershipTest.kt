@@ -39,10 +39,13 @@ class DownloadOwnershipTest {
      * The races here play out in shared "Author - Title" folders left by
      * downloads that started before each book got its own folder (#49).
      */
-    private class FakeReads(val root: File) : FolderReads {
+    private class FakeReads(val root: File, val appRoot: File = root) : FolderReads {
         val books = mutableMapOf<String, AudioBook>()
         val rows = mutableMapOf<String, DownloadItem>()
         var afterSharerIdsRead: (suspend () -> Unit)? = null
+
+        /** Where primary shared storage sits, for SAF track URIs (`primary:...`). */
+        var storageRoot: File? = null
 
         override suspend fun book(id: String) = books[id]
         override suspend fun books(ids: List<String>) = ids.mapNotNull { books[it] }
@@ -58,8 +61,15 @@ class DownloadOwnershipTest {
         override suspend fun downloadRows() =
             rows.values.map { DownloadOwnerRow(it.audioBookId, it.status.ordinal, it.downloadedBytes) }
         override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
-            DownloadLocation(root, bookDownloadFolder(root, book, startedWriting), true)
-        override fun storedLocation(localPath: String) = deleteLocationFor(localPath, "", root)
+            DownloadLocation(root, bookDownloadFolder(root, book, startedWriting), appRoot == root)
+        override fun storedLocation(localPath: String) =
+            deleteLocationFor(localPath, if (appRoot == root) "" else root.path, appRoot)
+        override suspend fun contentPathsExcept(audioBookId: String) =
+            books.values
+                .filter { it.id != audioBookId && it.localPath?.startsWith("content:") == true }
+                .associate { it.id to it.localPath!! }
+        override fun contentTrackFile(uri: String) =
+            safDocumentFile(uri) { if (it == "primary") storageRoot else null }
     }
 
     private fun folder(root: File, name: String, vararg files: String) = File(root, name).apply {
@@ -68,13 +78,21 @@ class DownloadOwnershipTest {
     }
 
     private suspend fun DownloadOwnership.claimFor(reads: FakeReads, downloadId: String, folder: File) =
+        claimFor(reads, downloadId) { folder }
+
+    /** The engine's claim, picking its folder under the lock with [pickFolder]. */
+    private suspend fun DownloadOwnership.claimFor(
+        reads: FakeReads,
+        downloadId: String,
+        pickFolder: suspend () -> File,
+    ): DownloadItem? =
         claim(
             downloadId = downloadId,
             audioBookId = reads.rows[downloadId]?.audioBookId ?: downloadId.removePrefix("d"),
-            folder = folder,
+            pickFolder = pickFolder,
             readRow = { reads.rows[downloadId] },
             writeRow = { reads.rows[it.id] = it },
-        )
+        )?.row
 
     /** The engine's completion from its in-memory [row], as DownloadEngine writes it. */
     private suspend fun DownloadOwnership.finish(reads: FakeReads, row: DownloadItem, folder: File): Boolean {
@@ -184,7 +202,7 @@ class DownloadOwnershipTest {
         val claimed = ownership.claim(
             downloadId = "dA",
             audioBookId = "A",
-            folder = File(root, "A"),
+            pickFolder = { File(root, "A") },
             readRow = {
                 val row = reads.rows["dA"]
                 cancel = launch {
@@ -495,5 +513,402 @@ class DownloadOwnershipTest {
         }
 
         assertFalse(old.exists())
+    }
+
+    // ─── Writes after a stop (#86) ───────────────────────────────────────────
+
+    /** The engine's throttled progress write for [downloadId], as DownloadEngine sends it. */
+    private suspend fun DownloadOwnership.progressFor(reads: FakeReads, downloadId: String, bytes: Long) =
+        recordProgress(
+            downloadId = downloadId,
+            downloadedBytes = bytes,
+            totalBytes = 100,
+            readRow = { reads.rows[downloadId] },
+            writeRow = { reads.rows[it.id] = it },
+        )
+
+    /** A Failed write for [downloadId], from the engine or the drain. */
+    private suspend fun DownloadOwnership.failFor(reads: FakeReads, downloadId: String) =
+        recordFailure(
+            downloadId = downloadId,
+            errorMessage = "boom",
+            downloadedBytes = 5,
+            readRow = { reads.rows[downloadId] },
+            writeRow = { reads.rows[it.id] = it },
+        )
+
+    /** A cancel, pause or delete of [audioBookId] whose stop timed out, so the engine is still on it. */
+    private suspend fun DownloadOwnership.stopTimesOut(audioBookId: String, act: suspend () -> Unit) =
+        actOnceEngineIsOff(audioBookId, rowIsDownloading = { true }, stopEngine = { false }) { act() }
+
+    @Test
+    fun `a progress tick after a cancel whose stop timed out never brings the row back`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        ownership.stopTimesOut("A") { reads.rows.remove("dA") }
+
+        assertFalse(ownership.progressFor(reads, "dA", 10))
+        assertNull("the cancelled row came back", reads.rows["dA"])
+    }
+
+    @Test
+    fun `a progress tick after a pause whose stop timed out leaves the row Paused`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued, downloadedBytes = 3)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        ownership.stopTimesOut("A") {
+            reads.rows["dA"] = reads.rows.getValue("dA").copy(status = DownloadStatus.Paused)
+        }
+
+        assertFalse(ownership.progressFor(reads, "dA", 10))
+        assertEquals(DownloadStatus.Paused, reads.rows.getValue("dA").status)
+        assertEquals(3, reads.rows.getValue("dA").downloadedBytes)
+    }
+
+    @Test
+    fun `a failure after a cancel whose stop timed out never brings the row back`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        ownership.stopTimesOut("A") { reads.rows.remove("dA") }
+
+        assertFalse(ownership.failFor(reads, "dA"))
+        assertNull("the cancelled row came back as Failed", reads.rows["dA"])
+    }
+
+    @Test
+    fun `a progress tick for an old download never lands on the book's new download`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        // Cancelled while stalled, then queued again before the old engine unwinds.
+        ownership.stopTimesOut("A") { reads.rows.remove("dA") }
+        reads.rows["dA2"] = DownloadItem(id = "dA2", audioBookId = "A", status = DownloadStatus.Queued)
+
+        assertFalse(ownership.progressFor(reads, "dA", 10))
+        assertNull(reads.rows["dA"])
+        assertEquals(0, reads.rows.getValue("dA2").downloadedBytes)
+        assertEquals(DownloadStatus.Queued, reads.rows.getValue("dA2").status)
+    }
+
+    @Test
+    fun `the engine's own progress lands on its row`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        assertTrue(ownership.progressFor(reads, "dA", 10))
+        assertEquals(10, reads.rows.getValue("dA").downloadedBytes)
+        assertEquals(100, reads.rows.getValue("dA").totalBytes)
+        assertEquals(DownloadStatus.Downloading, reads.rows.getValue("dA").status)
+    }
+
+    @Test
+    fun `the engine's own failure lands on its row`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        assertTrue(ownership.failFor(reads, "dA"))
+        assertEquals(DownloadStatus.Failed, reads.rows.getValue("dA").status)
+        assertEquals("boom", reads.rows.getValue("dA").errorMessage)
+        assertEquals(5, reads.rows.getValue("dA").downloadedBytes)
+    }
+
+    @Test
+    fun `the drain's missing-book failure never revives a cancelled row`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        val ownership = DownloadOwnership()
+
+        // The drain read dA as Queued, then the user cancelled it.
+        assertFalse(ownership.failFor(reads, "dA"))
+        assertNull(reads.rows["dA"])
+    }
+
+    // ─── Pauses, by tap or by a lapsed unlock (#86) ──────────────────────────
+
+    private suspend fun DownloadOwnership.pause(reads: FakeReads, downloadId: String, stopEngine: suspend () -> Boolean) =
+        pauseOnceEngineIsOff(
+            ownership = this,
+            audioBookId = reads.rows.getValue(downloadId).audioBookId,
+            rowIsDownloading = { reads.rows[downloadId]?.status == DownloadStatus.Downloading },
+            stopEngine = stopEngine,
+            readRow = { reads.rows[downloadId] },
+            readBook = { reads.books[it] },
+            writeRow = { reads.rows[it.id] = it },
+        )
+
+    @Test
+    fun `a pause that meets a download finishing as it stops leaves it Completed`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val dir = folder(root, "Herman Melville - Moby-Dick", "01.mp3")
+        val reads = FakeReads(root)
+        reads.books["B"] = AudioBook(id = "B", title = "Moby-Dick", author = "Herman Melville")
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = "B", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        val engineRow = ownership.claimFor(reads, "dB", dir)!!
+
+        // The engine commits its finish while the stop waits for it.
+        val wasDownloading = ownership.pause(reads, "dB") { ownership.finish(reads, engineRow, dir); true }
+
+        assertTrue(wasDownloading)
+        assertEquals(DownloadStatus.Completed, reads.rows.getValue("dB").status)
+        assertEquals(dir.absolutePath, reads.books.getValue("B").localPath)
+    }
+
+    @Test
+    fun `a pause of an engine that will not stop still pauses the row for good`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        reads.books["B"] = AudioBook(id = "B", title = "Moby-Dick", author = "Herman Melville")
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = "B", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dB", File(root, "B")))
+
+        assertTrue(ownership.pause(reads, "dB") { false })
+        val tick = ownership.progressFor(reads, "dB", 50)
+
+        assertFalse("the stalled engine's tick landed", tick)
+        assertEquals(DownloadStatus.Paused, reads.rows.getValue("dB").status)
+    }
+
+    @Test
+    fun `a pause of a book the engine is not on writes Paused at once`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.books["B"] = AudioBook(id = "B")
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = "B", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        val wasDownloading = ownership.pause(reads, "dB") { error("the engine was not on B") }
+
+        assertFalse(wasDownloading)
+        assertEquals(DownloadStatus.Paused, reads.rows.getValue("dB").status)
+    }
+
+    // ─── Local folder imports in a download folder (#88) ─────────────────────
+
+    /** A track a SAF folder import plays, as LocalLibraryScanner stores it. */
+    private fun safTrackUri(folderName: String, leaf: String): String {
+        fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+        return "content://com.android.externalstorage.documents/tree/" + enc("primary:AB") +
+            "/document/" + enc("primary:AB/$folderName/$leaf")
+    }
+
+    /** A local folder import playing [leaves] from [folderName] under the user's `AB` folder. */
+    private fun localImport(id: String, folderName: String, vararg leaves: String): AudioBook {
+        val tracks = leaves.mapIndexed { i, leaf ->
+            AudioFile(id = "$id-$i", index = i, filename = leaf, localPath = safTrackUri(folderName, leaf))
+        }
+        return AudioBook(
+            id = id, title = "Title", author = "Author", isLocal = true, isDownloaded = true,
+            localPath = tracks.first().localPath, audioFiles = tracks,
+        )
+    }
+
+    /** A user-picked download root `AB` in shared storage, and a server book downloaded into it. */
+    private fun serverDownloadInUserRoot(): Triple<FakeReads, AudioBook, File> {
+        val storageRoot = tempFolder.newFolder("storage")
+        val root = File(storageRoot, "AB").apply { mkdirs() }
+        val reads = FakeReads(root, appRoot = tempFolder.newFolder("app")).apply { this.storageRoot = storageRoot }
+        val dir = folder(root, "Author - Title [abcd1234]", "01.mp3", "02.mp3", "cover.jpg")
+        val s = AudioBook(
+            id = "li_s_abcd1234", title = "Title", author = "Author", isDownloaded = true,
+            localPath = dir.absolutePath, audioFiles = listOf(track("01.mp3", 0), track("02.mp3", 1)),
+        )
+        reads.books[s.id] = s
+        return Triple(reads, s, dir)
+    }
+
+    @Test
+    fun `deleting a server download keeps the audio a local folder import plays from the same folder`() = runBlocking {
+        val (reads, s, dir) = serverDownloadInUserRoot()
+        val l = localImport("local_L", dir.name, "01.mp3", "02.mp3")
+        reads.books[l.id] = l
+        val ownership = DownloadOwnership()
+
+        var decision: CancelCleanupDecision? = null
+        ownership.noEngineOn(s.id) { decision = removeDownloadedBookFiles(reads, ownership, s, dir.absolutePath) }
+
+        assertTrue("the local import's first track went with the delete", File(dir, "01.mp3").exists())
+        assertTrue("the local import's second track went with the delete", File(dir, "02.mp3").exists())
+        assertTrue(File(dir, "cover.jpg").exists())
+        // Nothing of S's own is left, so S stops pointing at the folder.
+        assertFalse(deleteKeepsLocalCopy(decision))
+    }
+
+    @Test
+    fun `a local import elsewhere does not stop a delete`() = runBlocking {
+        val (reads, s, dir) = serverDownloadInUserRoot()
+        folder(reads.root, "My Own Rip", "01.mp3", "02.mp3")
+        val l = localImport("local_L", "My Own Rip", "01.mp3", "02.mp3")
+        reads.books[l.id] = l
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(s.id) { removeDownloadedBookFiles(reads, ownership, s, dir.absolutePath) }
+
+        assertFalse(File(dir, "01.mp3").exists())
+        assertFalse(File(dir, "02.mp3").exists())
+        assertFalse(dir.exists())
+        assertTrue("the import's own audio went", File(reads.root, "My Own Rip/01.mp3").exists())
+    }
+
+    @Test
+    fun `a local import sharing only some tracks keeps those and lets the rest go`() = runBlocking {
+        val (reads, s, dir) = serverDownloadInUserRoot()
+        val l = localImport("local_L", dir.name, "02.mp3")
+        reads.books[l.id] = l
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(s.id) { removeDownloadedBookFiles(reads, ownership, s, dir.absolutePath) }
+
+        assertFalse(File(dir, "01.mp3").exists())
+        assertTrue(File(dir, "02.mp3").exists())
+        assertTrue(File(dir, "cover.jpg").exists())
+    }
+
+    // ─── Look-alike ids (#88) ────────────────────────────────────────────────
+
+    /** Two editions whose ids end in the same eight letters and digits. */
+    private val idA = AudioBook(id = "li_aaaa_12345678", title = "Moby-Dick", author = "Herman Melville")
+    private val idB = idA.copy(id = "li_bbbb_12345678")
+
+    /** A downloaded into its short-id folder, B queued as dB. */
+    private fun lookAlikes(root: File): Pair<FakeReads, File> {
+        val reads = FakeReads(root)
+        val aDir = folder(root, itemDownloadFolderName(idA.author, idA.title, idA.id), "01.mp3")
+        reads.books[idA.id] = idA.copy(isDownloaded = true, localPath = aDir.absolutePath, audioFiles = listOf(track("01.mp3")))
+        reads.books[idB.id] = idB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        return reads to aDir
+    }
+
+    @Test
+    fun `two editions whose ids end alike download into separate folders`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val (reads, aDir) = lookAlikes(root)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertNotEquals(aDir, ownership.engineClaim!!.folder)
+        assertEquals(root, ownership.engineClaim!!.folder.parentFile)
+    }
+
+    @Test
+    fun `a redirected download resumes and cancels in its own folder`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val (reads, aDir) = lookAlikes(root)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+        val claimed = ownership.engineClaim!!.folder
+        claimed.mkdirs()
+        File(claimed, "01.mp3.part").writeBytes(byteArrayOf(1))
+
+        // Resume, cancel and delete find the folder the download really went to.
+        assertEquals(claimed, bookDownloadFolder(root, idB, startedWriting = true))
+        assertEquals(claimed, bookDownloadFolder(root, idB, startedWriting = false))
+
+        ownership.release()
+        ownership.noEngineOn(idB.id) {
+            reads.rows.remove("dB")
+            removeCancelledPartialFiles(reads, ownership, idB.id, startedWriting = true)
+        }
+
+        assertFalse("B's cancelled partial folder was left behind", claimed.exists())
+        assertTrue("A's audio went with B's cancel", File(aDir, "01.mp3").exists())
+    }
+
+    @Test
+    fun `an edition alone keeps the short folder`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        reads.books[idB.id] = idB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertEquals(itemDownloadFolderName(idB.author, idB.title, idB.id), ownership.engineClaim!!.folder.name)
+    }
+
+    @Test
+    fun `an edition's own earlier partial is not a reason to move`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        reads.books[idB.id] = idB
+        // B wrote a track here before it was paused, then was resumed.
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued, downloadedBytes = 3)
+        val own = folder(root, itemDownloadFolderName(idB.author, idB.title, idB.id), "01.mp3")
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = true) })
+
+        assertEquals(own, ownership.engineClaim!!.folder)
+    }
+
+    @Test
+    fun `a short folder another edition is still downloading into sends the second one to its own`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        // A paused partway, no stored path yet. Only its row says it writes here.
+        val aDir = folder(root, itemDownloadFolderName(idA.author, idA.title, idA.id), "01.mp3", "02.mp3.part")
+        reads.books[idA.id] = idA
+        reads.books[idB.id] = idB
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = idA.id, status = DownloadStatus.Paused, downloadedBytes = 3)
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertNotEquals(aDir, ownership.engineClaim!!.folder)
+    }
+
+    @Test
+    fun `a paused edition resumes in its own short folder while a look-alike only waits in the queue`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        // A wrote a track into its short folder before it was paused. B is
+        // queued and has written nothing anywhere yet.
+        val aDir = folder(root, itemDownloadFolderName(idA.author, idA.title, idA.id), "01.mp3")
+        reads.books[idA.id] = idA
+        reads.books[idB.id] = idB
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = idA.id, status = DownloadStatus.Queued, downloadedBytes = 3)
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued, startedAt = 2)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dA") { pickDownloadFolder(reads, idA, startedWriting = true) })
+
+        assertEquals("A left its own finished track behind", aDir, ownership.engineClaim!!.folder)
+    }
+
+    @Test
+    fun `a short folder a local import plays from sends a look-alike to its own`() = runBlocking {
+        val storageRoot = tempFolder.newFolder("storage")
+        val root = File(storageRoot, "AB").apply { mkdirs() }
+        val reads = FakeReads(root, appRoot = tempFolder.newFolder("app")).apply { this.storageRoot = storageRoot }
+        // A's download was deleted, but its tracks stayed for the local
+        // import of the same folder. No book row stores that folder now.
+        val shortName = itemDownloadFolderName(idA.author, idA.title, idA.id)
+        val aDir = folder(root, shortName, "01.mp3")
+        reads.books[idA.id] = idA
+        reads.books["local_L"] = localImport("local_L", shortName, "01.mp3")
+        reads.books[idB.id] = idB
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = idB.id, status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        assertNotNull(ownership.claimFor(reads, "dB") { pickDownloadFolder(reads, idB, startedWriting = false) })
+
+        assertNotEquals("B would take the import's audio as its own", aDir, ownership.engineClaim!!.folder)
     }
 }

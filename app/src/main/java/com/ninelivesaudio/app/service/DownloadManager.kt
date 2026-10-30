@@ -20,8 +20,7 @@ import com.ninelivesaudio.app.service.download.DownloadNotifications
 import com.ninelivesaudio.app.service.download.DownloadQueueWorker
 import com.ninelivesaudio.app.service.download.estimateTotalBytes
 import com.ninelivesaudio.app.service.download.finishInOwnerScope
-import com.ninelivesaudio.app.service.download.lookUpInChunks
-import com.ninelivesaudio.app.service.download.pauseKeepsCompletedRow
+import com.ninelivesaudio.app.service.download.pauseOnceEngineIsOff
 import com.ninelivesaudio.app.service.download.DownloadSlotStore
 import com.ninelivesaudio.app.service.download.ResumeDecision
 import com.ninelivesaudio.app.service.download.decideResume
@@ -37,7 +36,6 @@ import com.ninelivesaudio.app.service.download.runEngineExclusively
 import com.ninelivesaudio.app.service.download.removeCancelledPartialFiles
 import com.ninelivesaudio.app.service.download.removeDownloadedBookFiles
 import com.ninelivesaudio.app.service.download.deleteKeepsLocalCopy
-import com.ninelivesaudio.app.service.download.DownloadOwnerRow
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -541,20 +539,21 @@ class DownloadManager @Inject constructor(
     /**
      * Re-resolve the slot after entitlement drops, and stand down the losers.
      *
-     * Order matters and is the whole point. The winner is resolved first, the
-     * running worker is cancelled, and the losing rows are only written AFTER
-     * the worker is confirmed stopped. DownloadEngine writes progress and
-     * terminal state unconditionally from a stale in-memory object and does not
-     * take the slot mutex, so a losing row written while it is still running gets
-     * clobbered straight back to Downloading.
+     * The winner and the losers (Downloading rows of other books) are read
+     * first. Each loser is then paused the way a tap pauses it (see
+     * [pauseOnceEngineIsOff]): the engine on it is stopped, and the row is
+     * written under the ownership lock once the stop is done. DownloadEngine
+     * records progress only while its row is still Downloading, so even an
+     * engine whose stop timed out never puts a paused loser back.
+     *
+     * Only a loser still Downloading after the stop is paused. One that
+     * finished or failed meanwhile keeps that state, as before.
      *
      * Losers are PAUSED, never deleted. Files stay, streaming keeps working, and
      * deleting down to one book stays the user's call.
      */
     suspend fun resolveSlotAfterEntitlementDrop() {
         if (!slotStore.slotApplies) return
-
-        val winner = slotMutex.withLock { slotStore.resolveAndPersistWinner() }
 
         // Nothing downloading that should not be means nothing to stand down.
         // This early return is what makes the whole function safe to call at
@@ -563,21 +562,32 @@ class DownloadManager @Inject constructor(
         // worse than the problem being solved. It also means a downgrade that
         // happened while the app was dead is still handled, which a
         // transitions-only collector would miss.
-        val hasLosingDownload = slotMutex.withLock {
-            downloadItemDao.getAll().any {
+        val losers = slotMutex.withLock {
+            val winner = slotStore.resolveAndPersistWinner()
+            downloadItemDao.getAll().filter {
                 it.status == DownloadStatus.Downloading.ordinal && it.audioBookId != winner
             }
         }
-        if (!hasLosingDownload) return
+        if (losers.isEmpty()) return
 
-        stopDrainAndAwait()
-
-        slotMutex.withLock {
-            downloadItemDao.getAll()
-                .filter {
-                    it.status == DownloadStatus.Downloading.ordinal && it.audioBookId != winner
-                }
-                .forEach { downloadItemDao.upsert(it.copy(status = DownloadStatus.Paused.ordinal)) }
+        // The slot lock is never held around the ownership lock. The row lock
+        // keeps resume, promotion and drain starts out until every loser is
+        // written.
+        rowMutex.withLock {
+            for (loser in losers) {
+                pauseOnceEngineIsOff(
+                    ownership = ownership,
+                    audioBookId = loser.audioBookId,
+                    rowIsDownloading = { isDownloadingRow(loser.id) },
+                    stopEngine = { stopDrainAndAwait() },
+                    readRow = {
+                        downloadItemDao.getById(loser.id)?.toDomain()
+                            ?.takeIf { it.status == DownloadStatus.Downloading }
+                    },
+                    readBook = { audioBookDao.getById(it)?.toDomain() },
+                    writeRow = { downloadItemDao.upsert(it.toEntity()) },
+                )
+            }
         }
 
         // The winner may now be downloadable and unblocked, so restart. Honours
@@ -644,21 +654,18 @@ class DownloadManager @Inject constructor(
         // Held like cancel, so no drain starts between the stop and the write.
         val wasDownloading = rowMutex.withLock {
             val entity = downloadItemDao.getById(downloadId) ?: return@withLock false
-            ownership.actOnceEngineIsOff(
+            // Re-reads after any stop: the engine's last tick moved the bytes on,
+            // and it may have finished the book in the meantime. A Completed row
+            // that predates the book's saved local copy still gets Paused.
+            pauseOnceEngineIsOff(
+                ownership = ownership,
                 audioBookId = entity.audioBookId,
                 rowIsDownloading = { isDownloadingRow(downloadId) },
                 stopEngine = { stopDrainAndAwait() },
-            ) { stop ->
-                // Re-read after any stop: the engine's last tick moved the bytes on,
-                // and it may have finished the book in the meantime. A Completed row
-                // that predates the book's saved local copy still gets Paused.
-                val latest = downloadItemDao.getById(downloadId) ?: return@actOnceEngineIsOff stop.wasDownloading
-                val book = audioBookDao.getById(latest.audioBookId)
-                if (!pauseKeepsCompletedRow(latest.status, book?.isDownloaded, book?.localPath)) {
-                    downloadItemDao.upsert(latest.copy(status = DownloadStatus.Paused.ordinal))
-                }
-                stop.wasDownloading
-            }
+                readRow = { downloadItemDao.getById(downloadId)?.toDomain() },
+                readBook = { audioBookDao.getById(it)?.toDomain() },
+                writeRow = { downloadItemDao.upsert(it.toEntity()) },
+            )
         }
         if (wasDownloading) {
             // The engine was stopped above; let the drain continue with the rest.
@@ -818,8 +825,10 @@ class DownloadManager @Inject constructor(
 
         if (bookEntity != null) {
             // The cover.jpg either went with the folder or belongs to another
-            // edition now, so this book stops pointing at it either way.
-            audioBookDao.upsert(bookEntity.copy(isDownloaded = 0, localPath = null, localCoverPath = null))
+            // edition now, so this book stops pointing at it either way. Only
+            // those columns change, so a sync or a position save that landed
+            // since the read above stays (#85).
+            audioBookDao.clearLocalCopy(audioBookId)
         }
         if (downloadId != null) {
             downloadItemDao.deleteById(downloadId)
@@ -852,20 +861,8 @@ class DownloadManager @Inject constructor(
             false
         }
 
-    /** Room and the engine's path rules, as delete and cancel read them. */
-    private val folderReads = object : FolderReads {
-        override suspend fun book(id: String) = audioBookDao.getById(id)?.toDomain()
-        override suspend fun books(ids: List<String>) =
-            lookUpInChunks(ids) { audioBookDao.getByIds(it) }.map { it.toDomain() }
-        override suspend fun filePathBookIdsExcept(audioBookId: String) =
-            audioBookDao.getFilePathBookIdsExcept(audioBookId)
-        override suspend fun localPathsExcept(audioBookId: String) = audioBookDao.getLocalPathsExcept(audioBookId)
-        override suspend fun downloadRows() =
-            downloadItemDao.getAll().map { DownloadOwnerRow(it.audioBookId, it.status, it.downloadedBytes) }
-        override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
-            engine.downloadLocationFor(book, startedWriting)
-        override fun storedLocation(localPath: String) = engine.storedDownloadLocation(localPath)
-    }
+    /** Room and the engine's path rules, as delete and cancel read them. The engine's own. */
+    private val folderReads: FolderReads get() = engine.folderReads
 
     /** Check if a book is downloaded. */
     suspend fun isBookDownloaded(audioBookId: String): Boolean {

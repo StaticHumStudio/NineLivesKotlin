@@ -139,6 +139,14 @@ fun DownloadItem.toEntity(): DownloadItemEntity = DownloadItemEntity(
     filesToDownloadJson = json.encodeToString(filesToDownload),
 )
 
+/** The AudioFilesJson column text for [files], the same encoding [toEntity] writes. */
+internal fun encodeAudioFilesJson(files: List<AudioFile>): String =
+    json.encodeToString(files.map { it.toJson() })
+
+/** The ChaptersJson column text for [chapters], the same encoding [toEntity] writes. */
+internal fun encodeChaptersJson(chapters: List<Chapter>): String =
+    json.encodeToString(chapters.map { it.toJson() })
+
 // ─── JSON serialization helpers for nested objects ───────────────────────
 
 @kotlinx.serialization.Serializable

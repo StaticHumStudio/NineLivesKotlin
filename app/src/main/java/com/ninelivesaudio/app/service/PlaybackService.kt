@@ -162,6 +162,8 @@ class PlaybackService : MediaLibraryService() {
                         // source or library changed, so start a fresh
                         // browse-artwork epoch.
                         mediaBrowseTree.invalidateArtworkEpoch()
+                        // The cached art belongs to the old source (#1).
+                        clearArtworkCaches(reason = "source")
                         notifyAutoBrowseParentsChanged(autoBrowseParentsChangedAfterSourceChange(mediaBrowseTree.browsedFolderIds()))
                     } catch (e: Exception) {
                         Log.e(TAG, "source-change collector: failed to refresh Auto browse parents", e)
@@ -218,6 +220,23 @@ class PlaybackService : MediaLibraryService() {
      */
     fun createLibraryCallback(): MediaLibrarySession.Callback {
         return LibraryCallback()
+    }
+
+    /**
+     * Real memory pressure drops the browse and now playing art (#1). The
+     * screen turning off (TRIM_MEMORY_UI_HIDDEN, most of a drive) does not,
+     * see [shouldDropArtworkOnTrim]. The fetch epoch is left alone, so rows
+     * refetch only as it allows instead of all at once.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (shouldDropArtworkOnTrim(level)) clearArtworkCaches(reason = "trim")
+    }
+
+    private fun clearArtworkCaches(reason: String) {
+        mediaBrowseTree.clearArtworkCache()
+        playbackManager.clearArtworkCache()
+        Log.d(TAG, "artwork caches cleared: reason=$reason")
     }
 
     @OptIn(UnstableApi::class)

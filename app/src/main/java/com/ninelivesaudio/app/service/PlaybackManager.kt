@@ -3369,6 +3369,18 @@ class PlaybackManager @Inject constructor(
         val needsRemoteArtwork: Boolean,
     )
 
+    // The last few now playing covers fetched from the server, so going back
+    // to a book embeds its art at once instead of downloading it again (#1).
+    private val nowPlayingArtworkCache = NowPlayingArtworkCache()
+
+    /**
+     * Drops the now playing covers. For a sign out, server or library switch
+     * and real memory pressure (see PlaybackService).
+     */
+    fun clearArtworkCache() {
+        nowPlayingArtworkCache.clear()
+    }
+
     /**
      * Never sets artworkUri. Android Auto's MediaDataLoader rejects cleartext
      * http outright, and even https can't carry the Authorization header a
@@ -3395,8 +3407,10 @@ class PlaybackManager @Inject constructor(
             // Off Main: this is a synchronous disk/ContentResolver read, and
             // loadAudioBookOwned runs on Main (ExoPlayer requirement).
             val localArtwork = withContext(Dispatchers.IO) { loadLocalArtworkBytes(book) }
-            if (localArtwork != null) {
-                builder.setArtworkData(localArtwork, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            // A server cover fetched earlier for this book and version.
+            val artwork = localArtwork ?: nowPlayingArtworkCache.get(book.id, book.coverPath)
+            if (artwork != null) {
+                builder.setArtworkData(artwork, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
             } else {
                 needsRemoteArtwork = true
             }
@@ -3445,8 +3459,10 @@ class PlaybackManager @Inject constructor(
      * failure; artwork is always optional.
      */
     private fun fetchRemoteArtworkBytes(book: AudioBook): ByteArray? {
-        val remoteCoverUrl = book.coverPath
-        if (remoteCoverUrl.isNullOrEmpty()) return null
+        // http(s) only, at the 512 pixel embed size: a local file:// or
+        // content:// cover never becomes a network request, and the server
+        // never sends its multi MB original only for it to be shrunk here.
+        val remoteCoverUrl = nowPlayingRemoteArtworkUrl(book.coverPath) ?: return null
         // A factory rather than a single execute(): ArtworkCodec may need to
         // re-issue the request on a rare bounds-mark overrun (see its kdoc).
         // Each call opens its own response/body, closed by BoundedInputStream
@@ -3503,6 +3519,7 @@ class PlaybackManager @Inject constructor(
                 Log.w(TAG, "scheduleRemoteArtworkFetch: failed bookId=${book.id}: ${e.message}")
                 null
             } ?: return@launch
+            nowPlayingArtworkCache.put(book.id, book.coverPath, artworkBytes)
             withContext(Dispatchers.Main) {
                 republishArtwork(book.id, artworkBytes)
             }

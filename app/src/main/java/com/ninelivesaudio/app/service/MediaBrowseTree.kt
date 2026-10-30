@@ -21,7 +21,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -110,7 +109,9 @@ class MediaBrowseTree @Inject constructor(
     // per book — see the comment in scheduleArtworkFetch() for why that matters.
     private val artworkFetchBurst = ArtworkFetchBurstTracker()
 
-    private val _artworkUpdated = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    // One replayed slot (see artworkSignal), so art that lands before
+    // PlaybackService starts collecting still triggers a refresh.
+    private val _artworkUpdated = artworkSignal()
 
     /** Emits whenever a background artwork fetch lands. PlaybackService collects this
      *  and calls notifyChildrenChanged so Auto re-renders the browse lists with art. */
@@ -276,6 +277,16 @@ class MediaBrowseTree @Inject constructor(
      */
     fun invalidateArtworkEpoch() {
         artworkFetchEpoch.clear()
+    }
+
+    /**
+     * Drops every cached browse cover. For a sign out, server or library
+     * switch (the art belongs to the old source) and real memory pressure.
+     * Leaves the fetch epoch alone, so a trim never sets off a refetch storm:
+     * rows refetch only as their next epoch allows.
+     */
+    fun clearArtworkCache() {
+        artworkCache.clear()
     }
 
     private suspend fun resolveActiveScope(): AppSettings {
@@ -557,6 +568,13 @@ internal class BrowseArtworkCache(
 
     /** Test-only: current entry count, to assert the cap holds. */
     internal fun size(): Int = synchronized(lock) { entries.size }
+
+    fun clear() {
+        synchronized(lock) {
+            entries.clear()
+            totalBytes = 0L
+        }
+    }
 
     private fun evictUntilWithinCaps() {
         val iterator = entries.entries.iterator()

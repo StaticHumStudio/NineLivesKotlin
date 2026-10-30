@@ -7,8 +7,10 @@ import androidx.room.Query
 import androidx.room.RawQuery
 import androidx.room.Transaction
 import androidx.sqlite.db.SupportSQLiteQuery
+import com.ninelivesaudio.app.data.local.AUTO_KEYED_ROWS
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
+import com.ninelivesaudio.app.data.local.entity.AutoBucketCount
 import com.ninelivesaudio.app.data.local.entity.BookProgressState
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
@@ -225,6 +227,41 @@ interface AudioBookDao {
         """
     )
     suspend fun getAutoDownloadedPage(libraryId: String, isLocal: Int, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /**
+     * Android Auto letter folders: live books per Library rail letter in one
+     * library, source and branch ([downloadedOnly] 0 or 1). [ws] is
+     * [com.ninelivesaudio.app.data.local.AUTO_TRIM_CHARS]. See [AUTO_KEYED_ROWS] for how a title is filed.
+     */
+    @Query("SELECT k1 AS bucket, COUNT(*) AS count FROM (" + AUTO_KEYED_ROWS + ") GROUP BY k1")
+    suspend fun countAutoLetters(libraryId: String, isLocal: Int, downloadedOnly: Int, ws: String): List<AutoBucketCount>
+
+    /** Live books per two letter key ("T#", "TA" to "TZ") under one rail [letter]. */
+    @Query("SELECT k1 || k2 AS bucket, COUNT(*) AS count FROM (" + AUTO_KEYED_ROWS + ") WHERE k1 = :letter GROUP BY k2")
+    suspend fun countAutoPairs(libraryId: String, isLocal: Int, downloadedOnly: Int, ws: String, letter: String): List<AutoBucketCount>
+
+    /**
+     * One page of the books under an Android Auto folder key: rail letter
+     * [first] and, for a two letter key, [second]. Same order as
+     * [getAutoBrowsePage], so a folder lists its books in Library order.
+     */
+    @Query(
+        "SELECT Id AS id, Title AS title, Author AS author, Narrator AS narrator, " +
+            "CoverPath AS coverPath, LocalCoverPath AS localCoverPath, GenresJson AS genresJson " +
+            "FROM (" + AUTO_KEYED_ROWS + ") " +
+            "WHERE k1 = :first AND (:second IS NULL OR k2 = :second) " +
+            "ORDER BY Title COLLATE NOCASE, Id LIMIT :limit OFFSET :offset"
+    )
+    suspend fun getAutoBucketPage(
+        libraryId: String,
+        isLocal: Int,
+        downloadedOnly: Int,
+        ws: String,
+        first: String,
+        second: String?,
+        limit: Int,
+        offset: Int,
+    ): List<AutoBrowseRow>
 
     /**
      * One page of Android Auto search hits in one library and source: the

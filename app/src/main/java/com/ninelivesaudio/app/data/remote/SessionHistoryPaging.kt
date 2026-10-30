@@ -1,8 +1,10 @@
 package com.ninelivesaudio.app.data.remote
 
+import com.ninelivesaudio.app.data.remote.dto.ApiListeningSession
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A runaway guard, not a product limit: 1,000 pages of 50 is 50,000 sessions.
@@ -71,3 +73,22 @@ internal suspend fun fetchSessionHistory(
  */
 internal fun bookHistoryStart(addedAt: Long?): Long? =
     addedAt?.minus(BOOK_HISTORY_MARGIN_MS)?.takeIf { it > 0L }
+
+/**
+ * One server session as the app keeps it. The session's own library id comes
+ * along so its history still counts after its book leaves the cache (#66).
+ */
+internal fun ApiListeningSession.toListeningSession(): ListeningSession = ListeningSession(
+    id = id,
+    libraryItemId = libraryItemId,
+    currentTime = currentTime.seconds,
+    timeListening = timeListening.seconds,
+    startedAt = normalizeEpochMillis(startedAt),
+    updatedAt = normalizeEpochMillis(updatedAt),
+    displayTitle = displayTitle,
+    libraryId = libraryId?.takeIf { it.isNotBlank() },
+)
+
+/** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
+internal fun normalizeEpochMillis(value: Long): Long =
+    if (value in 1..999_999_999_999L) value * 1000 else value

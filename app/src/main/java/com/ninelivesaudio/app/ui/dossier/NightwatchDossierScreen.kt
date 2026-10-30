@@ -495,13 +495,17 @@ private fun BookStatCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = book.author,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = NineLivesTheme.colors.archiveTextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // A book that left the catalog (#66) has only its sessions'
+                // title, so it shows no author or progress it no longer knows.
+                if (book.inCatalog) {
+                    Text(
+                        text = book.author,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 book.narrator?.let { narrator ->
                     Text(
                         text = "Read by $narrator",
@@ -529,38 +533,40 @@ private fun BookStatCard(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (book.inCatalog) {
+            Spacer(modifier = Modifier.height(8.dp))
 
-        // Progress bar
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            LinearProgressIndicator(
-                progress = { (book.progress / 100.0).toFloat().coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
-                trackColor = NineLivesTheme.colors.archiveVoidElevated,
-            )
-
-            val progressLabel = when {
-                book.isFinished -> "Complete"
-                book.chaptersTotal > 0 && book.currentChapter > 0 ->
-                    "Ch ${book.currentChapter}/${book.chaptersTotal}"
-                book.progress > 0 -> "${book.progress.toInt()}%"
-                else -> ""
-            }
-            if (progressLabel.isNotEmpty()) {
-                Text(
-                    text = progressLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
-                    fontSize = 10.sp,
+            // Progress bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LinearProgressIndicator(
+                    progress = { (book.progress / 100.0).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
+
+                val progressLabel = when {
+                    book.isFinished -> "Complete"
+                    book.chaptersTotal > 0 && book.currentChapter > 0 ->
+                        "Ch ${book.currentChapter}/${book.chaptersTotal}"
+                    book.progress > 0 -> "${book.progress.toInt()}%"
+                    else -> ""
+                }
+                if (progressLabel.isNotEmpty()) {
+                    Text(
+                        text = progressLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
+                        fontSize = 10.sp,
+                    )
+                }
             }
         }
 

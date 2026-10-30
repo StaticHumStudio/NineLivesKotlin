@@ -55,21 +55,78 @@ class DossierLibraryScopeTest {
 
         assertEquals(
             listOf(included),
-            dossierSessionsInActiveScope(listOf(included, excluded), setOf("active-book")),
+            dossierSessionsInActiveScope(listOf(included, excluded), setOf("active-book"), "active-library"),
         )
         assertEquals(
             emptyList<ListeningSession>(),
-            dossierSessionsInActiveScope(listOf(included, excluded), emptySet()),
+            dossierSessionsInActiveScope(listOf(included, excluded), emptySet(), "active-library"),
         )
     }
 
-    private fun session(id: String, bookId: String) = ListeningSession(
+    // Issue #66: a book pruned from the cache took its listening history out
+    // of the Dossier with it. A session now also counts through its own
+    // library id, which the server sends with every session.
+
+    @Test
+    fun `a session for a book no longer cached still counts in its own library`() {
+        val orphan = session(id = "o", bookId = "pruned-book", libraryId = "active-library")
+        assertEquals(listOf(orphan), dossierSessionsInActiveScope(listOf(orphan), emptySet(), "active-library"))
+    }
+
+    @Test
+    fun `a session from another library never counts here`() {
+        val other = session(id = "x", bookId = "pruned-book", libraryId = "other-library")
+        assertEquals(emptyList<ListeningSession>(), dossierSessionsInActiveScope(listOf(other), emptySet(), "active-library"))
+    }
+
+    @Test
+    fun `a session with no library id for an uncached book stays out`() {
+        val old = session(id = "n", bookId = "pruned-book", libraryId = null)
+        assertEquals(emptyList<ListeningSession>(), dossierSessionsInActiveScope(listOf(old), emptySet(), "active-library"))
+    }
+
+    @Test
+    fun `with no active library an uncached book's session stays out`() {
+        val orphan = session(id = "o", bookId = "pruned-book", libraryId = "active-library")
+        assertEquals(emptyList<ListeningSession>(), dossierSessionsInActiveScope(listOf(orphan), emptySet(), null))
+    }
+
+    @Test
+    fun `a cached book counts by its cache scope whatever library the session names`() {
+        // The cached book already passed the active library and source check,
+        // so the session's own library id is not asked twice.
+        val cached = session(id = "c", bookId = "active-book", libraryId = "renamed-library")
+        assertEquals(listOf(cached), dossierSessionsInActiveScope(listOf(cached), setOf("active-book"), "active-library"))
+    }
+
+    @Test
+    fun `a book no longer cached takes its title from its newest session that has one`() {
+        assertEquals(
+            "Dracula",
+            uncachedBookTitle(
+                listOf(
+                    session("a", "b"),
+                    session("b", "b", displayTitle = "Dracula"),
+                    session("c", "b", displayTitle = "Old name"),
+                ),
+            ),
+        )
+        assertEquals("Unknown Title", uncachedBookTitle(listOf(session("a", "b", displayTitle = " "))))
+    }
+
+    private fun session(
+        id: String,
+        bookId: String,
+        libraryId: String? = null,
+        displayTitle: String? = null,
+    ) = ListeningSession(
         id = id,
         libraryItemId = bookId,
         currentTime = Duration.ZERO,
         timeListening = Duration.ZERO,
         startedAt = 0L,
         updatedAt = 0L,
-        displayTitle = null,
+        displayTitle = displayTitle,
+        libraryId = libraryId,
     )
 }

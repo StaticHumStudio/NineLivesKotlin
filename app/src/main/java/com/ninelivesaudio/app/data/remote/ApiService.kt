@@ -1005,27 +1005,12 @@ class ApiService @Inject constructor(
             }
             val body = response.body() ?: throw java.io.IOException("Empty listening sessions body on page $page")
             PageOutcome.Page(
-                results = body.sessions.map { session ->
-                    ListeningSession(
-                        id = session.id,
-                        libraryItemId = session.libraryItemId,
-                        currentTime = session.currentTime.seconds,
-                        timeListening = session.timeListening.seconds,
-                        startedAt = normalizeEpoch(session.startedAt),
-                        updatedAt = normalizeEpoch(session.updatedAt),
-                        displayTitle = session.displayTitle,
-                    )
-                },
+                results = body.sessions.map { it.toListeningSession() },
                 total = body.total,
                 reportedPage = body.page,
                 reportedPageCount = body.numPages,
             )
         }
-    }
-
-    /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
-    private fun normalizeEpoch(value: Long): Long {
-        return if (value in 1..999_999_999_999L) value * 1000 else value
     }
 
     // ─── Bookmarks ───────────────────────────────────────────────────────

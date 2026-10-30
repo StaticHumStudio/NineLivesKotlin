@@ -1,11 +1,13 @@
 package com.ninelivesaudio.app.data.remote
 
+import com.ninelivesaudio.app.data.remote.dto.ApiListeningSession
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -204,7 +206,32 @@ class SessionHistoryPagingTest {
         assertNull(bookHistoryStart(DAY / 2))
     }
 
+    @Test
+    fun `a server session keeps its library id`() {
+        val dto = json.decodeFromString<ApiListeningSession>(
+            """{"id":"ses_1","libraryItemId":"li_1","libraryId":"lib_1","startedAt":1700000000,"updatedAt":1700000100000,"displayTitle":"Dracula","timeListening":900.5,"currentTime":42.0,"mediaMetadata":{}}""",
+        )
+        val session = dto.toListeningSession()
+
+        assertEquals("lib_1", session.libraryId)
+        assertEquals("li_1", session.libraryItemId)
+        assertEquals("Dracula", session.displayTitle)
+        assertEquals(1_700_000_000_000L, session.startedAt) // seconds normalized as before
+        assertEquals(1_700_000_100_000L, session.updatedAt)
+        assertEquals(900.5.seconds, session.timeListening)
+        assertEquals(42.seconds, session.currentTime)
+    }
+
+    @Test
+    fun `a server too old to send a library id leaves it empty`() {
+        val dto = json.decodeFromString<ApiListeningSession>(
+            """{"id":"ses_2","libraryItemId":"li_1","startedAt":1700000000000,"updatedAt":1700000000000}""",
+        )
+        assertNull(dto.toListeningSession().libraryId)
+    }
+
     private companion object {
         const val DAY = 86_400_000L
+        val json = Json { ignoreUnknownKeys = true }
     }
 }

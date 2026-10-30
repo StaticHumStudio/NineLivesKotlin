@@ -105,5 +105,6 @@ class ListeningSessionRepository @Inject constructor(
         startedAt = startedAt,
         updatedAt = updatedAt,
         displayTitle = displayTitle,
+        libraryId = libraryId.takeIf { it.isNotBlank() },
     )
 }

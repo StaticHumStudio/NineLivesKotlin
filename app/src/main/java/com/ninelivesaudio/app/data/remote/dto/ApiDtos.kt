@@ -263,4 +263,5 @@ data class ApiListeningSession(
     val updatedAt: Long = 0,
     val displayTitle: String? = null,
     val dayOfWeek: String? = null,
+    val libraryId: String? = null,
 )

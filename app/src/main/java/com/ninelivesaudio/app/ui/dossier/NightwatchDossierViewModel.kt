@@ -174,6 +174,8 @@ class NightwatchDossierViewModel @Inject constructor(
         val isFinished: Boolean,
         val coverUrl: String?,
         val whisper: String?,
+        /** False when the book has left the cache and only its sessions remain (#66). */
+        val inCatalog: Boolean = true,
     )
 
     data class NarratorStat(
@@ -385,7 +387,11 @@ class NightwatchDossierViewModel @Inject constructor(
                     isCurrent = { generation == loadGeneration },
                     publish = { apply -> _uiState.update(apply) },
                 ) {
-                    val recentSessions = dossierSessionsInActiveScope(windowSessions, bookMap.keys)
+                    val recentSessions = dossierSessionsInActiveScope(
+                        windowSessions,
+                        bookMap.keys,
+                        settings.activeLibraryId,
+                    )
 
                     // Sanitize session durations: cap timeListening at wall-clock span
                     val sanitizedSessions = recentSessions.map { session ->
@@ -417,9 +423,7 @@ class NightwatchDossierViewModel @Inject constructor(
                         // Skip books with less than 2 minutes total
                         if (bookTime < 120.seconds) return@mapNotNull null
 
-                        val title = book?.title
-                            ?: sessions.firstOrNull()?.displayTitle
-                            ?: "Unknown Title"
+                        val title = book?.title ?: uncachedBookTitle(sessions)
 
                         BookStat(
                             bookId = bookId,
@@ -434,6 +438,7 @@ class NightwatchDossierViewModel @Inject constructor(
                             isFinished = book?.isFinished ?: false,
                             coverUrl = book?.effectiveCoverPath,
                             whisper = book?.let { generateBookWhisper(it, bookTime) },
+                            inCatalog = book != null,
                         )
                     }.sortedByDescending { it.listeningTime }
 
@@ -891,10 +896,32 @@ internal suspend fun <T> publishIfStillCurrent(
     if (isCurrent()) publish(result)
 }
 
+/**
+ * The sessions that count in the active library and source.
+ *
+ * A session counts when its book is cached in the active library and source
+ * ([scopedBookIds]). Since issue #66 it also counts when no cached book
+ * matched but the session itself names [activeLibraryId]: a book the server
+ * removed, or the cache pruned, keeps its listening history in the Dossier.
+ * A session from another library never counts here. A server old enough to
+ * omit the session's library id leaves it null, which keeps the old rule.
+ */
 internal fun dossierSessionsInActiveScope(
     sessions: List<ListeningSession>,
     scopedBookIds: Set<String>,
-): List<ListeningSession> = sessions.filter { it.libraryItemId in scopedBookIds }
+    activeLibraryId: String?,
+): List<ListeningSession> = sessions.filter {
+    it.libraryItemId in scopedBookIds ||
+        (activeLibraryId != null && it.libraryId == activeLibraryId)
+}
+
+/**
+ * The title for a book that has left the cache: the first session in [sessions]
+ * (newest first) that carries a title, else the existing fallback copy.
+ */
+internal fun uncachedBookTitle(sessions: List<ListeningSession>): String =
+    sessions.firstNotNullOfOrNull { session -> session.displayTitle?.takeIf { it.isNotBlank() } }
+        ?: "Unknown Title"
 
 /**
  * Whether a live entitlement change invalidates the report already on screen.

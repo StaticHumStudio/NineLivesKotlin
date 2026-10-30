@@ -98,7 +98,7 @@ data class GroupedSection(
 
 private const val SHELF_REREAD_THROTTLE_MS = 1_000L
 private const val UNKNOWN_SERIES_GROUP = "Standalone/Unknown Series"
-private const val UNKNOWN_AUTHOR_GROUP = "Unknown Author"
+internal const val UNKNOWN_AUTHOR_GROUP = "Unknown Author"
 private const val UNKNOWN_GENRE_GROUP = "Uncategorized Genre"
 
 internal data class DownloadedOnlyFilterState(
@@ -1075,11 +1075,26 @@ class LibraryViewModel @Inject constructor(
                     (snapshot.selectedTab == LibraryTab.Downloaded || snapshot.showDownloadedOnly)
             }
 
+        val isUnlocked = entitlements.current.isUnlocked
+        // Author view groups a server library by its Audiobookshelf authors
+        // (issue #87). Until a sync stores them the list is empty and the
+        // view groups by the author line, as before.
+        val authors = if (
+            !snapshot.isLocalMode &&
+            FreeTier.effectiveViewMode(snapshot.viewMode, isUnlocked) == ViewMode.AUTHOR
+        ) {
+            AuthorDirectory(audioBookRepository.libraryAuthors(libraryId))
+        } else {
+            AuthorDirectory.EMPTY
+        }
+        if (!filterPublication.isCurrent(snapshot.request)) return null
+
         val shelf = arrangeShelf(
             books = books,
             storedSort = snapshot.sortMode,
             storedViewMode = snapshot.viewMode,
-            isUnlocked = entitlements.current.isUnlocked,
+            isUnlocked = isUnlocked,
+            authors = authors,
         )
 
         // Get total count from DB (not from filtered set)
@@ -1402,6 +1417,7 @@ internal suspend fun arrangeShelf(
     storedSort: SortMode,
     storedViewMode: ViewMode,
     isUnlocked: Boolean,
+    authors: AuthorDirectory = AuthorDirectory.EMPTY,
 ): ArrangedShelf {
     val sort = FreeTier.effectiveSort(storedSort, isUnlocked)
     val viewMode = FreeTier.effectiveViewMode(storedViewMode, isUnlocked)
@@ -1413,7 +1429,7 @@ internal suspend fun arrangeShelf(
     return ArrangedShelf(
         books = sorted,
         viewMode = viewMode,
-        sections = buildGroupedSections(books = sorted, viewMode = viewMode, sortMode = sort),
+        sections = buildGroupedSections(books = sorted, viewMode = viewMode, sortMode = sort, authors = authors),
     )
 }
 
@@ -1421,12 +1437,14 @@ internal suspend fun arrangeShelf(
  * Groups shelf books. [books] must already be in [sortMode] order (the shelf
  * sorts once before grouping), and each group keeps that order, so groups are
  * not sorted again. The one exception is a series in Series view, which reads
- * in [seriesReadingOrder].
+ * in [seriesReadingOrder]. Author view matches server books against
+ * [authors], the library's Audiobookshelf authors (issue #87).
  */
 internal fun buildGroupedSections(
     books: List<AudioBook>,
     viewMode: ViewMode,
     sortMode: SortMode,
+    authors: AuthorDirectory = AuthorDirectory.EMPTY,
 ): List<GroupedSection> {
     if (viewMode == ViewMode.ALL) return emptyList()
 
@@ -1434,20 +1452,25 @@ internal fun buildGroupedSections(
     // A group's key is its name with runs of spaces made one ("John  Smith" is
     // "John Smith"). Capitals stay distinct, so "Saga" and "SAGA" remain two
     // series, and the key never depends on which book sorts first. A book is in
-    // each group at most once.
+    // each group at most once. An Audiobookshelf author's key is its id, and
+    // its title the server's spelling. The first title seen for a key stays.
     val grouped = linkedMapOf<String, MutableList<AudioBook>>()
+    val titles = HashMap<String, String>()
     val bookKeys = LinkedHashSet<String>()
     books.forEach { book ->
         bookKeys.clear()
-        groupingKeysForBook(book, viewMode).forEach { name ->
-            val spelling = collapseSpaces(name)
-            if (spelling.isNotEmpty()) bookKeys += spelling
+        groupsForBook(book, viewMode, authors).forEach { group ->
+            val key = collapseSpaces(group.key)
+            if (key.isNotEmpty()) {
+                bookKeys += key
+                titles.getOrPut(key) { collapseSpaces(group.title).ifEmpty { key } }
+            }
         }
         bookKeys.forEach { key -> grouped.getOrPut(key) { mutableListOf() }.add(book) }
     }
 
     val sections = grouped.entries
-        .map { (key, values) -> SectionSortEntry(GroupedSection(key = key, title = key, books = values)) }
+        .map { (key, values) -> SectionSortEntry(GroupedSection(key = key, title = titles.getValue(key), books = values)) }
         .sortedWith(groupedSectionComparator(sortMode))
         .map { it.section }
     if (viewMode != ViewMode.SERIES) return sections
@@ -1554,23 +1577,11 @@ internal fun withoutRepeatedIds(books: List<AudioBook>): List<AudioBook> {
     return books.filter { seen.add(it.id) }
 }
 
-/** [name] trimmed, with each run of spaces inside it made one space. */
-private fun collapseSpaces(name: String): String {
-    val trimmed = name.trim()
-    return buildString(trimmed.length) {
-        var lastWasSpace = false
-        for (c in trimmed) {
-            val isSpace = c.isWhitespace()
-            if (!isSpace) append(c) else if (!lastWasSpace) append(' ')
-            lastWasSpace = isSpace
-        }
-    }
-}
-
-private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<String> = when (viewMode) {
-    ViewMode.SERIES -> listOf(book.seriesName?.takeIf { it.isNotBlank() } ?: UNKNOWN_SERIES_GROUP)
+/** The groups [book] is listed under in [viewMode], each as a key and a title. */
+private fun groupsForBook(book: AudioBook, viewMode: ViewMode, authors: AuthorDirectory): List<AuthorGroup> = when (viewMode) {
+    ViewMode.SERIES -> listOf(namedGroup(book.seriesName?.takeIf { it.isNotBlank() } ?: UNKNOWN_SERIES_GROUP))
     // Multi-placement too: a co-authored book appears under each author.
-    ViewMode.AUTHOR -> authorGroupNames(book).ifEmpty { listOf(UNKNOWN_AUTHOR_GROUP) }
+    ViewMode.AUTHOR -> authorGroups(book, authors)
     ViewMode.GENRE -> book.genres
         .asSequence()
         .map { it.trim() }
@@ -1578,22 +1589,25 @@ private fun groupingKeysForBook(book: AudioBook, viewMode: ViewMode): List<Strin
         .distinct()
         .toList()
         .ifEmpty { listOf(UNKNOWN_GENRE_GROUP) }
+        .map(::namedGroup)
     ViewMode.ALL -> emptyList()
 }
 
+/** A group known only by its name, which is both its key and its title. */
+private fun namedGroup(name: String) = AuthorGroup(key = name, title = name)
+
 /**
- * The authors a book is listed under in Author view (issue #64). The book
- * itself keeps its full author line for display. Audiobookshelf's library
- * list sends a co-authored book's authors as one string joined with ", ", so
- * a server book is split there ([splitServerAuthorNames]). A local book's
- * author comes from its tags or folder, where "Tolkien, J.R.R." is one
- * person written last name first, so it stays whole. Empty for no author.
+ * The author names a book is listed under in Author view with no
+ * Audiobookshelf author list (issue #64). The book itself keeps its full
+ * author line for display. Audiobookshelf's library list sends a co-authored
+ * book's authors as one string joined with ", ", so a server book is split
+ * there ([splitServerAuthorNames]). A local book's author comes from its tags
+ * or folder, where "Tolkien, J.R.R." is one person written last name first,
+ * so it stays whole. Empty for no author. See [authorGroups] for the view's
+ * real grouping, which matches the library's author list first (issue #87).
  */
-internal fun authorGroupNames(book: AudioBook): List<String> {
-    val author = book.author.trim()
-    if (author.isEmpty()) return emptyList()
-    return if (book.isLocal) listOf(author) else splitServerAuthorNames(author)
-}
+internal fun authorGroupNames(book: AudioBook): List<String> =
+    if (book.author.isBlank()) emptyList() else authorGroups(book, AuthorDirectory.EMPTY).map { it.title }
 
 /**
  * The names in an Audiobookshelf author line, which joins its authors with

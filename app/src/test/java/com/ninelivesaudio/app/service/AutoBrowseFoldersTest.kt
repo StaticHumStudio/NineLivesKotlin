@@ -33,8 +33,18 @@ class AutoBrowseFoldersTest {
 
         override suspend fun page(key: String?, limit: Int, offset: Int): List<AutoBrowseRow> {
             limits += limit
+            pageReads++
             val rows = if (key == null) sorted else sorted.filter { autoTitleKey(it.title, key.length) == key }
             return rows.drop(offset).take(limit)
+        }
+
+        var pageReads = 0
+        var titleReads = 0
+
+        override suspend fun everyNthTitle(key: String, every: Int, fromRow: Int, toRow: Int): List<String> {
+            titleReads++
+            val rows = sorted.filter { autoTitleKey(it.title, key.length) == key }
+            return (fromRow until minOf(toRow, rows.size)).filter { it % every == 0 }.map { rows[it].title }
         }
     }
 
@@ -315,5 +325,24 @@ class AutoBrowseFoldersTest {
         assertEquals("#, part 3", autoFolderTitle(AutoFolderId(AutoBranch.DOWNLOADED, "#", part = 3)))
         assertEquals("Library", autoFolderTitle(AutoFolderId(AutoBranch.LIBRARY, null)))
         assertEquals("Downloaded", autoFolderTitle(AutoFolderId(AutoBranch.DOWNLOADED, null)))
+    }
+
+    @Test
+    fun `part subtitles take one read for the whole list`() = runBlocking {
+        val source = FakeAutoFolderSource(List(50_000) { book("the$it", "The ${it.toString().padStart(5, '0')}") })
+        val parts = children(AutoFolderId(AutoBranch.LIBRARY, "TH"), source).map { it as AutoBrowseChild.Folder }
+
+        assertEquals(100, parts.size)
+        assertEquals(0, source.pageReads)
+        assertEquals(1, source.titleReads)
+        assertEquals("From The 00000", parts[0].subtitle)
+        assertEquals("From The 00500", parts[1].subtitle)
+        assertEquals("From The 49500", parts[99].subtitle)
+
+        // A page of the part list reads only its own boundaries.
+        val page = children(AutoFolderId(AutoBranch.LIBRARY, "TH"), source, page = 2, pageSize = 10)
+            .map { it as AutoBrowseChild.Folder }
+        assertEquals((21..30).map { "library/TH/$it" }, page.map { it.id.mediaId })
+        assertEquals("From The 10000", page[0].subtitle)
     }
 }

@@ -265,6 +265,30 @@ interface AudioBookDao {
     ): List<AutoBrowseRow>
 
     /**
+     * The titles at rows [fromRow], [fromRow] + [every], ... before [toRow]
+     * of one Android Auto folder key, in [getAutoBucketPage] order, in one
+     * read: the first title of each numbered part.
+     */
+    @Query(
+        "SELECT title FROM (" +
+            "SELECT Title AS title, ROW_NUMBER() OVER (ORDER BY Title COLLATE NOCASE, Id) - 1 AS rn " +
+            "FROM (" + AUTO_KEYED_ROWS + ") " +
+            "WHERE k1 = :first AND (:second IS NULL OR k2 = :second)" +
+            ") WHERE rn >= :fromRow AND rn < :toRow AND rn % :every = 0 ORDER BY rn"
+    )
+    suspend fun everyNthAutoTitle(
+        libraryId: String,
+        isLocal: Int,
+        downloadedOnly: Int,
+        ws: String,
+        first: String,
+        second: String?,
+        every: Int,
+        fromRow: Int,
+        toRow: Int,
+    ): List<String>
+
+    /**
      * One page of Android Auto search hits in one library and source: the
      * folded search column (title, author, series, narrator) contains
      * [pattern], a folded and escaped LIKE pattern (backslash escapes).

@@ -1,6 +1,6 @@
 package com.ninelivesaudio.app.service.download
 
-import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.util.Log
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.entity.DownloadedCoverRow
@@ -22,6 +22,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.URI
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.random.Random
@@ -82,6 +83,18 @@ internal fun savedCoverFileIn(localCoverPath: String?, localPath: String?): File
     if (file.name != SAVED_COVER_FILE_NAME) return null
     val folder = File(localPath).normalize()
     return file.takeIf { it.parentFile == folder }
+}
+
+/**
+ * [rows] whose saved cover is theirs alone. Two editions downloaded before
+ * each book got its own folder can share one cover.jpg, and refreshing it
+ * for one would change the other's picture, so a shared cover is left as it
+ * is. Rows with no writable saved cover are dropped too.
+ */
+internal fun rowsWithTheirOwnCover(rows: List<DownloadedCoverRow>): List<DownloadedCoverRow> {
+    val targets = rows.associateWith { savedCoverFileIn(it.localCoverPath, it.localPath)?.absoluteFile?.normalize() }
+    val owners = targets.values.filterNotNull().groupingBy { it }.eachCount()
+    return rows.filter { row -> targets[row]?.let { owners[it] == 1 } == true }
 }
 
 /**
@@ -224,12 +237,34 @@ private fun readCoverBody(response: Response): ByteArray? {
     return bytes.takeIf { it.isNotEmpty() && it.size <= SAVED_COVER_MAX_BYTES }
 }
 
-/** Whether [bytes] read as an image, decoding only the bounds. */
-private fun decodesAsImage(bytes: ByteArray): Boolean {
-    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-    return options.outWidth > 0 && options.outHeight > 0
+/**
+ * Whether [bytes] decode into a whole picture. Decodes the pixels at about
+ * 256 pixels wide (small and quick), and refuses a partial image, so a good
+ * header over broken or cut off picture data never replaces a working cover.
+ */
+internal fun decodesAsImage(bytes: ByteArray): Boolean {
+    if (bytes.isEmpty()) return false
+    return try {
+        val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
+        val bitmap = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+            val longest = maxOf(info.size.width, info.size.height)
+            var sample = 1
+            while (longest / sample > DECODE_CHECK_PX) sample *= 2
+            decoder.setTargetSampleSize(sample)
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            decoder.setOnPartialImageListener { false }
+        }
+        val whole = bitmap.width > 0 && bitmap.height > 0
+        bitmap.recycle()
+        whole
+    } catch (e: Exception) {
+        false
+    } catch (e: OutOfMemoryError) {
+        false
+    }
 }
+
+private const val DECODE_CHECK_PX = 256
 
 private const val TAG = "DownloadedCoverRefresh"
 
@@ -252,7 +287,7 @@ class DownloadedCoverRefresher @Inject constructor(
         try {
             withTimeoutOrNull(SAVED_COVER_REFRESH_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
-                    val rows = audioBookDao.getDownloadedCoverRows()
+                    val rows = rowsWithTheirOwnCover(audioBookDao.getDownloadedCoverRows())
                         .filter { savedCoverFileIn(it.localCoverPath, it.localPath)?.parentFile?.isDirectory == true }
                     val coverPaths = rows.associate { it.id to it.coverPath }
                     refreshSavedCovers(

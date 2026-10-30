@@ -132,6 +132,20 @@ class AutoFolderQueryInstrumentedTest {
         assertEquals(flatT, bucketT)
     }
 
+    @Test
+    fun partBoundaryTitlesMatchThePages() = runBlocking {
+        val dao = database.audioBookDao()
+        seedBigLibrary()
+        val source = RoomAutoFolderSource(dao, LIBRARY, isLocal = false, branch = AutoBranch.LIBRARY)
+        // "TH" holds the 700 "The ..." titles plus a few "Th..." ones: two parts.
+        val n = source.pairCounts("T").getValue("TH")
+        val expected = (0 until n step 100).map { source.page("TH", 1, it).single().title }
+
+        assertEquals(expected, dao.everyNthAutoTitle(LIBRARY, 0, 0, AUTO_TRIM_CHARS, "T", "H", 100, 0, n))
+        assertEquals(expected.drop(2).take(3), dao.everyNthAutoTitle(LIBRARY, 0, 0, AUTO_TRIM_CHARS, "T", "H", 100, 200, 500))
+        assertEquals(expected, source.everyNthTitle("TH", 100, 0, n))
+    }
+
     /** Walks like Android Auto (page 0, Int.MAX_VALUE), checking no list is over the cap. */
     private suspend fun walk(id: AutoFolderId, source: AutoFolderSource, depth: Int = 0): List<String> {
         val kids = autoChildren(id, source, 0, Int.MAX_VALUE)

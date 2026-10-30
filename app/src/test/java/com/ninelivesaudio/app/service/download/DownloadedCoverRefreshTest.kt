@@ -321,4 +321,15 @@ class DownloadedCoverRefreshTest {
         assertNull(fetchSavedCoverBytes(client, "file:///d/cover.jpg", 5_000, looksLikeJpeg))
         assertFalse(asked)
     }
+
+    @Test
+    fun `a cover two editions share is left alone`() {
+        // Two editions downloaded before each book got its own folder share one cover.jpg.
+        val a = DownloadedCoverRow("a", cover(10_000), "file:///d/shared/cover.jpg", "/d/shared")
+        val b = DownloadedCoverRow("b", cover(20_000), "file:///d/shared/cover.jpg", "/d/shared/")
+        val own = DownloadedCoverRow("c", cover(10_000), "file:///d/c/cover.jpg", "/d/c")
+        val nowhere = DownloadedCoverRow("x", cover(10_000), "content://x/cover.jpg", "/d/x")
+
+        assertEquals(listOf("c"), rowsWithTheirOwnCover(listOf(a, b, own, nowhere)).map { it.id })
+    }
 }

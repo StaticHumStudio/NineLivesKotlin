@@ -109,6 +109,13 @@ internal interface AutoFolderSource {
 
     /** Books under [key] (null is the whole branch), Title NOCASE then Id, as LIMIT and OFFSET. */
     suspend fun page(key: String?, limit: Int, offset: Int): List<AutoBrowseRow>
+
+    /**
+     * The titles at rows [fromRow], [fromRow] + [every], ... before [toRow]
+     * of [key]'s books in page order, in one read. [fromRow] is a multiple
+     * of [every]. The first title of each numbered part.
+     */
+    suspend fun everyNthTitle(key: String, every: Int, fromRow: Int, toRow: Int): List<String>
 }
 
 /** One row of an Auto list: a folder to open or a book to play. */
@@ -211,10 +218,17 @@ internal suspend fun autoChildren(
         }
     }
     val slice = folderSlice(partCount(n), page, pageSize) ?: return emptyList()
-    return slice.map { i ->
+    // Each part's first title, for its subtitle, in one read for the whole
+    // list. One read per part made a big "Th" take seconds to open.
+    val firstTitles = source.everyNthTitle(
+        key = key,
+        every = AUTO_FOLDER_CAP,
+        fromRow = slice.first * AUTO_FOLDER_CAP,
+        toRow = minOf((slice.last.toLong() + 1) * AUTO_FOLDER_CAP, n.toLong()).toInt(),
+    )
+    return slice.mapIndexed { j, i ->
         val partId = AutoFolderId(id.branch, key, i + 1)
-        val firstTitle = source.page(key, 1, i * AUTO_FOLDER_CAP).firstOrNull()?.title
-        AutoBrowseChild.Folder(partId, autoFolderTitle(partId), firstTitle?.let { "From $it" })
+        AutoBrowseChild.Folder(partId, autoFolderTitle(partId), firstTitles.getOrNull(j)?.let { "From $it" })
     }
 }
 

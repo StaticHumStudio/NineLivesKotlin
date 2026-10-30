@@ -32,6 +32,19 @@ internal class RoomAutoFolderSource(
         dao.countAutoPairs(libraryId, isLocal, downloadedFlag, AUTO_TRIM_CHARS, letter)
             .associate { it.bucket to it.count }
 
+    override suspend fun everyNthTitle(key: String, every: Int, fromRow: Int, toRow: Int): List<String> =
+        dao.everyNthAutoTitle(
+            libraryId = libraryId,
+            isLocal = isLocal,
+            downloadedOnly = downloadedFlag,
+            ws = AUTO_TRIM_CHARS,
+            first = key.substring(0, 1),
+            second = key.getOrNull(1)?.toString(),
+            every = every,
+            fromRow = fromRow,
+            toRow = toRow,
+        )
+
     override suspend fun page(key: String?, limit: Int, offset: Int): List<AutoBrowseRow> = when {
         key == null && downloadedOnly -> dao.getAutoDownloadedPage(libraryId, isLocal, limit, offset)
         key == null -> dao.getAutoBrowsePage(libraryId, isLocal, limit, offset)

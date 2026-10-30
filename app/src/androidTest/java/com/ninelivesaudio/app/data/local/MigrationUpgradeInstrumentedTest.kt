@@ -10,6 +10,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.ninelivesaudio.app.data.local.converter.toEntity
+import com.ninelivesaudio.app.data.local.entity.LibraryAuthorEntity
 import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.local.migration.ALL_MIGRATIONS
 import com.ninelivesaudio.app.data.local.migration.MIGRATION_10_11
@@ -20,6 +21,8 @@ import com.ninelivesaudio.app.data.repository.buildLibrarySqlArgs
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.AudioFile
 import com.ninelivesaudio.app.domain.model.Chapter
+import com.ninelivesaudio.app.domain.model.LibraryAuthor
+import com.ninelivesaudio.app.ui.library.AuthorDirectory
 import com.ninelivesaudio.app.ui.library.SortMode
 import com.ninelivesaudio.app.ui.library.ViewMode
 import com.ninelivesaudio.app.ui.library.buildGroupedSections
@@ -151,6 +154,40 @@ class MigrationUpgradeInstrumentedTest {
         assertEquals(
             listOf("Coretta Scott King", "John", "Martin Luther King, Jr.", "Neil Gaiman", "Smith", "Terry Pratchett", "Unknown Author"),
             sections.map { it.title },
+        )
+    }
+
+    @Test
+    fun anUpgradedLibraryGroupsByAuthorOnceTheListIsStored() = runBlocking {
+        helper.createDatabase(TEST_DB, 10).use(::seedV10)
+
+        val database = openWithAllMigrations()
+        database.libraryAuthorDao().replaceForLibrary(
+            LIBRARY,
+            listOf(
+                LibraryAuthorEntity(LIBRARY, "au_sj", "Smith, John"),
+                LibraryAuthorEntity(LIBRARY, "au_np", "Neil Gaiman"),
+                LibraryAuthorEntity(LIBRARY, "au_tp", "Terry Pratchett"),
+            ),
+        )
+        val directory = AuthorDirectory(
+            database.libraryAuthorDao().getForLibrary(LIBRARY).map { LibraryAuthor(it.authorId, it.name) }
+        )
+        val books = database.audioBookDao().getFilteredBooks(
+            SimpleSQLiteQuery(
+                buildLibrarySql(tab = 0, hideFinished = false, downloadedOnly = false, hasSearch = false),
+                buildLibrarySqlArgs(LIBRARY, ""),
+            )
+        ).map { it.toShelfBook() }
+        val sections = buildGroupedSections(books, ViewMode.AUTHOR, SortMode.TITLE_AZ, directory)
+        val titles = sections.map { it.title }
+
+        assertTrue(titles.toString(), "Smith, John" in titles)
+        assertTrue(titles.toString(), "Smith" !in titles && "John" !in titles)
+        assertEquals(SERVER_BOOK_IDS, sections.flatMap { s -> s.books.map { it.id } }.toSet())
+        assertEquals(
+            listOf("Coretta Scott King", "Martin Luther King, Jr.", "Neil Gaiman", "Smith, John", "Terry Pratchett", "Unknown Author"),
+            titles,
         )
     }
 

@@ -22,6 +22,7 @@ import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.LibraryAuthor
 import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.service.shelfProgress
@@ -211,6 +212,10 @@ class AudioBookRepository @Inject constructor(
         // for showing and navigating, never for saving back. See toShelfBook.
         return results.mapCooperatively { it.toShelfBook() }
     }
+
+    /** The library's stored Audiobookshelf authors (issue #87), empty until a sync stores them. */
+    suspend fun libraryAuthors(libraryId: String): List<LibraryAuthor> =
+        database.libraryAuthorDao().getForLibrary(libraryId).map { LibraryAuthor(id = it.authorId, name = it.name) }
 
     /** Count all audiobooks in a library. */
     suspend fun countByLibrary(libraryId: String): Int =

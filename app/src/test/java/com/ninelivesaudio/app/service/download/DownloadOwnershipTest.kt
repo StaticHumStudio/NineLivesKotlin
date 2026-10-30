@@ -617,4 +617,64 @@ class DownloadOwnershipTest {
         assertFalse(ownership.failFor(reads, "dA"))
         assertNull(reads.rows["dA"])
     }
+
+    // ─── Pauses, by tap or by a lapsed unlock (#86) ──────────────────────────
+
+    private suspend fun DownloadOwnership.pause(reads: FakeReads, downloadId: String, stopEngine: suspend () -> Boolean) =
+        pauseOnceEngineIsOff(
+            ownership = this,
+            audioBookId = reads.rows.getValue(downloadId).audioBookId,
+            rowIsDownloading = { reads.rows[downloadId]?.status == DownloadStatus.Downloading },
+            stopEngine = stopEngine,
+            readRow = { reads.rows[downloadId] },
+            readBook = { reads.books[it] },
+            writeRow = { reads.rows[it.id] = it },
+        )
+
+    @Test
+    fun `a pause that meets a download finishing as it stops leaves it Completed`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val dir = folder(root, "Herman Melville - Moby-Dick", "01.mp3")
+        val reads = FakeReads(root)
+        reads.books["B"] = AudioBook(id = "B", title = "Moby-Dick", author = "Herman Melville")
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = "B", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        val engineRow = ownership.claimFor(reads, "dB", dir)!!
+
+        // The engine commits its finish while the stop waits for it.
+        val wasDownloading = ownership.pause(reads, "dB") { ownership.finish(reads, engineRow, dir); true }
+
+        assertTrue(wasDownloading)
+        assertEquals(DownloadStatus.Completed, reads.rows.getValue("dB").status)
+        assertEquals(dir.absolutePath, reads.books.getValue("B").localPath)
+    }
+
+    @Test
+    fun `a pause of an engine that will not stop still pauses the row for good`() = runBlocking {
+        val root = tempFolder.newFolder("Audiobookshelf")
+        val reads = FakeReads(root)
+        reads.books["B"] = AudioBook(id = "B", title = "Moby-Dick", author = "Herman Melville")
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = "B", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dB", File(root, "B")))
+
+        assertTrue(ownership.pause(reads, "dB") { false })
+        val tick = ownership.progressFor(reads, "dB", 50)
+
+        assertFalse("the stalled engine's tick landed", tick)
+        assertEquals(DownloadStatus.Paused, reads.rows.getValue("dB").status)
+    }
+
+    @Test
+    fun `a pause of a book the engine is not on writes Paused at once`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.books["B"] = AudioBook(id = "B")
+        reads.rows["dB"] = DownloadItem(id = "dB", audioBookId = "B", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+
+        val wasDownloading = ownership.pause(reads, "dB") { error("the engine was not on B") }
+
+        assertFalse(wasDownloading)
+        assertEquals(DownloadStatus.Paused, reads.rows.getValue("dB").status)
+    }
 }

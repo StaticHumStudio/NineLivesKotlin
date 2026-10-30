@@ -171,6 +171,40 @@ class DownloadOwnership @Inject constructor() {
 }
 
 /**
+ * Pause one download of [audioBookId], the same way for a tap and for an
+ * unlock that lapsed. Runs through [DownloadOwnership.actOnceEngineIsOff], so
+ * an engine on the book is stopped first and the row is written under the
+ * lock. The row is read again after the stop, since the engine may have moved
+ * its bytes on or finished the book meanwhile. A finished row whose book holds
+ * its local copy stays Completed (see [pauseKeepsCompletedRow]), anything else
+ * becomes Paused. A row [readRow] no longer returns is left alone. Even when
+ * the stop timed out, a Paused row is final: the engine's next write is
+ * refused (see [DownloadOwnership.recordProgress]) and it stops.
+ *
+ * Returns whether the engine was (or may have been) on the book, so the
+ * caller knows to restart the drain for the rest of the queue.
+ */
+internal suspend fun pauseOnceEngineIsOff(
+    ownership: DownloadOwnership,
+    audioBookId: String,
+    rowIsDownloading: suspend () -> Boolean,
+    stopEngine: suspend () -> Boolean,
+    readRow: suspend () -> DownloadItem?,
+    readBook: suspend (String) -> AudioBook?,
+    writeRow: suspend (DownloadItem) -> Unit,
+): Boolean = ownership.actOnceEngineIsOff(audioBookId, rowIsDownloading, stopEngine) { stop ->
+    val latest = readRow() ?: return@actOnceEngineIsOff stop.wasDownloading
+    val book = readBook(latest.audioBookId)
+    val keepsFinish = pauseKeepsCompletedRow(
+        rowStatus = latest.status.ordinal,
+        isDownloaded = book?.let { if (it.isDownloaded) 1 else 0 },
+        localPath = book?.localPath,
+    )
+    if (!keepsFinish) writeRow(latest.copy(status = DownloadStatus.Paused))
+    stop.wasDownloading
+}
+
+/**
  * What delete and cancel read to judge a folder. DownloadManager backs it with
  * Room and the engine's path rules.
  */

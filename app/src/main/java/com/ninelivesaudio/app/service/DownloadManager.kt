@@ -541,12 +541,11 @@ class DownloadManager @Inject constructor(
     /**
      * Re-resolve the slot after entitlement drops, and stand down the losers.
      *
-     * Order matters and is the whole point. The winner is resolved first, the
-     * running worker is cancelled, and the losing rows are only written AFTER
-     * the worker is confirmed stopped. DownloadEngine writes progress and
-     * terminal state unconditionally from a stale in-memory object and does not
-     * take the slot mutex, so a losing row written while it is still running gets
-     * clobbered straight back to Downloading.
+     * Order matters. The winner is resolved first, the running worker is
+     * cancelled, and the losing rows are written once the worker has stopped.
+     * DownloadEngine records progress and failure only while its row is still
+     * Downloading (see [DownloadOwnership.recordProgress]), so even an engine
+     * whose stop timed out never puts a paused loser back to Downloading.
      *
      * Losers are PAUSED, never deleted. Files stay, streaming keeps working, and
      * deleting down to one book stays the user's call.

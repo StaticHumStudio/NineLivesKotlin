@@ -58,8 +58,11 @@ class DownloadEngine @Inject constructor(
      * caller owns any completion/failure event emission.
      *
      * Returns null without touching anything when the row is gone or no longer
-     * Queued or Downloading by the time the engine claims it. The claim and the
-     * completion go through [DownloadOwnership], see the rule there.
+     * Queued or Downloading by the time the engine claims it. Also null when
+     * the row moved on mid-download (cancelled, paused, deleted, queued again):
+     * the engine then deletes its current `.part` file and stops, writing
+     * nothing more. The claim, every row write and the completion go through
+     * [DownloadOwnership], see the rule there.
      */
     suspend fun download(
         item: DownloadItem,
@@ -88,9 +91,19 @@ class DownloadEngine @Inject constructor(
         item: DownloadItem,
         audioBook: AudioBook,
         onProgress: suspend (downloadId: String, downloaded: Long, total: Long) -> Unit,
-    ): DownloadItem {
+    ): DownloadItem? {
         // Already written as Downloading by the claim.
         var download = item
+        val readRow: suspend () -> DownloadItem? = { downloadItemDao.getById(item.id)?.toDomain() }
+        val writeRow: suspend (DownloadItem) -> Unit = { downloadItemDao.upsert(it.toEntity()) }
+
+        // Progress lands on the row as it is now, and only while it is still
+        // this engine's. False means the row moved on, so the engine stops.
+        suspend fun recordProgress(bytes: Long, total: Long): Boolean =
+            ownership.recordProgress(item.id, bytes, total, readRow, writeRow)
+
+        suspend fun recordFailure(message: String, bytes: Long): Boolean =
+            ownership.recordFailure(item.id, message, bytes, readRow, writeRow)
 
         // Create download directory
         downloadDir.mkdirs()
@@ -107,7 +120,7 @@ class DownloadEngine @Inject constructor(
                 status = DownloadStatus.Failed,
                 errorMessage = "No audio files available for download",
             )
-            downloadItemDao.upsert(download.toEntity())
+            if (!recordFailure(download.errorMessage!!, download.downloadedBytes)) return null
             return download
         }
 
@@ -185,7 +198,12 @@ class DownloadEngine @Inject constructor(
 
                                     if (shouldPersistProgress(bytesDelta, timeDelta)) {
                                         download = download.copy(downloadedBytes = downloadedBytes)
-                                        downloadItemDao.upsert(download.toEntity())
+                                        if (!recordProgress(downloadedBytes, totalBytes)) {
+                                            // The row moved on while this engine ran on.
+                                            // Leave nothing half written behind.
+                                            partPath.delete()
+                                            return null
+                                        }
                                         onProgress(download.id, downloadedBytes, totalBytes)
                                         lastPersistedBytes = downloadedBytes
                                         lastPersistedAt = now
@@ -203,9 +221,11 @@ class DownloadEngine @Inject constructor(
                     }
                     fileSuccess = true
 
-                    // Always flush progress after each completed file.
+                    // Always flush progress after each completed file. A row that
+                    // moved on stops the engine here, keeping the finished file
+                    // for whatever cancel or delete decides.
                     download = download.copy(downloadedBytes = downloadedBytes)
-                    downloadItemDao.upsert(download.toEntity())
+                    if (!recordProgress(downloadedBytes, totalBytes)) return null
                     onProgress(download.id, downloadedBytes, totalBytes)
                     lastPersistedBytes = downloadedBytes
                     lastPersistedAt = System.currentTimeMillis()
@@ -238,7 +258,7 @@ class DownloadEngine @Inject constructor(
                             errorMessage = "$fileName: ${e.message}",
                             downloadedBytes = downloadedBytes,
                         )
-                        downloadItemDao.upsert(download.toEntity())
+                        if (!recordFailure(download.errorMessage!!, downloadedBytes)) return null
                         return download
                     }
                 }

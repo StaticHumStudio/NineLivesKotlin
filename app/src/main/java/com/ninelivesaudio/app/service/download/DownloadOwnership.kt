@@ -31,9 +31,11 @@ internal data class EngineStop(
  * The rule: every change to what the engine owns, and every delete or cancel
  * decision together with its file removal, runs under [lock]. The engine's
  * changes are claiming a row (only while it still exists and is still Queued
- * or Downloading) along with the folder it will write, committing completion
- * (row Completed and the book's local copy in one step, only while the row
- * still exists), and letting the folder go. Delete, cancel and pause act
+ * or Downloading) along with the folder it will write, recording progress or
+ * failure on that row (only while it is still the engine's, see
+ * [recordProgress] and [recordFailure]), committing completion (row Completed
+ * and the book's local copy in one step, only while the row still exists),
+ * and letting the folder go. Delete, cancel and pause act
  * through [actOnceEngineIsOff]: with the engine on the book they stop it
  * first, outside the lock, then act under it. The folder the engine is
  * writing is never deleted, whichever book it belongs to. No network I/O
@@ -90,6 +92,50 @@ class DownloadOwnership @Inject constructor() {
             commit()
             true
         }
+
+    /**
+     * The engine records [downloadedBytes] of [totalBytes] on its row. Under
+     * the lock it reads the row fresh and writes the new counts onto that
+     * fresh copy, only while the engine still holds [downloadId] and the row
+     * is still Downloading. False means nothing was written: the row was
+     * cancelled, paused, deleted or queued again while the engine ran on (a
+     * stop that timed out), so the engine has to stop too.
+     */
+    internal suspend fun recordProgress(
+        downloadId: String,
+        downloadedBytes: Long,
+        totalBytes: Long,
+        readRow: suspend () -> DownloadItem?,
+        writeRow: suspend (DownloadItem) -> Unit,
+    ): Boolean = lock.withLock {
+        if (current?.downloadId != downloadId) return@withLock false
+        val fresh = readRow()?.takeIf { it.status == DownloadStatus.Downloading } ?: return@withLock false
+        writeRow(fresh.copy(downloadedBytes = downloadedBytes, totalBytes = totalBytes))
+        true
+    }
+
+    /**
+     * Mark [downloadId] Failed with [errorMessage]. Under the lock it reads the
+     * row fresh and writes Failed onto that fresh copy, only while the row is
+     * still Queued or Downloading and no engine holds another download. Used by
+     * the engine and by the drain's missing-book check. False means nothing was
+     * written, because the row moved on (cancelled, paused, deleted).
+     */
+    internal suspend fun recordFailure(
+        downloadId: String,
+        errorMessage: String,
+        downloadedBytes: Long,
+        readRow: suspend () -> DownloadItem?,
+        writeRow: suspend (DownloadItem) -> Unit,
+    ): Boolean = lock.withLock {
+        val claim = current
+        if (claim != null && claim.downloadId != downloadId) return@withLock false
+        val fresh = readRow()
+            ?.takeIf { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
+            ?: return@withLock false
+        writeRow(fresh.copy(status = DownloadStatus.Failed, errorMessage = errorMessage, downloadedBytes = downloadedBytes))
+        true
+    }
 
     /** The engine lets its folder go. Runs even when the engine was cancelled. */
     internal suspend fun release() {

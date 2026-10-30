@@ -496,4 +496,125 @@ class DownloadOwnershipTest {
 
         assertFalse(old.exists())
     }
+
+    // ─── Writes after a stop (#86) ───────────────────────────────────────────
+
+    /** The engine's throttled progress write for [downloadId], as DownloadEngine sends it. */
+    private suspend fun DownloadOwnership.progressFor(reads: FakeReads, downloadId: String, bytes: Long) =
+        recordProgress(
+            downloadId = downloadId,
+            downloadedBytes = bytes,
+            totalBytes = 100,
+            readRow = { reads.rows[downloadId] },
+            writeRow = { reads.rows[it.id] = it },
+        )
+
+    /** A Failed write for [downloadId], from the engine or the drain. */
+    private suspend fun DownloadOwnership.failFor(reads: FakeReads, downloadId: String) =
+        recordFailure(
+            downloadId = downloadId,
+            errorMessage = "boom",
+            downloadedBytes = 5,
+            readRow = { reads.rows[downloadId] },
+            writeRow = { reads.rows[it.id] = it },
+        )
+
+    /** A cancel, pause or delete of [audioBookId] whose stop timed out, so the engine is still on it. */
+    private suspend fun DownloadOwnership.stopTimesOut(audioBookId: String, act: suspend () -> Unit) =
+        actOnceEngineIsOff(audioBookId, rowIsDownloading = { true }, stopEngine = { false }) { act() }
+
+    @Test
+    fun `a progress tick after a cancel whose stop timed out never brings the row back`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        ownership.stopTimesOut("A") { reads.rows.remove("dA") }
+
+        assertFalse(ownership.progressFor(reads, "dA", 10))
+        assertNull("the cancelled row came back", reads.rows["dA"])
+    }
+
+    @Test
+    fun `a progress tick after a pause whose stop timed out leaves the row Paused`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued, downloadedBytes = 3)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        ownership.stopTimesOut("A") {
+            reads.rows["dA"] = reads.rows.getValue("dA").copy(status = DownloadStatus.Paused)
+        }
+
+        assertFalse(ownership.progressFor(reads, "dA", 10))
+        assertEquals(DownloadStatus.Paused, reads.rows.getValue("dA").status)
+        assertEquals(3, reads.rows.getValue("dA").downloadedBytes)
+    }
+
+    @Test
+    fun `a failure after a cancel whose stop timed out never brings the row back`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        ownership.stopTimesOut("A") { reads.rows.remove("dA") }
+
+        assertFalse(ownership.failFor(reads, "dA"))
+        assertNull("the cancelled row came back as Failed", reads.rows["dA"])
+    }
+
+    @Test
+    fun `a progress tick for an old download never lands on the book's new download`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        // Cancelled while stalled, then queued again before the old engine unwinds.
+        ownership.stopTimesOut("A") { reads.rows.remove("dA") }
+        reads.rows["dA2"] = DownloadItem(id = "dA2", audioBookId = "A", status = DownloadStatus.Queued)
+
+        assertFalse(ownership.progressFor(reads, "dA", 10))
+        assertNull(reads.rows["dA"])
+        assertEquals(0, reads.rows.getValue("dA2").downloadedBytes)
+        assertEquals(DownloadStatus.Queued, reads.rows.getValue("dA2").status)
+    }
+
+    @Test
+    fun `the engine's own progress lands on its row`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        assertTrue(ownership.progressFor(reads, "dA", 10))
+        assertEquals(10, reads.rows.getValue("dA").downloadedBytes)
+        assertEquals(100, reads.rows.getValue("dA").totalBytes)
+        assertEquals(DownloadStatus.Downloading, reads.rows.getValue("dA").status)
+    }
+
+    @Test
+    fun `the engine's own failure lands on its row`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        reads.rows["dA"] = DownloadItem(id = "dA", audioBookId = "A", status = DownloadStatus.Queued)
+        val ownership = DownloadOwnership()
+        assertNotNull(ownership.claimFor(reads, "dA", File(reads.root, "A")))
+
+        assertTrue(ownership.failFor(reads, "dA"))
+        assertEquals(DownloadStatus.Failed, reads.rows.getValue("dA").status)
+        assertEquals("boom", reads.rows.getValue("dA").errorMessage)
+        assertEquals(5, reads.rows.getValue("dA").downloadedBytes)
+    }
+
+    @Test
+    fun `the drain's missing-book failure never revives a cancelled row`() = runBlocking {
+        val reads = FakeReads(tempFolder.newFolder("Audiobookshelf"))
+        val ownership = DownloadOwnership()
+
+        // The drain read dA as Queued, then the user cancelled it.
+        assertFalse(ownership.failFor(reads, "dA"))
+        assertNull(reads.rows["dA"])
+    }
 }

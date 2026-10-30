@@ -14,8 +14,9 @@ import com.ninelivesaudio.app.data.local.entity.*
         PendingProgressEntity::class,
         LocalListeningSessionEntity::class,
         LocalBookmarkEntity::class,
+        LibraryAuthorEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pendingProgressDao(): PendingProgressDao
     abstract fun localListeningSessionDao(): LocalListeningSessionDao
     abstract fun localBookmarkDao(): LocalBookmarkDao
+    abstract fun libraryAuthorDao(): LibraryAuthorDao
 
     companion object {
         const val DATABASE_NAME = "audiobookshelf.db"

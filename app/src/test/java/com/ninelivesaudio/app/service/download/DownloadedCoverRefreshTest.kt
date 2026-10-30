@@ -185,7 +185,7 @@ class DownloadedCoverRefreshTest {
         claim(
             downloadId = "d$audioBookId",
             audioBookId = audioBookId,
-            folder = File(tempFolder.root, audioBookId),
+            pickFolder = { File(tempFolder.root, audioBookId) },
             readRow = { row },
             writeRow = { row = it },
         )

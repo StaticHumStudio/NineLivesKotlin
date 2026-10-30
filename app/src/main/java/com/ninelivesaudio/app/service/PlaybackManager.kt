@@ -39,6 +39,7 @@ import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
+import com.ninelivesaudio.app.service.download.trackFileInside
 import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
 import androidx.media3.session.CommandButton
@@ -1767,7 +1768,9 @@ class PlaybackManager @Inject constructor(
                 val orderedFiles = book.audioFiles.sortedBy { it.index }
                 val resolvedNames = resolveDownloadFileNames(orderedFiles)
                 for ((position, af) in orderedFiles.withIndex()) {
-                    val path = af.localPath
+                    // A recorded path counts only when it sits inside the book's
+                    // own folder. Otherwise fall back to the names the engine writes.
+                    val path = af.localPath?.let { p -> localDir?.let { trackFileInside(it, p)?.absolutePath } }
                         ?: localDir?.let { dir ->
                             File(dir, resolvedNames[position]).takeIf { f -> f.exists() }?.absolutePath
                                 ?: File(dir, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath

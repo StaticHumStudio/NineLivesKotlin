@@ -60,3 +60,39 @@ internal fun safDocumentFile(uri: String, volumeRoot: (volumeId: String) -> File
     } ?: return null
     return segments.fold(base) { dir, segment -> File(dir, segment) }
 }
+
+/**
+ * `File(folder, leafName)` only when it really sits directly in [folder].
+ * A leaf of "..", ".", "" or one holding a separator is refused, as is a
+ * name that resolves out of the folder through a link (#35).
+ */
+internal fun containedTrackFile(folder: File, leafName: String): File? {
+    if (leafName.isEmpty() || leafName == "." || leafName == ".." || leafName.contains('/') || leafName.contains('\\')) {
+        return null
+    }
+    return try {
+        val file = File(folder, leafName)
+        if (file.canonicalFile.parentFile == folder.canonicalFile) file else null
+    } catch (_: java.io.IOException) {
+        null
+    } catch (_: SecurityException) {
+        null
+    }
+}
+
+/**
+ * A stored track path (plain or `file://`) as a file, only when it sits
+ * directly in [folder], judged canonically. Anything else gives null, so a
+ * recorded path can never lead the player outside the book's own folder.
+ */
+internal fun trackFileInside(folder: File, storedPath: String): File? {
+    val file = bookPathAsFile(storedPath) ?: return null
+    if (!file.isAbsolute) return null
+    return try {
+        if (file.canonicalFile.parentFile == folder.canonicalFile) file else null
+    } catch (_: java.io.IOException) {
+        null
+    } catch (_: SecurityException) {
+        null
+    }
+}

@@ -2,7 +2,9 @@ package com.ninelivesaudio.app.service.download
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
@@ -11,6 +13,9 @@ import java.io.File
  * the import plays (#88).
  */
 class DownloadPathsTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     private val primary = File("/storage/emulated/0")
     private val sdCard = File("/storage/1234-5678")
@@ -104,5 +109,42 @@ class DownloadPathsTest {
                 ::volumes,
             ),
         )
+    }
+
+    @Test
+    fun `a plain leaf name stays inside the folder`() {
+        val dir = tempFolder.newFolder("book")
+
+        assertEquals(File(dir, "01.mp3"), containedTrackFile(dir, "01.mp3"))
+    }
+
+    @Test
+    fun `dot dot and dot names are refused`() {
+        val dir = tempFolder.newFolder("book")
+
+        assertNull(containedTrackFile(dir, ".."))
+        assertNull(containedTrackFile(dir, "."))
+        assertNull(containedTrackFile(dir, ""))
+        assertNull(containedTrackFile(dir, "a/b.mp3"))
+    }
+
+    @Test
+    fun `a stored track path outside the book folder is refused`() {
+        val dir = tempFolder.newFolder("book")
+        val other = tempFolder.newFolder("other")
+
+        assertNull(trackFileInside(dir, File(other, "01.mp3").absolutePath))
+        assertNull(trackFileInside(dir, File(dir, "sub/01.mp3").absolutePath))
+        assertNull(trackFileInside(dir, File(dir, "../other/01.mp3").path))
+        assertNull(trackFileInside(dir, "content://x/document/y"))
+    }
+
+    @Test
+    fun `a file uri inside the folder is accepted`() {
+        val dir = tempFolder.newFolder("book")
+        val track = File(dir, "01.mp3")
+
+        assertEquals(track.canonicalFile, trackFileInside(dir, track.toURI().toString())?.canonicalFile)
+        assertEquals(track.canonicalFile, trackFileInside(dir, track.absolutePath)?.canonicalFile)
     }
 }

@@ -123,7 +123,10 @@ internal fun downloadedFileNames(files: List<AudioFile>): List<String> =
 /** Stable on-disk leaf names, disambiguating only sanitization collisions. */
 internal fun resolveDownloadFileNames(files: List<AudioFile>): List<String> {
     val baseNames = files.mapIndexed { index, file ->
-        sanitizeDownloadFileName(file.filename.ifBlank { "track_${index + 1}" })
+        // A name that is empty or only dots would resolve to the folder or its
+        // parent, so it gets a numbered name instead (#35).
+        sanitizeDownloadFileName(file.filename).takeUnless { name -> name.all { it == '.' } }
+            ?: "track_${index + 1}"
     }
     val taken = mutableSetOf<String>()
     return baseNames.mapIndexed { index, base ->

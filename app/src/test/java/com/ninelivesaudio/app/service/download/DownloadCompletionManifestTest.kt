@@ -9,6 +9,7 @@ import com.ninelivesaudio.app.domain.model.Chapter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -39,7 +40,10 @@ class DownloadCompletionManifestTest {
             localCoverUri = "file:///downloads/Author - Book/cover.jpg",
         )
 
-        assertEquals(tracks, saved.audioFiles)
+        assertEquals(
+            tracks.map { it.copy(localPath = File("/downloads/Author - Book", it.filename).absolutePath) },
+            saved.audioFiles,
+        )
         assertEquals(chapters, saved.chapters)
         assertTrue(saved.isDownloaded)
         assertEquals("/downloads/Author - Book", saved.localPath)
@@ -121,5 +125,41 @@ class DownloadCompletionManifestTest {
         )
 
         assertEquals(listOf("Opening", "Chapter 3"), mapped.map { it.title })
+    }
+
+    @Test
+    fun `completion records where each track sits on disk, in index order`() {
+        val saved = completedDownloadBook(
+            row = syncedRow,
+            downloaded = syncedRow.copy(audioFiles = tracks.reversed()),
+            localPath = "/d",
+            localCoverUri = null,
+        )
+
+        assertEquals(listOf(0, 1), saved.audioFiles.map { it.index })
+        assertEquals(
+            listOf(File("/d", "Chapter 2.mp3").absolutePath, File("/d", "Chapter 10.mp3").absolutePath),
+            saved.audioFiles.map { it.localPath },
+        )
+    }
+
+    @Test
+    fun `a track's recorded path is the name the engine wrote, collisions included`() {
+        val clash = listOf(
+            AudioFile(id = "a", ino = "a", index = 0, duration = 60.seconds, filename = "a:b.mp3"),
+            AudioFile(id = "b", ino = "b", index = 1, duration = 60.seconds, filename = "a:b.mp3"),
+        )
+        val saved = completedDownloadBook(
+            row = syncedRow,
+            downloaded = syncedRow.copy(audioFiles = clash),
+            localPath = "/d",
+            localCoverUri = null,
+        )
+
+        assertEquals(
+            resolveDownloadFileNames(clash),
+            saved.audioFiles.map { File(it.localPath!!).name },
+        )
+        assertEquals(2, saved.audioFiles.mapNotNull { it.localPath }.toSet().size)
     }
 }

@@ -150,6 +150,18 @@ class DownloadEngine @Inject constructor(
         val orderedFiles = book.audioFiles.sortedBy { it.index }
         val fileNames = downloadedFileNames(book.audioFiles)
 
+        // Every name has to land directly inside the book's folder. The name
+        // rules already turn "..", "." and empty names into numbered ones, so
+        // this refuses anything that still leads out (a link, a separator).
+        if (fileNames.any { containedTrackFile(downloadDir, it) == null }) {
+            download = download.copy(
+                status = DownloadStatus.Failed,
+                errorMessage = UNSAFE_TRACK_NAME_MESSAGE,
+            )
+            if (!recordFailure(UNSAFE_TRACK_NAME_MESSAGE, download.downloadedBytes)) return null
+            return download
+        }
+
         // Download each audio file
         for (i in orderedFiles.indices) {
             val audioFile = orderedFiles[i]
@@ -563,6 +575,22 @@ internal fun completedDownloadBook(
     isDownloaded = true,
     localPath = localPath,
     localCoverPath = localCoverUri ?: row.localCoverPath,
-    audioFiles = downloaded.audioFiles.ifEmpty { row.audioFiles },
+    audioFiles = recordedTracks(downloaded.audioFiles, localPath).ifEmpty { row.audioFiles },
     chapters = downloaded.chapters.ifEmpty { row.chapters },
 )
+
+/**
+ * The track list a finished download records: index order, each track with the
+ * path of the file the engine wrote for it (same names as [downloadedFileNames]).
+ * The player and the offline check read these paths instead of guessing from
+ * filenames.
+ */
+internal fun recordedTracks(files: List<AudioFile>, folderPath: String): List<AudioFile> {
+    val ordered = files.sortedBy { it.index }
+    val names = resolveDownloadFileNames(ordered)
+    return ordered.mapIndexed { i, file -> file.copy(localPath = File(folderPath, names[i]).absolutePath) }
+}
+
+/** Draft copy, pending Jeff. */
+internal const val UNSAFE_TRACK_NAME_MESSAGE =
+    "A track name in this book can't be saved safely. Nothing was downloaded."

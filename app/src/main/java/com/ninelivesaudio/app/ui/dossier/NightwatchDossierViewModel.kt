@@ -67,6 +67,17 @@ internal fun dossierHistoryPresentation(
     )
 }
 
+/**
+ * The share card's own line for an incomplete history (issue #65). The screen
+ * warning carries a technical reason, which does not belong on a shared image.
+ * Draft copy, pending Jeff.
+ */
+internal const val SHARE_CARD_PARTIAL_HISTORY_NOTE = "Partial history. Some sessions did not load."
+
+/** The share card note for [historyWarning], or null for a complete history. */
+internal fun shareCardHistoryNote(historyWarning: String?): String? =
+    historyWarning?.let { SHARE_CARD_PARTIAL_HISTORY_NOTE }
+
 enum class DossierPeriod(
     val label: String,
     val subtitle: String,
@@ -174,6 +185,8 @@ class NightwatchDossierViewModel @Inject constructor(
         val isFinished: Boolean,
         val coverUrl: String?,
         val whisper: String?,
+        /** False when the book has left the cache and only its sessions remain (#66). */
+        val inCatalog: Boolean = true,
     )
 
     data class NarratorStat(
@@ -334,20 +347,15 @@ class NightwatchDossierViewModel @Inject constructor(
             }
 
             try {
-                val history = dossierHistoryPresentation(sessionRepository.getAllSessions())
-                history.unavailableMessage?.let { message ->
-                    publishHistoryUnavailable(message)
-                    return@launch
-                }
-                val allSessions = history.sessions
-
                 // Time period window, clamped by entitlement.
                 //
                 // Clamped HERE rather than at the chips, because the chips only
                 // control what can be tapped. A selection made while unlocked
                 // survives the downgrade in ViewModel state, so gating the
                 // control alone would leave a free install quietly reading a
-                // year of history behind a greyed chip.
+                // year of history behind a greyed chip. It runs before any
+                // session is requested, because the clamped period's start is
+                // how far back the history pages.
                 val period = FreeTier.effectiveDossierPeriod(
                     _uiState.value.selectedPeriod,
                     entitlements.current.isUnlocked,
@@ -358,6 +366,17 @@ class NightwatchDossierViewModel @Inject constructor(
                     _uiState.update { it.copy(selectedPeriod = period) }
                 }
                 val cutoffMillis = period.cutoffMillis()
+
+                // Pages until the period is covered (issue #65), so a long
+                // window is no longer cut off at the newest 1,000 sessions.
+                val history = dossierHistoryPresentation(sessionRepository.getSessionsSince(cutoffMillis))
+                history.unavailableMessage?.let { message ->
+                    publishHistoryUnavailable(message)
+                    return@launch
+                }
+                val allSessions = history.sessions
+                // Read after the fetch, as before: a long history takes a while,
+                // and a session that started meanwhile still belongs to "now".
                 val endMillis = period.endMillis()
                 val windowSessions = allSessions.filter { it.startedAt in cutoffMillis..endMillis }
 
@@ -381,7 +400,11 @@ class NightwatchDossierViewModel @Inject constructor(
                     isCurrent = { generation == loadGeneration },
                     publish = { apply -> _uiState.update(apply) },
                 ) {
-                    val recentSessions = dossierSessionsInActiveScope(windowSessions, bookMap.keys)
+                    val recentSessions = dossierSessionsInActiveScope(
+                        windowSessions,
+                        bookMap.keys,
+                        settings.activeLibraryId,
+                    )
 
                     // Sanitize session durations: cap timeListening at wall-clock span
                     val sanitizedSessions = recentSessions.map { session ->
@@ -413,9 +436,7 @@ class NightwatchDossierViewModel @Inject constructor(
                         // Skip books with less than 2 minutes total
                         if (bookTime < 120.seconds) return@mapNotNull null
 
-                        val title = book?.title
-                            ?: sessions.firstOrNull()?.displayTitle
-                            ?: "Unknown Title"
+                        val title = book?.title ?: uncachedBookTitle(sessions)
 
                         BookStat(
                             bookId = bookId,
@@ -430,6 +451,7 @@ class NightwatchDossierViewModel @Inject constructor(
                             isFinished = book?.isFinished ?: false,
                             coverUrl = book?.effectiveCoverPath,
                             whisper = book?.let { generateBookWhisper(it, bookTime) },
+                            inCatalog = book != null,
                         )
                     }.sortedByDescending { it.listeningTime }
 
@@ -887,10 +909,32 @@ internal suspend fun <T> publishIfStillCurrent(
     if (isCurrent()) publish(result)
 }
 
+/**
+ * The sessions that count in the active library and source.
+ *
+ * A session counts when its book is cached in the active library and source
+ * ([scopedBookIds]). Since issue #66 it also counts when no cached book
+ * matched but the session itself names [activeLibraryId]: a book the server
+ * removed, or the cache pruned, keeps its listening history in the Dossier.
+ * A session from another library never counts here. A server old enough to
+ * omit the session's library id leaves it null, which keeps the old rule.
+ */
 internal fun dossierSessionsInActiveScope(
     sessions: List<ListeningSession>,
     scopedBookIds: Set<String>,
-): List<ListeningSession> = sessions.filter { it.libraryItemId in scopedBookIds }
+    activeLibraryId: String?,
+): List<ListeningSession> = sessions.filter {
+    it.libraryItemId in scopedBookIds ||
+        (activeLibraryId != null && it.libraryId == activeLibraryId)
+}
+
+/**
+ * The title for a book that has left the cache: the first session in [sessions]
+ * (newest first) that carries a title, else the existing fallback copy.
+ */
+internal fun uncachedBookTitle(sessions: List<ListeningSession>): String =
+    sessions.firstNotNullOfOrNull { session -> session.displayTitle?.takeIf { it.isNotBlank() } }
+        ?: "Unknown Title"
 
 /**
  * Whether a live entitlement change invalidates the report already on screen.

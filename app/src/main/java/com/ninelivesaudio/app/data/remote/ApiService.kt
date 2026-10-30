@@ -169,8 +169,6 @@ class ApiService @Inject constructor(
         private const val LIBRARY_ITEMS_PAGE_CAP = 1000
         private const val LISTENING_SESSIONS_PAGE_SIZE = 50
         private const val SORT_ADDED_AT = "addedAt"
-        private const val LISTENING_SESSIONS_ITEM_PAGE_CAP = 3
-        private const val LISTENING_SESSIONS_ALL_PAGE_CAP = 20
     }
 
     var lastError: String? = null
@@ -964,31 +962,38 @@ class ApiService @Inject constructor(
 
     /**
      * Sessions for one book. The server endpoint has no verified item-id filter, so
-     * this pages the account history and scopes it client-side. The page cap keeps
-     * the per-book Dossier bounded for large histories.
+     * this pages the account history back to [coveredFrom] (the whole history when
+     * null) and scopes it client-side. Book Detail passes a day before the book was
+     * added, since no session can predate its book.
      */
     suspend fun getListeningSessions(
         libraryItemId: String,
+        coveredFrom: Long?,
         itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
     ): RemoteResult<List<ListeningSession>> =
-        fetchListeningSessions(itemsPerPage, LISTENING_SESSIONS_ITEM_PAGE_CAP).map { sessions ->
+        fetchListeningSessions(itemsPerPage, coveredFrom).map { sessions ->
             sessions.filter { it.libraryItemId == libraryItemId }
         }
 
-    /** All sessions across all books, for stats and the Dossier. */
-    suspend fun getAllListeningSessions(
+    /**
+     * Every session that started at or after [coveredFrom] (older ones may come
+     * along on the last page), for stats and the Dossier. Pages until the period
+     * is covered instead of stopping at a fixed page count (issue #65).
+     */
+    suspend fun getListeningSessionsSince(
+        coveredFrom: Long?,
         itemsPerPage: Int = LISTENING_SESSIONS_PAGE_SIZE,
     ): RemoteResult<List<ListeningSession>> =
-        fetchListeningSessions(itemsPerPage, LISTENING_SESSIONS_ALL_PAGE_CAP)
+        fetchListeningSessions(itemsPerPage, coveredFrom)
 
     private suspend fun fetchListeningSessions(
         itemsPerPage: Int,
-        maxPages: Int,
+        coveredFrom: Long?,
     ): RemoteResult<List<ListeningSession>> = withContext(Dispatchers.IO) {
-        runPaginatedFetch(
-            limit = itemsPerPage,
-            maxPages = maxPages,
-            itemKey = { it.id },
+        fetchSessionHistory(
+            pageSize = itemsPerPage,
+            maxPages = SESSION_HISTORY_PAGE_CAP,
+            coveredFrom = coveredFrom,
             onPageFailure = { page, e ->
                 lastError = "Failed to load listening sessions page $page: ${e.message}"
             },
@@ -1000,27 +1005,12 @@ class ApiService @Inject constructor(
             }
             val body = response.body() ?: throw java.io.IOException("Empty listening sessions body on page $page")
             PageOutcome.Page(
-                results = body.sessions.map { session ->
-                    ListeningSession(
-                        id = session.id,
-                        libraryItemId = session.libraryItemId,
-                        currentTime = session.currentTime.seconds,
-                        timeListening = session.timeListening.seconds,
-                        startedAt = normalizeEpoch(session.startedAt),
-                        updatedAt = normalizeEpoch(session.updatedAt),
-                        displayTitle = session.displayTitle,
-                    )
-                },
+                results = body.sessions.map { it.toListeningSession() },
                 total = body.total,
                 reportedPage = body.page,
                 reportedPageCount = body.numPages,
             )
-        }.map { sessions -> sessions.sortedByDescending { it.startedAt } }
-    }
-
-    /** Normalize an epoch value that might be seconds or milliseconds to milliseconds. */
-    private fun normalizeEpoch(value: Long): Long {
-        return if (value in 1..999_999_999_999L) value * 1000 else value
+        }
     }
 
     // ─── Bookmarks ───────────────────────────────────────────────────────

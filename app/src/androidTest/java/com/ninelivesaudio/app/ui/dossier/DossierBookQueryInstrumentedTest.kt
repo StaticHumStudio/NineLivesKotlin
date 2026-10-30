@@ -87,6 +87,7 @@ class DossierBookQueryInstrumentedTest {
                 sessionFor("unknown-historical-book"),
             ),
             scopedBookIds = queryScope.mapTo(mutableSetOf()) { it.id },
+            activeLibraryId = settings.activeLibraryId,
         )
 
         assertEquals(

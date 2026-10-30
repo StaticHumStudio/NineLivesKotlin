@@ -4,6 +4,7 @@ import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import kotlin.time.Duration.Companion.seconds
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -63,5 +64,19 @@ class DossierHistoryResultTest {
         assertEquals(NightwatchDossierViewModel.DossierState().headerWhisper, failed.headerWhisper)
         assertEquals(0, failed.totalSessions)
         assertEquals(null, failed.overviewWhisper)
+    }
+
+    // Issue #65: the share card never said its numbers were partial. It now
+    // carries a short note whenever the screen shows the warning.
+
+    @Test
+    fun `a partial history puts the note on the share card`() {
+        val p = dossierHistoryPresentation(RemoteResult.Partial(listOf(session), "page 3: HTTP 500"))
+        assertEquals(SHARE_CARD_PARTIAL_HISTORY_NOTE, shareCardHistoryNote(p.warning))
+    }
+
+    @Test
+    fun `a complete history leaves the share card clean`() {
+        assertNull(shareCardHistoryNote(dossierHistoryPresentation(RemoteResult.Ok(listOf(session))).warning))
     }
 }

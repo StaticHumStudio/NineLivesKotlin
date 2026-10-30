@@ -3,11 +3,7 @@ package com.ninelivesaudio.app.ui.dossier
 import android.content.ClipData
 import android.content.Intent
 import android.graphics.Bitmap
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import android.view.PixelCopy
-import android.view.View
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -32,10 +28,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -54,9 +47,9 @@ import com.ninelivesaudio.app.ui.dossier.NightwatchDossierViewModel.*
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.unlock.UnlockViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -495,13 +488,17 @@ private fun BookStatCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = book.author,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = NineLivesTheme.colors.archiveTextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // A book that left the catalog (#66) has only its sessions'
+                // title, so it shows no author or progress it no longer knows.
+                if (book.inCatalog) {
+                    Text(
+                        text = book.author,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NineLivesTheme.colors.archiveTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 book.narrator?.let { narrator ->
                     Text(
                         text = "Read by $narrator",
@@ -529,38 +526,40 @@ private fun BookStatCard(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (book.inCatalog) {
+            Spacer(modifier = Modifier.height(8.dp))
 
-        // Progress bar
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            LinearProgressIndicator(
-                progress = { (book.progress / 100.0).toFloat().coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
-                trackColor = NineLivesTheme.colors.archiveVoidElevated,
-            )
-
-            val progressLabel = when {
-                book.isFinished -> "Complete"
-                book.chaptersTotal > 0 && book.currentChapter > 0 ->
-                    "Ch ${book.currentChapter}/${book.chaptersTotal}"
-                book.progress > 0 -> "${book.progress.toInt()}%"
-                else -> ""
-            }
-            if (progressLabel.isNotEmpty()) {
-                Text(
-                    text = progressLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
-                    fontSize = 10.sp,
+            // Progress bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LinearProgressIndicator(
+                    progress = { (book.progress / 100.0).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.goldFilament,
+                    trackColor = NineLivesTheme.colors.archiveVoidElevated,
                 )
+
+                val progressLabel = when {
+                    book.isFinished -> "Complete"
+                    book.chaptersTotal > 0 && book.currentChapter > 0 ->
+                        "Ch ${book.currentChapter}/${book.chaptersTotal}"
+                    book.progress > 0 -> "${book.progress.toInt()}%"
+                    else -> ""
+                }
+                if (progressLabel.isNotEmpty()) {
+                    Text(
+                        text = progressLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (book.isFinished) NineLivesTheme.colors.archiveSuccess else NineLivesTheme.colors.archiveTextMuted,
+                        fontSize = 10.sp,
+                    )
+                }
             }
         }
 
@@ -889,25 +888,20 @@ private fun DossierShareSection(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val rootView = LocalView.current
-    var cardBounds by remember { mutableStateOf<android.graphics.Rect?>(null) }
+    val capture = rememberShareCardCapture()
+    // What sat behind the card when the share copied screen pixels, so the
+    // exported corners keep that look instead of turning see-through.
+    val exportBackground = NineLivesTheme.colors.archiveVoidDeep
     var isSharing by remember { mutableStateOf(false) }
 
     SectionHeader("Share")
 
-    // The card that will be captured directly from the Compose host view.
+    // The card draws through a graphics layer, so the share renders all of it
+    // even when it is scrolled part way off screen or something sits over it.
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInRoot()
-                cardBounds = android.graphics.Rect(
-                    bounds.left.toInt(),
-                    bounds.top.toInt(),
-                    bounds.right.toInt(),
-                    bounds.bottom.toInt(),
-                )
-            },
+            .recordInto(capture),
     ) {
         DossierSummaryCard(
             state = state,
@@ -920,18 +914,20 @@ private fun DossierShareSection(
     // Share button
     Button(
         onClick = {
-            val bounds = cardBounds
-            if (isSharing || bounds == null || bounds.isEmpty) return@Button
+            if (isSharing) return@Button
             isSharing = true
             scope.launch {
                 try {
-                    val bitmap = captureViewRegion(rootView, bounds)
+                    val bitmap = capture.capture(background = exportBackground)
                     if (bitmap != null) {
                         shareBitmap(context, bitmap)
                     } else {
                         Toast.makeText(context, "Capture failed – please try again", Toast.LENGTH_SHORT)
                             .show()
                     }
+                } catch (e: CancellationException) {
+                    // The screen went away mid share (a rotation, say). Not a failure.
+                    throw e
                 } catch (e: Exception) {
                     Log.e("DossierShare", "Share failed", e)
                     Toast.makeText(context, "Share failed – please try again", Toast.LENGTH_SHORT)
@@ -1000,6 +996,16 @@ private fun DossierSummaryCard(
                 color = NineLivesTheme.colors.archiveTextMuted,
                 letterSpacing = 1.sp,
             )
+            // A shared image of a partial history says so (issue #65).
+            shareCardHistoryNote(state.historyWarning)?.let { note ->
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NineLivesTheme.colors.archiveTextSecondary,
+                    textAlign = TextAlign.Center,
+                )
+            }
 
             Spacer(modifier = Modifier.height(20.dp))
 
@@ -1333,58 +1339,6 @@ private fun ShareLeaderboardRow(
                     .background(color),
             )
         }
-    }
-}
-
-/**
- * Captures a region of the view's window using [PixelCopy], which reads
- * directly from the GPU surface and therefore supports hardware bitmaps
- * (Coil images, RenderEffects, etc.) without the
- * "Software rendering doesn't support hardware bitmaps" crash.
- *
- * Min SDK 30 guarantees [PixelCopy] is always available.
- */
-private suspend fun captureViewRegion(
-    view: View,
-    bounds: android.graphics.Rect,
-): Bitmap? {
-    val window = view.context.let {
-        (it as? android.app.Activity)?.window
-    } ?: run {
-        Log.e("DossierShare", "Cannot obtain window for PixelCopy")
-        return null
-    }
-
-    // Map view-local bounds to window (screen) coordinates
-    val locationInWindow = IntArray(2)
-    view.getLocationInWindow(locationInWindow)
-
-    val srcRect = android.graphics.Rect(
-        (bounds.left + locationInWindow[0]).coerceAtLeast(0),
-        (bounds.top + locationInWindow[1]).coerceAtLeast(0),
-        (bounds.right + locationInWindow[0]),
-        (bounds.bottom + locationInWindow[1]),
-    )
-    if (srcRect.isEmpty) return null
-
-    val bitmap = Bitmap.createBitmap(srcRect.width(), srcRect.height(), Bitmap.Config.ARGB_8888)
-
-    return suspendCancellableCoroutine { cont ->
-        PixelCopy.request(
-            window,
-            srcRect,
-            bitmap,
-            { result ->
-                if (result == PixelCopy.SUCCESS) {
-                    cont.resumeWith(Result.success(bitmap))
-                } else {
-                    Log.e("DossierShare", "PixelCopy failed with result code $result")
-                    bitmap.recycle()
-                    cont.resumeWith(Result.success(null))
-                }
-            },
-            Handler(Looper.getMainLooper()),
-        )
     }
 }
 

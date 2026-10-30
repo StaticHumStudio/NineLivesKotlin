@@ -764,6 +764,18 @@ class ApiService @Inject constructor(
         }
 
     /**
+     * The library's Audiobookshelf authors (issue #87). Any failure, a thrown
+     * one included, is [RemoteResult.Failed], so a stored list is never
+     * replaced by nothing. See [libraryAuthorsResult].
+     */
+    internal suspend fun getLibraryAuthors(libraryId: String): RemoteResult<List<LibraryAuthor>> =
+        withContext(Dispatchers.IO) {
+            remoteResultCatching(onFailure = { e -> Log.w(TAG, "getLibraryAuthors($libraryId) failed", e) }) {
+                libraryAuthorsResult(api.getLibraryAuthors(libraryId))
+            }
+        }
+
+    /**
      * Books added at or after [cutoff], newest first, mapped exactly as the
      * full download maps them. Pages stop at the first older book; see
      * [runIncrementalFetch] for when this gives up instead.

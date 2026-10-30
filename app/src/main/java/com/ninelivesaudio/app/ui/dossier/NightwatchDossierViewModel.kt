@@ -67,6 +67,17 @@ internal fun dossierHistoryPresentation(
     )
 }
 
+/**
+ * The share card's own line for an incomplete history (issue #65). The screen
+ * warning carries a technical reason, which does not belong on a shared image.
+ * Draft copy, pending Jeff.
+ */
+internal const val SHARE_CARD_PARTIAL_HISTORY_NOTE = "Partial history. Some sessions did not load."
+
+/** The share card note for [historyWarning], or null for a complete history. */
+internal fun shareCardHistoryNote(historyWarning: String?): String? =
+    historyWarning?.let { SHARE_CARD_PARTIAL_HISTORY_NOTE }
+
 enum class DossierPeriod(
     val label: String,
     val subtitle: String,

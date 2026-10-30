@@ -224,6 +224,49 @@ internal interface FolderReads {
     fun plannedLocation(book: AudioBook, startedWriting: Boolean): DownloadLocation
     /** Where a stored localPath sits, or null when the engine never wrote it. */
     fun storedLocation(localPath: String): DownloadLocation?
+    /**
+     * Every other book whose stored localPath is a content URI (the local
+     * folder imports), by id. See `AudioBookDao.getContentPathRowsExcept`.
+     */
+    suspend fun contentPathsExcept(audioBookId: String): Map<String, String>
+    /** The file a local import's track URI names, see [safDocumentFile]. */
+    fun contentTrackFile(uri: String): File?
+}
+
+/**
+ * The local folder imports (#88) that play audio from inside the download
+ * root of [location], as folder sharers for [deleteDownloadFiles]: one per
+ * folder an import's tracks sit in, naming its tracks there.
+ *
+ * A user can pick a download folder and also import that same folder as a
+ * local library. The import's tracks are SAF document URIs, which the
+ * sharer check could not read, so deleting the server download took audio
+ * the import still plays. Only imports whose stored localPath resolves under
+ * the root are loaded. A track URI that names no file is skipped: only the
+ * shared storage provider names files, and nothing else reaches a download
+ * root.
+ */
+internal suspend fun localImportSharers(
+    reads: FolderReads,
+    audioBookId: String,
+    location: DownloadLocation,
+): List<FolderSharer> {
+    val root = runCatching { location.root.canonicalFile }.getOrNull() ?: return emptyList()
+    fun underRoot(file: File): Boolean =
+        runCatching { file.canonicalFile.toPath().startsWith(root.toPath()) }.getOrDefault(false)
+    val importIds = reads.contentPathsExcept(audioBookId)
+        .filterValues { path -> reads.contentTrackFile(path)?.let(::underRoot) == true }
+        .keys
+        .toList()
+    if (importIds.isEmpty()) return emptyList()
+    return reads.books(importIds).flatMap { import ->
+        import.audioFiles
+            .mapNotNull { track -> track.localPath?.let(reads::contentTrackFile) }
+            .groupBy { it.parentFile }
+            .mapNotNull { (parent, tracks) ->
+                parent?.let { FolderSharer(path = it.path, fileNames = tracks.map(File::getName)) }
+            }
+    }
 }
 
 /**
@@ -234,7 +277,8 @@ internal interface FolderReads {
  * Two editions with the same author and title shared one folder before each
  * download got its own (and those folders are still around), so the other
  * books stored there come along with their track lists, and only this book's
- * own files go. A folder another download may still be writing keeps
+ * own files go. A local folder import playing tracks from the same folder
+ * counts the same way (see [localImportSharers]). A folder another download may still be writing keeps
  * everything: any unfinished row's folder (see [unfinishedDownloadOwners]) and
  * the folder the engine is really writing, even when a title change moved
  * where its row says it goes. The rules live in [deleteDownloadFiles].
@@ -246,12 +290,14 @@ internal suspend fun removeDownloadedBookFiles(
     localPath: String,
 ): CancelCleanupDecision? {
     val location = reads.storedLocation(localPath) ?: return null
-    val sharers = reads.books(reads.filePathBookIdsExcept(book.id)).map { other ->
+    val filePathSharers = reads.books(reads.filePathBookIdsExcept(book.id)).map { other ->
         FolderSharer(
             path = other.localPath.orEmpty(),
             fileNames = other.audioFiles.takeIf { it.isNotEmpty() }?.let(::downloadedFileNames),
         )
     }
+    // A local folder import over the same folder keeps the tracks it plays (#88).
+    val sharers = filePathSharers + localImportSharers(reads, book.id, location)
     val claim = ownership.engineClaim
     val rows = reads.downloadRows()
     val candidates = reads.books(rows.map { it.audioBookId }.filter { it != book.id }.distinct())

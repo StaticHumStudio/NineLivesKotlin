@@ -39,10 +39,13 @@ class DownloadOwnershipTest {
      * The races here play out in shared "Author - Title" folders left by
      * downloads that started before each book got its own folder (#49).
      */
-    private class FakeReads(val root: File) : FolderReads {
+    private class FakeReads(val root: File, val appRoot: File = root) : FolderReads {
         val books = mutableMapOf<String, AudioBook>()
         val rows = mutableMapOf<String, DownloadItem>()
         var afterSharerIdsRead: (suspend () -> Unit)? = null
+
+        /** Where primary shared storage sits, for SAF track URIs (`primary:...`). */
+        var storageRoot: File? = null
 
         override suspend fun book(id: String) = books[id]
         override suspend fun books(ids: List<String>) = ids.mapNotNull { books[it] }
@@ -58,8 +61,15 @@ class DownloadOwnershipTest {
         override suspend fun downloadRows() =
             rows.values.map { DownloadOwnerRow(it.audioBookId, it.status.ordinal, it.downloadedBytes) }
         override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
-            DownloadLocation(root, bookDownloadFolder(root, book, startedWriting), true)
-        override fun storedLocation(localPath: String) = deleteLocationFor(localPath, "", root)
+            DownloadLocation(root, bookDownloadFolder(root, book, startedWriting), appRoot == root)
+        override fun storedLocation(localPath: String) =
+            deleteLocationFor(localPath, if (appRoot == root) "" else root.path, appRoot)
+        override suspend fun contentPathsExcept(audioBookId: String) =
+            books.values
+                .filter { it.id != audioBookId && it.localPath?.startsWith("content:") == true }
+                .associate { it.id to it.localPath!! }
+        override fun contentTrackFile(uri: String) =
+            safDocumentFile(uri) { if (it == "primary") storageRoot else null }
     }
 
     private fun folder(root: File, name: String, vararg files: String) = File(root, name).apply {
@@ -676,5 +686,86 @@ class DownloadOwnershipTest {
 
         assertFalse(wasDownloading)
         assertEquals(DownloadStatus.Paused, reads.rows.getValue("dB").status)
+    }
+
+    // ─── Local folder imports in a download folder (#88) ─────────────────────
+
+    /** A track a SAF folder import plays, as LocalLibraryScanner stores it. */
+    private fun safTrackUri(folderName: String, leaf: String): String {
+        fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+        return "content://com.android.externalstorage.documents/tree/" + enc("primary:AB") +
+            "/document/" + enc("primary:AB/$folderName/$leaf")
+    }
+
+    /** A local folder import playing [leaves] from [folderName] under the user's `AB` folder. */
+    private fun localImport(id: String, folderName: String, vararg leaves: String): AudioBook {
+        val tracks = leaves.mapIndexed { i, leaf ->
+            AudioFile(id = "$id-$i", index = i, filename = leaf, localPath = safTrackUri(folderName, leaf))
+        }
+        return AudioBook(
+            id = id, title = "Title", author = "Author", isLocal = true, isDownloaded = true,
+            localPath = tracks.first().localPath, audioFiles = tracks,
+        )
+    }
+
+    /** A user-picked download root `AB` in shared storage, and a server book downloaded into it. */
+    private fun serverDownloadInUserRoot(): Triple<FakeReads, AudioBook, File> {
+        val storageRoot = tempFolder.newFolder("storage")
+        val root = File(storageRoot, "AB").apply { mkdirs() }
+        val reads = FakeReads(root, appRoot = tempFolder.newFolder("app")).apply { this.storageRoot = storageRoot }
+        val dir = folder(root, "Author - Title [abcd1234]", "01.mp3", "02.mp3", "cover.jpg")
+        val s = AudioBook(
+            id = "li_s_abcd1234", title = "Title", author = "Author", isDownloaded = true,
+            localPath = dir.absolutePath, audioFiles = listOf(track("01.mp3", 0), track("02.mp3", 1)),
+        )
+        reads.books[s.id] = s
+        return Triple(reads, s, dir)
+    }
+
+    @Test
+    fun `deleting a server download keeps the audio a local folder import plays from the same folder`() = runBlocking {
+        val (reads, s, dir) = serverDownloadInUserRoot()
+        val l = localImport("local_L", dir.name, "01.mp3", "02.mp3")
+        reads.books[l.id] = l
+        val ownership = DownloadOwnership()
+
+        var decision: CancelCleanupDecision? = null
+        ownership.noEngineOn(s.id) { decision = removeDownloadedBookFiles(reads, ownership, s, dir.absolutePath) }
+
+        assertTrue("the local import's first track went with the delete", File(dir, "01.mp3").exists())
+        assertTrue("the local import's second track went with the delete", File(dir, "02.mp3").exists())
+        assertTrue(File(dir, "cover.jpg").exists())
+        // Nothing of S's own is left, so S stops pointing at the folder.
+        assertFalse(deleteKeepsLocalCopy(decision))
+    }
+
+    @Test
+    fun `a local import elsewhere does not stop a delete`() = runBlocking {
+        val (reads, s, dir) = serverDownloadInUserRoot()
+        folder(reads.root, "My Own Rip", "01.mp3", "02.mp3")
+        val l = localImport("local_L", "My Own Rip", "01.mp3", "02.mp3")
+        reads.books[l.id] = l
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(s.id) { removeDownloadedBookFiles(reads, ownership, s, dir.absolutePath) }
+
+        assertFalse(File(dir, "01.mp3").exists())
+        assertFalse(File(dir, "02.mp3").exists())
+        assertFalse(dir.exists())
+        assertTrue("the import's own audio went", File(reads.root, "My Own Rip/01.mp3").exists())
+    }
+
+    @Test
+    fun `a local import sharing only some tracks keeps those and lets the rest go`() = runBlocking {
+        val (reads, s, dir) = serverDownloadInUserRoot()
+        val l = localImport("local_L", dir.name, "02.mp3")
+        reads.books[l.id] = l
+        val ownership = DownloadOwnership()
+
+        ownership.noEngineOn(s.id) { removeDownloadedBookFiles(reads, ownership, s, dir.absolutePath) }
+
+        assertFalse(File(dir, "01.mp3").exists())
+        assertTrue(File(dir, "02.mp3").exists())
+        assertTrue(File(dir, "cover.jpg").exists())
     }
 }

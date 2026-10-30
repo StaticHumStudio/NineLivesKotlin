@@ -265,6 +265,14 @@ interface AudioBookDao {
     @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getSlotRowsByIds(ids: List<String>): List<SlotBookRow>
 
+    /**
+     * Every other book whose stored localPath is a content URI: the local
+     * folder imports. Deleting a server download checks them so it never takes
+     * audio an import plays from the same folder (#88).
+     */
+    @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE Id != :excludeId AND LocalPath LIKE 'content:%'")
+    suspend fun getContentPathRowsExcept(excludeId: String): List<SlotBookRow>
+
     @Query("DELETE FROM AudioBooks")
     suspend fun deleteAll()
 

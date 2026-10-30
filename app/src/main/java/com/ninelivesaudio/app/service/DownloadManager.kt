@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import android.content.Context
+import android.os.storage.StorageManager
 import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkManager
 import com.ninelivesaudio.app.data.local.converter.toDomain
@@ -36,6 +37,7 @@ import com.ninelivesaudio.app.service.download.wifiRuleChangeRestartsDrain
 import com.ninelivesaudio.app.service.download.runEngineExclusively
 import com.ninelivesaudio.app.service.download.removeCancelledPartialFiles
 import com.ninelivesaudio.app.service.download.removeDownloadedBookFiles
+import com.ninelivesaudio.app.service.download.safDocumentFile
 import com.ninelivesaudio.app.service.download.deleteKeepsLocalCopy
 import com.ninelivesaudio.app.service.download.DownloadOwnerRow
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -876,6 +878,21 @@ class DownloadManager @Inject constructor(
         override fun plannedLocation(book: AudioBook, startedWriting: Boolean) =
             engine.downloadLocationFor(book, startedWriting)
         override fun storedLocation(localPath: String) = engine.storedDownloadLocation(localPath)
+        override suspend fun contentPathsExcept(audioBookId: String) =
+            audioBookDao.getContentPathRowsExcept(audioBookId)
+                .mapNotNull { row -> row.localPath?.let { row.id to it } }
+                .toMap()
+        override fun contentTrackFile(uri: String) = safDocumentFile(uri, ::storageVolumeRoot)
+    }
+
+    /** Where a storage volume is mounted: `primary` or an SD card's uuid. */
+    private fun storageVolumeRoot(volumeId: String): java.io.File? {
+        val storage = context.getSystemService(StorageManager::class.java) ?: return null
+        return if (volumeId == "primary") {
+            storage.primaryStorageVolume.directory
+        } else {
+            storage.storageVolumes.firstOrNull { it.uuid.equals(volumeId, ignoreCase = true) }?.directory
+        }
     }
 
     /** Check if a book is downloaded. */

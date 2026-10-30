@@ -325,6 +325,10 @@ class DownloadManager @Inject constructor(
     private val _downloadFailed = MutableSharedFlow<DownloadItem>(replay = 1, extraBufferCapacity = 8)
     val downloadFailed: SharedFlow<DownloadItem> = _downloadFailed.asSharedFlow()
 
+    /** Book ids whose download was just deleted. The player and Book Detail let go of it (#89). */
+    private val _downloadRemoved = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val downloadRemoved: SharedFlow<String> = _downloadRemoved.asSharedFlow()
+
     // ─── Queue Operations ────────────────────────────────────────────────────
 
     /**
@@ -807,6 +811,7 @@ class DownloadManager @Inject constructor(
             // Restart the drain for whatever else is queued.
             enqueueDrain(replace = true)
         }
+        if (removed) _downloadRemoved.tryEmit(audioBookId)
         removed
     }
 

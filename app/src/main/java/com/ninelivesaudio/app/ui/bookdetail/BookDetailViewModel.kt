@@ -34,6 +34,27 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 
+/**
+ * The download button for a download row, or for the book's own flag when it
+ * has no row (a delete from the Downloads tab removes the row, and the page
+ * must follow without being reopened).
+ */
+internal fun downloadButtonState(rowStatus: DownloadStatus?, bookIsDownloaded: Boolean): BookDetailViewModel.DownloadButtonState =
+    when (rowStatus) {
+        null -> if (bookIsDownloaded) BookDetailViewModel.DownloadButtonState.COMPLETED
+        else BookDetailViewModel.DownloadButtonState.NONE
+        // A provisional slot claim, taken before the metadata fetch returns. It
+        // reads as Queued because that is what it is from the user's side: the
+        // book is spoken for and nothing has downloaded yet.
+        DownloadStatus.Preparing -> BookDetailViewModel.DownloadButtonState.QUEUED
+        DownloadStatus.Queued -> BookDetailViewModel.DownloadButtonState.QUEUED
+        DownloadStatus.Downloading -> BookDetailViewModel.DownloadButtonState.DOWNLOADING
+        DownloadStatus.Paused -> BookDetailViewModel.DownloadButtonState.PAUSED
+        DownloadStatus.Completed -> BookDetailViewModel.DownloadButtonState.COMPLETED
+        DownloadStatus.Failed -> BookDetailViewModel.DownloadButtonState.NONE
+        DownloadStatus.Cancelled -> BookDetailViewModel.DownloadButtonState.NONE
+    }
+
 enum class HistoryLoadStatus { NOT_LOADED, COMPLETE, PARTIAL, FAILED }
 
 internal data class HistoryPresentation(
@@ -297,30 +318,15 @@ class BookDetailViewModel @Inject constructor(
 
     private fun observeDownloadState() {
         viewModelScope.launch {
-            downloadItemDao.observeAll().collect { entities ->
-                val entity = entities.firstOrNull { it.audioBookId == bookId }
-                currentDownloadId = entity?.id
-                val state = if (entity == null) {
-                    if (_uiState.value.isDownloaded) DownloadButtonState.COMPLETED
-                    else DownloadButtonState.NONE
-                } else {
-                    val item = entity.toDomain()
-                    when (item.status) {
-                        // A provisional slot claim, taken before the metadata
-                        // fetch returns. It reads as Queued because that is what
-                        // it is from the user's side: the book is spoken for and
-                        // nothing has downloaded yet.
-                        DownloadStatus.Preparing -> DownloadButtonState.QUEUED
-                        DownloadStatus.Queued -> DownloadButtonState.QUEUED
-                        DownloadStatus.Downloading -> DownloadButtonState.DOWNLOADING
-                        DownloadStatus.Paused -> DownloadButtonState.PAUSED
-                        DownloadStatus.Completed -> DownloadButtonState.COMPLETED
-                        DownloadStatus.Failed -> DownloadButtonState.NONE
-                        DownloadStatus.Cancelled -> DownloadButtonState.NONE
-                    }
+            combine(
+                downloadItemDao.observeAll(),
+                audioBookRepository.observeIsDownloaded(bookId),
+            ) { entities, downloaded -> entities.firstOrNull { it.audioBookId == bookId } to downloaded }
+                .collect { (entity, downloaded) ->
+                    currentDownloadId = entity?.id
+                    val state = downloadButtonState(entity?.toDomain()?.status, downloaded)
+                    _uiState.update { it.copy(downloadState = state, isDownloaded = downloaded) }
                 }
-                _uiState.update { it.copy(downloadState = state) }
-            }
         }
     }
 

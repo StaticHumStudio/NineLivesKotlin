@@ -193,6 +193,26 @@ internal fun playbackWorkActive(
 internal fun shouldReportPolledPosition(hasBook: Boolean, @Suppress("UNUSED_PARAMETER") duration: Duration): Boolean =
     hasBook
 
+internal enum class DownloadRemovalAction { NONE, UNLOAD, STOP_LOAD_AND_UNLOAD }
+
+/**
+ * What the player does when a server download is deleted (#89). Only a book
+ * the player loaded from that download's files lets go: a book it streams
+ * (started before the download finished) keeps playing, and a local import
+ * never had a download. A load still under way stops before it reads files
+ * that are gone.
+ */
+internal fun downloadRemovalAction(
+    currentBook: AudioBook?,
+    removedBookId: String,
+    loading: Boolean,
+): DownloadRemovalAction = when {
+    currentBook == null || currentBook.id != removedBookId || currentBook.isLocal -> DownloadRemovalAction.NONE
+    !currentBook.isDownloaded || currentBook.localPath.isNullOrEmpty() -> DownloadRemovalAction.NONE
+    loading -> DownloadRemovalAction.STOP_LOAD_AND_UNLOAD
+    else -> DownloadRemovalAction.UNLOAD
+}
+
 internal class PlaybackLoadOwner {
     private val ownerLock = Any()
     private var nextRequest = 0L
@@ -764,6 +784,7 @@ class PlaybackManager @Inject constructor(
     private val sessionRepository: ListeningSessionRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
     private val manifestBackfillLazy: Lazy<DownloadManifestBackfill>,
+    private val downloadManagerLazy: Lazy<DownloadManager>,
     private val connectivityMonitor: ConnectivityMonitor,
     private val okHttpClient: OkHttpClient,
     private val localFolderAccess: LocalFolderAccess,
@@ -3207,6 +3228,31 @@ class PlaybackManager @Inject constructor(
                 recoverIfSessionStale()
             }
         }
+        // A deleted download must not leave the player holding its files (#89).
+        scope.launch {
+            downloadManagerLazy.get().downloadRemoved.collect { bookId ->
+                onDownloadRemoved(bookId)
+            }
+        }
+    }
+
+    /**
+     * The book keeps its place in the mini player but lets go of the deleted
+     * files. Play then reloads it: it streams when the server is reachable, or
+     * shows the usual offline message. It never switches to streaming by itself,
+     * since that could spend mobile data unasked.
+     */
+    private suspend fun onDownloadRemoved(bookId: String) {
+        val current = _currentBook.value
+        val action = downloadRemovalAction(current, bookId, _playbackState.value == PlaybackState.LOADING)
+        if (action == DownloadRemovalAction.NONE || current == null) return
+        if (action == DownloadRemovalAction.STOP_LOAD_AND_UNLOAD) playbackLoadOwner.invalidate()
+        finishPlayback(PlaybackTermination.STOP)
+        val fresh = withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) }
+        // Another book may have taken the player while the row was read.
+        if (_currentBook.value?.id != bookId) return
+        _currentBook.value = fresh ?: current.copy(isDownloaded = false, localPath = null, localCoverPath = null)
+        _isLocalFile.value = false
     }
 
     /**

@@ -318,13 +318,22 @@ class MediaBrowseTree @Inject constructor(
         // showed a thumbnail. Embed a downscaled JPEG instead: serve it from
         // cache if we already have it, otherwise kick a bounded background
         // fetch and let this row render text-only until it lands.
+        //
+        // Art is cached and fetched by cover version, not by book, so an
+        // edited cover or a rewritten saved cover is fetched again (#70).
         try {
             if (!book.effectiveCoverPath.isNullOrEmpty()) {
-                val cached = artworkCache.get(book.id)
+                val key = artworkVersionKey(
+                    book.id,
+                    book.coverPath,
+                    book.localCoverPath,
+                    savedCoverModifiedMs(book.localCoverPath),
+                )
+                val cached = artworkCache.get(key)
                 if (cached != null) {
                     metadataBuilder.setArtworkData(cached, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
                 } else {
-                    scheduleArtworkFetch(book)
+                    scheduleArtworkFetch(book, key)
                 }
             }
         } catch (e: Exception) {
@@ -352,13 +361,13 @@ class MediaBrowseTree @Inject constructor(
      * flicker. Never throws — a fetch failure just leaves the row without
      * art.
      */
-    private fun scheduleArtworkFetch(book: AutoBookItem) {
+    private fun scheduleArtworkFetch(book: AutoBookItem, key: String) {
         val bookId = book.id
         // The epoch gate is checked and set synchronously, BEFORE ever
         // launching a coroutine, so a book that already had an attempt this
         // epoch never even reaches the scheduling machinery below — this is
         // what actually bounds the eviction/notify/re-query loop.
-        if (!artworkFetchEpoch.attempt(bookId)) return
+        if (!artworkFetchEpoch.attempt(key)) return
         artworkFetchScope.launch {
             // Both of these must be the FIRST things this coroutine body
             // does, so they either both happen or neither does. If the scope
@@ -370,13 +379,13 @@ class MediaBrowseTree @Inject constructor(
             // and burst tracking never drained, wedging every future browse
             // notify for the life of the process.
             val addedToInFlight = synchronized(inFlightArtworkFetchesLock) {
-                inFlightArtworkFetches.add(bookId)
+                inFlightArtworkFetches.add(key)
             }
             if (!addedToInFlight) {
                 // This book is already being fetched, so this scheduling is
                 // redundant. Hand the epoch attempt back rather than letting
                 // it be silently consumed here — see ArtworkFetchEpoch.release.
-                artworkFetchEpoch.release(bookId)
+                artworkFetchEpoch.release(key)
                 return@launch
             }
             artworkFetchBurst.begin()
@@ -392,12 +401,12 @@ class MediaBrowseTree @Inject constructor(
                         null
                     }
                     if (bytes != null) {
-                        artworkCache.put(bookId, bytes)
+                        artworkCache.put(key, bytes)
                         landed = true
                     }
                 }
             } finally {
-                synchronized(inFlightArtworkFetchesLock) { inFlightArtworkFetches.remove(bookId) }
+                synchronized(inFlightArtworkFetchesLock) { inFlightArtworkFetches.remove(key) }
                 // Only notifies once the whole current burst has drained (no
                 // fetch still in flight) and something actually changed since
                 // the last notify. If more misses get scheduled while
@@ -501,7 +510,8 @@ class MediaBrowseTree @Inject constructor(
 
 /**
  * Bounded in-memory LRU of downscaled browse-row cover thumbnails, keyed by
- * book id. Capped by both entry count and total bytes so a long browse
+ * [artworkVersionKey] (book plus cover version, so an edited cover misses
+ * and is fetched again). Capped by both entry count and total bytes so a long browse
  * session (scrolling a big library) can't grow this unbounded — a
  * misbehaving server returning maximum-size images every time is the worst
  * case this guards against.
@@ -534,12 +544,12 @@ internal class BrowseArtworkCache(
     }
     private var totalBytes = 0L
 
-    fun get(bookId: String): ByteArray? = synchronized(lock) { entries[bookId] }
+    fun get(key: String): ByteArray? = synchronized(lock) { entries[key] }
 
-    fun put(bookId: String, bytes: ByteArray) {
+    fun put(key: String, bytes: ByteArray) {
         synchronized(lock) {
-            entries.remove(bookId)?.let { totalBytes -= it.size }
-            entries[bookId] = bytes
+            entries.remove(key)?.let { totalBytes -= it.size }
+            entries[key] = bytes
             totalBytes += bytes.size
             evictUntilWithinCaps()
         }

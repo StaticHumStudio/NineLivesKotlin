@@ -1143,8 +1143,10 @@ class ApiService @Inject constructor(
             narrator = metadata?.narratorName?.takeIf { it.isNotBlank() }
                 ?: metadata?.narrators?.firstOrNull()?.takeIf { it.isNotBlank() },
             description = metadata?.description,
+            // Versioned with the item's updated time, so an edited cover is
+            // a new address and every cache keyed by it refetches (#70).
             coverPath = if (!item.media?.coverPath.isNullOrEmpty()) {
-                "$serverUrl/api/items/${Uri.encode(item.id)}/cover"
+                versionedCoverUrl("$serverUrl/api/items/${Uri.encode(item.id)}/cover", item.updatedAt)
             } else null,
             duration = (item.media?.duration ?: 0.0).seconds,
             addedAt = item.addedAt,

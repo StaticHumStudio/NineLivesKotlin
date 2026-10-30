@@ -87,4 +87,11 @@ class ServerCoverUrlTest {
         val url = "http://192.168.1.5:13378/api/items/li_1/cover"
         assertEquals(url, sent(url))
     }
+
+    @Test fun `the version survives a server move`() {
+        assertEquals(
+            "https://vpn.example/abs/api/items/li_1/cover?ts=5&width=256",
+            sent(thumbnailCoverUrl(versionedCoverUrl("http://192.168.1.5:13378/api/items/li_1/cover", 5), 256)),
+        )
+    }
 }

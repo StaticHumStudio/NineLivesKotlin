@@ -61,6 +61,8 @@ data class ApiLibraryItem(
     val id: String = "",
     val libraryId: String? = null,
     val addedAt: Long? = null,
+    /** When the item last changed on the server (epoch ms), a cover edit included. */
+    val updatedAt: Long? = null,
     val media: ApiMedia? = null,
     val userMediaProgress: ApiUserMediaProgress? = null,
 )

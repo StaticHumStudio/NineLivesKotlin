@@ -236,4 +236,14 @@ class ArtworkFetchEpochTest {
 
         assertEquals("exactly one thread may win the attempt", 1, winners.get())
     }
+
+    @Test
+    fun `an edited cover gets a fresh attempt in the same epoch`() {
+        val epoch = ArtworkFetchEpoch()
+        val k1 = artworkVersionKey("book-1", "https://abs.test/api/items/book-1/cover?ts=1", null, null)
+        val k2 = artworkVersionKey("book-1", "https://abs.test/api/items/book-1/cover?ts=2", null, null)
+        assertTrue(epoch.attempt(k1))
+        assertFalse(epoch.attempt(k1))
+        assertTrue(epoch.attempt(k2))
+    }
 }

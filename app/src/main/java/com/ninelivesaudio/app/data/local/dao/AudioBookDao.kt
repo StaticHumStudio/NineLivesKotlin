@@ -12,6 +12,7 @@ import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
 import com.ninelivesaudio.app.data.local.entity.AutoBucketCount
 import com.ninelivesaudio.app.data.local.entity.BookProgressState
+import com.ninelivesaudio.app.data.local.entity.DownloadedCoverRow
 import com.ninelivesaudio.app.data.local.entity.SyncMergeState
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
@@ -293,6 +294,16 @@ interface AudioBookDao {
         """
     )
     suspend fun countAutoSearch(libraryId: String, isLocal: Int, pattern: String, cap: Int): Int
+
+    /** Cover fields of every live downloaded server book, for the saved cover refresh (#70). */
+    @Query(
+        """
+        SELECT Id AS id, CoverPath AS coverPath, LocalCoverPath AS localCoverPath, LocalPath AS localPath
+        FROM AudioBooks
+        WHERE IsLocal = 0 AND IsDownloaded = 1 AND ArchivedAt IS NULL
+        """
+    )
+    suspend fun getDownloadedCoverRows(): List<DownloadedCoverRow>
 
     /** Slot fields of every downloaded book, in any library. */
     @Query("SELECT Id AS id, IsLocal AS isLocal, IsDownloaded AS isDownloaded, LocalPath AS localPath FROM AudioBooks WHERE IsDownloaded = 1")

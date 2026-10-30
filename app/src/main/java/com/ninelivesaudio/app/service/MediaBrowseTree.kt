@@ -7,6 +7,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
+import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -20,7 +21,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -40,12 +40,16 @@ import javax.inject.Singleton
  *   "recently_played"     → recently played books
  *   "library"             → all books in the active library or folder
  *   "downloaded"          → downloaded books in the active library or folder
+ *   "library/T", "library/TH", "library/TH/2", and the same under
+ *   "downloaded"          → letter folders, two letter folders and numbered
+ *                           parts of a shelf over 500 books (AutoFolderId)
  *   "book_{id}"           → a single playable book
  */
 @Singleton
 class MediaBrowseTree @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val audioBookRepository: AudioBookRepository,
+    private val audioBookDao: AudioBookDao,
     private val settingsManager: SettingsManager,
     private val apiService: ApiService,
     private val okHttpClient: OkHttpClient,
@@ -105,11 +109,20 @@ class MediaBrowseTree @Inject constructor(
     // per book — see the comment in scheduleArtworkFetch() for why that matters.
     private val artworkFetchBurst = ArtworkFetchBurstTracker()
 
-    private val _artworkUpdated = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    // One replayed slot (see artworkSignal), so art that lands before
+    // PlaybackService starts collecting still triggers a refresh.
+    private val _artworkUpdated = artworkSignal()
 
     /** Emits whenever a background artwork fetch lands. PlaybackService collects this
      *  and calls notifyChildrenChanged so Auto re-renders the browse lists with art. */
     val artworkUpdated: SharedFlow<Unit> = _artworkUpdated.asSharedFlow()
+
+    // Folders Auto opened lately, so a sync or landing art can refresh them
+    // too and not only the three fixed shelves.
+    private val recentFolders = RecentAutoFolders()
+
+    /** Folder ids Auto browsed lately, newest first, for change notifications. */
+    fun browsedFolderIds(): List<String> = recentFolders.snapshot()
 
     // ─── Public API ────────────────────────────────────────────────────
 
@@ -151,21 +164,26 @@ class MediaBrowseTree @Inject constructor(
                     .map { bookToMediaItem(it.toAutoBookItem()) }
             }
 
-            // Library and Downloaded read one page from SQL, A to Z, light
-            // rows only. Sorting and paging the whole library in memory cost
-            // seconds and about 100 MB per page at 50k books, and repeated on
-            // every artwork notify.
-            parentId == DOWNLOADED_ID ->
-                autoBrowsePage(settings, page, pageSize, audioBookRepository::getAutoDownloadedPage)
-                    .map { bookToMediaItem(it.toAutoBookItem()) }
-
-            parentId == LIBRARY_ID ->
-                autoBrowsePage(settings, page, pageSize, audioBookRepository::getAutoBrowsePage)
-                    .map { bookToMediaItem(it.toAutoBookItem()) }
-
-            else -> emptyList()
+            // Library and Downloaded browse as a tree: one flat list up to
+            // 500 books, then letter folders, two letter folders and parts
+            // (see AutoBrowseFolders). Every count and page is read from SQL,
+            // light rows only, so nothing outside one page is loaded.
+            else -> {
+                val folderId = AutoFolderId.parse(parentId) ?: return emptyList()
+                val scope = autoScope(settings) ?: return emptyList()
+                if (folderId.key != null) recentFolders.record(parentId)
+                autoChildren(folderId, folderSource(scope, folderId.branch), page, pageSize).map { child ->
+                    when (child) {
+                        is AutoBrowseChild.Book -> bookToMediaItem(child.row.toAutoBookItem())
+                        is AutoBrowseChild.Folder -> buildBrowsableItem(child.id.mediaId, child.title, child.subtitle)
+                    }
+                }
+            }
         }
     }
+
+    private fun folderSource(scope: AutoScope, branch: AutoBranch): AutoFolderSource =
+        RoomAutoFolderSource(audioBookDao, scope.libraryId, scope.isLocal, branch)
 
     /** Count children for Media3 invalidation without constructing browse items. */
     suspend fun getChildCount(parentId: String): Int {
@@ -177,8 +195,10 @@ class MediaBrowseTree @Inject constructor(
             activeLibraryId = settings.activeLibraryId,
             activeIsLocal = settings.appMode == AppMode.LOCAL,
             countRecent = audioBookRepository::countRecentlyPlayedForAuto,
-            countLibrary = audioBookRepository::countForAuto,
-            countDownloaded = audioBookRepository::countDownloadedForAuto,
+            countTree = { folderId ->
+                val scope = autoScope(settings)
+                if (scope == null) 0 else autoChildCount(folderId, folderSource(scope, folderId.branch))
+            },
         )
     }
 
@@ -189,6 +209,9 @@ class MediaBrowseTree @Inject constructor(
         if (mediaId != ROOT_ID && mediaId != SETUP_REQUIRED_ID &&
             !canBrowseAuto(settings, apiService.isAuthenticated)
         ) return null
+        // A letter folder, two letter folder or part. A stale one still
+        // resolves, and lists whatever it holds now (see autoChildren).
+        val folderId = AutoFolderId.parse(mediaId)
         return when {
             mediaId == ROOT_ID -> buildBrowsableItem(ROOT_ID, "Nine Lives Audio", null)
             mediaId == SETUP_REQUIRED_ID -> buildBrowsableItem(
@@ -199,6 +222,8 @@ class MediaBrowseTree @Inject constructor(
             mediaId == RECENTLY_PLAYED_ID -> buildBrowsableItem(RECENTLY_PLAYED_ID, "Recently Played", "Continue listening")
             mediaId == LIBRARY_ID -> buildBrowsableItem(LIBRARY_ID, "Library", "Browse the active source")
             mediaId == DOWNLOADED_ID -> buildBrowsableItem(DOWNLOADED_ID, "Downloaded", "Available offline")
+
+            folderId != null -> buildBrowsableItem(mediaId, autoFolderTitle(folderId), null)
 
             mediaId.startsWith(BOOK_PREFIX) -> {
                 val bookId = mediaId.removePrefix(BOOK_PREFIX)
@@ -254,6 +279,16 @@ class MediaBrowseTree @Inject constructor(
         artworkFetchEpoch.clear()
     }
 
+    /**
+     * Drops every cached browse cover. For a sign out, server or library
+     * switch (the art belongs to the old source) and real memory pressure.
+     * Leaves the fetch epoch alone, so a trim never sets off a refetch storm:
+     * rows refetch only as their next epoch allows.
+     */
+    fun clearArtworkCache() {
+        artworkCache.clear()
+    }
+
     private suspend fun resolveActiveScope(): AppSettings {
         val libraries = libraryRepository.getAll()
         val resolution = resolveActiveLibrarySelection(libraries, settingsManager.currentSettings)
@@ -294,13 +329,22 @@ class MediaBrowseTree @Inject constructor(
         // showed a thumbnail. Embed a downscaled JPEG instead: serve it from
         // cache if we already have it, otherwise kick a bounded background
         // fetch and let this row render text-only until it lands.
+        //
+        // Art is cached and fetched by cover version, not by book, so an
+        // edited cover or a rewritten saved cover is fetched again (#70).
         try {
             if (!book.effectiveCoverPath.isNullOrEmpty()) {
-                val cached = artworkCache.get(book.id)
+                val key = artworkVersionKey(
+                    book.id,
+                    book.coverPath,
+                    book.localCoverPath,
+                    savedCoverModifiedMs(book.localCoverPath),
+                )
+                val cached = artworkCache.get(key)
                 if (cached != null) {
                     metadataBuilder.setArtworkData(cached, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
                 } else {
-                    scheduleArtworkFetch(book)
+                    scheduleArtworkFetch(book, key)
                 }
             }
         } catch (e: Exception) {
@@ -328,13 +372,13 @@ class MediaBrowseTree @Inject constructor(
      * flicker. Never throws — a fetch failure just leaves the row without
      * art.
      */
-    private fun scheduleArtworkFetch(book: AutoBookItem) {
+    private fun scheduleArtworkFetch(book: AutoBookItem, key: String) {
         val bookId = book.id
         // The epoch gate is checked and set synchronously, BEFORE ever
         // launching a coroutine, so a book that already had an attempt this
         // epoch never even reaches the scheduling machinery below — this is
         // what actually bounds the eviction/notify/re-query loop.
-        if (!artworkFetchEpoch.attempt(bookId)) return
+        if (!artworkFetchEpoch.attempt(key)) return
         artworkFetchScope.launch {
             // Both of these must be the FIRST things this coroutine body
             // does, so they either both happen or neither does. If the scope
@@ -346,13 +390,13 @@ class MediaBrowseTree @Inject constructor(
             // and burst tracking never drained, wedging every future browse
             // notify for the life of the process.
             val addedToInFlight = synchronized(inFlightArtworkFetchesLock) {
-                inFlightArtworkFetches.add(bookId)
+                inFlightArtworkFetches.add(key)
             }
             if (!addedToInFlight) {
                 // This book is already being fetched, so this scheduling is
                 // redundant. Hand the epoch attempt back rather than letting
                 // it be silently consumed here — see ArtworkFetchEpoch.release.
-                artworkFetchEpoch.release(bookId)
+                artworkFetchEpoch.release(key)
                 return@launch
             }
             artworkFetchBurst.begin()
@@ -368,12 +412,12 @@ class MediaBrowseTree @Inject constructor(
                         null
                     }
                     if (bytes != null) {
-                        artworkCache.put(bookId, bytes)
+                        artworkCache.put(key, bytes)
                         landed = true
                     }
                 }
             } finally {
-                synchronized(inFlightArtworkFetchesLock) { inFlightArtworkFetches.remove(bookId) }
+                synchronized(inFlightArtworkFetchesLock) { inFlightArtworkFetches.remove(key) }
                 // Only notifies once the whole current burst has drained (no
                 // fetch still in flight) and something actually changed since
                 // the last notify. If more misses get scheduled while
@@ -477,7 +521,8 @@ class MediaBrowseTree @Inject constructor(
 
 /**
  * Bounded in-memory LRU of downscaled browse-row cover thumbnails, keyed by
- * book id. Capped by both entry count and total bytes so a long browse
+ * [artworkVersionKey] (book plus cover version, so an edited cover misses
+ * and is fetched again). Capped by both entry count and total bytes so a long browse
  * session (scrolling a big library) can't grow this unbounded — a
  * misbehaving server returning maximum-size images every time is the worst
  * case this guards against.
@@ -510,12 +555,12 @@ internal class BrowseArtworkCache(
     }
     private var totalBytes = 0L
 
-    fun get(bookId: String): ByteArray? = synchronized(lock) { entries[bookId] }
+    fun get(key: String): ByteArray? = synchronized(lock) { entries[key] }
 
-    fun put(bookId: String, bytes: ByteArray) {
+    fun put(key: String, bytes: ByteArray) {
         synchronized(lock) {
-            entries.remove(bookId)?.let { totalBytes -= it.size }
-            entries[bookId] = bytes
+            entries.remove(key)?.let { totalBytes -= it.size }
+            entries[key] = bytes
             totalBytes += bytes.size
             evictUntilWithinCaps()
         }
@@ -523,6 +568,13 @@ internal class BrowseArtworkCache(
 
     /** Test-only: current entry count, to assert the cap holds. */
     internal fun size(): Int = synchronized(lock) { entries.size }
+
+    fun clear() {
+        synchronized(lock) {
+            entries.clear()
+            totalBytes = 0L
+        }
+    }
 
     private fun evictUntilWithinCaps() {
         val iterator = entries.entries.iterator()
@@ -700,35 +752,51 @@ internal fun canBrowseAuto(settings: AppSettings, isAuthenticated: Boolean): Boo
         AppMode.LOCAL -> settings.selectedLocalLibraryId != null
     }
 
-internal fun autoBrowseParentsChangedAfterSync(): List<String> =
+/**
+ * What a completed sync refreshes in Auto: the three shelves and the folders
+ * Auto opened lately ([recentFolders], newest first), so a folder a driver
+ * is in repaints too.
+ */
+internal fun autoBrowseParentsChangedAfterSync(recentFolders: List<String> = emptyList()): List<String> =
     listOf(
         MediaBrowseTree.RECENTLY_PLAYED_ID,
         MediaBrowseTree.LIBRARY_ID,
         MediaBrowseTree.DOWNLOADED_ID,
-    )
+    ) + recentFolders
 
-internal fun autoBrowseParentsChangedAfterSourceChange(): List<String> =
-    listOf(MediaBrowseTree.ROOT_ID) + autoBrowseParentsChangedAfterSync()
+internal fun autoBrowseParentsChangedAfterSourceChange(recentFolders: List<String> = emptyList()): List<String> =
+    listOf(MediaBrowseTree.ROOT_ID) + autoBrowseParentsChangedAfterSync(recentFolders)
 
 internal fun autoRootItemIds(canBrowse: Boolean): List<String> =
     if (canBrowse) MediaBrowseTree.rootItemIds() else listOf(MediaBrowseTree.SETUP_REQUIRED_ID)
 
+/** The library and source Auto browses. */
+internal data class AutoScope(val libraryId: String, val isLocal: Boolean)
+
+/** The active library and source, or null before one resolves. */
+internal fun autoScope(settings: AppSettings): AutoScope? {
+    val libraryId = settings.activeLibraryId ?: return null
+    return AutoScope(libraryId, settings.appMode == AppMode.LOCAL)
+}
+
+/**
+ * How many children [parentId] has, for Media3 change notifications, counted
+ * without building rows. Library, Downloaded and their folders count through
+ * the tree ([countTree]), so a shelf over 500 books reports its folders. A
+ * malformed id counts zero.
+ */
 internal suspend fun autoBrowseChildCount(
     parentId: String,
     canBrowse: Boolean,
     activeLibraryId: String?,
     activeIsLocal: Boolean,
     countRecent: suspend (String, Boolean) -> Int,
-    countLibrary: suspend (String, Boolean) -> Int,
-    countDownloaded: suspend (String, Boolean) -> Int,
+    countTree: suspend (AutoFolderId) -> Int,
 ): Int {
     if (parentId == MediaBrowseTree.ROOT_ID) return autoRootItemIds(canBrowse).size
     if (!canBrowse) return 0
     val libraryId = activeLibraryId ?: return 0
-    return when (parentId) {
-        MediaBrowseTree.RECENTLY_PLAYED_ID -> minOf(20, countRecent(libraryId, activeIsLocal))
-        MediaBrowseTree.LIBRARY_ID -> countLibrary(libraryId, activeIsLocal)
-        MediaBrowseTree.DOWNLOADED_ID -> countDownloaded(libraryId, activeIsLocal)
-        else -> 0
-    }
+    if (parentId == MediaBrowseTree.RECENTLY_PLAYED_ID) return minOf(20, countRecent(libraryId, activeIsLocal))
+    val folderId = AutoFolderId.parse(parentId) ?: return 0
+    return countTree(folderId)
 }

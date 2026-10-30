@@ -97,4 +97,20 @@ class BrowseArtworkCacheTest {
         ids.forEach { cache.put(it, thumbnail) }
         ids.forEach { id -> assertNotNull(cache.get(id)) }
     }
+
+    @Test
+    fun `clear empties the browse cache`() {
+        val cache = BrowseArtworkCache(maxEntries = 2, maxTotalBytes = 1_000)
+        cache.put("book-1", ByteArray(400))
+        cache.put("book-2", ByteArray(400))
+        cache.clear()
+        assertNull(cache.get("book-1"))
+        assertNull(cache.get("book-2"))
+        assertEquals(0, cache.size())
+        // The byte total restarts too: two fresh 400 byte entries fit again.
+        cache.put("book-3", ByteArray(400))
+        cache.put("book-4", ByteArray(400))
+        assertNotNull(cache.get("book-3"))
+        assertNotNull(cache.get("book-4"))
+    }
 }

@@ -5,6 +5,7 @@ import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class MediaBrowseScopeTest {
@@ -42,6 +43,47 @@ class MediaBrowseScopeTest {
     }
 
     @Test
+    fun `completed sync also refreshes folders Auto has open`() {
+        assertEquals(
+            listOf(
+                MediaBrowseTree.RECENTLY_PLAYED_ID,
+                MediaBrowseTree.LIBRARY_ID,
+                MediaBrowseTree.DOWNLOADED_ID,
+                "library/T",
+            ),
+            autoBrowseParentsChangedAfterSync(listOf("library/T")),
+        )
+    }
+
+    @Test
+    fun `source change refreshes the root, the shelves and open folders`() {
+        assertEquals(
+            listOf(
+                MediaBrowseTree.ROOT_ID,
+                MediaBrowseTree.RECENTLY_PLAYED_ID,
+                MediaBrowseTree.LIBRARY_ID,
+                MediaBrowseTree.DOWNLOADED_ID,
+                "library/TH/2",
+                "downloaded/#",
+            ),
+            autoBrowseParentsChangedAfterSourceChange(listOf("library/TH/2", "downloaded/#")),
+        )
+    }
+
+    @Test
+    fun `recent folders keep the last eight, newest first`() {
+        val recent = RecentAutoFolders()
+        (1..10).forEach { recent.record("library/T/$it") }
+        assertEquals((10 downTo 3).map { "library/T/$it" }, recent.snapshot())
+
+        recent.record("library/T/5")
+        assertEquals(
+            listOf("library/T/5") + (10 downTo 3).filter { it != 5 }.map { "library/T/$it" },
+            recent.snapshot(),
+        )
+    }
+
+    @Test
     fun `source change also invalidates the Auto root`() {
         assertEquals(
             listOf(
@@ -55,20 +97,31 @@ class MediaBrowseScopeTest {
     }
 
     @Test
-    fun `downloaded shelf stays inside the selected server library`() = runBlocking {
+    fun `the downloaded shelf stays inside the selected server library`() {
         val settings = AppSettings(
             appMode = AppMode.AUDIOBOOKSHELF,
             selectedLibraryId = "server-active",
             selectedLocalLibraryId = "local",
         )
-        var asked: Pair<String, Boolean>? = null
 
-        autoBrowsePage(settings, page = 0, pageSize = 50) { libraryId, isLocal, _, _ ->
-            asked = libraryId to isLocal
-            emptyList<String>()
-        }
+        assertEquals(AutoScope("server-active", isLocal = false), autoScope(settings))
+    }
 
-        assertEquals("server-active" to false, asked)
+    @Test
+    fun `local mode browses the local library`() {
+        val settings = AppSettings(
+            appMode = AppMode.LOCAL,
+            selectedLibraryId = "server-active",
+            selectedLocalLibraryId = "local-lib",
+        )
+
+        assertEquals(AutoScope("local-lib", isLocal = true), autoScope(settings))
+    }
+
+    @Test
+    fun `no active library browses nothing`() {
+        assertNull(autoScope(AppSettings(appMode = AppMode.AUDIOBOOKSHELF)))
+        assertNull(autoScope(AppSettings(appMode = AppMode.LOCAL, selectedLibraryId = "server")))
     }
 
     @Test
@@ -222,54 +275,50 @@ class MediaBrowseScopeTest {
         assertEquals(emptyList<AudioBook>(), result)
     }
 
-    @Test
-    fun `browse notifications use count queries instead of materializing books`() = runBlocking {
-        val queried = mutableListOf<String>()
-        val count = autoBrowseChildCount(
-            parentId = MediaBrowseTree.DOWNLOADED_ID,
-            canBrowse = true,
-            activeLibraryId = "active",
-            activeIsLocal = false,
-            countRecent = { _, _ -> error("recent count should not run") },
-            countLibrary = { _, _ -> error("library count should not run") },
-            countDownloaded = { libraryId, isLocal ->
-                queried += libraryId
-                assertEquals(false, isLocal)
-                37
-            },
-        )
+    private val noCount: suspend (String, Boolean) -> Int = { _, _ -> error("recent count should not run") }
+    private val noTree: suspend (AutoFolderId) -> Int = { error("tree count should not run") }
 
-        assertEquals(37, count)
-        assertEquals(listOf("active"), queried)
+    @Test
+    fun `library and downloaded counts go through the tree`() = runBlocking {
+        val asked = mutableListOf<AutoFolderId>()
+        val tree: suspend (AutoFolderId) -> Int = { asked += it; 27 }
+
+        assertEquals(27, autoBrowseChildCount(MediaBrowseTree.LIBRARY_ID, true, "active", false, noCount, tree))
+        assertEquals(27, autoBrowseChildCount(MediaBrowseTree.DOWNLOADED_ID, true, "active", false, noCount, tree))
+        assertEquals(
+            listOf(AutoFolderId(AutoBranch.LIBRARY, null), AutoFolderId(AutoBranch.DOWNLOADED, null)),
+            asked,
+        )
+    }
+
+    @Test
+    fun `a folder counts through the tree`() = runBlocking {
+        val asked = mutableListOf<AutoFolderId>()
+        val count = autoBrowseChildCount("library/T", true, "active", false, noCount) { asked += it; 12 }
+
+        assertEquals(12, count)
+        assertEquals(listOf(AutoFolderId(AutoBranch.LIBRARY, "T")), asked)
+    }
+
+    @Test
+    fun `a malformed folder id counts zero`() = runBlocking {
+        listOf("library/t", "library/T/2", "book_1", "podcasts").forEach {
+            assertEquals(it, 0, autoBrowseChildCount(it, true, "active", false, noCount, noTree))
+        }
+    }
+
+    @Test
+    fun `nothing is counted without a browsable source`() = runBlocking {
+        listOf(MediaBrowseTree.RECENTLY_PLAYED_ID, MediaBrowseTree.LIBRARY_ID, MediaBrowseTree.DOWNLOADED_ID, "library/T").forEach {
+            assertEquals(it, 0, autoBrowseChildCount(it, false, "server", false, noCount, noTree))
+            assertEquals(it, 0, autoBrowseChildCount(it, true, null, false, noCount, noTree))
+        }
     }
 
     @Test
     fun `browse notification counts preserve root auth cap and local source`() = runBlocking {
-        val unused: suspend (String, Boolean) -> Int = { _, _ -> error("count should not run") }
-        assertEquals(
-            1,
-            autoBrowseChildCount(
-                MediaBrowseTree.ROOT_ID,
-                canBrowse = false,
-                activeLibraryId = null,
-                activeIsLocal = false,
-                countRecent = unused,
-                countLibrary = unused,
-                countDownloaded = unused,
-            ),
-        )
-        assertEquals(
-            0,
-            autoBrowseChildCount(
-                MediaBrowseTree.LIBRARY_ID,
-                canBrowse = false,
-                activeLibraryId = "server",
-                activeIsLocal = false,
-                countRecent = unused,
-                countLibrary = unused,
-                countDownloaded = unused,
-            ),
-        )
+        assertEquals(1, autoBrowseChildCount(MediaBrowseTree.ROOT_ID, false, null, false, noCount, noTree))
+        assertEquals(3, autoBrowseChildCount(MediaBrowseTree.ROOT_ID, true, "server", false, noCount, noTree))
         assertEquals(
             20,
             autoBrowseChildCount(
@@ -282,24 +331,22 @@ class MediaBrowseScopeTest {
                     assertEquals(false, isLocal)
                     99
                 },
-                countLibrary = unused,
-                countDownloaded = unused,
+                countTree = noTree,
             ),
         )
         assertEquals(
-            12,
+            4,
             autoBrowseChildCount(
-                MediaBrowseTree.LIBRARY_ID,
+                MediaBrowseTree.RECENTLY_PLAYED_ID,
                 canBrowse = true,
                 activeLibraryId = "local",
                 activeIsLocal = true,
-                countRecent = unused,
-                countLibrary = { libraryId, isLocal ->
+                countRecent = { libraryId, isLocal ->
                     assertEquals("local", libraryId)
                     assertEquals(true, isLocal)
-                    12
+                    4
                 },
-                countDownloaded = unused,
+                countTree = noTree,
             ),
         )
     }

@@ -126,15 +126,16 @@ internal object ArtworkCodec {
         if (bitmap == null) return null
 
         val compressed = ByteArrayOutputStream()
-        var quality = 85
-        do {
-            compressed.reset()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, compressed)
-            quality -= 10
-        } while (compressed.size() > maxEmbedBytes && quality >= minQuality)
-        bitmap.recycle()
-
-        return compressed.toByteArray().takeIf { it.size <= maxEmbedBytes }
+        return compressWithinBudget(
+            qualities = jpegQualitySteps(start = 85, step = 10, minQuality = minQuality),
+            maxBytes = maxEmbedBytes,
+            compress = { quality ->
+                compressed.reset()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, compressed)
+                compressed.toByteArray()
+            },
+            release = bitmap::recycle,
+        )
     }
 
     /**
@@ -177,11 +178,49 @@ internal class BoundedInputStream(
     }
 
     override fun read(b: ByteArray, off: Int, len: Int): Int {
+        // InputStream's contract: a zero length read is 0, not end of stream.
+        if (len == 0) return 0
         if (bytesRead >= maxBytes) return -1
         val allowed = len.toLong().coerceAtMost(maxBytes - bytesRead).toInt()
         if (allowed <= 0) return -1
         val n = super.read(b, off, allowed)
         if (n > 0) bytesRead += n
         return n
+    }
+}
+
+/**
+ * JPEG qualities to try, best first: [start], then down by [step], always
+ * ending on [minQuality] itself. Stepping alone skipped the floor (85, 75,
+ * 65, 55 and never 50), so a cover that only fit at the documented floor
+ * was dropped (#1).
+ */
+internal fun jpegQualitySteps(start: Int, step: Int, minQuality: Int): List<Int> {
+    if (start <= minQuality || step <= 0) return listOf(maxOf(start, minQuality))
+    val steps = generateSequence(start) { it - step }.takeWhile { it > minQuality }.toMutableList()
+    steps += minQuality
+    return steps
+}
+
+/**
+ * The first [compress] result at or under [maxBytes], trying [qualities] in
+ * order, or null when none fits. [release] (the bitmap's recycle) runs
+ * exactly once, also when [compress] throws, so a failed compress never
+ * leaks the decoded bitmap (#1).
+ */
+internal fun compressWithinBudget(
+    qualities: List<Int>,
+    maxBytes: Int,
+    compress: (quality: Int) -> ByteArray,
+    release: () -> Unit,
+): ByteArray? {
+    try {
+        for (quality in qualities) {
+            val bytes = compress(quality)
+            if (bytes.size <= maxBytes) return bytes
+        }
+        return null
+    } finally {
+        release()
     }
 }

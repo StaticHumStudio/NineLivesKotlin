@@ -175,6 +175,21 @@ class DownloadOwnership @Inject constructor() {
         val confirmed = stopEngine()
         return lock.withLock { act(EngineStop(wasDownloading = true, stopConfirmed = confirmed)) }
     }
+
+    /**
+     * Run [act] under the lock unless the engine holds [audioBookId] or is
+     * writing [folder] (two editions that started before each book got its
+     * own folder can share one), and null without running it when it is.
+     * For short file work in a finished download's folder (the saved cover
+     * refresh, #70) that must never race the engine writing the same folder.
+     * File IO only, never network I/O.
+     */
+    internal suspend fun <T> whenEngineIsNotOn(audioBookId: String, folder: File, act: suspend () -> T): T? =
+        lock.withLock {
+            val claim = current
+            val sameFolder = claim != null && claim.folder.absoluteFile.normalize() == folder.absoluteFile.normalize()
+            if (claim?.audioBookId == audioBookId || sameFolder) null else act()
+        }
 }
 
 /**

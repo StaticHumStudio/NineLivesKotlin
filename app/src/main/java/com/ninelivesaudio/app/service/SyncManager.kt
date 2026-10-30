@@ -15,6 +15,7 @@ import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.data.repository.itemCountResult
 import com.ninelivesaudio.app.data.repository.wroteBooks
+import com.ninelivesaudio.app.service.download.DownloadedCoverRefresher
 import com.ninelivesaudio.app.data.repository.LibraryRefreshOutcome
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AppMode
@@ -66,6 +67,7 @@ class SyncManager @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val settingsManager: SettingsManager,
     private val playbackProgressDao: PlaybackProgressDao,
+    private val downloadedCoverRefresher: DownloadedCoverRefresher,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -315,7 +317,7 @@ class SyncManager @Inject constructor(
             // book metadata).
             runSyncWork = {
                 syncProgress()
-                when (mode) {
+                val report = when (mode) {
                     SyncMode.FULL -> fetchLibrarySyncReportFromCounts(
                         fetchLibraries = libraryRepository::syncFromServer,
                         fetchItemCounts = { library ->
@@ -354,6 +356,14 @@ class SyncManager @Inject constructor(
                         )
                     }
                 }
+                // Downloaded books keep the cover saved at download time. A
+                // pass that wrote books may carry a newer cover version, so
+                // replace saved covers older than it (#70). Bounded to 30 s.
+                if (mode == SyncMode.FULL || tally.wroteBooks) {
+                    val replaced = downloadedCoverRefresher.refreshStale()
+                    Log.d(TAG, "refreshStale: replaced $replaced saved covers")
+                }
+                report
             },
             persistOutcome = { report ->
                 val previousResult = settingsManager.currentSettings.lastSyncForCurrentServer()?.result

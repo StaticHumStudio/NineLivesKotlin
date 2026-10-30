@@ -65,4 +65,12 @@ class ThumbnailCoverUrlTest {
             thumbnailCoverUrl("https://abs.example.com/api/items/li_1/cover?", 240),
         )
     }
+
+    @Test
+    fun `a versioned cover keeps its version when a width is added`() {
+        assertEquals(
+            "https://abs.example.com/api/items/li_1/cover?ts=5&width=256",
+            thumbnailCoverUrl(com.ninelivesaudio.app.data.remote.versionedCoverUrl("https://abs.example.com/api/items/li_1/cover", 5), 256),
+        )
+    }
 }

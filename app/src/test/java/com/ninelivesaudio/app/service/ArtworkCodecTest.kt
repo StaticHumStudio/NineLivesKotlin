@@ -1,6 +1,8 @@
 package com.ninelivesaudio.app.service
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -39,5 +41,58 @@ class ArtworkCodecTest {
         assert(browseSample >= nowPlayingSample) {
             "expected browse sampleSize ($browseSample) >= now-playing sampleSize ($nowPlayingSample)"
         }
+    }
+
+    // ─── Compression budget (#1) ─────────────────────────────────────────
+
+    @Test
+    fun `the documented floor is always tried`() {
+        assertEquals(listOf(85, 75, 65, 55, 50), jpegQualitySteps(85, 10, 50))
+    }
+
+    @Test
+    fun `a floor on the step is not repeated`() {
+        assertEquals(listOf(85, 75, 65, 55), jpegQualitySteps(85, 10, 55))
+        assertEquals(listOf(85), jpegQualitySteps(85, 10, 85))
+    }
+
+    @Test
+    fun `compression stops at the first quality that fits`() {
+        val tried = mutableListOf<Int>()
+        val result = compressWithinBudget(listOf(85, 75, 65), maxBytes = 70, compress = { q ->
+            tried += q
+            ByteArray(q)
+        }, release = {})
+        assertEquals(listOf(85, 75, 65), tried)
+        assertEquals(65, result!!.size)
+
+        tried.clear()
+        compressWithinBudget(listOf(85, 75, 65), maxBytes = 80, compress = { q -> tried += q; ByteArray(q) }, release = {})
+        assertEquals(listOf(85, 75), tried)
+    }
+
+    @Test
+    fun `nothing comes back when even the floor is too big`() {
+        assertNull(compressWithinBudget(listOf(85, 50), maxBytes = 10, compress = { ByteArray(it) }, release = {}))
+    }
+
+    @Test
+    fun `the bitmap is released once whatever happens`() {
+        var released = 0
+        compressWithinBudget(listOf(85), maxBytes = 100, compress = { ByteArray(1) }, release = { released++ })
+        assertEquals(1, released)
+
+        released = 0
+        compressWithinBudget(listOf(85, 50), maxBytes = 1, compress = { ByteArray(10) }, release = { released++ })
+        assertEquals(1, released)
+
+        released = 0
+        try {
+            compressWithinBudget(listOf(85), maxBytes = 100, compress = { throw OutOfMemoryError("fixture") }, release = { released++ })
+            fail("the OutOfMemoryError was swallowed")
+        } catch (expected: OutOfMemoryError) {
+            assertEquals("fixture", expected.message)
+        }
+        assertEquals(1, released)
     }
 }

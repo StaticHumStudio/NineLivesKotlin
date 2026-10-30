@@ -56,30 +56,6 @@ internal fun AutoBrowseRow.toAutoBookItem(): AutoBookItem = AutoBookItem(
 internal const val AUTO_BROWSE_MAX_PAGE_SIZE = 500
 
 /**
- * One page of an Auto list for the active library and source, read straight
- * from SQL with [load] as LIMIT and OFFSET. Nothing outside the page is read.
- */
-internal suspend fun <T> autoBrowsePage(
-    settings: AppSettings,
-    page: Int,
-    pageSize: Int,
-    load: suspend (libraryId: String, isLocal: Boolean, limit: Int, offset: Int) -> List<T>,
-): List<T> {
-    val libraryId = settings.activeLibraryId ?: return emptyList()
-    if (page < 0 || pageSize <= 0) return emptyList()
-    // A page bigger than the cap is read as one capped list. Capping the
-    // limit but not the offset would skip the books between the cap and the
-    // next page start, so later pages of an oversized size are empty instead.
-    if (pageSize > AUTO_BROWSE_MAX_PAGE_SIZE) {
-        if (page > 0) return emptyList()
-        return load(libraryId, settings.appMode == AppMode.LOCAL, AUTO_BROWSE_MAX_PAGE_SIZE, 0)
-    }
-    val offset = page.toLong() * pageSize.toLong()
-    if (offset > Int.MAX_VALUE) return emptyList()
-    return load(libraryId, settings.appMode == AppMode.LOCAL, pageSize, offset.toInt())
-}
-
-/**
  * Most search hits Auto ever lists. A one letter query in a big library would
  * otherwise build a row and fetch a cover for thousands of books.
  */

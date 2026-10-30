@@ -4,6 +4,10 @@ import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteStatement
 import com.ninelivesaudio.app.data.local.bookSearchText
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,7 +18,8 @@ import java.lang.reflect.Proxy
  * Room refuses to open an upgraded database when a migration is missing or
  * builds a different schema than the entities describe. Neither shows up until
  * a real install upgrades, so these pin the chain and the SQL here. The
- * instrumented MigrationUpgradeInstrumentedTest runs 9 to 10 on real SQLite.
+ * instrumented MigrationUpgradeInstrumentedTest runs 9 to 10 and 10 to 11 on
+ * real SQLite.
  */
 class MigrationsTest {
 
@@ -27,7 +32,7 @@ class MigrationsTest {
             .mapNotNull { it.name.removeSuffix(".json").toIntOrNull() }
             .maxOrNull()
 
-        assertEquals((1 until 10).map { it to it + 1 }, steps)
+        assertEquals((1 until 11).map { it to it + 1 }, steps)
         assertEquals(newestSchema, steps.last().second)
     }
 
@@ -82,6 +87,22 @@ class MigrationsTest {
             assertEquals(bookSearchText(row.title, row.author, row.seriesName, row.narrator), update.second)
         }
         assertEquals("emile", updates.first().second.substringBefore('\u001F'))
+    }
+
+    @Test
+    fun `10 to 11 only creates the authors table Room expects`() {
+        val executed = mutableListOf<String>()
+        MIGRATION_10_11.migrate(recordingDatabase(executed))
+
+        val expected = Json.parseToJsonElement(File(schemaDir, "11.json").readText())
+            .jsonObject.getValue("database").jsonObject.getValue("entities").jsonArray
+            .map { it.jsonObject }
+            .singleOrNull { it["tableName"]?.jsonPrimitive?.content == "LibraryAuthors" }
+            ?.getValue("createSql")?.jsonPrimitive?.content
+            ?.replace("\${TABLE_NAME}", "LibraryAuthors")
+
+        assertTrue("LibraryAuthors missing from the exported v11 schema", expected != null)
+        assertEquals(listOf(expected), executed)
     }
 
     private data class BookRow(
@@ -200,7 +221,7 @@ class MigrationsTest {
                     null
                 }
                 "toString" -> "RecordingDatabase"
-                else -> error("migration 8 to 9 should only run SQL, it called ${method.name}")
+                else -> error("this migration should only run SQL, it called ${method.name}")
             }
         } as SupportSQLiteDatabase
 }

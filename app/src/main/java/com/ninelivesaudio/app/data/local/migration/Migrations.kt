@@ -117,6 +117,18 @@ val MIGRATION_9_10 = object : Migration(9, 10) {
     }
 }
 
+val MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Each server library's Audiobookshelf authors (issue #87), so Author
+        // view groups "Smith, John" as one person. A new table only: every
+        // existing row stays as it is, and the list fills on the next sync.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `LibraryAuthors` (`LibraryId` TEXT NOT NULL, `AuthorId` TEXT NOT NULL, " +
+                "`Name` TEXT NOT NULL, PRIMARY KEY(`LibraryId`, `AuthorId`))"
+        )
+    }
+}
+
 /** Rows read per backfill page, so a huge library never sits in memory whole. */
 internal const val SEARCH_BACKFILL_PAGE_SIZE = 500
 
@@ -171,4 +183,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_7_8,
     MIGRATION_8_9,
     MIGRATION_9_10,
+    MIGRATION_10_11,
 )

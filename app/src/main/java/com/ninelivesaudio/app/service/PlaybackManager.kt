@@ -3168,17 +3168,22 @@ class PlaybackManager @Inject constructor(
         if (tick != null) {
             try {
                 tick.listening.deliver(tick.timeListened) { delta ->
-                    progressRepository.syncSessionProgressIfCurrent(
-                        itemId = book.id,
-                        sessionId = tick.sessionId,
-                        currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        timeListened = delta,
-                        isCurrent = {
-                            lifetimeIsCurrent() &&
-                                _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
-                        },
-                    ) == true
+                    // Bounded: this holds the locks a stopped book's final
+                    // write needs, and deliver's NonCancellable outlasts any
+                    // cancellation (#54).
+                    boundedHeartbeatSend {
+                        progressRepository.syncSessionProgressIfCurrent(
+                            itemId = book.id,
+                            sessionId = tick.sessionId,
+                            currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            timeListened = delta,
+                            isCurrent = {
+                                lifetimeIsCurrent() &&
+                                    _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                            },
+                        )
+                    }
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation

@@ -123,4 +123,46 @@ class TerminalServerBudgetTest {
     fun `the whole sequence gets what one call used to get`() {
         assertEquals(5_000L, TERMINAL_SEQUENCE_DEADLINE.inWholeMilliseconds)
     }
+
+    @Test(timeout = 5_000)
+    fun `a heartbeat stuck mid request lets go of the book's locks within its bound`() = runBlocking {
+        // The real lock chain: a heartbeat runs inside the book's progress
+        // lock, then inside the session delivery lock under NonCancellable.
+        // The stopped book's final flush needs the progress lock first.
+        val owner = PlaybackProgressOwner()
+        val listening = ServerSessionListening()
+        val heartbeatInFlight = CompletableDeferred<Unit>()
+        val heartbeat = launch {
+            owner.sync("a") {
+                listening.deliver(10.0) {
+                    heartbeatInFlight.complete(Unit)
+                    boundedHeartbeatSend(timeout = 200.milliseconds) { never.await() }
+                }
+            }
+        }
+        heartbeatInFlight.await()
+        val started = System.nanoTime()
+        val budget = TerminalServerBudget(total = 300.milliseconds)
+        var flushed = false
+        withContext(NonCancellable) {
+            owner.finalFlushSnapshot(owner.snapshotToken("a"), syncTerminal = {}) { flushed = true }
+            budget.call(serverLive = true) { listening.deliver(20.0) { true } }
+        }
+        val ms = (System.nanoTime() - started) / 1_000_000
+        assertTrue(flushed)
+        assertTrue("waited ${ms}ms", ms < 800)
+        heartbeat.join()
+    }
+
+    @Test
+    fun `a heartbeat that answers in time reports what the server said`() = runBlocking {
+        assertTrue(boundedHeartbeatSend { true })
+        assertFalse(boundedHeartbeatSend { false })
+        assertFalse(boundedHeartbeatSend { null })
+    }
+
+    @Test
+    fun `a heartbeat gets the same bound as the whole terminal sequence`() {
+        assertEquals(TERMINAL_SEQUENCE_DEADLINE, HEARTBEAT_SYNC_TIMEOUT)
+    }
 }

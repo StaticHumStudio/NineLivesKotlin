@@ -166,17 +166,17 @@ fun WhisperOnEnter(
     context: WhisperContext,
     whisperService: WhisperService = WhisperService.instance
 ) {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val shouldShow = unhingedSettings.shouldShowWhispers
-    val reduceMotion = unhingedSettings.reduceMotionRequested
+    // Read after the delay, not at composition: the stored settings can arrive after the first frame.
+    val settings by rememberUpdatedState(LocalUnhingedSettings.current)
 
     LaunchedEffect(Unit) {
         delay(500) // Small delay before showing
-        whisperService.tryShowWhisper(
+        val shown = whisperService.tryShowWhisper(
             context = context,
-            enabled = shouldShow,
-            reduceMotion = reduceMotion
+            enabled = settings.shouldShowWhispers,
+            reduceMotion = settings.reduceMotionRequested
         )
+        if (shown) Log.d("Whisper", "shown context=$context")
     }
 }
 

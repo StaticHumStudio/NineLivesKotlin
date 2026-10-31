@@ -167,8 +167,10 @@ class MainActivity : ComponentActivity() {
             } catch (_: Exception) { false }
 
             // Observe DataStore-persisted unhinged settings (includes user's reduce motion toggle)
-            val dataStoreSettings by unhingedRepository.settingsFlow
-                .collectAsStateWithLifecycle(initialValue = UnhingedSettings.Default)
+            // null until the DataStore has answered, so nothing acts on placeholder defaults.
+            val storedSettings by unhingedRepository.settingsFlow
+                .collectAsStateWithLifecycle<UnhingedSettings?>(initialValue = null)
+            val dataStoreSettings = storedSettings ?: UnhingedSettings.Default
 
             // Merge: use DataStore reduce motion OR system reduce motion
             val reduceMotion = dataStoreSettings.reduceMotionRequested || systemReduceMotion
@@ -226,22 +228,24 @@ class MainActivity : ComponentActivity() {
 
                 // WhisperHost wraps all content to show atmospheric whisper overlays
                 WhisperHost(modifier = Modifier.fillMaxSize()) {
-                    // Trigger a whisper on app open
-                    WhisperOnEnter(WhisperContext.APP_OPENED)
-                    WhisperEventTriggers(events = { since ->
-                        whisperEvents(
-                            states = playbackManager.playbackState,
-                            ticks = playbackManager.chapterTicks(),
-                            finishedBooks = playbackManager.bookCompleted,
-                            completedDownloads = downloadManager.downloadCompleted,
-                            sinceMillis = since,
-                            clock = SystemClock::elapsedRealtime
+                    // Whispers wait for the stored settings (whispers toggle, Reduced Motion).
+                    if (storedSettings != null) {
+                        WhisperOnEnter(WhisperContext.APP_OPENED)
+                        WhisperEventTriggers(events = { since ->
+                            whisperEvents(
+                                states = playbackManager.playbackState,
+                                ticks = playbackManager.chapterTicks(),
+                                finishedBooks = playbackManager.bookCompleted,
+                                completedDownloads = downloadManager.downloadCompleted,
+                                sinceMillis = since,
+                                clock = SystemClock::elapsedRealtime
+                            )
+                        })
+                        IdleWhisperTrigger(
+                            onHome = currentRoute == Routes.HOME,
+                            lastInteractionAt = lastInteractionAt
                         )
-                    })
-                    IdleWhisperTrigger(
-                        onHome = currentRoute == Routes.HOME,
-                        lastInteractionAt = lastInteractionAt
-                    )
+                    }
 
                     Scaffold(
                         modifier = Modifier.fillMaxSize(),

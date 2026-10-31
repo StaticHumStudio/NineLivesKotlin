@@ -34,6 +34,51 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 
+/** The slice of the download rows and the stored flag that one book's page reads. */
+internal data class BookDownloadFeed(val rowId: String?, val rowStatus: DownloadStatus?, val storedFlag: Boolean)
+
+/**
+ * Follows only this book's download row. Every row in the app is watched, but
+ * a tick on another book's row, or on this one's byte count, changes nothing
+ * the page shows, so it does not emit.
+ */
+internal fun bookDownloadFeed(
+    bookId: String,
+    rows: Flow<List<com.ninelivesaudio.app.data.local.entity.DownloadItemEntity>>,
+    storedFlag: Flow<Boolean>,
+): Flow<BookDownloadFeed> = combine(rows, storedFlag) { entities, flag ->
+    val entity = entities.firstOrNull { it.audioBookId == bookId }
+    BookDownloadFeed(entity?.id, entity?.toDomain()?.status, flag)
+}.distinctUntilChanged()
+
+/**
+ * The stored flag counts only for a server book. A local import keeps its flag
+ * set whatever happens to its folder, so the page's own folder check decides.
+ */
+internal fun shownAsDownloaded(isLocal: Boolean, storedFlag: Boolean, current: Boolean): Boolean =
+    if (isLocal) current else storedFlag
+
+/**
+ * The download button for a download row, or for the book's own flag when it
+ * has no row (a delete from the Downloads tab removes the row, and the page
+ * must follow without being reopened).
+ */
+internal fun downloadButtonState(rowStatus: DownloadStatus?, bookIsDownloaded: Boolean): BookDetailViewModel.DownloadButtonState =
+    when (rowStatus) {
+        null -> if (bookIsDownloaded) BookDetailViewModel.DownloadButtonState.COMPLETED
+        else BookDetailViewModel.DownloadButtonState.NONE
+        // A provisional slot claim, taken before the metadata fetch returns. It
+        // reads as Queued because that is what it is from the user's side: the
+        // book is spoken for and nothing has downloaded yet.
+        DownloadStatus.Preparing -> BookDetailViewModel.DownloadButtonState.QUEUED
+        DownloadStatus.Queued -> BookDetailViewModel.DownloadButtonState.QUEUED
+        DownloadStatus.Downloading -> BookDetailViewModel.DownloadButtonState.DOWNLOADING
+        DownloadStatus.Paused -> BookDetailViewModel.DownloadButtonState.PAUSED
+        DownloadStatus.Completed -> BookDetailViewModel.DownloadButtonState.COMPLETED
+        DownloadStatus.Failed -> BookDetailViewModel.DownloadButtonState.NONE
+        DownloadStatus.Cancelled -> BookDetailViewModel.DownloadButtonState.NONE
+    }
+
 enum class HistoryLoadStatus { NOT_LOADED, COMPLETE, PARTIAL, FAILED }
 
 internal data class HistoryPresentation(
@@ -297,30 +342,17 @@ class BookDetailViewModel @Inject constructor(
 
     private fun observeDownloadState() {
         viewModelScope.launch {
-            downloadItemDao.observeAll().collect { entities ->
-                val entity = entities.firstOrNull { it.audioBookId == bookId }
-                currentDownloadId = entity?.id
-                val state = if (entity == null) {
-                    if (_uiState.value.isDownloaded) DownloadButtonState.COMPLETED
-                    else DownloadButtonState.NONE
-                } else {
-                    val item = entity.toDomain()
-                    when (item.status) {
-                        // A provisional slot claim, taken before the metadata
-                        // fetch returns. It reads as Queued because that is what
-                        // it is from the user's side: the book is spoken for and
-                        // nothing has downloaded yet.
-                        DownloadStatus.Preparing -> DownloadButtonState.QUEUED
-                        DownloadStatus.Queued -> DownloadButtonState.QUEUED
-                        DownloadStatus.Downloading -> DownloadButtonState.DOWNLOADING
-                        DownloadStatus.Paused -> DownloadButtonState.PAUSED
-                        DownloadStatus.Completed -> DownloadButtonState.COMPLETED
-                        DownloadStatus.Failed -> DownloadButtonState.NONE
-                        DownloadStatus.Cancelled -> DownloadButtonState.NONE
+            bookDownloadFeed(bookId, downloadItemDao.observeAll(), audioBookRepository.observeIsDownloaded(bookId))
+                .collect { feed ->
+                    currentDownloadId = feed.rowId
+                    _uiState.update {
+                        val downloaded = shownAsDownloaded(it.isLocal, feed.storedFlag, it.isDownloaded)
+                        it.copy(
+                            downloadState = downloadButtonState(feed.rowStatus, downloaded),
+                            isDownloaded = downloaded,
+                        )
                     }
                 }
-                _uiState.update { it.copy(downloadState = state) }
-            }
         }
     }
 

@@ -186,6 +186,23 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET IsDownloaded = 0, LocalPath = NULL, LocalCoverPath = NULL WHERE Id = :id")
     suspend fun clearLocalCopy(id: String)
 
+    /**
+     * Fill in the track list and chapters of a download made before 2.1.6, but
+     * only while the row is still that download: downloaded, at the same folder,
+     * with no track list. Returns the rows changed (0 when a delete, a new
+     * download or a sync got there first).
+     */
+    @Query(
+        "UPDATE AudioBooks SET AudioFilesJson = :audioFilesJson, ChaptersJson = :chaptersJson " +
+            "WHERE Id = :id AND IsDownloaded = 1 AND LocalPath = :localPath " +
+            "AND (AudioFilesJson IS NULL OR AudioFilesJson = '[]')"
+    )
+    suspend fun backfillDownloadManifest(id: String, localPath: String, audioFilesJson: String, chaptersJson: String): Int
+
+    /** The book's downloaded flag as it changes. Null when the row is gone. */
+    @Query("SELECT IsDownloaded FROM AudioBooks WHERE Id = :id")
+    fun observeIsDownloaded(id: String): Flow<Int?>
+
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
     suspend fun updateCoverPath(id: String, coverPath: String)
 
@@ -419,6 +436,7 @@ interface AudioBookDao {
     fun observeRecentlyPlayedByLibrary(libraryId: String, limit: Int = 9): Flow<List<RecentlyPlayedResult>>
 
     /** Get all audiobooks for a library with their last-played timestamp. */
+    @Transaction // one snapshot, like getFilteredBooks
     @Query("""
         SELECT ab.*, pp.UpdatedAt AS lastPlayedAt
         FROM AudioBooks ab

@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LibraryAuthor
+import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.service.shelfProgress
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -130,13 +132,9 @@ class AudioBookRepository @Inject constructor(
     suspend fun getLocalBooks(): List<AudioBook> =
         audioBookDao.getBySource(isLocal = 1).map { it.toDomain() }
 
-    /** Get audiobooks by library with last-played timestamps enriched. */
-    suspend fun getByLibraryWithLastPlayed(libraryId: String): List<AudioBook> =
-        audioBookDao.getByLibraryWithLastPlayed(libraryId).map { result ->
-            result.audioBook.toDomain().copy(
-                lastPlayedAt = result.lastPlayedAt?.toEpochMillis()
-            )
-        }
+    /** Whether the book holds a downloaded copy, following deletes and completions. */
+    fun observeIsDownloaded(id: String): Flow<Boolean> =
+        audioBookDao.observeIsDownloaded(id).map { (it ?: 0) != 0 }.distinctUntilChanged()
 
     /** Get a single audiobook by ID. */
     suspend fun getById(id: String): AudioBook? =
@@ -977,9 +975,8 @@ internal suspend fun <T> runSerializedLibraryItemPrune(
 
 /**
  * [mergeSyncedBooks] reading only the columns the merge keeps. The whole row
- * (audio file and chapter lists) is read only for a downloaded book whose
- * server copy came back without tracks or chapters, the one case the merge
- * borrows them from the local row. A book new to the cache takes the
+ * (audio file and chapter lists) is read only for a downloaded book, the one
+ * case the merge keeps the local lists over the server's. A book new to the cache takes the
  * position the progress pull saved for it ([getProgressRows]), see
  * [withPulledProgress].
  */
@@ -991,9 +988,7 @@ internal suspend fun mergeSyncedBooksLean(
 ): List<AudioBook> {
     if (remote.isEmpty()) return emptyList()
     val states = fetchByIdChunks(remote.map { it.id }, getMergeStates).associateBy { it.id }
-    val needDetail = remote.filter { book ->
-        states[book.id]?.isDownloaded == 1 && (book.audioFiles.isEmpty() || book.chapters.isEmpty())
-    }.map { it.id }
+    val needDetail = remote.filter { book -> states[book.id]?.isDownloaded == 1 }.map { it.id }
     val details = if (needDetail.isEmpty()) emptyMap() else fetchByIdChunks(needDetail, getFullRows).associateBy { it.id }
     val newIds = remote.filter { states[it.id] == null }.map { it.id }
     val pulled = if (newIds.isEmpty()) emptyMap() else fetchByIdChunks(newIds, getProgressRows).associateBy { it.audioBookId }
@@ -1041,6 +1036,21 @@ internal fun AudioBookEntity.toSyncMergeState(): SyncMergeState = SyncMergeState
 )
 
 /**
+ * The chapters a downloaded book keeps through a sync. They describe the
+ * tracks, so with no recorded tracks the local chapters stay (the play-time
+ * backfill fills both after the disk check). With recorded tracks the server's
+ * chapters (an edit there should arrive) are taken only when the server's
+ * track list is the same one: same count and same file at each index.
+ */
+private fun syncedChapters(kept: AudioBook, remote: AudioBook): List<Chapter> {
+    if (kept.audioFiles.isEmpty()) return kept.chapters
+    val sameTracks = kept.audioFiles.size == remote.audioFiles.size &&
+        kept.audioFiles.sortedBy { it.index }.zip(remote.audioFiles.sortedBy { it.index })
+            .all { (a, b) -> a.index == b.index && a.ino.ifEmpty { a.id } == b.ino.ifEmpty { b.id } }
+    return if (sameTracks) remote.chapters.ifEmpty { kept.chapters } else kept.chapters
+}
+
+/**
  * Merge a server book with its local row during sync, preserving local-only
  * state the server does not know about: the download flag, the on-disk audio
  * path, the cover persisted at download time, and any local playback progress
@@ -1051,19 +1061,24 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
 
 /**
  * [mergeSyncedBook] from the kept columns alone. [detail] is the whole local
- * row, needed only to borrow tracks or chapters for a downloaded book whose
- * server copy has none. Without it those stay as the server sent them.
+ * row, needed only to keep a downloaded book's own tracks and chapters.
+ * Without it those stay as the server sent them.
  */
 internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: AudioBookEntity?): AudioBook {
     if (local == null) return remote
 
     val withDownload = if (local.isDownloaded == 1) {
+        val kept = detail?.toDomain()
         remote.copy(
             isDownloaded = true,
             localPath = local.localPath,
             localCoverPath = local.localCoverPath,
-            audioFiles = remote.audioFiles.ifEmpty { detail?.toDomain()?.audioFiles.orEmpty() },
-            chapters = remote.chapters.ifEmpty { detail?.toDomain()?.chapters.orEmpty() },
+            // A download's own track list is the record of what is on disk, so a
+            // sync never swaps it for the server's. Old downloads hold none, and
+            // stay that way until the play-time backfill checks the server's
+            // list against the files (#35). Chapters follow the tracks.
+            audioFiles = kept?.audioFiles ?: remote.audioFiles,
+            chapters = if (kept == null) remote.chapters else syncedChapters(kept, remote),
         )
     } else remote
 

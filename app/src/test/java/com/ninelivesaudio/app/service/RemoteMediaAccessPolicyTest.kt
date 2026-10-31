@@ -194,4 +194,21 @@ class RemoteMediaAccessPolicyTest {
 
         assertTrue(hasUsableLocalDownload(book))
     }
+
+    @Test
+    fun `a recorded track path outside the book folder makes the download unusable`() {
+        val downloadDirectory = tempFolder.newFolder("recorded-download")
+        val elsewhere = tempFolder.newFolder("elsewhere").resolve("x.mp3").apply { writeBytes(byteArrayOf(1)) }
+        val inside = downloadDirectory.resolve("a.mp3").apply { writeBytes(byteArrayOf(1)) }
+        val book = cachedServerBook.copy(
+            isDownloaded = true,
+            localPath = downloadDirectory.absolutePath,
+            audioFiles = listOf(
+                AudioFile(filename = "a.mp3", index = 0, localPath = inside.absolutePath),
+                AudioFile(filename = "x.mp3", index = 1, localPath = elsewhere.absolutePath),
+            ),
+        )
+
+        assertFalse(hasUsableLocalDownload(book))
+    }
 }

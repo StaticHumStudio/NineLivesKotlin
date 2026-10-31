@@ -38,7 +38,11 @@ import com.ninelivesaudio.app.domain.model.PlaybackSessionInfo
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
+import com.ninelivesaudio.app.service.download.DownloadManifestBackfill
+import com.ninelivesaudio.app.service.download.MANIFEST_BACKFILL_TIMEOUT
+import com.ninelivesaudio.app.service.download.needsManifestBackfill
 import com.ninelivesaudio.app.service.download.resolveDownloadFileNames
+import com.ninelivesaudio.app.service.download.trackFileInside
 import com.ninelivesaudio.app.MainActivity
 import androidx.media3.session.MediaController
 import androidx.media3.session.CommandButton
@@ -189,12 +193,33 @@ internal fun playbackWorkActive(
 internal fun shouldReportPolledPosition(hasBook: Boolean, @Suppress("UNUSED_PARAMETER") duration: Duration): Boolean =
     hasBook
 
+internal enum class DownloadRemovalAction { NONE, UNLOAD, STOP_LOAD_AND_UNLOAD }
+
+/**
+ * What the player does when a server download is deleted (#89). Only a book
+ * the player loaded from that download's files lets go: a book it streams
+ * (started before the download finished) keeps playing, and a local import
+ * never had a download. A load still under way stops before it reads files
+ * that are gone.
+ */
+internal fun downloadRemovalAction(
+    currentBook: AudioBook?,
+    removedBookId: String,
+    loading: Boolean,
+): DownloadRemovalAction = when {
+    currentBook == null || currentBook.id != removedBookId || currentBook.isLocal -> DownloadRemovalAction.NONE
+    !currentBook.isDownloaded || currentBook.localPath.isNullOrEmpty() -> DownloadRemovalAction.NONE
+    loading -> DownloadRemovalAction.STOP_LOAD_AND_UNLOAD
+    else -> DownloadRemovalAction.UNLOAD
+}
+
 internal class PlaybackLoadOwner {
     private val ownerLock = Any()
     private var nextRequest = 0L
     private var activeRequest: Long? = null
     private val pendingRequests = sortedSetOf<Long>()
     private val requestChanges = MutableStateFlow(0L)
+    private val diskLoadBooks = mutableMapOf<Long, String>()
 
     fun newRequest(): Long = synchronized(ownerLock) {
         (++nextRequest).also(pendingRequests::add)
@@ -216,7 +241,30 @@ internal class PlaybackLoadOwner {
         }
     }
 
+    /** Notes that [request] is loading [bookId] from its downloaded files. */
+    fun trackLoad(request: Long, bookId: String) = synchronized(ownerLock) {
+        diskLoadBooks[request] = bookId
+    }
+
+    /**
+     * Cancels every load of [bookId] from disk, whether it has claimed the
+     * player yet or not (a delete can land before the load has set its book
+     * or its loading state). True when one was cancelled.
+     */
+    fun cancelLoadsOf(bookId: String): Boolean = synchronized(ownerLock) {
+        val requests = diskLoadBooks.filterValues { it == bookId }.keys
+        if (requests.isEmpty()) return@synchronized false
+        requests.forEach { request ->
+            diskLoadBooks.remove(request)
+            pendingRequests.remove(request)
+            if (activeRequest == request) activeRequest = null
+        }
+        requestChanges.value += 1L
+        true
+    }
+
     fun abandon(request: Long): Boolean = synchronized(ownerLock) {
+        diskLoadBooks.remove(request)
         val wasNewest = pendingRequests.lastOrNull() == request
         if (pendingRequests.remove(request)) {
             requestChanges.value += 1L
@@ -759,6 +807,8 @@ class PlaybackManager @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val sessionRepository: ListeningSessionRepository,
     private val syncManagerLazy: Lazy<SyncManager>,
+    private val manifestBackfillLazy: Lazy<DownloadManifestBackfill>,
+    private val downloadManagerLazy: Lazy<DownloadManager>,
     private val connectivityMonitor: ConnectivityMonitor,
     private val okHttpClient: OkHttpClient,
     private val localFolderAccess: LocalFolderAccess,
@@ -1289,6 +1339,9 @@ class PlaybackManager @Inject constructor(
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBookOwned must be called from the Main thread"
         }
+        if (!book.isLocal && book.isDownloaded && !book.localPath.isNullOrEmpty()) {
+            playbackLoadOwner.trackLoad(loadRequest, book.id)
+        }
         if (!book.isInActiveLibrary(settingsManager.currentSettings)) {
             if (playbackLoadOwner.abandon(loadRequest)) {
                 _events.tryEmit(PlaybackEvent.Error("That book is not in the active library."))
@@ -1403,6 +1456,32 @@ class PlaybackManager @Inject constructor(
                     LoadSessionOpen.DEFER -> Unit
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+            }
+
+            // A download from 2.1.5 or earlier has no track list, so it plays in
+            // file name order with no chapters. While the server is reachable,
+            // take its list once, but only if it matches the files on disk. The
+            // wait is capped, and the download plays as it is on any doubt (#35).
+            if (
+                remoteAccess.usesLocalTracks() &&
+                needsManifestBackfill(effectiveBook) &&
+                connectivityMonitor.connectionStatus.value.let {
+                    it == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+                        it == ConnectivityMonitor.ConnectionStatus.SYNCING
+                }
+            ) {
+                val filled = withTimeoutOrNull(MANIFEST_BACKFILL_TIMEOUT) {
+                    manifestBackfillLazy.get().backfill(effectiveBook)
+                }
+                if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+                if (filled != null) {
+                    effectiveBook = effectiveBook.copy(audioFiles = filled.audioFiles, chapters = filled.chapters)
+                    _currentBook.value = effectiveBook
+                    if (cachedChapters.isEmpty() && filled.chapters.isNotEmpty()) {
+                        cachedChapters = filled.chapters.sortedBy { it.start }
+                        _chapters.value = cachedChapters
+                    }
+                }
             }
 
             // If no session audio tracks AND no local audio files, fetch full book details
@@ -1767,7 +1846,9 @@ class PlaybackManager @Inject constructor(
                 val orderedFiles = book.audioFiles.sortedBy { it.index }
                 val resolvedNames = resolveDownloadFileNames(orderedFiles)
                 for ((position, af) in orderedFiles.withIndex()) {
-                    val path = af.localPath
+                    // A recorded path counts only when it sits inside the book's
+                    // own folder. Otherwise fall back to the names the engine writes.
+                    val path = af.localPath?.let { p -> localDir?.let { trackFileInside(it, p)?.absolutePath } }
                         ?: localDir?.let { dir ->
                             File(dir, resolvedNames[position]).takeIf { f -> f.exists() }?.absolutePath
                                 ?: File(dir, File(af.filename).name).takeIf { f -> f.exists() }?.absolutePath
@@ -3174,6 +3255,35 @@ class PlaybackManager @Inject constructor(
                 recoverIfSessionStale()
             }
         }
+        // A deleted download must not leave the player holding its files (#89).
+        scope.launch {
+            downloadManagerLazy.get().downloadRemoved.collect { bookId ->
+                onDownloadRemoved(bookId)
+            }
+        }
+    }
+
+    /**
+     * The book keeps its place in the mini player but lets go of the deleted
+     * files. Play then reloads it: it streams when the server is reachable, or
+     * shows the usual offline message. It never switches to streaming by itself,
+     * since that could spend mobile data unasked.
+     */
+    private suspend fun onDownloadRemoved(bookId: String) {
+        // A load can be under way without having set its book or loading state
+        // yet, so it is cancelled by the book it is loading, not by what the
+        // player shows.
+        playbackLoadOwner.cancelLoadsOf(bookId)
+        val current = _currentBook.value
+        val action = downloadRemovalAction(current, bookId, _playbackState.value == PlaybackState.LOADING)
+        if (action == DownloadRemovalAction.NONE || current == null) return
+        if (action == DownloadRemovalAction.STOP_LOAD_AND_UNLOAD) playbackLoadOwner.invalidate()
+        finishPlayback(PlaybackTermination.STOP)
+        val fresh = withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) }
+        // Another book may have taken the player while the row was read.
+        if (_currentBook.value?.id != bookId) return
+        _currentBook.value = fresh ?: current.copy(isDownloaded = false, localPath = null, localCoverPath = null)
+        _isLocalFile.value = false
     }
 
     /**

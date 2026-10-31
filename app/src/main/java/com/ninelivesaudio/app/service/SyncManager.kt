@@ -658,12 +658,13 @@ class SyncManager @Inject constructor(
      * Force-push final position on playback stop.
      * If offline, enqueue for later.
      */
-    suspend fun flushPlaybackProgress(
+    internal suspend fun flushPlaybackProgress(
         itemId: String,
         currentTime: Double,
         isFinished: Boolean,
         duration: Double = 0.0,
         onPersisted: suspend () -> Unit = {},
+        pushBudget: TerminalServerBudget? = null,
     ) {
         val safeCurrentTime = currentTime.coerceAtLeast(0.0)
         val safeDuration = duration.coerceAtLeast(0.0)
@@ -682,6 +683,10 @@ class SyncManager @Inject constructor(
             return
         }
 
+        // A stopped book's push draws on the terminal sequence's shared
+        // deadline when it has one (#54). The local write and queue row land
+        // either way.
+        val pushTimeout = terminalPushTimeout(pushBudget)
         progressRepository.savePushOrEnqueueProgress(
             itemId = itemId,
             currentTime = safeCurrentTime,
@@ -690,10 +695,11 @@ class SyncManager @Inject constructor(
             pushToServer = terminalProgressPushAllowed(
                 isOnline = connectivityMonitor.isOnline.value,
                 connectionStatus = connectivityMonitor.connectionStatus.value,
-            ),
-            pushTimeout = TERMINAL_PROGRESS_PUSH_TIMEOUT,
+            ) && pushTimeout > kotlin.time.Duration.ZERO,
+            pushTimeout = pushTimeout,
             onPersisted = onPersisted,
         )
+        pushBudget?.checkExpired()
 
         // Clear active item
         clearActivePlaybackItemIf(itemId)

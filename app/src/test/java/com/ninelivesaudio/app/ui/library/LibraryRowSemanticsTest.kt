@@ -5,6 +5,7 @@ import com.ninelivesaudio.app.domain.model.Chapter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import java.time.ZoneId
 import kotlin.time.Duration.Companion.seconds
 
 /** What TalkBack reads for a Library row, and for the search box above it. */
@@ -81,7 +82,10 @@ class LibraryRowSemanticsTest {
     fun `an archived book says so`() {
         val book = AudioBook(id = "1", title = "Dune", author = "Frank Herbert", archivedAt = 5L)
 
-        assertEquals("Dune, by Frank Herbert, archived", bookRowDescription(book))
+        assertEquals(
+            "Dune, by Frank Herbert, archived, folder not found since Jan 1, 1970",
+            bookRowDescription(book, ZoneId.of("UTC")),
+        )
     }
 
     @Test
@@ -93,8 +97,8 @@ class LibraryRowSemanticsTest {
         )
 
         assertEquals(
-            "Dune, by Frank Herbert, archived, 50 percent listened, chapter 2 of 4, downloaded",
-            bookRowDescription(book),
+            "Dune, by Frank Herbert, archived, folder not found since Jan 1, 1970, 50 percent listened, chapter 2 of 4, downloaded",
+            bookRowDescription(book, ZoneId.of("UTC")),
         )
     }
 

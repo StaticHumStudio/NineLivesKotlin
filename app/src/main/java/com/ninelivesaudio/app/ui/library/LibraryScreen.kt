@@ -59,6 +59,7 @@ import com.ninelivesaudio.app.domain.model.SyncResult
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
 import com.ninelivesaudio.app.ui.components.CornerSigils
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
+import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -817,10 +818,13 @@ internal fun GroupHeaderRow(
  * it is on the device. The row's pieces (cover, ring, dots, percent text) are
  * hidden from TalkBack so none of them repeat it.
  */
-internal fun bookRowDescription(book: AudioBook): String = buildList {
+internal fun bookRowDescription(book: AudioBook, zone: ZoneId = ZoneId.systemDefault()): String = buildList {
     add(book.title)
     if (book.author.isNotBlank()) add("by ${book.author}")
-    if (book.isArchived) add("archived")
+    if (book.isArchived) {
+        add("archived")
+        book.archivedAt?.let { add(archivedLabel(it, zone).replaceFirstChar { c -> c.lowercase() }) }
+    }
     if (book.isFinished) {
         add("finished")
     } else if (book.hasProgress) {
@@ -944,11 +948,13 @@ private fun ArchiveBookListItem(
                         border = BorderStroke(1.dp, NineLivesTheme.colors.archiveOutline),
                     ) {
                         Text(
-                            text = "Archived",
+                            text = book.archivedAt?.let { archivedLabel(it) } ?: "Archived",
                             style = MaterialTheme.typography.labelSmall,
                             color = NineLivesTheme.colors.archiveTextSecondary,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }

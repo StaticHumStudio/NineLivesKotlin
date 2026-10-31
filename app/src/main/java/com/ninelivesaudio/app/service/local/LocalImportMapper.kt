@@ -56,6 +56,7 @@ fun ScannedLocalBook.toAudioBook(libraryId: String): AudioBook {
 private fun buildSyntheticChapters(tracks: List<ScannedTrack>): List<Chapter> {
     if (tracks.isEmpty()) return emptyList()
 
+    val titles = chapterTitles(tracks)
     var cumulativeSeconds = 0.0
     return tracks.mapIndexed { index, track ->
         val startSeconds = cumulativeSeconds
@@ -66,7 +67,23 @@ private fun buildSyntheticChapters(tracks: List<ScannedTrack>): List<Chapter> {
             id = index,
             start = startSeconds,
             end = cumulativeSeconds,
-            title = track.filename.substringBeforeLast("."),
+            title = titles[index],
         )
     }
+}
+
+/**
+ * One chapter name per track. A track's title tag names its chapter, with the
+ * file name (no extension) as the fallback. Two cases always fall back to file
+ * names: a book with fewer than two tracks (its title tag is the book's title),
+ * and a book where at least two tracks carry the same tag, ignoring case and
+ * spaces (rippers often stamp the book's name on every file).
+ */
+internal fun chapterTitles(tracks: List<ScannedTrack>): List<String> {
+    val fileNames = tracks.map { it.filename.substringBeforeLast(".") }
+    if (tracks.size < 2) return fileNames
+    val tags = tracks.map { it.title?.trim().orEmpty() }
+    val tagged = tags.filter { it.isNotEmpty() }
+    if (tagged.size >= 2 && tagged.map { it.lowercase() }.distinct().size == 1) return fileNames
+    return tags.mapIndexed { i, tag -> tag.ifEmpty { fileNames[i] } }
 }

@@ -30,6 +30,8 @@ import com.ninelivesaudio.app.service.shelfProgress
 import com.ninelivesaudio.app.service.local.LocalBookFingerprint
 import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
 import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
+import com.ninelivesaudio.app.service.local.sameLocalBook
+import com.ninelivesaudio.app.service.local.setAsideId
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -544,10 +546,33 @@ class AudioBookRepository @Inject constructor(
         }
     }
 
-    /** Import scanned Local Library books into one local library. */
+    /**
+     * Import scanned Local Library books into one local library.
+     *
+     * An archived row at a scanned book's id is handed back only when the scan
+     * found the same book (issue #47). A different book at that path starts
+     * fresh, and the archived book moves to its own row `<id>~<ArchivedAt>`
+     * with its place, bookmarks and listening history, still archived. Callers
+     * run this inside a transaction ([importLocalBooksCarryingMoves]).
+     */
     suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
         if (books.isEmpty()) return
-        val existingById = fetchByIdChunks(books.map { it.id }, audioBookDao::getByIds).associateBy { it.id }
+        val existingById = fetchByIdChunks(books.map { it.id }, audioBookDao::getByIds).associateBy { it.id }.toMutableMap()
+        for (book in books) {
+            val old = existingById[book.id] ?: continue
+            val archivedAt = old.archivedAt ?: continue
+            if (sameLocalBook(old.toDomain().fingerprint(), book.fingerprint())) continue
+            val asideId = setAsideId(old.id, archivedAt)
+            // The scan wrote any cover of the new book to local_covers/<id>.jpg
+            // before this ran. With none of its own, that file is still the old
+            // book's art: keep it for the archived row under its own name.
+            val keptCover = if (book.coverPath == null) keepCoverForSetAside(old.id, asideId) else null
+            audioBookDao.upsert(old.copy(id = asideId, coverPath = keptCover, localCoverPath = keptCover))
+            playbackProgressDao.moveToBook(old.id, asideId)
+            localBookmarkDao.moveToBook(old.id, asideId)
+            localListeningSessionDao.moveToBook(old.id, asideId)
+            existingById.remove(book.id)
+        }
         audioBookDao.upsertAll(
             books.map { book ->
                 val existing = existingById[book.id]
@@ -589,6 +614,8 @@ class AudioBookRepository @Inject constructor(
      * (issue #20). A local book's id hashes its path under the picked root, so
      * dragging a folder one level deeper archives the old row and imports a new
      * one, and the user's place stays with the row nobody can see any more.
+     * The place, the bookmarks and the listening history all move to the new
+     * row (issue #46), so the Dossier's totals do not drop with the old one.
      *
      * Call this AFTER the scan's books are imported and BEFORE the missing ones
      * are archived. [existingIds] is the library's LIVE local ids as they were
@@ -623,6 +650,10 @@ class AudioBookRepository @Inject constructor(
         val vanishedById = vanishedBooks.associateBy { it.id }
 
         for ((from, to) in moves) {
+            // Bookmarks and listening history follow the book whether or not it
+            // had a saved place (issue #46).
+            localBookmarkDao.moveToBook(from, to)
+            localListeningSessionDao.moveToBook(from, to)
             val progress = playbackProgressDao.getByAudioBookId(from) ?: continue
             // The destination row was just imported with a fresh zero position,
             // so there is nothing of the user's here to overwrite. The progress
@@ -638,17 +669,32 @@ class AudioBookRepository @Inject constructor(
         }
     }
 
-    private fun AudioBook.fingerprint() = LocalBookFingerprint(
-        id = id,
-        folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
+    /** Move local_covers/<id>.jpg to <asideId>.jpg and return its file URI, or null when there is none. */
+    private fun keepCoverForSetAside(id: String, asideId: String): String? = runCatching {
+        val dir = java.io.File(context.filesDir, "local_covers")
+        val from = java.io.File(dir, "$id.jpg")
+        if (!from.isFile) return@runCatching null
+        val to = java.io.File(dir, "$asideId.jpg")
+        from.copyTo(to, overwrite = true)
+        from.delete()
+        android.net.Uri.fromFile(to).toString()
+    }.getOrNull()
+
+    private fun AudioBook.fingerprint(): LocalBookFingerprint {
         // Sorted so the same book fingerprints the same whichever side of the
         // move it is read from, without collapsing repeated tracks the way a
-        // set would.
-        tracks = audioFiles
+        // set would. Same-named tracks (CD1/01.mp3, CD2/01.mp3) order by length,
+        // which a retag keeps, not by size, which it changes.
+        val files = audioFiles
             .filter { it.filename.isNotBlank() }
-            .map { it.filename to it.size }
-            .sortedWith(compareBy({ it.first }, { it.second })),
-    )
+            .sortedWith(compareBy({ it.filename }, { it.duration.inWholeMilliseconds }, { it.size }))
+        return LocalBookFingerprint(
+            id = id,
+            folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
+            tracks = files.map { it.filename to it.size },
+            durationsMs = files.map { it.duration.inWholeMilliseconds },
+        )
+    }
 
     /**
      * Make every local cover in [libraryId] durable before archiving. Books

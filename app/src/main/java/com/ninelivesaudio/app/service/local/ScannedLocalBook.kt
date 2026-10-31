@@ -25,4 +25,6 @@ data class ScannedTrack(
     val duration: Duration = Duration.ZERO,
     val mimeType: String? = null,
     val size: Long = 0,
+    /** The track's own title tag, when it has one. Names its chapter unless every track repeats it. */
+    val title: String? = null,
 )

@@ -105,6 +105,27 @@ class LocalScanEngineTest {
         assertEquals(expectedId, result.books.single().id)
     }
 
+    // ─── #93: chapter titles ───────────────────────────────────────────────
+
+    @Test
+    fun `a tagged track names its chapter`() {
+        val folder = "$rootUri/Dracula"
+        val root = dir(null, rootUri, children = listOf(
+            dir("Dracula", folder, children = listOf(
+                file("01.mp3", "$folder/01.mp3"),
+                file("02.mp3", "$folder/02.mp3"),
+            ))
+        ))
+        val titles = mapOf(
+            "$folder/01.mp3" to LocalMetadataExtractor.TrackMetadata(title = "Chapter 01"),
+            "$folder/02.mp3" to LocalMetadataExtractor.TrackMetadata(title = "Chapter 12"),
+        )
+
+        val book = engine(titles).scan(root, rootUri).books.single().toAudioBook("lib")
+
+        assertEquals(listOf("Chapter 01", "Chapter 12"), book.chapters.map { it.title })
+    }
+
     // ─── R4: disc grouping ──────────────────────────────────────────────────
 
     @Test

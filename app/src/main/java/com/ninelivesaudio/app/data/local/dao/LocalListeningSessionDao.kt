@@ -48,6 +48,10 @@ interface LocalListeningSessionDao {
     @Query("DELETE FROM LocalListeningSessions WHERE AudioBookId = :audioBookId")
     suspend fun deleteByAudioBookId(audioBookId: String)
 
+    /** Re-point every session of [from] at [to] (a moved or set aside book). */
+    @Query("UPDATE LocalListeningSessions SET AudioBookId = :to WHERE AudioBookId = :from")
+    suspend fun moveToBook(from: String, to: String): Int
+
     @Query("DELETE FROM LocalListeningSessions")
     suspend fun deleteAll()
 }

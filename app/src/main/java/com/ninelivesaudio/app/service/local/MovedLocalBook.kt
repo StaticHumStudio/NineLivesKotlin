@@ -26,6 +26,12 @@ data class LocalBookFingerprint(
      * like a thin one.
      */
     val tracks: List<Pair<String, Long>>,
+    /**
+     * Each track's length in milliseconds, in the same order as [tracks], or
+     * empty when unknown. Lengths survive a retag, byte sizes do not, so
+     * [sameLocalBook] uses them when sizes cannot vouch for the book.
+     */
+    val durationsMs: List<Long> = emptyList(),
 )
 
 /**
@@ -84,3 +90,33 @@ fun folderNameOfTrackUri(uri: String?): String {
     val segments = decoded.split('/', ':').filter { it.isNotBlank() }
     return if (segments.size >= 2) segments[segments.size - 2] else ""
 }
+
+/**
+ * Is [new] the same book that [old] was? Used when a scan finds a book at the
+ * folder of an archived one (issue #47): the same files come back with their
+ * place, anything else starts fresh. An old row with no track list has nothing
+ * to compare, so it counts as the same book (what happened before this check).
+ *
+ * Same folder name and the same file names are required. Then either the byte
+ * sizes match (and are real, not all zero: a provider that reports no sizes
+ * proves nothing, so generic names like 01.mp3 cannot vouch for a book), or
+ * every track's length agrees within about a second. Retagging changes sizes
+ * but not lengths, so a retagged copy of the same book still counts.
+ */
+fun sameLocalBook(old: LocalBookFingerprint, new: LocalBookFingerprint): Boolean {
+    if (old.tracks.isEmpty()) return true
+    if (old.folderName != new.folderName) return false
+    if (old.tracks.map { it.first } != new.tracks.map { it.first }) return false
+    val sizesVouch = old.tracks == new.tracks && old.tracks.any { it.second > 0L }
+    if (sizesVouch) return true
+    val a = old.durationsMs
+    val b = new.durationsMs
+    return a.size == old.tracks.size && b.size == a.size &&
+        a.all { it > 0L } && b.all { it > 0L } &&
+        a.indices.all { kotlin.math.abs(a[it] - b[it]) <= DURATION_TOLERANCE_MS }
+}
+
+private const val DURATION_TOLERANCE_MS = 1_000L
+
+/** The id an archived book keeps when a different book takes over its folder's id. */
+internal fun setAsideId(id: String, archivedAt: Long): String = "$id~$archivedAt"

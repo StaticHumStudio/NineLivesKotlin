@@ -356,6 +356,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
             duration = meta?.duration ?: Duration.ZERO,
             mimeType = meta?.mimeType ?: file.mimeType,
             size = file.sizeBytes,
+            title = meta?.title,
         )
 
         return ScannedLocalBook(
@@ -473,6 +474,7 @@ class LocalScanEngine(private val metadataSource: ScanMetadataSource) {
                 duration = nwm.meta?.duration ?: Duration.ZERO,
                 mimeType = nwm.meta?.mimeType ?: nwm.node.mimeType,
                 size = nwm.node.sizeBytes,
+                title = nwm.meta?.title,
             )
         }
     }

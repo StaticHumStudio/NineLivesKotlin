@@ -116,4 +116,54 @@ class PlaybackLoadStagingTest {
         assertFalse(playerHoldsRemoteBook(a.copy(isLocal = true), b.copy(isLocal = true)))
         assertFalse(playerHoldsRemoteBook(null, null))
     }
+
+    @Test
+    fun `cancelling a slow load clears its staging at once so play reaches the previous book`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        val request = owner.newRequest()
+        assertTrue(owner.claim(request))
+        s.stage(request, b) // the load now waits on a slow server
+        cancelPlaybackLoad(owner, s) // a mode switch
+        assertFalse(owner.isCurrent(request))
+        assertNull(s.book.value)
+        val action = playAction(
+            bookLoading = s.book.value != null,
+            hasRetainedBook = true,
+            mediaItemCount = 0,
+            playerState = androidx.media3.common.Player.STATE_IDLE,
+        )
+        assertEquals(PlayAction.RELOAD_RETAINED, action)
+        // The cancelled load's own finally later finds nothing of its own to clear.
+        assertFalse(s.clear(request))
+    }
+
+    @Test
+    fun `a cancelled load finishing late leaves a newer load's staging alone`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        val old = owner.newRequest()
+        assertTrue(owner.claim(old))
+        s.stage(old, a)
+        cancelPlaybackLoad(owner, s)
+        val newer = owner.newRequest()
+        assertTrue(owner.claim(newer))
+        s.stage(newer, b)
+        // The old load returns from the server and runs its finally.
+        assertFalse(s.clear(old))
+        assertEquals(b, s.book.value)
+        assertTrue(owner.isCurrent(newer))
+        // A second cancel before the newer load stages anything clears only its own.
+        cancelPlaybackLoad(owner, s)
+        assertNull(s.book.value)
+    }
+
+    @Test
+    fun `a cancel with no load running leaves a staging it does not own alone`() {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        s.stage(7, a) // staged by a request this owner never claimed
+        cancelPlaybackLoad(owner, s)
+        assertEquals(a, s.book.value)
+    }
 }

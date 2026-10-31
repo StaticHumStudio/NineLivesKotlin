@@ -41,6 +41,18 @@ internal class StagedLoad {
 }
 
 /**
+ * Cancels the running load and clears its staging at once. The cancelled
+ * load can sit on a slow server for the whole read timeout before it notices,
+ * and until its staging clears the mini player shows that book and play and
+ * seek are ignored. Only the cancelled load's own staging is cleared, so a
+ * newer load that already staged keeps its book, and the cancelled load's
+ * own clear later finds nothing of its own.
+ */
+internal fun cancelPlaybackLoad(owner: PlaybackLoadOwner, staged: StagedLoad) {
+    owner.invalidate()?.let(staged::clear)
+}
+
+/**
  * Runs [publish], which makes the loaded book current, and only then clears
  * [request]'s staging. An observer reading the staged book first never sees
  * the previous book in between.

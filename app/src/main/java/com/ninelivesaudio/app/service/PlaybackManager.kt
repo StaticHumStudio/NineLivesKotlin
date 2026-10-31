@@ -289,10 +289,13 @@ internal class PlaybackLoadOwner {
         wasNewest
     }
 
-    fun invalidate() = synchronized(ownerLock) {
+    /** Cancels every load. Returns the load that owned the player, if any. */
+    fun invalidate(): Long? = synchronized(ownerLock) {
+        val cancelled = activeRequest
         activeRequest = null
         pendingRequests.clear()
         requestChanges.value += 1L
+        cancelled
     }
 
     fun isCurrent(request: Long): Boolean = synchronized(ownerLock) {
@@ -1181,7 +1184,7 @@ class PlaybackManager @Inject constructor(
      * Stops any load under way from writing anything more. stop() alone does
      * not, so a delete calls this first.
      */
-    fun cancelLoad() = playbackLoadOwner.invalidate()
+    fun cancelLoad() = cancelPlaybackLoad(playbackLoadOwner, stagedLoad)
 
     // A terminated book stays in _currentBook so the UI keeps showing it. This
     // records that its terminal flush already ran, so the next load does not

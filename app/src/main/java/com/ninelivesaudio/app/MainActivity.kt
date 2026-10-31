@@ -177,7 +177,8 @@ class MainActivity : ComponentActivity() {
             val unhingedSettings = UnhingedSettings.fromAppSettings(
                 unhingedThemeEnabled = appSettings.unhingedThemeEnabled,
                 anomaliesEnabled = appSettings.anomaliesEnabled,
-                whispersEnabled = appSettings.whispersEnabled,
+                // The Settings toggle writes the DataStore copy, not appSettings, so read it here.
+                whispersEnabled = dataStoreSettings.whispersEnabled,
                 copyModeString = appSettings.copyMode,
                 reduceMotionRequested = reduceMotion
             )

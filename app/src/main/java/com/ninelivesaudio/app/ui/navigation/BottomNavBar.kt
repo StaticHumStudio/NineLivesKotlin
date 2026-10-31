@@ -19,6 +19,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -89,33 +90,36 @@ fun BottomNavBar(
         contentColor = colors.goldFilament
     ) {
         bottomNavItemsFor(appMode).forEach { item ->
-            val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
+            // Keyed by route so a reused slot cannot carry Settings' selected animation into Downloads.
+            key(item.route) {
+                val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
 
-            NavigationBarItem(
-                selected = isSelected,
-                onClick = {
-                    navController.navigateToTab(item.route)
-                },
-                icon = {
-                    Icon(
-                        imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
-                        contentDescription = item.label
+                NavigationBarItem(
+                    selected = isSelected,
+                    onClick = {
+                        navController.navigateToTab(item.route)
+                    },
+                    icon = {
+                        Icon(
+                            imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
+                            contentDescription = item.label
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = item.label,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = colors.goldFilament,
+                        selectedTextColor = colors.goldFilament,
+                        unselectedIconColor = colors.archiveTextMuted,
+                        unselectedTextColor = colors.archiveTextMuted,
+                        indicatorColor = colors.goldFilament.copy(alpha = 0.12f)
                     )
-                },
-                label = {
-                    Text(
-                        text = item.label,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = colors.goldFilament,
-                    selectedTextColor = colors.goldFilament,
-                    unselectedIconColor = colors.archiveTextMuted,
-                    unselectedTextColor = colors.archiveTextMuted,
-                    indicatorColor = colors.goldFilament.copy(alpha = 0.12f)
                 )
-            )
+            }
         }
     }
 }

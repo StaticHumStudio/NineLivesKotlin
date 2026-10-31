@@ -5,37 +5,49 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.random.Random
 
+/** Minimum time between two launch whispers. */
+internal const val LAUNCH_WHISPER_COOLDOWN_MS = 15 * 60 * 1000L
+
+/** Minimum time between two event whispers, shared by every event context. */
+internal const val EVENT_WHISPER_COOLDOWN_MS = 20 * 60 * 1000L
+
+/** Minimum time between any two whispers of either kind, so they never stack. */
+internal const val MIN_WHISPER_GAP_MS = 30_000L
+
+/** Every context except the app opening is driven by something happening in the app. */
+val WhisperContext.isEvent: Boolean
+    get() = this != WhisperContext.APP_OPENED
+
 /**
- * Whisper Service — Manages Contextual Whisper Display
+ * Whisper Service: manages contextual whisper display
  *
  * Handles display logic, cooldowns, and deterministic selection of whispers.
  * Ensures whispers are rare enough to feel special.
  *
  * **Rules**:
- * - Max 1 whisper per "session section" (screen nav or 15-minute window)
- * - Cooldown timer between whispers
+ * - Launch whisper (APP_OPENED): at most one per 15 minutes.
+ * - Event whispers (the other five contexts): at most one per 20 minutes, shared by all five.
+ * - Any two whispers of either kind: at least 30 seconds apart.
+ * - Whispers off or Reduced Motion refuses every context and spends no budget.
  * - Never during: error states, modals, car mode
- * - Deterministic selection (same seed = same sequence)
+ *
+ * @param clock Wall clock in milliseconds. Injected so the budgets can be tested.
  */
-class WhisperService {
+class WhisperService(private val clock: () -> Long = System::currentTimeMillis) {
 
     private val _currentWhisper = MutableStateFlow<String?>(null)
     val currentWhisper: StateFlow<String?> = _currentWhisper.asStateFlow()
 
-    private var lastWhisperTime = 0L
+    // null means "never", so a test clock near zero behaves like a fresh install.
+    private var lastLaunchAt: Long? = null
+    private var lastEventAt: Long? = null
+    private var lastAnyAt: Long? = null
     private var sessionSectionStart = 0L
     private var whisperShownInSection = false
-    private val random = Random(System.currentTimeMillis())
-
-    /**
-     * Whisper configuration
-     */
-    private val cooldownMs = 15 * 60 * 1000L // 15 minutes
-    private val displayDurationMs = 4000L // 4 seconds
 
     /**
      * Try to show a whisper for the given context.
-     * Returns true if whisper was shown, false if blocked by cooldown.
+     * Returns true if whisper was shown, false if blocked by a budget.
      *
      * @param context The whisper context
      * @param enabled Whether whispers are enabled in settings
@@ -50,29 +62,31 @@ class WhisperService {
         if (!enabled) return false
         if (reduceMotion) return false // Whispers are motion, respect reduce motion
 
-        val now = System.currentTimeMillis()
+        val now = clock()
 
-        // Check cooldown
-        if (now - lastWhisperTime < cooldownMs) {
-            return false
+        // Never stack two whispers
+        if (lastAnyAt.let { it != null && now - it < MIN_WHISPER_GAP_MS }) return false
+
+        if (context.isEvent) {
+            if (lastEventAt.let { it != null && now - it < EVENT_WHISPER_COOLDOWN_MS }) return false
+        } else {
+            if (lastLaunchAt.let { it != null && now - it < LAUNCH_WHISPER_COOLDOWN_MS }) return false
+            // Session section applies to the launch whisper only
+            if (whisperShownInSection && now - sessionSectionStart < LAUNCH_WHISPER_COOLDOWN_MS) return false
         }
 
-        // Check session section
-        if (whisperShownInSection && now - sessionSectionStart < cooldownMs) {
-            return false
-        }
-
-        // Select whisper
         val whisper = selectWhisper(context, now)
-
-        // Show whisper
         _currentWhisper.value = whisper
-        lastWhisperTime = now
+        lastAnyAt = now
 
-        // Update session section tracking
-        if (!whisperShownInSection || now - sessionSectionStart >= cooldownMs) {
-            sessionSectionStart = now
-            whisperShownInSection = true
+        if (context.isEvent) {
+            lastEventAt = now
+        } else {
+            lastLaunchAt = now
+            if (!whisperShownInSection || now - sessionSectionStart >= LAUNCH_WHISPER_COOLDOWN_MS) {
+                sessionSectionStart = now
+                whisperShownInSection = true
+            }
         }
 
         return true
@@ -90,8 +104,8 @@ class WhisperService {
      * Resets the "whisper shown in section" flag after cooldown
      */
     fun newSessionSection() {
-        val now = System.currentTimeMillis()
-        if (now - sessionSectionStart >= cooldownMs) {
+        val now = clock()
+        if (now - sessionSectionStart >= LAUNCH_WHISPER_COOLDOWN_MS) {
             whisperShownInSection = false
             sessionSectionStart = now
         }
@@ -111,7 +125,9 @@ class WhisperService {
      */
     fun reset() {
         _currentWhisper.value = null
-        lastWhisperTime = 0L
+        lastLaunchAt = null
+        lastEventAt = null
+        lastAnyAt = null
         sessionSectionStart = 0L
         whisperShownInSection = false
     }

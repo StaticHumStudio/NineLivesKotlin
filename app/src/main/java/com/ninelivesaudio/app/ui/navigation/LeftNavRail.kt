@@ -7,6 +7,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,16 +45,19 @@ fun LeftNavRail(
         verticalArrangement = Arrangement.Center
     ) {
         bottomNavItemsFor(appMode).forEach { item ->
-            val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
+            // Keyed by route for parity with the bottom bar.
+            key(item.route) {
+                val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
 
-            LeftNavItem(
-                item = item,
-                isSelected = isSelected,
-                onClick = {
-                    navController.navigateToTab(item.route)
-                }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+                LeftNavItem(
+                    item = item,
+                    isSelected = isSelected,
+                    onClick = {
+                        navController.navigateToTab(item.route)
+                    }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
         }
     }
 }

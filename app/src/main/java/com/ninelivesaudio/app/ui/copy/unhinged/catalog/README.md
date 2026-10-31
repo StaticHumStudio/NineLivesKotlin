@@ -30,11 +30,11 @@ Contains all whisper text organized by context.
 
 **Contexts**:
 - `APP_OPENED` - When user opens the app
-- `PLAYBACK_RESUMED` - When playback starts after pause
-- `CHAPTER_FINISHED` - When a chapter completes
-- `DOWNLOAD_COMPLETED` - When a download finishes
-- `BOOK_FINISHED` - When an entire book completes
-- `IDLE` - When user is idle for 60+ seconds
+- `PLAYBACK_RESUMED` - Playback goes from paused to playing after a pause of at least 30 seconds
+- `CHAPTER_FINISHED` - A chapter plays through to its end and the next one starts (a skip does not count)
+- `DOWNLOAD_COMPLETED` - A download finishes while the app is on screen
+- `BOOK_FINISHED` - An entire book completes
+- `IDLE` - 60 seconds on Home with no touch, at most once per Home visit
 
 Each context has 5-10 variants so repetition is rare.
 
@@ -45,8 +45,11 @@ Each context has 5-10 variants so repetition is rare.
 Manages display logic, cooldowns, and selection.
 
 **Rules**:
-- Max 1 whisper per 15-minute window
-- Max 1 whisper per screen/session section
+- Launch whisper (`APP_OPENED`): at most one per 15 minutes
+- Event whispers (the other five contexts): at most one per 20 minutes, shared by all five
+- Any two whispers of either kind: at least 30 seconds apart, so they never stack
+- Events fire only while the app is on screen. Nothing queued in the background shows up later
+- The Whispers toggle and Reduce Motion gate every context
 - Deterministic selection (same seed = same sequence)
 - Respects reduce motion (whispers are disabled if reduce motion is on)
 

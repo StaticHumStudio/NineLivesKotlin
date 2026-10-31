@@ -18,7 +18,15 @@ import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveTextFlavor
 import com.ninelivesaudio.app.ui.theme.unhinged.ArchiveVoidElevated
 import com.ninelivesaudio.app.ui.components.unhinged.LocalUnhingedSettings
 import com.ninelivesaudio.app.ui.theme.unhinged.shouldShowWhispers
+import android.os.SystemClock
+import android.util.Log
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Whisper Display — Transient Text Overlay
@@ -158,17 +166,17 @@ fun WhisperOnEnter(
     context: WhisperContext,
     whisperService: WhisperService = WhisperService.instance
 ) {
-    val unhingedSettings = LocalUnhingedSettings.current
-    val shouldShow = unhingedSettings.shouldShowWhispers
-    val reduceMotion = unhingedSettings.reduceMotionRequested
+    // Read after the delay, not at composition: the stored settings can arrive after the first frame.
+    val settings by rememberUpdatedState(LocalUnhingedSettings.current)
 
     LaunchedEffect(Unit) {
         delay(500) // Small delay before showing
-        whisperService.tryShowWhisper(
+        val shown = whisperService.tryShowWhisper(
             context = context,
-            enabled = shouldShow,
-            reduceMotion = reduceMotion
+            enabled = settings.shouldShowWhispers,
+            reduceMotion = settings.reduceMotionRequested
         )
+        if (shown) Log.d("Whisper", "shown context=$context")
     }
 }
 
@@ -209,6 +217,69 @@ fun WhisperOnEvent(
             if (shown) {
                 onShown()
             }
+        }
+    }
+}
+
+/**
+ * Listens for the playback and download moments that can whisper.
+ *
+ * Collects only while the app is on screen (STARTED), so nothing that happened in the
+ * background shows up later. [events] receives the wall clock time the collection began, so a
+ * replayed old event can be told apart from a new one. The toggle and Reduced Motion are read
+ * at the moment an event arrives, and [WhisperService] holds the budgets.
+ */
+@Composable
+fun WhisperEventTriggers(
+    events: (sinceMillis: Long) -> Flow<WhisperContext>,
+    whisperService: WhisperService = WhisperService.instance
+) {
+    val settings by rememberUpdatedState(LocalUnhingedSettings.current)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            events(System.currentTimeMillis()).collect { context ->
+                val shown = whisperService.tryShowWhisper(
+                    context = context,
+                    enabled = settings.shouldShowWhispers,
+                    reduceMotion = settings.reduceMotionRequested
+                )
+                if (shown) Log.d("Whisper", "shown context=$context")
+            }
+        }
+    }
+}
+
+/**
+ * Whispers once if the person sits on Home for a minute without touching the screen.
+ * At most once per Home visit. Runs only while the app is in the foreground.
+ */
+@Composable
+fun IdleWhisperTrigger(
+    onHome: Boolean,
+    lastInteractionAt: StateFlow<Long>,
+    whisperService: WhisperService = WhisperService.instance
+) {
+    val settings by rememberUpdatedState(LocalUnhingedSettings.current)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(onHome, lifecycle) {
+        if (!onHome) return@LaunchedEffect
+        var fired = false
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (fired) return@repeatOnLifecycle awaitCancellation()
+            awaitIdle(
+                startedAt = SystemClock.elapsedRealtime(),
+                lastInteractionAt = lastInteractionAt,
+                clock = SystemClock::elapsedRealtime
+            )
+            fired = true
+            val shown = whisperService.tryShowWhisper(
+                context = WhisperContext.IDLE,
+                enabled = settings.shouldShowWhispers,
+                reduceMotion = settings.reduceMotionRequested
+            )
+            if (shown) Log.d("Whisper", "shown context=${WhisperContext.IDLE}")
+            awaitCancellation()
         }
     }
 }

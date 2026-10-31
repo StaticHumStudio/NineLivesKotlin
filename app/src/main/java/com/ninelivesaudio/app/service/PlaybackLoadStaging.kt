@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.Chapter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,9 +20,28 @@ internal class StagedLoad {
     val book: StateFlow<AudioBook?> = _book.asStateFlow()
 
     /** Stages [book] for [request], replacing any older staging. */
+    // The loading book's chapters, sorted. They become the player's chapter
+    // cache only when the book publishes, so a failed load never leaves the
+    // previous book's chapter taps indexing the loading book's chapters.
+    private var chapters: List<Chapter> = emptyList()
+
+    /** Stages [book] and its chapters for [request], replacing any older staging. */
     fun stage(request: Long, book: AudioBook) = synchronized(lock) {
         this.request = request
+        chapters = book.chapters.sortedBy { it.start }
         _book.value = book
+    }
+
+    /** [request]'s staged chapters, or null when it is not the staged load. */
+    fun chapters(request: Long): List<Chapter>? = synchronized(lock) {
+        if (this.request != request) null else chapters
+    }
+
+    /** Fills in [request]'s chapters when it staged none, as a backfill or session finds them. */
+    fun fillChaptersIfEmpty(request: Long, found: List<Chapter>): Boolean = synchronized(lock) {
+        if (this.request != request || chapters.isNotEmpty() || found.isEmpty()) return false
+        chapters = found.sortedBy { it.start }
+        true
     }
 
     /** Replaces the staged book, only while [request] is the staged one. */
@@ -35,6 +55,7 @@ internal class StagedLoad {
     fun clear(request: Long): Boolean = synchronized(lock) {
         if (this.request != request) return false
         this.request = null
+        chapters = emptyList()
         _book.value = null
         true
     }
@@ -53,12 +74,26 @@ internal fun cancelPlaybackLoad(owner: PlaybackLoadOwner, staged: StagedLoad) {
 }
 
 /**
- * Runs [publish], which makes the loaded book current, and only then clears
+ * Cancels every load of [bookId] from disk because its download was removed,
+ * and clears the staging of any that had staged. A downloaded book's load can
+ * still wait on a session open or an online backfill, and until then the mini
+ * player would show it and ignore play. A newer load's staging is left alone.
+ * True when a load was cancelled.
+ */
+internal fun cancelDiskLoadsOf(owner: PlaybackLoadOwner, staged: StagedLoad, bookId: String): Boolean {
+    val cancelled = owner.cancelLoadRequestsOf(bookId)
+    cancelled.forEach(staged::clear)
+    return cancelled.isNotEmpty()
+}
+
+/**
+ * Runs [publish] with the staged chapters, which makes the loaded book and its
+ * chapter cache current together, and only then clears
  * [request]'s staging. An observer reading the staged book first never sees
  * the previous book in between.
  */
-internal inline fun publishStagedLoad(staged: StagedLoad, request: Long, publish: () -> Unit): Boolean {
-    publish()
+internal inline fun publishStagedLoad(staged: StagedLoad, request: Long, publish: (chapters: List<Chapter>) -> Unit): Boolean {
+    publish(staged.chapters(request).orEmpty())
     return staged.clear(request)
 }
 

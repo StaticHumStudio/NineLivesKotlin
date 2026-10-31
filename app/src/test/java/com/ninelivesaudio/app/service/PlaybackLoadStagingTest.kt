@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.Chapter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -165,5 +166,82 @@ class PlaybackLoadStagingTest {
         s.stage(7, a) // staged by a request this owner never claimed
         cancelPlaybackLoad(owner, s)
         assertEquals(a, s.book.value)
+    }
+
+    @Test
+    fun `removing the download of the loading book clears its staging at once`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        val request = owner.newRequest()
+        owner.trackLoad(request, "b")
+        assertTrue(owner.claim(request))
+        s.stage(request, b) // the load now waits on a session open or a backfill
+        assertTrue(cancelDiskLoadsOf(owner, s, "b"))
+        assertFalse(owner.isCurrent(request))
+        assertNull(s.book.value)
+        assertFalse(s.clear(request)) // its own finally finds nothing left
+    }
+
+    @Test
+    fun `removing a download leaves a newer load's staging alone`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        val old = owner.newRequest()
+        owner.trackLoad(old, "a")
+        assertTrue(owner.claim(old))
+        s.stage(old, a)
+        val newer = owner.newRequest()
+        owner.trackLoad(newer, "b")
+        assertTrue(owner.claim(newer))
+        s.stage(newer, b)
+        // The old load of "a" was superseded but is still tracked as a disk load.
+        assertTrue(cancelDiskLoadsOf(owner, s, "a"))
+        assertEquals(b, s.book.value)
+        assertTrue(owner.isCurrent(newer))
+        assertFalse(cancelDiskLoadsOf(owner, s, "c"))
+        assertEquals(b, s.book.value)
+    }
+
+    private val aChapters = listOf(Chapter(id = 0, start = 0.0, end = 60.0, title = "A one"), Chapter(id = 1, start = 60.0, end = 120.0, title = "A two"))
+    private val bChapters = listOf(Chapter(id = 1, start = 300.0, end = 600.0, title = "B two"), Chapter(id = 0, start = 0.0, end = 300.0, title = "B one"))
+
+    @Test
+    fun `a failed load of B leaves A's chapter cache alone`() {
+        val s = StagedLoad()
+        var cache = aChapters // what seekToChapter indexes while A is current
+        s.stage(1, b.copy(chapters = bChapters))
+        s.fillChaptersIfEmpty(1, listOf(Chapter(title = "ignored, B has chapters")))
+        // B fails: its staging clears and nothing published.
+        assertTrue(s.clear(1))
+        assertEquals(aChapters, cache)
+        assertNull(s.chapters(1))
+        assertEquals(60.0, cache[1].start, 0.0)
+        assertEquals("A two", cache[1].title)
+    }
+
+    @Test
+    fun `B's chapters switch in the same step that makes B current`() {
+        val s = StagedLoad()
+        var cache = aChapters
+        var current: AudioBook? = a
+        s.stage(2, b) // no chapters on the list row
+        s.fillChaptersIfEmpty(2, bChapters) // from the backfill or the session
+        s.fillChaptersIfEmpty(1, aChapters) // a stale load cannot fill B's
+        assertEquals(aChapters, cache) // still A until publish
+        publishStagedLoad(s, 2) { chapters ->
+            current = b
+            cache = chapters
+        }
+        assertEquals(b, current)
+        assertEquals(listOf("B one", "B two"), cache.map { it.title })
+    }
+
+    @Test
+    fun `a stale load cannot read the newer load's chapters`() {
+        val s = StagedLoad()
+        s.stage(1, a.copy(chapters = aChapters))
+        s.stage(2, b.copy(chapters = bChapters))
+        assertNull(s.chapters(1))
+        assertEquals(listOf("B one", "B two"), s.chapters(2)?.map { it.title })
     }
 }

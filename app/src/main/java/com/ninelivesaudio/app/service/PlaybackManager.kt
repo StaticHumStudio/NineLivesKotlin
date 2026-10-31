@@ -268,16 +268,19 @@ internal class PlaybackLoadOwner {
      * player yet or not (a delete can land before the load has set its book
      * or its loading state). True when one was cancelled.
      */
-    fun cancelLoadsOf(bookId: String): Boolean = synchronized(ownerLock) {
-        val requests = diskLoadBooks.filterValues { it == bookId }.keys
-        if (requests.isEmpty()) return@synchronized false
+    fun cancelLoadsOf(bookId: String): Boolean = cancelLoadRequestsOf(bookId).isNotEmpty()
+
+    /** Same as [cancelLoadsOf], returning the requests it cancelled. */
+    fun cancelLoadRequestsOf(bookId: String): Set<Long> = synchronized(ownerLock) {
+        val requests = diskLoadBooks.filterValues { it == bookId }.keys.toSet()
+        if (requests.isEmpty()) return@synchronized requests
         requests.forEach { request ->
             diskLoadBooks.remove(request)
             pendingRequests.remove(request)
             if (activeRequest == request) activeRequest = null
         }
         requestChanges.value += 1L
-        true
+        requests
     }
 
     fun abandon(request: Long): Boolean = synchronized(ownerLock) {
@@ -1447,8 +1450,9 @@ class PlaybackManager @Inject constructor(
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
             // The previous book stays current, with its own position, duration
-            // and chapters, until publishLoadedBook (#42).
-            cachedChapters = book.chapters.sortedBy { it.start }
+            // and chapters, until publishLoadedBook (#42). This book's chapters
+            // stay staged with it, so a chapter tap on the previous book never
+            // indexes them.
             serverListening = ServerSessionListening()
             pausedAtTimestamp = null
 
@@ -1513,9 +1517,7 @@ class PlaybackManager @Inject constructor(
                 if (filled != null) {
                     effectiveBook = effectiveBook.copy(audioFiles = filled.audioFiles, chapters = filled.chapters)
                     stagedLoad.update(loadRequest, effectiveBook)
-                    if (cachedChapters.isEmpty() && filled.chapters.isNotEmpty()) {
-                        cachedChapters = filled.chapters.sortedBy { it.start }
-                    }
+                    stagedLoad.fillChaptersIfEmpty(loadRequest, filled.chapters)
                 }
             }
 
@@ -1534,9 +1536,7 @@ class PlaybackManager @Inject constructor(
                 if (fullBook != null && fullBook.audioFiles.isNotEmpty()) {
                     effectiveBook = fullBook.copy(currentTime = book.currentTime, progress = book.progress)
                     stagedLoad.update(loadRequest, effectiveBook)
-                    if (cachedChapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
-                        cachedChapters = fullBook.chapters.sortedBy { it.start }
-                    }
+                    stagedLoad.fillChaptersIfEmpty(loadRequest, fullBook.chapters)
                 }
             }
 
@@ -1657,15 +1657,16 @@ class PlaybackManager @Inject constructor(
             // publishLoadedBook.
             var initialChapter: Chapter? = null
             var initialChapterIndex = -1
-            if (cachedChapters.isNotEmpty()) {
+            val loadChapters = stagedLoad.chapters(loadRequest) ?: return false
+            if (loadChapters.isNotEmpty()) {
                 val posSeconds = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
-                initialChapterIndex = cachedChapters.indexOfFirst { ch ->
+                initialChapterIndex = loadChapters.indexOfFirst { ch ->
                     posSeconds >= ch.start && posSeconds < ch.end
                 }.takeIf { it >= 0 }
-                    ?: if (posSeconds >= cachedChapters.last().end) cachedChapters.lastIndex else 0
+                    ?: if (posSeconds >= loadChapters.last().end) loadChapters.lastIndex else 0
 
-                initialChapter = cachedChapters[initialChapterIndex]
-                chapterPlayer?.chapters = cachedChapters
+                initialChapter = loadChapters[initialChapterIndex]
+                chapterPlayer?.chapters = loadChapters
                 chapterPlayer?.currentChapter = initialChapter
                 chapterPlayer?.currentChapterIndex = initialChapterIndex
                 chapterPlayer?.absolutePositionMs = startPosition.inWholeMilliseconds
@@ -1729,9 +1730,10 @@ class PlaybackManager @Inject constructor(
         chapter: Chapter?,
         chapterIndex: Int,
     ) {
-        publishStagedLoad(stagedLoad, loadRequest) {
+        publishStagedLoad(stagedLoad, loadRequest) { chapters ->
             _currentBook.value = book
-            _chapters.value = cachedChapters
+            cachedChapters = chapters
+            _chapters.value = chapters
             _currentChapter.value = chapter
             _currentChapterIndex.value = chapterIndex
             // A paused process-death restore has no polling loop to publish the
@@ -1813,10 +1815,12 @@ class PlaybackManager @Inject constructor(
                             serverListening = ServerSessionListening()
                             progressRepository.invalidatePendingProgressLifetime(book.id)
                             lastSyncTimestamp = System.currentTimeMillis()
-                            if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
+                            if (loadRequest != null) {
+                                // A load's chapters stay staged until it publishes.
+                                stagedLoad.fillChaptersIfEmpty(loadRequest, session.chapters)
+                            } else if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
                                 cachedChapters = session.chapters.sortedBy { it.start }
-                                // A load publishes its chapters itself.
-                                if (loadRequest == null) _chapters.value = cachedChapters
+                                _chapters.value = cachedChapters
                             }
                             true
                         } else {
@@ -3404,13 +3408,13 @@ class PlaybackManager @Inject constructor(
         // A load can be under way without having set its book or loading state
         // yet, so it is cancelled by the book it is loading, not by what the
         // player shows.
-        playbackLoadOwner.cancelLoadsOf(bookId)
+        cancelDiskLoadsOf(playbackLoadOwner, stagedLoad, bookId)
         val current = _currentBook.value
         // The book being loaded is staged, not current, until it publishes (#42).
         when (downloadRemovalTarget(current, stagedLoad.book.value, bookId)) {
             DownloadRemovalAction.NONE -> return
             DownloadRemovalAction.STOP_LOAD_AND_UNLOAD -> {
-                playbackLoadOwner.invalidate()
+                cancelPlaybackLoad(playbackLoadOwner, stagedLoad)
                 finishPlayback(PlaybackTermination.STOP)
             }
             DownloadRemovalAction.UNLOAD -> finishPlayback(PlaybackTermination.STOP)

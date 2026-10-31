@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -124,45 +125,91 @@ class TerminalServerBudgetTest {
         assertEquals(5_000L, TERMINAL_SEQUENCE_DEADLINE.inWholeMilliseconds)
     }
 
-    @Test(timeout = 5_000)
-    fun `a heartbeat stuck mid request lets go of the book's locks within its bound`() = runBlocking {
+    @Test(timeout = 10_000)
+    fun `a switch during a slow heartbeat frees the book's locks at once`() = runBlocking {
         // The real lock chain: a heartbeat runs inside the book's progress
-        // lock, then inside the session delivery lock under NonCancellable.
-        // The stopped book's final flush needs the progress lock first.
+        // lock, then inside the session delivery lock under NonCancellable,
+        // and the server takes 6 s to answer. The stopped book's final flush
+        // needs the progress lock first, and the next load waits on the
+        // whole terminal sequence.
         val owner = PlaybackProgressOwner()
         val listening = ServerSessionListening()
         val heartbeatInFlight = CompletableDeferred<Unit>()
+        val sent = mutableListOf<Double>()
+        var heartbeatAcknowledged: Boolean? = null
         val heartbeat = launch {
             owner.sync("a") {
-                listening.deliver(10.0) {
-                    heartbeatInFlight.complete(Unit)
-                    boundedHeartbeatSend(timeout = 200.milliseconds) { never.await() }
+                heartbeatAcknowledged = listening.deliver(10.0) { delta ->
+                    listening.heartbeatSend {
+                        sent += delta
+                        heartbeatInFlight.complete(Unit)
+                        delay(6_000)
+                        true
+                    }
                 }
             }
         }
         heartbeatInFlight.await()
         val started = System.nanoTime()
-        val budget = TerminalServerBudget(total = 300.milliseconds)
-        var flushed = false
-        withContext(NonCancellable) {
-            owner.finalFlushSnapshot(owner.snapshotToken("a"), syncTerminal = {}) { flushed = true }
-            budget.call(serverLive = true) { listening.deliver(20.0) { true } }
+        // The end of book job: signal first, then the locks, all on the real
+        // shared deadline (J2).
+        listening.markStopping()
+        val terminal = launch {
+            withContext(NonCancellable) {
+                val budget = TerminalServerBudget()
+                owner.finalFlushSnapshot(owner.snapshotToken("a"), syncTerminal = {}) {}
+                budget.call(serverLive = true) {
+                    listening.deliver(20.0) { delta -> budget.call(serverLive = true) { sent += delta; true } ?: false }
+                }
+                budget.call(serverLive = true) { listening.close {} }
+            }
         }
+        terminal.join() // the next book's load starts here
         val ms = (System.nanoTime() - started) / 1_000_000
-        assertTrue(flushed)
-        assertTrue("waited ${ms}ms", ms < 800)
+        assertTrue("next load waited ${ms}ms", ms < 1_000)
+        assertTrue("next load waited ${ms}ms, past the J2 budget", ms < TERMINAL_SEQUENCE_DEADLINE.inWholeMilliseconds)
         heartbeat.join()
+        assertEquals(false, heartbeatAcknowledged)
+        // The cut heartbeat's time rides on the final sync: one linear
+        // double count at a switch, never more.
+        assertEquals(listOf(10.0, 20.0), sent)
     }
 
     @Test
-    fun `a heartbeat that answers in time reports what the server said`() = runBlocking {
-        assertTrue(boundedHeartbeatSend { true })
-        assertFalse(boundedHeartbeatSend { false })
-        assertFalse(boundedHeartbeatSend { null })
+    fun `a heartbeat for a book that already stopped is not sent`() = runBlocking {
+        val listening = ServerSessionListening()
+        listening.markStopping()
+        listening.markStopping()
+        var called = false
+        assertFalse(listening.heartbeatSend { called = true; true })
+        assertFalse(called)
+    }
+
+    @Test(timeout = 30_000)
+    fun `a slow server that still records gets each heartbeat's time once`() = runBlocking {
+        // The server takes 6 s to answer but records every request it gets.
+        // No book is stopping, so each heartbeat waits for its answer the way
+        // master does, and the next one never resends acknowledged time.
+        val listening = ServerSessionListening()
+        val recorded = mutableListOf<Double>()
+        for (total in listOf(12.0, 24.0, 36.0)) {
+            listening.deliver(total) { delta ->
+                listening.heartbeatSend {
+                    recorded += delta
+                    delay(6_000)
+                    true
+                }
+            }
+        }
+        assertEquals(listOf(12.0, 12.0, 12.0), recorded)
+        assertEquals(36.0, recorded.sum(), 0.0)
     }
 
     @Test
-    fun `a heartbeat gets the same bound as the whole terminal sequence`() {
-        assertEquals(TERMINAL_SEQUENCE_DEADLINE, HEARTBEAT_SYNC_TIMEOUT)
+    fun `a heartbeat that answers reports what the server said`() = runBlocking {
+        val listening = ServerSessionListening()
+        assertTrue(listening.heartbeatSend { true })
+        assertFalse(listening.heartbeatSend { false })
+        assertFalse(listening.heartbeatSend { null })
     }
 }

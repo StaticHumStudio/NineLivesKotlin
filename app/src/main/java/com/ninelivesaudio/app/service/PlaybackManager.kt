@@ -2308,6 +2308,9 @@ class PlaybackManager @Inject constructor(
         // destroy our shared player during the new book's network request.
         if (!keepServiceConnection) stopPlaybackService()
 
+        // First, before the terminal work waits on any lock: a heartbeat in
+        // flight for this session stops waiting on the server (#54).
+        terminal?.serverListening?.markStopping()
         if (terminal != null && terminalToken != null) {
             pendingTerminalOwner.launch(scope, terminal.bookId) {
                 // Finish captured terminal work even if the service tears down.
@@ -3168,10 +3171,10 @@ class PlaybackManager @Inject constructor(
         if (tick != null) {
             try {
                 tick.listening.deliver(tick.timeListened) { delta ->
-                    // Bounded: this holds the locks a stopped book's final
-                    // write needs, and deliver's NonCancellable outlasts any
-                    // cancellation (#54).
-                    boundedHeartbeatSend {
+                    // This holds the locks a stopped book's final write needs,
+                    // and deliver's NonCancellable outlasts any cancellation.
+                    // It waits for the server unless the book is stopping (#54).
+                    tick.listening.heartbeatSend {
                         progressRepository.syncSessionProgressIfCurrent(
                             itemId = book.id,
                             sessionId = tick.sessionId,

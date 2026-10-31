@@ -50,19 +50,3 @@ internal class TerminalServerBudget(
 /** How long a stopped book's progress push may wait on the server. */
 internal fun terminalPushTimeout(budget: TerminalServerBudget?): Duration =
     budget?.remaining() ?: TERMINAL_PROGRESS_PUSH_TIMEOUT
-
-/** How long one playback heartbeat may wait on the server. */
-internal val HEARTBEAT_SYNC_TIMEOUT = TERMINAL_SEQUENCE_DEADLINE
-
-/**
- * A playback heartbeat's server call, bounded. A heartbeat holds the book's
- * progress lock and the session delivery lock while it waits, under
- * NonCancellable, and a stopped book's final write needs both. Unbounded, a
- * server that stopped answering held up the next load for the whole HTTP read
- * timeout (#54). An unanswered heartbeat is not acknowledged, so the next one
- * carries its listening time.
- */
-internal suspend fun boundedHeartbeatSend(
-    timeout: Duration = HEARTBEAT_SYNC_TIMEOUT,
-    send: suspend () -> Boolean?,
-): Boolean = kotlinx.coroutines.withTimeoutOrNull(timeout) { send() } == true

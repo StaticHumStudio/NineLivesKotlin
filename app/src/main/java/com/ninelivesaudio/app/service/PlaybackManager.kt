@@ -3408,10 +3408,8 @@ class PlaybackManager @Inject constructor(
         // A load can be under way without having set its book or loading state
         // yet, so it is cancelled by the book it is loading, not by what the
         // player shows.
-        cancelDiskLoadsOf(playbackLoadOwner, stagedLoad, bookId)
         val current = _currentBook.value
-        // The book being loaded is staged, not current, until it publishes (#42).
-        when (downloadRemovalTarget(current, stagedLoad.book.value, bookId)) {
+        when (planDownloadRemoval(playbackLoadOwner, stagedLoad, current, bookId)) {
             DownloadRemovalAction.NONE -> return
             DownloadRemovalAction.STOP_LOAD_AND_UNLOAD -> {
                 cancelPlaybackLoad(playbackLoadOwner, stagedLoad)

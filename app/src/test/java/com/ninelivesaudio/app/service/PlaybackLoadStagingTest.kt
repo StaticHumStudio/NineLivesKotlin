@@ -244,4 +244,43 @@ class PlaybackLoadStagingTest {
         assertNull(s.chapters(1))
         assertEquals(listOf("B one", "B two"), s.chapters(2)?.map { it.title })
     }
+
+    private val downloadedB = b.copy(isDownloaded = true, localPath = "/books/b")
+
+    @Test
+    fun `deleting the loading book's download mid load stops that load`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        val request = owner.newRequest()
+        owner.trackLoad(request, "b")
+        assertTrue(owner.claim(request))
+        s.stage(request, downloadedB) // waiting on its session open or backfill
+        // The real order inside onDownloadRemoved: plan, then act on the plan.
+        val action = planDownloadRemoval(owner, s, current = a, removedBookId = "b")
+        // STOP runs finishPlayback, which leaves LOADING and tears the load down.
+        assertEquals(DownloadRemovalAction.STOP_LOAD_AND_UNLOAD, action)
+        assertNull(s.book.value)
+        assertFalse(owner.isCurrent(request))
+    }
+
+    @Test
+    fun `deleting the previous book's download while another loads only refreshes it`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val s = StagedLoad()
+        val request = owner.newRequest()
+        assertTrue(owner.claim(request))
+        s.stage(request, b) // streamed B loading
+        val downloadedA = a.copy(isDownloaded = true, localPath = "/books/a")
+        val action = planDownloadRemoval(owner, s, current = downloadedA, removedBookId = "a")
+        assertEquals(DownloadRemovalAction.REFRESH_ONLY, action)
+        assertEquals(b, s.book.value)
+        assertTrue(owner.isCurrent(request))
+    }
+
+    @Test
+    fun `deleting the current book's download with nothing loading unloads it`() {
+        val downloadedA = a.copy(isDownloaded = true, localPath = "/books/a")
+        val action = planDownloadRemoval(PlaybackLoadOwner(), StagedLoad(), current = downloadedA, removedBookId = "a")
+        assertEquals(DownloadRemovalAction.UNLOAD, action)
+    }
 }

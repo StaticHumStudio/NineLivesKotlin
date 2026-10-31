@@ -87,6 +87,24 @@ internal fun cancelDiskLoadsOf(owner: PlaybackLoadOwner, staged: StagedLoad, boo
 }
 
 /**
+ * What a removed download does to the player. The loading book is read
+ * before its load is cancelled, because the cancel clears its staging and
+ * the decision still has to see it: deleting the loading book's download
+ * must stop that load, or the player stays LOADING with nobody to end it.
+ * The book being loaded is staged, not current, until it publishes (#42).
+ */
+internal fun planDownloadRemoval(
+    owner: PlaybackLoadOwner,
+    staged: StagedLoad,
+    current: AudioBook?,
+    removedBookId: String,
+): DownloadRemovalAction {
+    val loading = staged.book.value
+    cancelDiskLoadsOf(owner, staged, removedBookId)
+    return downloadRemovalTarget(current, loading, removedBookId)
+}
+
+/**
  * Runs [publish] with the staged chapters, which makes the loaded book and its
  * chapter cache current together, and only then clears
  * [request]'s staging. An observer reading the staged book first never sees

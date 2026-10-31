@@ -28,24 +28,24 @@ class LibraryAuthorSyncTest {
             LibraryRefreshOutcome.Full(RemoteResult.Partial(3, "x")),
             LibraryRefreshOutcome.Incremental(1, 6),
         ).forEach { outcome ->
-            assertTrue(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = true))
-            assertTrue(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false))
+            assertTrue(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = true, isMetered = false))
+            assertTrue(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false, isMetered = false))
         }
     }
 
     @Test
     fun `authors refresh once per run when nothing changed`() {
         listOf(LibraryRefreshOutcome.Unchanged(5), LibraryRefreshOutcome.Deferred("m")).forEach { outcome ->
-            assertTrue(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false))
-            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = true))
+            assertTrue(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false, isMetered = false))
+            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = true, isMetered = false))
         }
     }
 
     @Test
     fun `a failed check or failed download never asks for authors`() {
         listOf(LibraryRefreshOutcome.CheckFailed("x"), LibraryRefreshOutcome.Full(RemoteResult.Failed("x"))).forEach { outcome ->
-            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false))
-            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = true))
+            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false, isMetered = false))
+            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = true, isMetered = false))
         }
     }
 
@@ -106,5 +106,37 @@ class LibraryAuthorSyncTest {
             fail("cancellation must propagate")
         } catch (_: CancellationException) {
         }
+    }
+
+    @Test
+    fun `an idle check never fetches the author list on a metered network`() {
+        listOf(LibraryRefreshOutcome.Unchanged(5), LibraryRefreshOutcome.Deferred("m")).forEach { outcome ->
+            assertFalse(outcome.toString(), shouldRefreshAuthors(outcome, storedThisRun = false, isMetered = true))
+        }
+        // A sync that wrote books still refreshes, metered or not.
+        assertTrue(shouldRefreshAuthors(LibraryRefreshOutcome.Incremental(1, 6), storedThisRun = false, isMetered = true))
+    }
+
+    @Test
+    fun `a failed fetch lets the next check try again this run`() {
+        val stored = mutableSetOf("k")
+        recordAuthorsStored(stored, "k", stored = false)
+        assertFalse("k" in stored)
+        recordAuthorsStored(stored, "k", stored = true)
+        assertTrue("k" in stored)
+    }
+
+    @Test
+    fun `pruning a library removes its authors with its books`() = runBlocking {
+        val calls = mutableListOf<String>()
+        pruneLibraryRows("lib", { calls += "books:$it" }, { calls += "authors:$it" })
+        assertEquals(listOf("books:lib", "authors:lib"), calls)
+    }
+
+    @Test
+    fun `clear cache also clears the author lists`() = runBlocking {
+        val calls = mutableListOf<String>()
+        clearServerLibraryCache({ calls += "books" }, { calls += "libraries" }, { calls += "authors" })
+        assertEquals(listOf("books", "libraries", "authors"), calls)
     }
 }

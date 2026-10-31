@@ -46,6 +46,7 @@ class AuthorDirectory(authors: List<LibraryAuthor>) {
             splitServerAuthorNames(unmatched.joinToString(", ")).mapTo(out) { AuthorGroup(it, it) }
             unmatched.clear()
         }
+        var previousMatched = false
         var start = 0
         while (start < pieces.size) {
             var end = minOf(pieces.size, start + maxPieces)
@@ -56,9 +57,17 @@ class AuthorDirectory(authors: List<LibraryAuthor>) {
                 end--
             }
             if (hit == null) {
-                unmatched += pieces[start]
+                if (previousMatched && isNameSuffix(pieces[start])) {
+                    // "Vonnegut, Jr." after a matched "Kurt Vonnegut": the suffix
+                    // belongs to that author, it is not a second person.
+                    previousMatched = false
+                } else {
+                    unmatched += pieces[start]
+                    previousMatched = false
+                }
                 start++
             } else {
+                previousMatched = true
                 flushUnmatched()
                 out += AuthorGroup(AUTHOR_ID_KEY_PREFIX + hit.id, hit.name)
                 start = end

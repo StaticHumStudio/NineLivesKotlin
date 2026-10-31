@@ -251,7 +251,7 @@ class AudioBookRepository @Inject constructor(
         val flightKey = identity.flightKey(libraryId)
         return syncFlights.run(flightKey, LibrarySyncKind.FULL) {
             lockFor(flightKey).withLock { runFullSyncLocked(libraryId, identity) }
-                .also { refreshAuthorsAfter(libraryId, identity, it) }
+                .also { refreshAuthorsAfter(libraryId, identity, it, isMetered = false) }
         }.itemCountResult() ?: RemoteResult.Failed("sync did not run")
     }
 
@@ -262,9 +262,14 @@ class AudioBookRepository @Inject constructor(
      * for it. The list is written only while [identity] is still signed in,
      * and a stored list tells an open Library to group again.
      */
-    private fun refreshAuthorsAfter(libraryId: String, identity: LibrarySyncIdentity, outcome: LibraryRefreshOutcome) {
+    private fun refreshAuthorsAfter(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        outcome: LibraryRefreshOutcome,
+        isMetered: Boolean,
+    ) {
         val key = identity.flightKey(libraryId)
-        if (!shouldRefreshAuthors(outcome, storedThisRun = key in authorsStoredThisRun)) return
+        if (!shouldRefreshAuthors(outcome, storedThisRun = key in authorsStoredThisRun, isMetered = isMetered)) return
         syncScope.launch {
             val stored = refreshLibraryAuthors(
                 fetch = { apiService.getLibraryAuthors(libraryId) },
@@ -277,10 +282,8 @@ class AudioBookRepository @Inject constructor(
                     }
                 },
             )
-            if (stored) {
-                authorsStoredThisRun += key
-                _booksSaved.tryEmit(libraryId)
-            }
+            recordAuthorsStored(authorsStoredThisRun, key, stored)
+            if (stored) _booksSaved.tryEmit(libraryId)
         }
     }
 
@@ -302,7 +305,7 @@ class AudioBookRepository @Inject constructor(
         val flightKey = identity.flightKey(libraryId)
         return syncFlights.run(flightKey, LibrarySyncKind.CHECK) {
             lockFor(flightKey).withLock { runCheckLocked(libraryId, identity, isMetered) }
-                .also { refreshAuthorsAfter(libraryId, identity, it) }
+                .also { refreshAuthorsAfter(libraryId, identity, it, isMetered) }
         }
     }
 
@@ -501,7 +504,11 @@ class AudioBookRepository @Inject constructor(
      */
     internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String): Boolean =
         runSerializedLibraryItemPrune(lockFor(watermarkStore.currentSyncIdentity().flightKey(libraryId))) {
-            audioBookDao.deleteServerBooksByLibrary(libraryId)
+            pruneLibraryRows(
+                libraryId,
+                deleteBooks = audioBookDao::deleteServerBooksByLibrary,
+                deleteAuthors = database.libraryAuthorDao()::deleteForLibrary,
+            )
             audioBookDao.hasDownloadedServerBooks(libraryId)
         }
 

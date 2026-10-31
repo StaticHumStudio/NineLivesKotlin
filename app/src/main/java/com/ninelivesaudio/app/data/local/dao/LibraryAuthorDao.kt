@@ -16,6 +16,9 @@ interface LibraryAuthorDao {
     @Query("DELETE FROM LibraryAuthors WHERE LibraryId = :libraryId")
     suspend fun deleteForLibrary(libraryId: String)
 
+    @Query("DELETE FROM LibraryAuthors")
+    suspend fun deleteAll()
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(rows: List<LibraryAuthorEntity>)
 

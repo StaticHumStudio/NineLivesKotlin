@@ -1629,7 +1629,7 @@ internal fun splitServerAuthorNames(authorName: String): List<String> {
 /** Name suffixes that follow a comma inside one author's name. */
 private val NAME_SUFFIXES = setOf("jr", "sr", "ii", "iii", "iv", "phd", "ph.d", "md", "m.d", "esq", "inc", "llc", "ltd")
 
-private fun isNameSuffix(piece: String): Boolean = piece.lowercase().removeSuffix(".") in NAME_SUFFIXES
+internal fun isNameSuffix(piece: String): Boolean = piece.lowercase().removeSuffix(".") in NAME_SUFFIXES
 
 /** A section with its lowercased title worked out once, not on every compare. */
 private class SectionSortEntry(val section: GroupedSection) {

@@ -107,6 +107,14 @@ class AuthorDirectoryTest {
         assertEquals(listOf("Horror"), buildGroupedSections(books, ViewMode.GENRE, SortMode.TITLE_AZ, AuthorDirectory(listOf(smithJohn))).map { it.key })
     }
 
+    @Test
+    fun `a name suffix after a matched author stays with that author`() {
+        val vonnegut = LibraryAuthor("au_kv", "Kurt Vonnegut")
+        val sections = group(listOf(book("b", "Kurt Vonnegut, Jr.")), vonnegut)
+
+        assertEquals(listOf("author-id:au_kv"), sections.map { it.key })
+    }
+
     private fun group(books: List<AudioBook>, vararg authors: LibraryAuthor) =
         buildGroupedSections(sortBooks(books, SortMode.TITLE_AZ), ViewMode.AUTHOR, SortMode.TITLE_AZ, AuthorDirectory(authors.toList()))
 

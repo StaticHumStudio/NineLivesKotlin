@@ -33,6 +33,9 @@ object AppModule {
     fun provideLibraryDao(db: AppDatabase): LibraryDao = db.libraryDao()
 
     @Provides
+    fun provideLibraryAuthorDao(db: AppDatabase): LibraryAuthorDao = db.libraryAuthorDao()
+
+    @Provides
     fun provideAudioBookDao(db: AppDatabase): AudioBookDao = db.audioBookDao()
 
     @Provides

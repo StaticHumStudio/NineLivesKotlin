@@ -114,8 +114,40 @@ class SyncMergeTest {
         val merged = mergeSyncedBook(expandedRemote, local)
 
         assertEquals(downloadedDetailedBook().audioFiles, merged.audioFiles)
+        // A different track list keeps the chapters that went with the recorded one.
         assertEquals(downloadedDetailedBook().chapters, merged.chapters)
         assertEquals("Server title", merged.title)
+    }
+
+    @Test
+    fun `a server chapter edit reaches a download whose tracks match`() {
+        val local = downloadedDetailedBook().toEntity()
+        val edited = listOf(Chapter(id = 1, start = 0.0, end = 20.0, title = "Edited"))
+        val remote = AudioBook(
+            id = "1",
+            audioFiles = downloadedDetailedBook().audioFiles.map { it.copy(localPath = null) },
+            chapters = edited,
+        )
+
+        val merged = mergeSyncedBook(remote, local)
+
+        assertEquals(edited, merged.chapters)
+        assertEquals(downloadedDetailedBook().audioFiles, merged.audioFiles)
+    }
+
+    @Test
+    fun `a legacy download keeps its own chapters, not the server's`() {
+        val legacy = downloadedDetailedBook().copy(audioFiles = emptyList(), chapters = emptyList()).toEntity()
+        val remote = AudioBook(
+            id = "1",
+            audioFiles = listOf(AudioFile(id = "new", index = 0, filename = "new.m4b")),
+            chapters = listOf(Chapter(id = 3, start = 0.0, end = 20.0, title = "Server")),
+        )
+
+        val merged = mergeSyncedBook(remote, legacy)
+
+        assertTrue(merged.audioFiles.isEmpty())
+        assertTrue(merged.chapters.isEmpty())
     }
 
     @Test

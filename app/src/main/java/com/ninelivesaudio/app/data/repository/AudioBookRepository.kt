@@ -23,6 +23,7 @@ import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LibraryAuthor
+import com.ninelivesaudio.app.domain.model.Chapter
 import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.service.shelfProgress
@@ -1035,6 +1036,21 @@ internal fun AudioBookEntity.toSyncMergeState(): SyncMergeState = SyncMergeState
 )
 
 /**
+ * The chapters a downloaded book keeps through a sync. They describe the
+ * tracks, so with no recorded tracks the local chapters stay (the play-time
+ * backfill fills both after the disk check). With recorded tracks the server's
+ * chapters (an edit there should arrive) are taken only when the server's
+ * track list is the same one: same count and same file at each index.
+ */
+private fun syncedChapters(kept: AudioBook, remote: AudioBook): List<Chapter> {
+    if (kept.audioFiles.isEmpty()) return kept.chapters
+    val sameTracks = kept.audioFiles.size == remote.audioFiles.size &&
+        kept.audioFiles.sortedBy { it.index }.zip(remote.audioFiles.sortedBy { it.index })
+            .all { (a, b) -> a.index == b.index && a.ino.ifEmpty { a.id } == b.ino.ifEmpty { b.id } }
+    return if (sameTracks) remote.chapters.ifEmpty { kept.chapters } else kept.chapters
+}
+
+/**
  * Merge a server book with its local row during sync, preserving local-only
  * state the server does not know about: the download flag, the on-disk audio
  * path, the cover persisted at download time, and any local playback progress
@@ -1052,6 +1068,7 @@ internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: 
     if (local == null) return remote
 
     val withDownload = if (local.isDownloaded == 1) {
+        val kept = detail?.toDomain()
         remote.copy(
             isDownloaded = true,
             localPath = local.localPath,
@@ -1059,10 +1076,9 @@ internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: 
             // A download's own track list is the record of what is on disk, so a
             // sync never swaps it for the server's. Old downloads hold none, and
             // stay that way until the play-time backfill checks the server's
-            // list against the files (#35). Chapters fall back to the server's
-            // only when the download has none.
-            audioFiles = detail?.toDomain()?.audioFiles ?: remote.audioFiles,
-            chapters = detail?.toDomain()?.chapters?.ifEmpty { remote.chapters } ?: remote.chapters,
+            // list against the files (#35). Chapters follow the tracks.
+            audioFiles = kept?.audioFiles ?: remote.audioFiles,
+            chapters = if (kept == null) remote.chapters else syncedChapters(kept, remote),
         )
     } else remote
 

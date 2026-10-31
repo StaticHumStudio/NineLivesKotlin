@@ -219,6 +219,7 @@ internal class PlaybackLoadOwner {
     private var activeRequest: Long? = null
     private val pendingRequests = sortedSetOf<Long>()
     private val requestChanges = MutableStateFlow(0L)
+    private val diskLoadBooks = mutableMapOf<Long, String>()
 
     fun newRequest(): Long = synchronized(ownerLock) {
         (++nextRequest).also(pendingRequests::add)
@@ -240,7 +241,30 @@ internal class PlaybackLoadOwner {
         }
     }
 
+    /** Notes that [request] is loading [bookId] from its downloaded files. */
+    fun trackLoad(request: Long, bookId: String) = synchronized(ownerLock) {
+        diskLoadBooks[request] = bookId
+    }
+
+    /**
+     * Cancels every load of [bookId] from disk, whether it has claimed the
+     * player yet or not (a delete can land before the load has set its book
+     * or its loading state). True when one was cancelled.
+     */
+    fun cancelLoadsOf(bookId: String): Boolean = synchronized(ownerLock) {
+        val requests = diskLoadBooks.filterValues { it == bookId }.keys
+        if (requests.isEmpty()) return@synchronized false
+        requests.forEach { request ->
+            diskLoadBooks.remove(request)
+            pendingRequests.remove(request)
+            if (activeRequest == request) activeRequest = null
+        }
+        requestChanges.value += 1L
+        true
+    }
+
     fun abandon(request: Long): Boolean = synchronized(ownerLock) {
+        diskLoadBooks.remove(request)
         val wasNewest = pendingRequests.lastOrNull() == request
         if (pendingRequests.remove(request)) {
             requestChanges.value += 1L
@@ -1314,6 +1338,9 @@ class PlaybackManager @Inject constructor(
     ): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBookOwned must be called from the Main thread"
+        }
+        if (!book.isLocal && book.isDownloaded && !book.localPath.isNullOrEmpty()) {
+            playbackLoadOwner.trackLoad(loadRequest, book.id)
         }
         if (!book.isInActiveLibrary(settingsManager.currentSettings)) {
             if (playbackLoadOwner.abandon(loadRequest)) {
@@ -3243,6 +3270,10 @@ class PlaybackManager @Inject constructor(
      * since that could spend mobile data unasked.
      */
     private suspend fun onDownloadRemoved(bookId: String) {
+        // A load can be under way without having set its book or loading state
+        // yet, so it is cancelled by the book it is loading, not by what the
+        // player shows.
+        playbackLoadOwner.cancelLoadsOf(bookId)
         val current = _currentBook.value
         val action = downloadRemovalAction(current, bookId, _playbackState.value == PlaybackState.LOADING)
         if (action == DownloadRemovalAction.NONE || current == null) return

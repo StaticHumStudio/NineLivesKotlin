@@ -34,6 +34,30 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 
+/** The slice of the download rows and the stored flag that one book's page reads. */
+internal data class BookDownloadFeed(val rowId: String?, val rowStatus: DownloadStatus?, val storedFlag: Boolean)
+
+/**
+ * Follows only this book's download row. Every row in the app is watched, but
+ * a tick on another book's row, or on this one's byte count, changes nothing
+ * the page shows, so it does not emit.
+ */
+internal fun bookDownloadFeed(
+    bookId: String,
+    rows: Flow<List<com.ninelivesaudio.app.data.local.entity.DownloadItemEntity>>,
+    storedFlag: Flow<Boolean>,
+): Flow<BookDownloadFeed> = combine(rows, storedFlag) { entities, flag ->
+    val entity = entities.firstOrNull { it.audioBookId == bookId }
+    BookDownloadFeed(entity?.id, entity?.toDomain()?.status, flag)
+}.distinctUntilChanged()
+
+/**
+ * The stored flag counts only for a server book. A local import keeps its flag
+ * set whatever happens to its folder, so the page's own folder check decides.
+ */
+internal fun shownAsDownloaded(isLocal: Boolean, storedFlag: Boolean, current: Boolean): Boolean =
+    if (isLocal) current else storedFlag
+
 /**
  * The download button for a download row, or for the book's own flag when it
  * has no row (a delete from the Downloads tab removes the row, and the page
@@ -318,14 +342,16 @@ class BookDetailViewModel @Inject constructor(
 
     private fun observeDownloadState() {
         viewModelScope.launch {
-            combine(
-                downloadItemDao.observeAll(),
-                audioBookRepository.observeIsDownloaded(bookId),
-            ) { entities, downloaded -> entities.firstOrNull { it.audioBookId == bookId } to downloaded }
-                .collect { (entity, downloaded) ->
-                    currentDownloadId = entity?.id
-                    val state = downloadButtonState(entity?.toDomain()?.status, downloaded)
-                    _uiState.update { it.copy(downloadState = state, isDownloaded = downloaded) }
+            bookDownloadFeed(bookId, downloadItemDao.observeAll(), audioBookRepository.observeIsDownloaded(bookId))
+                .collect { feed ->
+                    currentDownloadId = feed.rowId
+                    _uiState.update {
+                        val downloaded = shownAsDownloaded(it.isLocal, feed.storedFlag, it.isDownloaded)
+                        it.copy(
+                            downloadState = downloadButtonState(feed.rowStatus, downloaded),
+                            isDownloaded = downloaded,
+                        )
+                    }
                 }
         }
     }

@@ -974,9 +974,8 @@ internal suspend fun <T> runSerializedLibraryItemPrune(
 
 /**
  * [mergeSyncedBooks] reading only the columns the merge keeps. The whole row
- * (audio file and chapter lists) is read only for a downloaded book whose
- * server copy came back without tracks or chapters, the one case the merge
- * borrows them from the local row. A book new to the cache takes the
+ * (audio file and chapter lists) is read only for a downloaded book, the one
+ * case the merge keeps the local lists over the server's. A book new to the cache takes the
  * position the progress pull saved for it ([getProgressRows]), see
  * [withPulledProgress].
  */
@@ -988,9 +987,7 @@ internal suspend fun mergeSyncedBooksLean(
 ): List<AudioBook> {
     if (remote.isEmpty()) return emptyList()
     val states = fetchByIdChunks(remote.map { it.id }, getMergeStates).associateBy { it.id }
-    val needDetail = remote.filter { book ->
-        states[book.id]?.isDownloaded == 1 && (book.audioFiles.isEmpty() || book.chapters.isEmpty())
-    }.map { it.id }
+    val needDetail = remote.filter { book -> states[book.id]?.isDownloaded == 1 }.map { it.id }
     val details = if (needDetail.isEmpty()) emptyMap() else fetchByIdChunks(needDetail, getFullRows).associateBy { it.id }
     val newIds = remote.filter { states[it.id] == null }.map { it.id }
     val pulled = if (newIds.isEmpty()) emptyMap() else fetchByIdChunks(newIds, getProgressRows).associateBy { it.audioBookId }
@@ -1048,8 +1045,8 @@ internal fun mergeSyncedBook(remote: AudioBook, local: AudioBookEntity?): AudioB
 
 /**
  * [mergeSyncedBook] from the kept columns alone. [detail] is the whole local
- * row, needed only to borrow tracks or chapters for a downloaded book whose
- * server copy has none. Without it those stay as the server sent them.
+ * row, needed only to keep a downloaded book's own tracks and chapters.
+ * Without it those stay as the server sent them.
  */
 internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: AudioBookEntity?): AudioBook {
     if (local == null) return remote
@@ -1059,8 +1056,13 @@ internal fun mergeSyncedBook(remote: AudioBook, local: SyncMergeState?, detail: 
             isDownloaded = true,
             localPath = local.localPath,
             localCoverPath = local.localCoverPath,
-            audioFiles = remote.audioFiles.ifEmpty { detail?.toDomain()?.audioFiles.orEmpty() },
-            chapters = remote.chapters.ifEmpty { detail?.toDomain()?.chapters.orEmpty() },
+            // A download's own track list is the record of what is on disk, so a
+            // sync never swaps it for the server's. Old downloads hold none, and
+            // stay that way until the play-time backfill checks the server's
+            // list against the files (#35). Chapters fall back to the server's
+            // only when the download has none.
+            audioFiles = detail?.toDomain()?.audioFiles ?: remote.audioFiles,
+            chapters = detail?.toDomain()?.chapters?.ifEmpty { remote.chapters } ?: remote.chapters,
         )
     } else remote
 

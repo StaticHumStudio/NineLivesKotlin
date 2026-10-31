@@ -102,7 +102,7 @@ class SyncMergeTest {
     }
 
     @Test
-    fun `expanded sync replaces stale downloaded detail`() {
+    fun `a full sync keeps the track list a finished download recorded`() {
         val local = downloadedDetailedBook().toEntity()
         val expandedRemote = AudioBook(
             id = "1",
@@ -113,8 +113,39 @@ class SyncMergeTest {
 
         val merged = mergeSyncedBook(expandedRemote, local)
 
-        assertEquals(expandedRemote.audioFiles, merged.audioFiles)
-        assertEquals(expandedRemote.chapters, merged.chapters)
+        assertEquals(downloadedDetailedBook().audioFiles, merged.audioFiles)
+        assertEquals(downloadedDetailedBook().chapters, merged.chapters)
+        assertEquals("Server title", merged.title)
+    }
+
+    @Test
+    fun `a full sync does not hand a legacy download the server's unchecked list`() {
+        // 2.1.5 and earlier left the list empty. Only the play-time backfill,
+        // which checks the files on disk, may fill it.
+        val legacy = downloadedDetailedBook().copy(audioFiles = emptyList(), chapters = emptyList()).toEntity()
+        val expandedRemote = AudioBook(
+            id = "1",
+            audioFiles = listOf(AudioFile(id = "new", index = 0, filename = "new.m4b")),
+        )
+
+        val merged = mergeSyncedBook(expandedRemote, legacy)
+
+        assertTrue(merged.audioFiles.isEmpty())
+    }
+
+    @Test
+    fun `the lean merge keeps recorded paths when the server sends a full list`() = kotlinx.coroutines.runBlocking {
+        val downloaded = downloadedDetailedBook().toEntity()
+
+        val merged = mergeSyncedBooksLean(
+            remote = listOf(AudioBook(id = "1", audioFiles = listOf(AudioFile(id = "x", index = 0, filename = "x.m4b")))),
+            getMergeStates = { listOf(downloaded.toSyncMergeState()) },
+            getFullRows = { listOf(downloaded) },
+            getProgressRows = { emptyList() },
+        )
+
+        assertEquals(downloadedDetailedBook().audioFiles, merged[0].audioFiles)
+        assertTrue(merged[0].audioFiles.all { !it.localPath.isNullOrBlank() })
     }
 
     @Test
@@ -227,7 +258,7 @@ class SyncMergeTest {
             audioFiles = listOf(AudioFile(id = "a", index = 0, filename = "a.mp3")),
             chapters = listOf(Chapter(id = 1, start = 0.0, end = 5.0, title = "One")),
         )
-        assertEquals(mergeSyncedBook(remote, local), mergeSyncedBook(remote, local.toSyncMergeState(), detail = null))
+        assertEquals(mergeSyncedBook(remote, local), mergeSyncedBook(remote, local.toSyncMergeState(), detail = local))
     }
 
     private fun downloadedDetailedBook() = AudioBook(

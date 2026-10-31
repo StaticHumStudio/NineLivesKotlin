@@ -44,4 +44,48 @@ class DownloadRemovalTest {
     fun `nothing loaded means nothing to unload`() {
         assertEquals(DownloadRemovalAction.NONE, downloadRemovalAction(null, "b", loading = false))
     }
+
+    @Test
+    fun `deleting a book's download cancels a load of it that has not claimed yet`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val request = owner.newRequest()
+        owner.trackLoad(request, "b")
+
+        assertEquals(true, owner.cancelLoadsOf("b"))
+
+        assertEquals(false, owner.claim(request))
+    }
+
+    @Test
+    fun `deleting a book's download cancels its claimed load`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val request = owner.newRequest()
+        owner.trackLoad(request, "b")
+        assertEquals(true, owner.claim(request))
+
+        assertEquals(true, owner.cancelLoadsOf("b"))
+
+        assertEquals(false, owner.isCurrent(request))
+    }
+
+    @Test
+    fun `deleting one book's download leaves another book's load alone`() = kotlinx.coroutines.runBlocking {
+        val owner = PlaybackLoadOwner()
+        val other = owner.newRequest()
+        owner.trackLoad(other, "c")
+
+        assertEquals(false, owner.cancelLoadsOf("b"))
+
+        assertEquals(true, owner.claim(other))
+    }
+
+    @Test
+    fun `a finished load is no longer tracked`() {
+        val owner = PlaybackLoadOwner()
+        val request = owner.newRequest()
+        owner.trackLoad(request, "b")
+        owner.abandon(request)
+
+        assertEquals(false, owner.cancelLoadsOf("b"))
+    }
 }

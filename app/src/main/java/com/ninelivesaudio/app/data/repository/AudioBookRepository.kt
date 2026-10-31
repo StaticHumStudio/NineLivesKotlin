@@ -591,6 +591,8 @@ class AudioBookRepository @Inject constructor(
      * (issue #20). A local book's id hashes its path under the picked root, so
      * dragging a folder one level deeper archives the old row and imports a new
      * one, and the user's place stays with the row nobody can see any more.
+     * The place, the bookmarks and the listening history all move to the new
+     * row (issue #46), so the Dossier's totals do not drop with the old one.
      *
      * Call this AFTER the scan's books are imported and BEFORE the missing ones
      * are archived. [existingIds] is the library's LIVE local ids as they were
@@ -625,6 +627,10 @@ class AudioBookRepository @Inject constructor(
         val vanishedById = vanishedBooks.associateBy { it.id }
 
         for ((from, to) in moves) {
+            // Bookmarks and listening history follow the book whether or not it
+            // had a saved place (issue #46).
+            localBookmarkDao.moveToBook(from, to)
+            localListeningSessionDao.moveToBook(from, to)
             val progress = playbackProgressDao.getByAudioBookId(from) ?: continue
             // The destination row was just imported with a fresh zero position,
             // so there is nothing of the user's here to overwrite. The progress

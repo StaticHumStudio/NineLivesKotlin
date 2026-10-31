@@ -305,7 +305,8 @@ class BillingManager @Inject constructor(
         // Acknowledge from the query path too, not only from the purchase
         // callback. Google auto-refunds unacknowledged purchases after three
         // days, and a missed callback would otherwise cost the user their money
-        // and us the sale.
+        // and us the sale. The acknowledger retries on its own scope, so this
+        // no longer waits inside the refresh lock or its timeout.
         if (responseOk) acknowledgeIfNeeded(result.purchasesList)
         return responseOk
     }
@@ -457,21 +458,34 @@ class BillingManager @Inject constructor(
         }
     }
 
-    private suspend fun acknowledgeIfNeeded(purchases: List<Purchase>) {
+    /**
+     * Acknowledgement is handed to [acknowledger], which retries on its own scope. It never runs
+     * inside the refresh lock or the refresh timeout, so a slow or failing acknowledgement cannot
+     * hold up a purchase grant or turn a good query into a FAILED refresh.
+     */
+    private fun acknowledgeIfNeeded(purchases: List<Purchase>) {
         val pending = purchases.filter { purchase ->
             purchase.purchaseState == Purchase.PurchaseState.PURCHASED &&
                 !purchase.isAcknowledged &&
                 purchase.products.contains(PurchaseEvaluator.UNLOCK_PRODUCT_ID)
         }
-
-        for (purchase in pending) {
-            val params = AcknowledgePurchaseParams.newBuilder()
-                .setPurchaseToken(purchase.purchaseToken)
-                .build()
-            val result = billingCall { client.acknowledgePurchase(params) }
-            Log.d(TAG, "acknowledge: ${result?.responseCode}")
-        }
+        if (pending.isEmpty()) return
+        acknowledger.acknowledge(pending.map { it.purchaseToken })
     }
+
+    private val acknowledger = PurchaseAcknowledger(
+        scope = scope,
+        acknowledgeOnce = { token ->
+            val params = AcknowledgePurchaseParams.newBuilder()
+                .setPurchaseToken(token)
+                .build()
+            val code = withTimeoutOrNull(BILLING_TIMEOUT_MS) {
+                billingCall { client.acknowledgePurchase(params) }
+            }?.responseCode
+            Log.d(TAG, "acknowledge: $code")
+            code
+        },
+    )
 
     /**
      * Run a Billing call, swallowing its failures but never its cancellation.

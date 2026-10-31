@@ -190,4 +190,23 @@ class LocalBookRevivalInstrumentedTest {
             dir.listFiles()?.forEach { it.delete() }
         }
     }
+
+    @Test
+    fun aRetagThatSwapsTheSizeOrderOfSameNamedTracksStillRevives() = runBlocking {
+        // A merged multi disc book: two tracks both named 01.mp3, 60 s and 120 s long.
+        val oldTracks = listOf(Triple("01.mp3", 1_000L, null as String?), Triple("01.mp3", 2_000L, null as String?))
+        database.audioBookDao().upsert(
+            kit.scanned("A", "Swap/Old Book", "Old Book", oldTracks, secondsByTrack = listOf(60, 120))
+                .toEntity().copy(archivedAt = archivedAt, currentTimeSeconds = 1200.0)
+        )
+        // Retagged: every size changed, and the 120 s track is now the smaller file.
+        val retagged = listOf(Triple("01.mp3", 2_100L, null as String?), Triple("01.mp3", 1_100L, null as String?))
+
+        scan(kit.scanned("A", "Swap/Old Book", "Old Book", retagged, secondsByTrack = listOf(60, 120)))
+
+        val row = database.audioBookDao().getById("A")!!
+        assertNull(row.archivedAt)
+        assertEquals(1200.0, row.currentTimeSeconds, 0.0)
+        assertTrue(database.audioBookDao().getLocalIdsByLibrary(LIB).none { it.startsWith("A~") })
+    }
 }

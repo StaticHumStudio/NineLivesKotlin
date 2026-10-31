@@ -685,10 +685,11 @@ class AudioBookRepository @Inject constructor(
     private fun AudioBook.fingerprint(): LocalBookFingerprint {
         // Sorted so the same book fingerprints the same whichever side of the
         // move it is read from, without collapsing repeated tracks the way a
-        // set would.
+        // set would. Same-named tracks (CD1/01.mp3, CD2/01.mp3) order by length,
+        // which a retag keeps, not by size, which it changes.
         val files = audioFiles
             .filter { it.filename.isNotBlank() }
-            .sortedWith(compareBy({ it.filename }, { it.size }))
+            .sortedWith(compareBy({ it.filename }, { it.duration.inWholeMilliseconds }, { it.size }))
         return LocalBookFingerprint(
             id = id,
             folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),

@@ -14,6 +14,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.local.dao.AudioBookDao
+import com.ninelivesaudio.app.data.local.dao.LibraryAuthorDao
 import com.ninelivesaudio.app.data.local.dao.LibraryDao
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.AuthSessionIdentity
@@ -22,6 +23,7 @@ import com.ninelivesaudio.app.data.remote.StoredTokenValidation
 import com.ninelivesaudio.app.data.remote.TokenValidationResult
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
+import com.ninelivesaudio.app.data.repository.clearServerLibraryCache
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
@@ -192,6 +194,7 @@ class SettingsViewModel @Inject constructor(
     private val downloadManager: DownloadManager,
     private val audioBookDao: AudioBookDao,
     private val libraryDao: LibraryDao,
+    private val libraryAuthorDao: LibraryAuthorDao,
     private val libraryRepository: LibraryRepository,
     private val audioBookRepository: AudioBookRepository,
     private val unhingedRepository: UnhingedSettingsRepository,
@@ -1348,8 +1351,11 @@ class SettingsViewModel @Inject constructor(
                 // pending syncs, or Local Library configuration. clearAllTables() would wipe
                 // playback positions, download records, the offline queue, and any folders
                 // the user added in Local mode, causing silent data loss.
-                audioBookDao.deleteAudiobookshelf()
-                libraryDao.deleteAudiobookshelf()
+                clearServerLibraryCache(
+                    deleteBooks = audioBookDao::deleteAudiobookshelf,
+                    deleteLibraries = libraryDao::deleteAudiobookshelf,
+                    deleteAuthors = libraryAuthorDao::deleteAll,
+                )
                 _uiState.update { it.copy(successMessage = "Cache cleared successfully") }
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = "Failed to clear cache: ${e.message}") }

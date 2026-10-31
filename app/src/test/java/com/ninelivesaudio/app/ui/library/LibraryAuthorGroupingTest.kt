@@ -1,6 +1,9 @@
 package com.ninelivesaudio.app.ui.library
 
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.LibraryAuthor
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -68,6 +71,35 @@ class LibraryAuthorGroupingTest {
         val sections = buildGroupedSections(listOf(book("x", "  ")), ViewMode.AUTHOR, SortMode.TITLE_AZ)
 
         assertEquals(listOf("Unknown Author"), sections.map { it.key })
+    }
+
+    @Test
+    fun `arrangeShelf hands the author list to Author view`() = runBlocking {
+        val shelf = arrangeShelf(
+            books = listOf(book("smith", "Smith, John")),
+            storedSort = SortMode.TITLE_AZ,
+            storedViewMode = ViewMode.AUTHOR,
+            isUnlocked = true,
+            authors = AuthorDirectory(listOf(LibraryAuthor("au_1", "Smith, John"))),
+        )
+
+        assertEquals(listOf("Smith, John"), shelf.sections.map { it.title })
+        assertEquals(listOf("smith"), shelf.sections.single().books.map { it.id })
+    }
+
+    @Test
+    fun `a locked Author view ignores the list`() = runBlocking {
+        val shelf = arrangeShelf(
+            books = listOf(book("smith", "Smith, John")),
+            storedSort = SortMode.TITLE_AZ,
+            storedViewMode = ViewMode.AUTHOR,
+            isUnlocked = false,
+            authors = AuthorDirectory(listOf(LibraryAuthor("au_1", "Smith, John"))),
+        )
+
+        assertEquals(ViewMode.ALL, shelf.viewMode)
+        assertTrue(shelf.sections.isEmpty())
+        assertEquals(listOf("smith"), shelf.books.map { it.id })
     }
 
     private fun book(id: String, author: String, isLocal: Boolean = false) =

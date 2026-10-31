@@ -67,6 +67,10 @@ interface AudiobookshelfApi {
         @Query("desc") desc: Int? = null,
     ): Response<LibraryItemsResponse>
 
+    /** Every author in a library, with the ids and names Audiobookshelf groups by. */
+    @GET("api/libraries/{libraryId}/authors")
+    suspend fun getLibraryAuthors(@Path("libraryId") libraryId: String): Response<LibraryAuthorsResponse>
+
     // ─── Items ───────────────────────────────────────────────────────────
 
     /** Get expanded item details (full metadata, audio files, chapters). */

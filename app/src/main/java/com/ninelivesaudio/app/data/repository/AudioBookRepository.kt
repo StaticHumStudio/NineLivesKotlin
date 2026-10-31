@@ -13,6 +13,7 @@ import com.ninelivesaudio.app.data.local.dao.LocalListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.AudioBookEntity
 import com.ninelivesaudio.app.data.local.entity.AutoBrowseRow
+import com.ninelivesaudio.app.data.local.entity.LibraryAuthorEntity
 import com.ninelivesaudio.app.data.local.entity.LocalCatalogEntry
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.local.entity.SHELF_BOOK_COLUMNS
@@ -21,6 +22,7 @@ import com.ninelivesaudio.app.data.local.entity.toShelfBook
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.RemoteResult
 import com.ninelivesaudio.app.domain.model.AudioBook
+import com.ninelivesaudio.app.domain.model.LibraryAuthor
 import com.ninelivesaudio.app.domain.util.mapCooperatively
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.service.shelfProgress
@@ -41,6 +43,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -82,6 +85,10 @@ class AudioBookRepository @Inject constructor(
     private val fullSyncFailures = ConcurrentHashMap<String, FullSyncFailures>()
 
     private val _booksSaved = MutableSharedFlow<String>(extraBufferCapacity = 16)
+
+    // Libraries (by flight key) whose author list was stored this app run, so
+    // a check that finds nothing new does not fetch it again (issue #87).
+    private val authorsStoredThisRun: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** A library id, each time a sync saves books for it (every page of a full download). */
     val booksSaved: SharedFlow<String> = _booksSaved.asSharedFlow()
@@ -206,6 +213,10 @@ class AudioBookRepository @Inject constructor(
         return results.mapCooperatively { it.toShelfBook() }
     }
 
+    /** The library's stored Audiobookshelf authors (issue #87), empty until a sync stores them. */
+    suspend fun libraryAuthors(libraryId: String): List<LibraryAuthor> =
+        database.libraryAuthorDao().getForLibrary(libraryId).map { LibraryAuthor(id = it.authorId, name = it.name) }
+
     /** Count all audiobooks in a library. */
     suspend fun countByLibrary(libraryId: String): Int =
         audioBookDao.countByLibrary(libraryId)
@@ -240,7 +251,40 @@ class AudioBookRepository @Inject constructor(
         val flightKey = identity.flightKey(libraryId)
         return syncFlights.run(flightKey, LibrarySyncKind.FULL) {
             lockFor(flightKey).withLock { runFullSyncLocked(libraryId, identity) }
+                .also { refreshAuthorsAfter(libraryId, identity, it, isMetered = false) }
         }.itemCountResult() ?: RemoteResult.Failed("sync did not run")
+    }
+
+    /**
+     * Fetches the library's Audiobookshelf author list after [outcome] when
+     * [shouldRefreshAuthors] says so (issue #87). It runs on its own in the
+     * sync scope after the sync's lock is released, so the shelf never waits
+     * for it. The list is written only while [identity] is still signed in,
+     * and a stored list tells an open Library to group again.
+     */
+    private fun refreshAuthorsAfter(
+        libraryId: String,
+        identity: LibrarySyncIdentity,
+        outcome: LibraryRefreshOutcome,
+        isMetered: Boolean,
+    ) {
+        val key = identity.flightKey(libraryId)
+        if (!shouldRefreshAuthors(outcome, storedThisRun = key in authorsStoredThisRun, isMetered = isMetered)) return
+        syncScope.launch {
+            val stored = refreshLibraryAuthors(
+                fetch = { apiService.getLibraryAuthors(libraryId) },
+                storeIfCurrent = { authors ->
+                    watermarkStore.runIfCurrent(identity) {
+                        database.libraryAuthorDao().replaceForLibrary(
+                            libraryId,
+                            authors.map { LibraryAuthorEntity(libraryId = libraryId, authorId = it.id, name = it.name) },
+                        )
+                    }
+                },
+            )
+            recordAuthorsStored(authorsStoredThisRun, key, stored)
+            if (stored) _booksSaved.tryEmit(libraryId)
+        }
     }
 
     /** Whether this library has any server books cached, so a shelf exists to show. */
@@ -261,6 +305,7 @@ class AudioBookRepository @Inject constructor(
         val flightKey = identity.flightKey(libraryId)
         return syncFlights.run(flightKey, LibrarySyncKind.CHECK) {
             lockFor(flightKey).withLock { runCheckLocked(libraryId, identity, isMetered) }
+                .also { refreshAuthorsAfter(libraryId, identity, it, isMetered) }
         }
     }
 
@@ -459,7 +504,11 @@ class AudioBookRepository @Inject constructor(
      */
     internal suspend fun pruneServerBooksForRemovedLibrary(libraryId: String): Boolean =
         runSerializedLibraryItemPrune(lockFor(watermarkStore.currentSyncIdentity().flightKey(libraryId))) {
-            audioBookDao.deleteServerBooksByLibrary(libraryId)
+            pruneLibraryRows(
+                libraryId,
+                deleteBooks = audioBookDao::deleteServerBooksByLibrary,
+                deleteAuthors = database.libraryAuthorDao()::deleteForLibrary,
+            )
             audioBookDao.hasDownloadedServerBooks(libraryId)
         }
 

@@ -84,3 +84,16 @@ fun folderNameOfTrackUri(uri: String?): String {
     val segments = decoded.split('/', ':').filter { it.isNotBlank() }
     return if (segments.size >= 2) segments[segments.size - 2] else ""
 }
+
+/**
+ * Is [new] the same book that [old] was? Used when a scan finds a book at the
+ * folder of an archived one (issue #47): the same files at the same sizes come
+ * back with their place, anything else starts fresh. An old row with no track
+ * list has nothing to compare, so it counts as the same book (what happened
+ * before this check existed).
+ */
+fun sameLocalBook(old: LocalBookFingerprint, new: LocalBookFingerprint): Boolean =
+    old.tracks.isEmpty() || (old.folderName == new.folderName && old.tracks == new.tracks)
+
+/** The id an archived book keeps when a different book takes over its folder's id. */
+internal fun setAsideId(id: String, archivedAt: Long): String = "$id~$archivedAt"

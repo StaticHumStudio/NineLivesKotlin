@@ -29,6 +29,8 @@ import com.ninelivesaudio.app.service.shelfProgress
 import com.ninelivesaudio.app.service.local.LocalBookFingerprint
 import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
 import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
+import com.ninelivesaudio.app.service.local.sameLocalBook
+import com.ninelivesaudio.app.service.local.setAsideId
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -546,10 +548,29 @@ class AudioBookRepository @Inject constructor(
         }
     }
 
-    /** Import scanned Local Library books into one local library. */
+    /**
+     * Import scanned Local Library books into one local library.
+     *
+     * An archived row at a scanned book's id is handed back only when the scan
+     * found the same book (issue #47). A different book at that path starts
+     * fresh, and the archived book moves to its own row `<id>~<ArchivedAt>`
+     * with its place, bookmarks and listening history, still archived. Callers
+     * run this inside a transaction ([importLocalBooksCarryingMoves]).
+     */
     suspend fun importLocalBooks(libraryId: String, books: List<AudioBook>) {
         if (books.isEmpty()) return
-        val existingById = fetchByIdChunks(books.map { it.id }, audioBookDao::getByIds).associateBy { it.id }
+        val existingById = fetchByIdChunks(books.map { it.id }, audioBookDao::getByIds).associateBy { it.id }.toMutableMap()
+        for (book in books) {
+            val old = existingById[book.id] ?: continue
+            val archivedAt = old.archivedAt ?: continue
+            if (sameLocalBook(old.toDomain().fingerprint(), book.fingerprint())) continue
+            val asideId = setAsideId(old.id, archivedAt)
+            audioBookDao.upsert(old.copy(id = asideId, coverPath = null, localCoverPath = null))
+            playbackProgressDao.moveToBook(old.id, asideId)
+            localBookmarkDao.moveToBook(old.id, asideId)
+            localListeningSessionDao.moveToBook(old.id, asideId)
+            existingById.remove(book.id)
+        }
         audioBookDao.upsertAll(
             books.map { book ->
                 val existing = existingById[book.id]

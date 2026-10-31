@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service.local
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -94,5 +95,37 @@ class MovedLocalBookTest {
             ),
         )
         assertEquals("", folderNameOfTrackUri(null))
+    }
+
+    // ─── #47: is the book at an archived book's folder the same book? ──────
+
+    @Test
+    fun `the same files at the same sizes are the same book`() {
+        assertTrue(
+            sameLocalBook(
+                book("a", "Old Book", "01.mp3" to 10L, "02.mp3" to 20L),
+                book("a", "Old Book", "01.mp3" to 10L, "02.mp3" to 20L),
+            )
+        )
+    }
+
+    @Test
+    fun `a different track list is a different book`() {
+        assertFalse(
+            sameLocalBook(
+                book("a", "Old Book", "01.mp3" to 10L),
+                book("a", "Old Book", "01.mp3" to 10L, "02.mp3" to 20L),
+            )
+        )
+    }
+
+    @Test
+    fun `a different size is a different book`() {
+        assertFalse(sameLocalBook(book("a", "Old Book", "01.mp3" to 10L), book("a", "Old Book", "01.mp3" to 11L)))
+    }
+
+    @Test
+    fun `an old row with no track list counts as the same book`() {
+        assertTrue(sameLocalBook(book("a", ""), book("a", "Old Book", "01.mp3" to 10L)))
     }
 }

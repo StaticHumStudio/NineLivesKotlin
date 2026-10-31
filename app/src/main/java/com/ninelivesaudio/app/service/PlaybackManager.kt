@@ -193,7 +193,7 @@ internal fun playbackWorkActive(
 internal fun shouldReportPolledPosition(hasBook: Boolean, @Suppress("UNUSED_PARAMETER") duration: Duration): Boolean =
     hasBook
 
-internal enum class DownloadRemovalAction { NONE, UNLOAD, STOP_LOAD_AND_UNLOAD }
+internal enum class DownloadRemovalAction { NONE, UNLOAD, STOP_LOAD_AND_UNLOAD, REFRESH_ONLY }
 
 /**
  * What the player does when a server download is deleted (#89). Only a book
@@ -211,6 +211,23 @@ internal fun downloadRemovalAction(
     !currentBook.isDownloaded || currentBook.localPath.isNullOrEmpty() -> DownloadRemovalAction.NONE
     loading -> DownloadRemovalAction.STOP_LOAD_AND_UNLOAD
     else -> DownloadRemovalAction.UNLOAD
+}
+
+/**
+ * [downloadRemovalAction] for a player that may be loading a book that is not
+ * current yet (#42). A delete of the loading book's download stops that load.
+ * A delete of the retained book's download while another book loads only
+ * refreshes its row: the retained book has no media left, and stopping would
+ * release the player under the loading book.
+ */
+internal fun downloadRemovalTarget(
+    current: AudioBook?,
+    loading: AudioBook?,
+    removedBookId: String,
+): DownloadRemovalAction {
+    if (loading?.id == removedBookId) return downloadRemovalAction(loading, removedBookId, loading = true)
+    val action = downloadRemovalAction(current, removedBookId, loading = false)
+    return if (loading != null && action == DownloadRemovalAction.UNLOAD) DownloadRemovalAction.REFRESH_ONLY else action
 }
 
 internal class PlaybackLoadOwner {
@@ -1149,12 +1166,17 @@ class PlaybackManager @Inject constructor(
     private val _currentBook = MutableStateFlow<AudioBook?>(null)
     val currentBook: StateFlow<AudioBook?> = _currentBook.asStateFlow()
 
+    // The book a load is filling the player with. It becomes current only
+    // once the load has its tracks, in publishLoadedBook (#42).
+    private val stagedLoad = StagedLoad()
+    val loadingBook: StateFlow<AudioBook?> = stagedLoad.book
+
     // A terminated book stays in _currentBook so the UI keeps showing it. This
     // records that its terminal flush already ran, so the next load does not
     // repeat it under a mode the book does not belong to.
-    // Starts finalized: there is no retained book at process start, and a
-    // first load that exits before its OK line must not turn the book it
-    // marked current into one with a pending terminal write.
+    // Starts finalized: there is no retained book at process start. A load
+    // finalizes the previous book before it fetches anything, and an abandoned
+    // or failed load leaves that previous, already finalized book current.
     private var retainedBookFinalized = true
 
     private val _position = MutableStateFlow(Duration.ZERO)
@@ -1388,6 +1410,7 @@ class PlaybackManager @Inject constructor(
         if (!playbackLoadOwner.claim(loadRequest)) return false
         var effectiveBook = book
         try {
+            stagedLoad.stage(loadRequest, book)
             playbackProgressOwner.invalidateSnapshots(book.id)
             if (shouldFinalizeRetainedBook(_currentBook.value != null, retainedBookFinalized)) {
                 finishPlayback(PlaybackTermination.STOP, keepServiceConnection = true)
@@ -1408,11 +1431,9 @@ class PlaybackManager @Inject constructor(
             val requestedGeneration = nextPlaybackGeneration(book.id)
             Log.d(TAG, "loadAudioBook: '${book.title}' isDownloaded=${book.isDownloaded}")
             _playbackState.value = PlaybackState.LOADING
-            _currentBook.value = book
+            // The previous book stays current, with its own position, duration
+            // and chapters, until publishLoadedBook (#42).
             cachedChapters = book.chapters.sortedBy { it.start }
-            _chapters.value = cachedChapters
-            _currentChapter.value = null
-            _currentChapterIndex.value = -1
             serverListening = ServerSessionListening()
             pausedAtTimestamp = null
 
@@ -1476,10 +1497,9 @@ class PlaybackManager @Inject constructor(
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
                 if (filled != null) {
                     effectiveBook = effectiveBook.copy(audioFiles = filled.audioFiles, chapters = filled.chapters)
-                    _currentBook.value = effectiveBook
+                    stagedLoad.update(loadRequest, effectiveBook)
                     if (cachedChapters.isEmpty() && filled.chapters.isNotEmpty()) {
                         cachedChapters = filled.chapters.sortedBy { it.start }
-                        _chapters.value = cachedChapters
                     }
                 }
             }
@@ -1498,10 +1518,9 @@ class PlaybackManager @Inject constructor(
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
                 if (fullBook != null && fullBook.audioFiles.isNotEmpty()) {
                     effectiveBook = fullBook.copy(currentTime = book.currentTime, progress = book.progress)
-                    _currentBook.value = effectiveBook
+                    stagedLoad.update(loadRequest, effectiveBook)
                     if (cachedChapters.isEmpty() && fullBook.chapters.isNotEmpty()) {
                         cachedChapters = fullBook.chapters.sortedBy { it.start }
-                        _chapters.value = cachedChapters
                     }
                 }
             }
@@ -1565,7 +1584,6 @@ class PlaybackManager @Inject constructor(
 
             // Determine source and load
             val isLocal = remoteAccess.usesLocalTracks()
-            _isLocalFile.value = isLocal
 
             // Reuse the persistent ExoPlayer — load new media items into it
             val player = exoPlayer!!
@@ -1586,7 +1604,14 @@ class PlaybackManager @Inject constructor(
                     playbackLoadOwner.isCurrent(loadRequest)
                 }
             }
-            if (!tracksLoaded || !playbackLoadOwner.isCurrent(loadRequest)) return false
+            when (loadedTracksOutcome(tracksLoaded, playbackLoadOwner.isCurrent(loadRequest), player.mediaItemCount)) {
+                LoadedTracks.SUPERSEDED -> return false
+                LoadedTracks.EMPTY -> {
+                    Log.w(TAG, "loadAudioBook: no media items for '${effectiveBook.title}'")
+                    return failLoad(loadRequest, "Failed to load: no audio tracks for this book.")
+                }
+                LoadedTracks.READY -> Unit
+            }
 
             // Set playback parameters
             player.playbackParameters = PlaybackParameters(_speed.value)
@@ -1608,30 +1633,32 @@ class PlaybackManager @Inject constructor(
             if (startPosition > Duration.ZERO) {
                 seekToPosition(startPosition)
             }
-            // A paused process-death restore has no polling loop to publish the
-            // ExoPlayer position, so seed the observable playhead immediately.
-            _position.value = startPosition
 
             // Eagerly set the initial chapter so ChapterAwareForwardingPlayer
             // returns chapter-relative duration/position from the very first
             // getDuration() call. Without this, currentChapter is null during
             // prepare() and Android Auto sees the full book duration until the
-            // 500ms polling loop catches up.
+            // 500ms polling loop catches up. The observable chapter waits for
+            // publishLoadedBook.
+            var initialChapter: Chapter? = null
+            var initialChapterIndex = -1
             if (cachedChapters.isNotEmpty()) {
                 val posSeconds = startPosition.toDouble(kotlin.time.DurationUnit.SECONDS)
-                val initialChapterIndex = cachedChapters.indexOfFirst { ch ->
+                initialChapterIndex = cachedChapters.indexOfFirst { ch ->
                     posSeconds >= ch.start && posSeconds < ch.end
                 }.takeIf { it >= 0 }
                     ?: if (posSeconds >= cachedChapters.last().end) cachedChapters.lastIndex else 0
 
-                val initialChapter = cachedChapters[initialChapterIndex]
-                _currentChapter.value = initialChapter
-                _currentChapterIndex.value = initialChapterIndex
+                initialChapter = cachedChapters[initialChapterIndex]
                 chapterPlayer?.chapters = cachedChapters
                 chapterPlayer?.currentChapter = initialChapter
                 chapterPlayer?.currentChapterIndex = initialChapterIndex
                 chapterPlayer?.absolutePositionMs = startPosition.inWholeMilliseconds
             }
+
+            // Nothing from here to playWhenReady suspends, so the new book
+            // becomes current in the same main thread turn that prepares it.
+            publishLoadedBook(loadRequest, effectiveBook, startPosition, isLocal, initialChapter, initialChapterIndex)
 
             // Start the foreground service (MediaController connect triggers startForeground).
             // Skipped when called from Android Auto's onSetMediaItems callback to avoid
@@ -1645,14 +1672,10 @@ class PlaybackManager @Inject constructor(
             player.prepare()
             player.playWhenReady = autoPlay
 
-            // Update duration
-            _duration.value = calculateTotalDuration(effectiveBook)
-
-            // Only a book that reached this point has a position and duration
-            // of its own. A load that bailed out earlier (superseded by another
-            // tap, or a failed session open) leaves the flag set, so the next
-            // load does not finalize a book that never played with the previous
-            // book's position.
+            // Only a book that reached this point is current with a position and
+            // duration of its own. A load that bailed out earlier (superseded by
+            // another tap, or a failed session open) left the previous book
+            // current and finalized, so the next load does not finalize it again.
             retainedBookFinalized = false
             _events.tryEmit(PlaybackEvent.BookLoaded(effectiveBook))
 
@@ -1670,14 +1693,56 @@ class PlaybackManager @Inject constructor(
         } catch (e: Exception) {
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             Log.e(TAG, "loadAudioBook: FAILED: ${e.message}", e)
-            val cleanupOwned = syncManager.setActivePlaybackItem(null) {
-                playbackLoadOwner.isCurrent(loadRequest)
-            }
-            if (!cleanupOwned) return false
-            _playbackState.value = PlaybackState.STOPPED
-            _events.tryEmit(PlaybackEvent.Error("Failed to load: ${e.message}"))
-            return false
+            return failLoad(loadRequest, "Failed to load: ${e.message}")
+        } finally {
+            stagedLoad.clear(loadRequest)
         }
+    }
+
+    /**
+     * Makes a loaded book current: book, chapters, position, duration and
+     * source in one place and one main thread turn, so no observer sees the
+     * new book with the previous book's position (#42). The staging clears
+     * last, so the mini player never falls back to the previous book between
+     * the writes.
+     */
+    private fun publishLoadedBook(
+        loadRequest: Long,
+        book: AudioBook,
+        startPosition: Duration,
+        isLocal: Boolean,
+        chapter: Chapter?,
+        chapterIndex: Int,
+    ) {
+        publishStagedLoad(stagedLoad, loadRequest) {
+            _currentBook.value = book
+            _chapters.value = cachedChapters
+            _currentChapter.value = chapter
+            _currentChapterIndex.value = chapterIndex
+            // A paused process-death restore has no polling loop to publish the
+            // ExoPlayer position, so the playhead is seeded here.
+            _position.value = startPosition
+            _duration.value = calculateTotalDuration(book)
+            _isLocalFile.value = isLocal
+        }
+    }
+
+    /**
+     * A load that ran but could not play leaves the previous, already
+     * finalized book current and the shared player empty. The player and
+     * state are cleaned up first, in the same main thread turn as the
+     * ownership check, so a load whose page closed (its scope is cancelled
+     * and the release below throws) does not stay LOADING.
+     */
+    private suspend fun failLoad(loadRequest: Long, message: String): Boolean {
+        if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+        exoPlayer?.clearMediaItems()
+        _playbackState.value = PlaybackState.STOPPED
+        _events.tryEmit(PlaybackEvent.Error(message))
+        syncManager.setActivePlaybackItem(null) {
+            playbackLoadOwner.isCurrent(loadRequest)
+        }
+        return false
     }
 
     private fun ensureListeningSessionStarted(requestedGeneration: Long) {
@@ -1725,7 +1790,8 @@ class PlaybackManager @Inject constructor(
                                 requestedGeneration = requestedGeneration,
                                 currentGeneration = playbackGeneration,
                                 requestedBookId = book.id,
-                                currentBookId = _currentBook.value?.id,
+                                // A load's book is staged, not current, until it publishes.
+                                currentBookId = playerBookId(stagedLoad.book.value, _currentBook.value),
                             )
                         ) {
                             currentSession = session
@@ -1734,7 +1800,8 @@ class PlaybackManager @Inject constructor(
                             lastSyncTimestamp = System.currentTimeMillis()
                             if (cachedChapters.isEmpty() && session.chapters.isNotEmpty()) {
                                 cachedChapters = session.chapters.sortedBy { it.start }
-                                _chapters.value = cachedChapters
+                                // A load publishes its chapters itself.
+                                if (loadRequest == null) _chapters.value = cachedChapters
                             }
                             true
                         } else {
@@ -2055,55 +2122,76 @@ class PlaybackManager @Inject constructor(
     // ─── Playback Controls ────────────────────────────────────────────────
 
     fun play() {
-        // A stopped or restored book keeps its place in the mini-player, but
-        // the player either lost its media items or was never created.
-        // Resuming that would prepare an empty playlist, which ends at once
-        // and marks the book finished. Reload it instead.
         val retained = _currentBook.value
-        if (shouldReloadRetainedBook(exoPlayer?.mediaItemCount ?: 0, retained != null)) {
-            scope.launch { loadAudioBook(retained!!) }
-            return
-        }
-        exoPlayer?.let { player ->
-            // Resuming a book that a non-STOP termination left playable re-arms
-            // its terminal flush. A stopped book kept the shared player but lost
-            // its media items, so its finalized flag stands and the next load
-            // does not flush it a second time.
-            if (player.mediaItemCount > 0) retainedBookFinalized = false
-            // ── Resume ────────────────────────────────────────────────
-            if (needsPlaybackPreparation(player.playbackState)) {
-                val bookId = _currentBook.value?.id
-                if (bookId != null) {
-                    scope.launch {
-                        pendingTerminalOwner.runAfterPending(
-                            bookId = bookId,
-                            isCurrent = {
-                                _currentBook.value?.id == bookId &&
-                                    exoPlayer === player &&
-                                    needsPlaybackPreparation(player.playbackState)
-                            },
-                        ) {
-                            // An error terminal flushed progress and released
-                            // sync ownership of this book. The retry keeps the
-                            // loaded player, so reclaim ownership here the way
-                            // a fresh load does, or a background sync imports
-                            // server progress over the retried playback.
-                            if (!syncManager.setActivePlaybackItem(bookId) { _currentBook.value?.id == bookId }) return@runAfterPending
-                            startPlaybackService()
-                            val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-                            player.seekTo(resume.mediaItemIndex, resume.positionMs)
-                            player.prepare()
-                            player.playWhenReady = true
-                        }
-                    }
-                    return
-                }
-                val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-                player.seekTo(resume.mediaItemIndex, resume.positionMs)
-                player.prepare()
+        when (
+            playAction(
+                bookLoading = stagedLoad.book.value != null,
+                hasRetainedBook = retained != null,
+                mediaItemCount = exoPlayer?.mediaItemCount ?: 0,
+                playerState = exoPlayer?.playbackState ?: Player.STATE_IDLE,
+            )
+        ) {
+            // The screen still shows the previous book while the player is
+            // being filled with the next one. Acting on it now would play the
+            // wrong book or a half built playlist.
+            PlayAction.IGNORE_WHILE_LOADING -> return
+            // A stopped or restored book keeps its place in the mini-player, but
+            // the player either lost its media items or was never created.
+            // Resuming that would prepare an empty playlist, which ends at once
+            // and marks the book finished. Reload it instead.
+            PlayAction.RELOAD_RETAINED -> {
+                scope.launch { loadAudioBook(retained!!) }
+                return
             }
-            player.playWhenReady = true
-            // Player callbacks own app state and transition side effects.
+            PlayAction.RETRY_AFTER_TERMINAL -> {
+                val player = exoPlayer ?: return
+                // Resuming a book that a non-STOP termination left playable re-arms
+                // its terminal flush. A stopped book kept the shared player but lost
+                // its media items, so its finalized flag stands and the next load
+                // does not flush it a second time.
+                if (player.mediaItemCount > 0) retainedBookFinalized = false
+                val bookId = retained!!.id
+                scope.launch {
+                    pendingTerminalOwner.runAfterPending(
+                        bookId = bookId,
+                        isCurrent = {
+                            retainedRetryStillApplies(
+                                currentBookId = _currentBook.value?.id,
+                                retryBookId = bookId,
+                                samePlayer = exoPlayer === player,
+                                playerNeedsPreparation = needsPlaybackPreparation(player.playbackState),
+                                bookLoading = stagedLoad.book.value != null,
+                            )
+                        },
+                    ) {
+                        // An error terminal flushed progress and released
+                        // sync ownership of this book. The retry keeps the
+                        // loaded player, so reclaim ownership here the way
+                        // a fresh load does, or a background sync imports
+                        // server progress over the retried playback.
+                        if (
+                            !syncManager.setActivePlaybackItem(bookId) {
+                                _currentBook.value?.id == bookId && stagedLoad.book.value == null
+                            }
+                        ) return@runAfterPending
+                        startPlaybackService()
+                        val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
+                        player.seekTo(resume.mediaItemIndex, resume.positionMs)
+                        player.prepare()
+                        player.playWhenReady = true
+                    }
+                }
+            }
+            PlayAction.RESUME -> exoPlayer?.let { player ->
+                if (player.mediaItemCount > 0) retainedBookFinalized = false
+                if (needsPlaybackPreparation(player.playbackState)) {
+                    val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
+                    player.seekTo(resume.mediaItemIndex, resume.positionMs)
+                    player.prepare()
+                }
+                player.playWhenReady = true
+                // Player callbacks own app state and transition side effects.
+            }
         }
     }
 
@@ -2164,9 +2252,9 @@ class PlaybackManager @Inject constructor(
         if (reason == PlaybackTermination.COMPLETED) _position.value = _duration.value
         // Capture the final elapsed tick once, before clearing either session.
         // Paused snapshots already folded their tick and zeroed the timestamp.
-        // A retained book that is already finalized, or that an abandoned load
-        // left current with the previous book's position, gets no terminal
-        // write at all. Teardown below still runs.
+        // A retained book that is already finalized gets no terminal write at
+        // all. An abandoned or failed load leaves the previous, already
+        // finalized book current, so it lands here too. Teardown below still runs.
         val captured = if (shouldFinalizeRetainedBook(book != null, retainedBookFinalized)) {
             capturePlaybackProgressSnapshot()
         } else {
@@ -2269,6 +2357,9 @@ class PlaybackManager @Inject constructor(
     }
 
     fun seekTo(position: Duration) {
+        // While a book loads, the screen shows the previous book. A seek from
+        // it would land in the incoming book's playlist (#42).
+        if (stagedLoad.book.value != null) return
         val player = exoPlayer
         val bookId = _currentBook.value?.id
         if (player?.playbackState == Player.STATE_ENDED && bookId != null) {
@@ -2499,6 +2590,7 @@ class PlaybackManager @Inject constructor(
     }
 
     fun seekToChapter(chapterIndex: Int) {
+        if (stagedLoad.book.value != null) return
         if (chapterIndex < 0 || chapterIndex >= cachedChapters.size) return
         val chapter = cachedChapters[chapterIndex]
 
@@ -3275,10 +3367,19 @@ class PlaybackManager @Inject constructor(
         // player shows.
         playbackLoadOwner.cancelLoadsOf(bookId)
         val current = _currentBook.value
-        val action = downloadRemovalAction(current, bookId, _playbackState.value == PlaybackState.LOADING)
-        if (action == DownloadRemovalAction.NONE || current == null) return
-        if (action == DownloadRemovalAction.STOP_LOAD_AND_UNLOAD) playbackLoadOwner.invalidate()
-        finishPlayback(PlaybackTermination.STOP)
+        // The book being loaded is staged, not current, until it publishes (#42).
+        when (downloadRemovalTarget(current, stagedLoad.book.value, bookId)) {
+            DownloadRemovalAction.NONE -> return
+            DownloadRemovalAction.STOP_LOAD_AND_UNLOAD -> {
+                playbackLoadOwner.invalidate()
+                finishPlayback(PlaybackTermination.STOP)
+            }
+            DownloadRemovalAction.UNLOAD -> finishPlayback(PlaybackTermination.STOP)
+            // The retained book has no media left while another book loads,
+            // and stopping would release the player under that load.
+            DownloadRemovalAction.REFRESH_ONLY -> Unit
+        }
+        if (current == null) return
         val fresh = withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) }
         // Another book may have taken the player while the row was read.
         if (_currentBook.value?.id != bookId) return

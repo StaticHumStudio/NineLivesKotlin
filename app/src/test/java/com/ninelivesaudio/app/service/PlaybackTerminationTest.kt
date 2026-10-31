@@ -61,4 +61,34 @@ class PlaybackTerminationTest {
         assertFalse(shouldReloadRetainedBook(mediaItemCount = 8, hasRetainedBook = true))
         assertFalse(shouldReloadRetainedBook(mediaItemCount = 0, hasRetainedBook = false))
     }
+
+    @Test
+    fun `a tap on play while a book loads does nothing`() {
+        assertEquals(
+            PlayAction.IGNORE_WHILE_LOADING,
+            playAction(bookLoading = true, hasRetainedBook = true, mediaItemCount = 0, playerState = Player.STATE_IDLE),
+        )
+        assertEquals(
+            PlayAction.IGNORE_WHILE_LOADING,
+            playAction(bookLoading = true, hasRetainedBook = true, mediaItemCount = 4, playerState = Player.STATE_READY),
+        )
+    }
+
+    @Test
+    fun `play sorts a retained book into reload, retry or resume`() {
+        assertEquals(PlayAction.RELOAD_RETAINED, playAction(false, true, 0, Player.STATE_IDLE))
+        assertEquals(PlayAction.RETRY_AFTER_TERMINAL, playAction(false, true, 4, Player.STATE_IDLE))
+        assertEquals(PlayAction.RETRY_AFTER_TERMINAL, playAction(false, true, 4, Player.STATE_ENDED))
+        assertEquals(PlayAction.RESUME, playAction(false, true, 4, Player.STATE_READY))
+        assertEquals(PlayAction.RESUME, playAction(false, false, 0, Player.STATE_IDLE))
+    }
+
+    @Test
+    fun `an error retry does not run while another book is loading`() {
+        assertFalse(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = true))
+        assertTrue(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = false))
+        assertFalse(retainedRetryStillApplies("b", "a", true, true, false))
+        assertFalse(retainedRetryStillApplies("a", "a", false, true, false))
+        assertFalse(retainedRetryStillApplies("a", "a", true, false, false))
+    }
 }

@@ -88,4 +88,37 @@ class DownloadRemovalTest {
 
         assertEquals(false, owner.cancelLoadsOf("b"))
     }
+
+    @Test
+    fun `deleting the download of the book that is loading stops the load before it is current`() {
+        assertEquals(
+            DownloadRemovalAction.STOP_LOAD_AND_UNLOAD,
+            downloadRemovalTarget(current = AudioBook(id = "a"), loading = fromDisk, removedBookId = "b"),
+        )
+    }
+
+    @Test
+    fun `deleting the retained book's download while another book loads only refreshes its row`() {
+        assertEquals(
+            DownloadRemovalAction.REFRESH_ONLY,
+            downloadRemovalTarget(current = fromDisk, loading = AudioBook(id = "c"), removedBookId = "b"),
+        )
+    }
+
+    @Test
+    fun `with no load running the current book follows the existing rule`() {
+        assertEquals(DownloadRemovalAction.UNLOAD, downloadRemovalTarget(fromDisk, null, "b"))
+        assertEquals(
+            DownloadRemovalAction.NONE,
+            downloadRemovalTarget(fromDisk.copy(isDownloaded = false, localPath = null), null, "b"),
+        )
+    }
+
+    @Test
+    fun `deleting a streamed loading book's download leaves the load alone`() {
+        assertEquals(
+            DownloadRemovalAction.NONE,
+            downloadRemovalTarget(fromDisk.copy(id = "a"), fromDisk.copy(isDownloaded = false, localPath = null), "b"),
+        )
+    }
 }

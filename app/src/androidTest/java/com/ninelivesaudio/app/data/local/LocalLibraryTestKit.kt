@@ -64,12 +64,12 @@ internal class LocalLibraryTestKit(
     }
 
     /** A scanned book as the mapper hands it over. Tracks are (file name, bytes, title tag). */
-    fun scanned(id: String, folder: String, title: String, tracks: List<Triple<String, Long, String?>>): AudioBook =
+    fun scanned(id: String, folder: String, title: String, tracks: List<Triple<String, Long, String?>>, secondsPerTrack: Int = 90): AudioBook =
         ScannedLocalBook(
             id = id,
             title = title,
             author = "Author",
-            duration = (tracks.size * 90).seconds,
+            duration = (tracks.size * secondsPerTrack).seconds,
             tracks = tracks.mapIndexed { index, (name, size, tag) ->
                 ScannedTrack(
                     id = "$id-$index",
@@ -77,7 +77,7 @@ internal class LocalLibraryTestKit(
                         "primary%3AAudiobooks%2F" + folder.split('/').joinToString("%2F") + "%2F$name",
                     filename = name,
                     index = index,
-                    duration = 90.seconds,
+                    duration = secondsPerTrack.seconds,
                     mimeType = "audio/mpeg",
                     size = size,
                     title = tag,

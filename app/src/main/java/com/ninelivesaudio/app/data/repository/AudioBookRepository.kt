@@ -565,7 +565,11 @@ class AudioBookRepository @Inject constructor(
             val archivedAt = old.archivedAt ?: continue
             if (sameLocalBook(old.toDomain().fingerprint(), book.fingerprint())) continue
             val asideId = setAsideId(old.id, archivedAt)
-            audioBookDao.upsert(old.copy(id = asideId, coverPath = null, localCoverPath = null))
+            // The scan wrote any cover of the new book to local_covers/<id>.jpg
+            // before this ran. With none of its own, that file is still the old
+            // book's art: keep it for the archived row under its own name.
+            val keptCover = if (book.coverPath == null) keepCoverForSetAside(old.id, asideId) else null
+            audioBookDao.upsert(old.copy(id = asideId, coverPath = keptCover, localCoverPath = keptCover))
             playbackProgressDao.moveToBook(old.id, asideId)
             localBookmarkDao.moveToBook(old.id, asideId)
             localListeningSessionDao.moveToBook(old.id, asideId)
@@ -667,17 +671,31 @@ class AudioBookRepository @Inject constructor(
         }
     }
 
-    private fun AudioBook.fingerprint() = LocalBookFingerprint(
-        id = id,
-        folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
+    /** Move local_covers/<id>.jpg to <asideId>.jpg and return its file URI, or null when there is none. */
+    private fun keepCoverForSetAside(id: String, asideId: String): String? = runCatching {
+        val dir = java.io.File(context.filesDir, "local_covers")
+        val from = java.io.File(dir, "$id.jpg")
+        if (!from.isFile) return@runCatching null
+        val to = java.io.File(dir, "$asideId.jpg")
+        from.copyTo(to, overwrite = true)
+        from.delete()
+        android.net.Uri.fromFile(to).toString()
+    }.getOrNull()
+
+    private fun AudioBook.fingerprint(): LocalBookFingerprint {
         // Sorted so the same book fingerprints the same whichever side of the
         // move it is read from, without collapsing repeated tracks the way a
         // set would.
-        tracks = audioFiles
+        val files = audioFiles
             .filter { it.filename.isNotBlank() }
-            .map { it.filename to it.size }
-            .sortedWith(compareBy({ it.first }, { it.second })),
-    )
+            .sortedWith(compareBy({ it.filename }, { it.size }))
+        return LocalBookFingerprint(
+            id = id,
+            folderName = folderNameOfTrackUri(audioFiles.firstOrNull()?.localPath ?: localPath),
+            tracks = files.map { it.filename to it.size },
+            durationsMs = files.map { it.duration.inWholeMilliseconds },
+        )
+    }
 
     /**
      * Make every local cover in [libraryId] durable before archiving. Books

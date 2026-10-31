@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ninelivesaudio.app.NineLivesApp
 import com.ninelivesaudio.app.data.local.LocalLibraryTestKit.Companion.LIB
+import com.ninelivesaudio.app.data.local.converter.toEntity
 import com.ninelivesaudio.app.domain.model.AudioBook
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -139,6 +140,54 @@ class LocalBookRevivalInstrumentedTest {
 
             assertEquals(before.total, after.total)
             assertEquals(before.sessions, after.sessions)
+        }
+    }
+
+    @Test
+    fun aRetaggedCopyOfTheSameBookRevivesWithItsPlace() = runBlocking {
+        // Same files and lengths, new byte sizes (a title tag was edited).
+        scan(kit.scanned("A", "Swap/Old Book", "Old Book", listOf(Triple("01.mp3", 1_044L, "Chapter One"))))
+
+        val row = database.audioBookDao().getById("A")!!
+        assertNull(row.archivedAt)
+        assertEquals(1200.0, row.currentTimeSeconds, 0.0)
+        assertEquals(1, database.localBookmarkDao().getByAudioBookId("A").size)
+        assertTrue(database.audioBookDao().getLocalIdsByLibrary(LIB).none { it.startsWith("A~") })
+    }
+
+    @Test
+    fun aDifferentBookWithGenericNamesAndNoSizesStartsFresh() = runBlocking {
+        // The old book as a provider with no sizes reported it, then a longer book with the same file name.
+        val noSizes = kit.scanned("A", "Swap/Old Book", "Old Book", listOf(Triple("01.mp3", 0L, null as String?)))
+        database.audioBookDao().upsert(
+            noSizes.toEntity().copy(archivedAt = archivedAt, currentTimeSeconds = 1200.0)
+        )
+        val other = kit.scanned("A", "Swap/Old Book", "Other Book", listOf(Triple("01.mp3", 0L, null as String?)), secondsPerTrack = 300)
+
+        scan(other)
+
+        assertEquals("Other Book", database.audioBookDao().getById("A")!!.title)
+        assertEquals(0.0, database.audioBookDao().getById("A")!!.currentTimeSeconds, 0.0)
+        assertEquals(listOf(asideId), database.audioBookDao().getLocalIdsByLibrary(LIB).filter { it.startsWith("A~") })
+    }
+
+    @Test
+    fun theSetAsideBookKeepsItsCover() = runBlocking {
+        val dir = java.io.File(app.filesDir, "local_covers").apply { mkdirs() }
+        val cover = java.io.File(dir, "A.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        database.audioBookDao().upsert(
+            database.audioBookDao().getById("A")!!.copy(coverPath = android.net.Uri.fromFile(cover).toString())
+        )
+        try {
+            scan(different) // the new book has no cover of its own
+
+            val aside = database.audioBookDao().getById(asideId)!!
+            val kept = java.io.File(dir, "$asideId.jpg")
+            assertEquals(android.net.Uri.fromFile(kept).toString(), aside.coverPath)
+            assertEquals(listOf<Byte>(1, 2, 3), kept.readBytes().toList())
+            assertNull(database.audioBookDao().getById("A")!!.coverPath)
+        } finally {
+            dir.listFiles()?.forEach { it.delete() }
         }
     }
 }

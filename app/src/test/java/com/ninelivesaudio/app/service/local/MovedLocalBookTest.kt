@@ -128,4 +128,67 @@ class MovedLocalBookTest {
     fun `an old row with no track list counts as the same book`() {
         assertTrue(sameLocalBook(book("a", ""), book("a", "Old Book", "01.mp3" to 10L)))
     }
+
+    private fun withLengths(folder: String, sizes: List<Long>, lengthsMs: List<Long>) = LocalBookFingerprint(
+        id = "a",
+        folderName = folder,
+        tracks = sizes.mapIndexed { i, size -> "0${i + 1}.mp3" to size },
+        durationsMs = lengthsMs,
+    )
+
+    @Test
+    fun `a retagged copy with new sizes but the same lengths is the same book`() {
+        assertTrue(
+            sameLocalBook(
+                withLengths("Old Book", listOf(1_000L, 2_000L), listOf(90_000L, 90_000L)),
+                withLengths("Old Book", listOf(1_040L, 2_040L), listOf(90_300L, 89_800L)),
+            )
+        )
+    }
+
+    @Test
+    fun `new sizes and lengths that differ is a different book`() {
+        assertFalse(
+            sameLocalBook(
+                withLengths("Old Book", listOf(1_000L, 2_000L), listOf(90_000L, 90_000L)),
+                withLengths("Old Book", listOf(1_040L, 2_040L), listOf(90_000L, 120_000L)),
+            )
+        )
+    }
+
+    @Test
+    fun `new sizes with no lengths known is a different book`() {
+        assertFalse(
+            sameLocalBook(
+                withLengths("Old Book", listOf(1_000L), emptyList()),
+                withLengths("Old Book", listOf(1_040L), emptyList()),
+            )
+        )
+    }
+
+    @Test
+    fun `generic names with no sizes reported do not vouch for a book`() {
+        assertFalse(
+            sameLocalBook(
+                withLengths("Old Book", listOf(0L, 0L), emptyList()),
+                withLengths("Old Book", listOf(0L, 0L), emptyList()),
+            )
+        )
+        assertFalse(
+            sameLocalBook(
+                withLengths("Old Book", listOf(0L, 0L), listOf(90_000L, 90_000L)),
+                withLengths("Old Book", listOf(0L, 0L), listOf(300_000L, 90_000L)),
+            )
+        )
+    }
+
+    @Test
+    fun `no sizes reported but the same lengths is the same book`() {
+        assertTrue(
+            sameLocalBook(
+                withLengths("Old Book", listOf(0L, 0L), listOf(90_000L, 90_000L)),
+                withLengths("Old Book", listOf(0L, 0L), listOf(90_200L, 90_000L)),
+            )
+        )
+    }
 }

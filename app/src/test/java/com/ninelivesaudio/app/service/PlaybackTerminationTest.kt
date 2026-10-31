@@ -1,6 +1,10 @@
 package com.ninelivesaudio.app.service
 
 import androidx.media3.common.Player
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -90,5 +94,77 @@ class PlaybackTerminationTest {
         assertFalse(retainedRetryStillApplies("b", "a", true, true, false))
         assertFalse(retainedRetryStillApplies("a", "a", false, true, false))
         assertFalse(retainedRetryStillApplies("a", "a", true, false, false))
+    }
+
+    @Test(timeout = 5_000)
+    fun `a stop that lands while the retry waits on the terminal write still finds the book finalized`() = runBlocking {
+        val pending = PendingTerminalOwner()
+        val gate = CompletableDeferred<Unit>()
+        pending.launch(this, "a") { gate.await() }
+        var finalized = true
+        var current = true
+        val calls = mutableListOf<String>()
+        val retry = async {
+            runTerminalRetry(
+                pending = pending,
+                bookId = "a",
+                isCurrent = { current },
+                claimOwnership = { calls += "claim"; true },
+                rearm = { finalized = false; calls += "rearm" },
+                prepare = { calls += "prepare" },
+            )
+        }
+        yield()
+        // While the retry waits, a stop or another load reads the flag. It
+        // must still say finalized, so it skips a second terminal write.
+        assertTrue(finalized)
+        current = false
+        gate.complete(Unit)
+        assertFalse(retry.await())
+        assertTrue(finalized)
+        assertEquals(emptyList<String>(), calls)
+    }
+
+    @Test(timeout = 5_000)
+    fun `the retry re-arms only after it reclaims ownership`() = runBlocking {
+        val pending = PendingTerminalOwner()
+        var finalized = true
+        val calls = mutableListOf<String>()
+        val prepared = runTerminalRetry(
+            pending = pending,
+            bookId = "a",
+            isCurrent = { true },
+            claimOwnership = { calls += "claim"; false },
+            rearm = { finalized = false; calls += "rearm" },
+            prepare = { calls += "prepare" },
+        )
+        assertFalse(prepared)
+        assertTrue(finalized)
+        assertEquals(listOf("claim"), calls)
+    }
+
+    @Test(timeout = 5_000)
+    fun `a retry that wins re-arms and then prepares`() = runBlocking {
+        val pending = PendingTerminalOwner()
+        val gate = CompletableDeferred<Unit>()
+        pending.launch(this, "a") { gate.await(); }
+        var finalized = true
+        val calls = mutableListOf<String>()
+        val retry = async {
+            runTerminalRetry(
+                pending = pending,
+                bookId = "a",
+                isCurrent = { true },
+                claimOwnership = { calls += "claim"; true },
+                rearm = { finalized = false; calls += "rearm" },
+                prepare = { calls += "prepare" },
+            )
+        }
+        yield()
+        assertEquals(emptyList<String>(), calls)
+        gate.complete(Unit)
+        assertTrue(retry.await())
+        assertFalse(finalized)
+        assertEquals(listOf("claim", "rearm", "prepare"), calls)
     }
 }

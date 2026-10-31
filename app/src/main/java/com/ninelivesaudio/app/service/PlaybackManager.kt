@@ -2157,14 +2157,13 @@ class PlaybackManager @Inject constructor(
             }
             PlayAction.RETRY_AFTER_TERMINAL -> {
                 val player = exoPlayer ?: return
-                // Resuming a book that a non-STOP termination left playable re-arms
-                // its terminal flush. A stopped book kept the shared player but lost
-                // its media items, so its finalized flag stands and the next load
-                // does not flush it a second time.
-                if (player.mediaItemCount > 0) retainedBookFinalized = false
                 val bookId = retained!!.id
+                // The terminal write re-arms only once the retry owns the book
+                // again (#43). Re-arming here, before the wait, let a stop or a
+                // new load that landed during it write the book's end twice.
                 scope.launch {
-                    pendingTerminalOwner.runAfterPending(
+                    runTerminalRetry(
+                        pending = pendingTerminalOwner,
                         bookId = bookId,
                         isCurrent = {
                             retainedRetryStillApplies(
@@ -2175,26 +2174,31 @@ class PlaybackManager @Inject constructor(
                                 bookLoading = stagedLoad.book.value != null,
                             )
                         },
-                    ) {
-                        // An error terminal flushed progress and released
-                        // sync ownership of this book. The retry keeps the
-                        // loaded player, so reclaim ownership here the way
-                        // a fresh load does, or a background sync imports
-                        // server progress over the retried playback.
-                        if (
-                            !syncManager.setActivePlaybackItem(bookId) {
+                        // An error terminal flushed progress and released sync
+                        // ownership of this book. The retry keeps the loaded
+                        // player, so it reclaims ownership the way a fresh load
+                        // does, or a background sync imports server progress
+                        // over the retried playback.
+                        claimOwnership = {
+                            syncManager.setActivePlaybackItem(bookId) {
                                 _currentBook.value?.id == bookId && stagedLoad.book.value == null
                             }
-                        ) return@runAfterPending
-                        startPlaybackService()
-                        val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-                        player.seekTo(resume.mediaItemIndex, resume.positionMs)
-                        player.prepare()
-                        player.playWhenReady = true
-                    }
+                        },
+                        rearm = { if (player.mediaItemCount > 0) retainedBookFinalized = false },
+                        prepare = {
+                            startPlaybackService()
+                            val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
+                            player.seekTo(resume.mediaItemIndex, resume.positionMs)
+                            player.prepare()
+                            player.playWhenReady = true
+                        },
+                    )
                 }
             }
             PlayAction.RESUME -> exoPlayer?.let { player ->
+                // Resuming a book that still has media re-arms its terminal
+                // flush. A stopped book lost its media items, so its finalized
+                // flag stands and the next load does not flush it a second time.
                 if (player.mediaItemCount > 0) retainedBookFinalized = false
                 if (needsPlaybackPreparation(player.playbackState)) {
                     val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)

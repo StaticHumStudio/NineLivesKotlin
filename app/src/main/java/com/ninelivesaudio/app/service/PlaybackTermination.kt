@@ -60,3 +60,28 @@ internal fun retainedRetryStillApplies(
     playerNeedsPreparation: Boolean,
     bookLoading: Boolean,
 ): Boolean = currentBookId == retryBookId && samePlayer && playerNeedsPreparation && !bookLoading
+
+/**
+ * The error retry from play() (#43). It waits for the book's terminal write,
+ * then reclaims sync ownership, and only then re-arms the book's terminal
+ * write and prepares the player. Re-arming before the wait let a stop or a
+ * new load that landed during it write the book's end a second time.
+ */
+internal suspend fun runTerminalRetry(
+    pending: PendingTerminalOwner,
+    bookId: String,
+    isCurrent: () -> Boolean,
+    claimOwnership: suspend () -> Boolean,
+    rearm: () -> Unit,
+    prepare: () -> Unit,
+): Boolean {
+    var prepared = false
+    pending.runAfterPending(bookId, isCurrent) {
+        if (claimOwnership()) {
+            rearm()
+            prepare()
+            prepared = true
+        }
+    }
+    return prepared
+}

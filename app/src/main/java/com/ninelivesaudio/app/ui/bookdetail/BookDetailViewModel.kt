@@ -606,7 +606,8 @@ class BookDetailViewModel @Inject constructor(
         viewModelScope.launch {
             // Stop playback first if this is the live book, so the session-sync
             // coroutine can't re-write the rows we're about to delete.
-            if (playbackManager.currentBook.value?.id == id) {
+            if (playbackManager.holdsBook(id)) {
+                playbackManager.cancelLoad()
                 playbackManager.stop()
             }
             audioBookRepository.deleteLocalBookForever(id)

@@ -99,4 +99,21 @@ class PlaybackLoadStagingTest {
         assertFalse(publishStagedLoad(s, 1) {})
         assertEquals(b, s.book.value)
     }
+
+    @Test
+    fun `a delete or sign out sees the book that is loading as held`() {
+        assertTrue(playerHoldsBook(a, b, "b"))
+        assertTrue(playerHoldsBook(a, b, "a"))
+        assertFalse(playerHoldsBook(a, b, "c"))
+        assertTrue(playerHoldsBook(null, b, "b"))
+        assertFalse(playerHoldsBook(null, null, "a"))
+    }
+
+    @Test
+    fun `a remote book that is loading counts as held for sign out`() {
+        assertTrue(playerHoldsRemoteBook(a.copy(isLocal = true), b))
+        assertTrue(playerHoldsRemoteBook(a, null))
+        assertFalse(playerHoldsRemoteBook(a.copy(isLocal = true), b.copy(isLocal = true)))
+        assertFalse(playerHoldsRemoteBook(null, null))
+    }
 }

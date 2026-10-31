@@ -67,3 +67,11 @@ internal fun loadedTracksOutcome(tracksLoaded: Boolean, stillCurrent: Boolean, m
 
 /** The book the shared player belongs to: the loading one while a load runs. */
 internal fun playerBookId(loading: AudioBook?, current: AudioBook?): String? = loading?.id ?: current?.id
+
+/** Whether the player holds [bookId], as the current book or the one loading. */
+internal fun playerHoldsBook(current: AudioBook?, loading: AudioBook?, bookId: String): Boolean =
+    current?.id == bookId || loading?.id == bookId
+
+/** Whether the player holds a server book, current or loading (sign out). */
+internal fun playerHoldsRemoteBook(current: AudioBook?, loading: AudioBook?): Boolean =
+    current?.isLocal == false || loading?.isLocal == false

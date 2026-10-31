@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -37,18 +38,16 @@ fun MiniPlayer(
     modifier: Modifier = Modifier,
 ) {
     val currentBook by playbackManager.currentBook.collectAsStateWithLifecycle()
+    val loadingBook by playbackManager.loadingBook.collectAsStateWithLifecycle()
     val playbackState by playbackManager.playbackState.collectAsStateWithLifecycle()
     val position by playbackManager.position.collectAsStateWithLifecycle()
     val duration by playbackManager.duration.collectAsStateWithLifecycle()
     val currentChapter by playbackManager.currentChapter.collectAsStateWithLifecycle()
 
-    // Only show if a book is loaded
-    val book = currentBook ?: return
-    if (playbackState == PlaybackState.STOPPED && book.title.isEmpty()) return
-
-    val progress = if (duration > kotlin.time.Duration.ZERO) {
-        (position.inWholeMilliseconds.toFloat() / duration.inWholeMilliseconds.toFloat()).coerceIn(0f, 1f)
-    } else 0f
+    // Only show if a book is loaded or loading
+    val display = miniPlayerDisplay(currentBook, loadingBook, playbackState, position, duration, currentChapter) ?: return
+    val book = display.book
+    val progress = display.progress
 
     Column(
         modifier = modifier
@@ -104,9 +103,9 @@ fun MiniPlayer(
                     overflow = TextOverflow.Ellipsis,
                     fontSize = 13.sp,
                 )
-                currentChapter?.let { ch ->
+                display.chapterTitle?.let { chapterTitle ->
                     Text(
-                        text = ch.title,
+                        text = chapterTitle,
                         style = MaterialTheme.typography.labelSmall,
                         color = NineLivesTheme.colors.archiveTextMuted,
                         maxLines = 1,
@@ -125,8 +124,10 @@ fun MiniPlayer(
                         playbackManager.play()
                     }
                 },
+                enabled = !display.loading,
                 modifier = Modifier
                     .size(40.dp)
+                    .alpha(if (display.loading) 0.4f else 1f)
                     .clip(CircleShape)
                     .background(NineLivesTheme.colors.goldFilament),
             ) {

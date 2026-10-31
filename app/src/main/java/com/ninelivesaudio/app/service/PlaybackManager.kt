@@ -1171,6 +1171,18 @@ class PlaybackManager @Inject constructor(
     private val stagedLoad = StagedLoad()
     val loadingBook: StateFlow<AudioBook?> = stagedLoad.book
 
+    /** Whether the player holds [bookId], current or loading. */
+    fun holdsBook(bookId: String): Boolean = playerHoldsBook(_currentBook.value, stagedLoad.book.value, bookId)
+
+    /** Whether the player holds a server book, current or loading. */
+    fun holdsRemoteBook(): Boolean = playerHoldsRemoteBook(_currentBook.value, stagedLoad.book.value)
+
+    /**
+     * Stops any load under way from writing anything more. stop() alone does
+     * not, so a delete calls this first.
+     */
+    fun cancelLoad() = playbackLoadOwner.invalidate()
+
     // A terminated book stays in _currentBook so the UI keeps showing it. This
     // records that its terminal flush already ran, so the next load does not
     // repeat it under a mode the book does not belong to.

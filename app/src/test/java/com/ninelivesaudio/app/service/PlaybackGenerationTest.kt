@@ -36,7 +36,7 @@ class PlaybackGenerationTest {
         fetchStarted.await()
         runNowPlayingDisconnectReset(
             currentBookId = "book-a",
-            invalidateActiveLoad = owner::invalidate,
+            cancelActiveLoad = { cancelPlaybackLoad(owner, StagedLoad()) },
             stopPlayback = {
                 playerStarted = false
                 persistedRestoreItem = null
@@ -49,6 +49,26 @@ class PlaybackGenerationTest {
 
         assertFalse(playerStarted)
         assertNull(persistedRestoreItem)
+    }
+
+    @Test
+    fun `disconnect during a slow session open clears the loading book at once`() = runBlocking {
+        val owner = PlaybackLoadOwner()
+        val staged = StagedLoad()
+        val request = owner.newRequest()
+        assertTrue(owner.claim(request))
+        staged.stage(request, com.ninelivesaudio.app.domain.model.AudioBook(id = "book-b", title = "Beta"))
+        // The load now waits on a slow session open. Sign out lands.
+        runNowPlayingDisconnectReset(
+            currentBookId = "book-a",
+            cancelActiveLoad = { cancelPlaybackLoad(owner, staged) },
+            stopPlayback = {},
+            clearCurrentBook = {},
+            awaitTerminalProgress = {},
+        )
+        assertFalse(owner.isCurrent(request))
+        // The mini player no longer shows the disconnected book as loading.
+        assertNull(staged.book.value)
     }
 
     @Test

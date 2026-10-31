@@ -578,7 +578,9 @@ class SettingsViewModel @Inject constructor(
 
     fun switchMode(mode: AppMode) {
         if (mode == _uiState.value.appMode) return
-        // Stop playback to avoid cross-mode player state
+        // Stop playback to avoid cross-mode player state. A book still loading
+        // would otherwise finish under the new mode.
+        playbackManager.cancelLoad()
         playbackManager.stop()
         _uiState.update { it.copy(appMode = mode) }
         viewModelScope.launch {
@@ -695,7 +697,8 @@ class SettingsViewModel @Inject constructor(
                 val ids = sweepTargetIds(pending.type)
                 // Stop playback if the live book is in the delete set, so the
                 // session-sync coroutine can't re-create rows we remove.
-                if (playbackManager.currentBook.value?.id in ids) {
+                if (ids.any(playbackManager::holdsBook)) {
+                    playbackManager.cancelLoad()
                     playbackManager.stop()
                 }
                 audioBookRepository.deleteLocalBooksForever(ids)
@@ -1123,7 +1126,7 @@ class SettingsViewModel @Inject constructor(
                         captureSession = apiService::currentAuthSession,
                         resetNowPlaying = playbackManager::resetNowPlayingForDisconnect,
                         logoutIfCurrent = { apiService.logoutIfCurrentSession(it) },
-                        holdsRemoteBook = playbackManager.currentBook.value?.isLocal == false,
+                        holdsRemoteBook = playbackManager.holdsRemoteBook(),
                         raiseDisconnectBarrier = playbackManager::raiseDisconnectBarrier,
                         lowerDisconnectBarrier = playbackManager::lowerDisconnectBarrier,
                     )

@@ -70,7 +70,7 @@ internal class StagedLoad {
  * own clear later finds nothing of its own.
  */
 internal fun cancelPlaybackLoad(owner: PlaybackLoadOwner, staged: StagedLoad) {
-    owner.invalidate()?.let(staged::clear)
+    owner.cancelAll(staged)
 }
 
 /**
@@ -80,11 +80,8 @@ internal fun cancelPlaybackLoad(owner: PlaybackLoadOwner, staged: StagedLoad) {
  * player would show it and ignore play. A newer load's staging is left alone.
  * True when a load was cancelled.
  */
-internal fun cancelDiskLoadsOf(owner: PlaybackLoadOwner, staged: StagedLoad, bookId: String): Boolean {
-    val cancelled = owner.cancelLoadRequestsOf(bookId)
-    cancelled.forEach(staged::clear)
-    return cancelled.isNotEmpty()
-}
+internal fun cancelDiskLoadsOf(owner: PlaybackLoadOwner, staged: StagedLoad, bookId: String): Boolean =
+    owner.cancelLoadsOf(bookId, staged)
 
 /**
  * What a removed download does to the player. The loading book is read

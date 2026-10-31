@@ -51,7 +51,7 @@ class DownloadRemovalTest {
         val request = owner.newRequest()
         owner.trackLoad(request, "b")
 
-        assertEquals(true, owner.cancelLoadsOf("b"))
+        assertEquals(true, owner.cancelLoadsOf("b", StagedLoad()))
 
         assertEquals(false, owner.claim(request))
     }
@@ -63,7 +63,7 @@ class DownloadRemovalTest {
         owner.trackLoad(request, "b")
         assertEquals(true, owner.claim(request))
 
-        assertEquals(true, owner.cancelLoadsOf("b"))
+        assertEquals(true, owner.cancelLoadsOf("b", StagedLoad()))
 
         assertEquals(false, owner.isCurrent(request))
     }
@@ -74,7 +74,7 @@ class DownloadRemovalTest {
         val other = owner.newRequest()
         owner.trackLoad(other, "c")
 
-        assertEquals(false, owner.cancelLoadsOf("b"))
+        assertEquals(false, owner.cancelLoadsOf("b", StagedLoad()))
 
         assertEquals(true, owner.claim(other))
     }
@@ -86,7 +86,7 @@ class DownloadRemovalTest {
         owner.trackLoad(request, "b")
         owner.abandon(request)
 
-        assertEquals(false, owner.cancelLoadsOf("b"))
+        assertEquals(false, owner.cancelLoadsOf("b", StagedLoad()))
     }
 
     @Test

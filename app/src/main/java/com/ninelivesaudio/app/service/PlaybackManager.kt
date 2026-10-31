@@ -268,19 +268,22 @@ internal class PlaybackLoadOwner {
      * player yet or not (a delete can land before the load has set its book
      * or its loading state). True when one was cancelled.
      */
-    fun cancelLoadsOf(bookId: String): Boolean = cancelLoadRequestsOf(bookId).isNotEmpty()
-
-    /** Same as [cancelLoadsOf], returning the requests it cancelled. */
-    fun cancelLoadRequestsOf(bookId: String): Set<Long> = synchronized(ownerLock) {
-        val requests = diskLoadBooks.filterValues { it == bookId }.keys.toSet()
-        if (requests.isEmpty()) return@synchronized requests
-        requests.forEach { request ->
-            diskLoadBooks.remove(request)
-            pendingRequests.remove(request)
-            if (activeRequest == request) activeRequest = null
+    fun cancelLoadsOf(bookId: String, staged: StagedLoad): Boolean {
+        val requests = synchronized(ownerLock) {
+            val requests = diskLoadBooks.filterValues { it == bookId }.keys.toSet()
+            if (requests.isNotEmpty()) {
+                requests.forEach { request ->
+                    diskLoadBooks.remove(request)
+                    pendingRequests.remove(request)
+                    if (activeRequest == request) activeRequest = null
+                }
+                requestChanges.value += 1L
+            }
+            requests
         }
-        requestChanges.value += 1L
-        requests
+        // Like [cancelAll], a cancelled load's staging goes with it, and only its own.
+        requests.forEach(staged::clear)
+        return requests.isNotEmpty()
     }
 
     fun abandon(request: Long): Boolean = synchronized(ownerLock) {
@@ -292,13 +295,21 @@ internal class PlaybackLoadOwner {
         wasNewest
     }
 
-    /** Cancels every load. Returns the load that owned the player, if any. */
-    fun invalidate(): Long? = synchronized(ownerLock) {
-        val cancelled = activeRequest
-        activeRequest = null
-        pendingRequests.clear()
-        requestChanges.value += 1L
-        cancelled
+    /**
+     * Cancels every load and clears the staging of the one that owned the
+     * player. It takes the staging on purpose: a cancel that left it set kept
+     * the mini player on the cancelled book, with play ignored, until that
+     * load came back from the server. A newer load's staging is left alone.
+     */
+    fun cancelAll(staged: StagedLoad) {
+        val cancelled = synchronized(ownerLock) {
+            val active = activeRequest
+            activeRequest = null
+            pendingRequests.clear()
+            requestChanges.value += 1L
+            active
+        }
+        cancelled?.let(staged::clear)
     }
 
     fun isCurrent(request: Long): Boolean = synchronized(ownerLock) {
@@ -736,12 +747,12 @@ internal fun playbackItemPersistenceAction(
 
 internal suspend fun runNowPlayingDisconnectReset(
     currentBookId: String?,
-    invalidateActiveLoad: () -> Unit,
+    cancelActiveLoad: () -> Unit,
     stopPlayback: () -> Unit,
     clearCurrentBook: () -> Unit,
     awaitTerminalProgress: suspend (String) -> Unit,
 ) {
-    invalidateActiveLoad()
+    cancelActiveLoad()
     stopPlayback()
     clearCurrentBook()
     currentBookId?.let { awaitTerminalProgress(it) }
@@ -749,7 +760,7 @@ internal suspend fun runNowPlayingDisconnectReset(
 
 /**
  * Whether a fresh load claim should be refused because a confirmed disconnect
- * is still tearing down the session. [invalidateActiveLoad] above only voids
+ * is still tearing down the session. [cancelActiveLoad] above only voids
  * the loads that existed when the reset started, so a load kicked off while a
  * disconnect is blocked awaiting terminal progress (leaving Settings triggers
  * a home-screen load, or Android Auto browses) would otherwise get a brand
@@ -2379,7 +2390,9 @@ class PlaybackManager @Inject constructor(
     suspend fun resetNowPlayingForDisconnect() {
         runNowPlayingDisconnectReset(
             currentBookId = _currentBook.value?.id,
-            invalidateActiveLoad = playbackLoadOwner::invalidate,
+            // The staging aware cancel, so a sign out during a slow session
+            // open does not leave the mini player on the loading book.
+            cancelActiveLoad = ::cancelLoad,
             stopPlayback = ::stop,
             clearCurrentBook = { _currentBook.value = null },
             awaitTerminalProgress = pendingTerminalOwner::await,

@@ -27,14 +27,19 @@ internal data class WidgetTrigger(
     val tick: Long,
     /** Covers picked or undone in the app (CoverPicker). */
     val coverCount: Long = 0,
+    /** A book is loading in the player. Its end redraws, so a failed load never leaves the dimmed button. */
+    val isLoading: Boolean = false,
 )
+
+/** The player's part of a [WidgetTrigger]. */
+internal data class PlaybackTrigger(val bookId: String?, val isPlaying: Boolean, val chapterIndex: Int, val isLoading: Boolean)
 
 enum class WidgetTarget { BINDER, HOME }
 
 /**
  * Which widgets need a redraw. Unlock, identity, sync, scan, a picked or
- * undone cover and the current book change what both show. Play state, chapter, reachability and the
- * playing tick only change the large widget's current book card.
+ * undone cover and the current book change what both show. Play state, a load starting or
+ * ending, chapter, reachability and the playing tick only change the large widget's current book card.
  */
 internal fun widgetRefreshTargets(prev: WidgetTrigger?, next: WidgetTrigger): Set<WidgetTarget> {
     if (prev == null) return setOf(WidgetTarget.BINDER, WidgetTarget.HOME)
@@ -46,6 +51,7 @@ internal fun widgetRefreshTargets(prev: WidgetTrigger?, next: WidgetTrigger): Se
         prev.currentBookId != next.currentBookId
     ) return setOf(WidgetTarget.BINDER, WidgetTarget.HOME)
     if (prev.isPlaying != next.isPlaying ||
+        prev.isLoading != next.isLoading ||
         prev.chapterIndex != next.chapterIndex ||
         prev.serverReachable != next.serverReachable ||
         prev.tick != next.tick

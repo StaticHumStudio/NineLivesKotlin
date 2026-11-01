@@ -105,7 +105,8 @@ class WidgetRefresher @Inject constructor(
             playbackManager.currentBook.map { it?.id },
             playbackManager.playbackState.map { isPlayingForWidget(it) },
             playbackManager.currentChapterIndex,
-        ) { id, playing, chapter -> Triple(id, playing, chapter) }
+            playbackManager.loadingBook.map { it != null },
+        ) { id, playing, chapter, loading -> PlaybackTrigger(id, playing, chapter, loading) }
         val counters = combine(syncCount, scanCount, tick, coverPicker.changeCount) { a, b, c, d -> listOf(a, b, c, d) }
         val reachable = connectivityMonitor.connectionStatus.map { it == ConnectivityMonitor.ConnectionStatus.CONNECTED }
 
@@ -115,9 +116,10 @@ class WidgetRefresher @Inject constructor(
                 WidgetTrigger(
                     isUnlocked = unlocked,
                     identity = id,
-                    currentBookId = play.first,
-                    isPlaying = play.second,
-                    chapterIndex = play.third,
+                    currentBookId = play.bookId,
+                    isPlaying = play.isPlaying,
+                    chapterIndex = play.chapterIndex,
+                    isLoading = play.isLoading,
                     serverReachable = reach,
                     syncCount = count[0],
                     scanCount = count[1],

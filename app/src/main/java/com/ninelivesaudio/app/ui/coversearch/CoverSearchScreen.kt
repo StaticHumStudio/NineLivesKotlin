@@ -311,6 +311,13 @@ private fun StatusLine(uiState: CoverSearchUiState) {
 }
 
 private fun CoverSourceId.label(): String = when (this) {
+    CoverSourceId.AUDIOBOOK_COVERS -> CoverCopy.SOURCE_AUDIOBOOK_COVERS
+    CoverSourceId.OPEN_LIBRARY -> CoverCopy.SOURCE_OPEN_LIBRARY
+}
+
+/** The credit under a preview: the artists for audiobookcovers.com, the service otherwise. */
+private fun CoverSourceId.credit(): String = when (this) {
+    CoverSourceId.AUDIOBOOK_COVERS -> CoverCopy.AUDIOBOOK_COVERS_CREDIT
     CoverSourceId.OPEN_LIBRARY -> CoverCopy.SOURCE_OPEN_LIBRARY
 }
 
@@ -387,7 +394,7 @@ private fun PreviewDialog(
                 }
                 if (preview is CoverPreview.FromSearch) {
                     Text(
-                        text = CoverCopy.SOURCE_OPEN_LIBRARY,
+                        text = preview.result.candidate.source.credit(),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.archiveTextMuted,
                         modifier = Modifier.padding(top = 8.dp),

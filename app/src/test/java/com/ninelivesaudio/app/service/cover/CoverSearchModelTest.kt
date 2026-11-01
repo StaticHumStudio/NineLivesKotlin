@@ -43,6 +43,21 @@ class CoverSearchModelTest {
         assertEquals(listOf("a"), merged.map { it.key })
     }
 
+    @Test fun `audiobookcovers comes before open library whatever order they answered in`() {
+        val abc = CoverCandidate(CoverSourceId.AUDIOBOOK_COVERS, "x", "t/x", "u/x", null, null)
+        val merged = mergeCoverSources(listOf(
+            SourceOutcome.Found(CoverSourceId.OPEN_LIBRARY, listOf(cand("a"))),
+            SourceOutcome.Found(CoverSourceId.AUDIOBOOK_COVERS, listOf(abc)),
+        ))
+        assertEquals(listOf("x", "a"), merged.map { it.key })
+    }
+
+    @Test fun `one source answering with nothing while the other failed reads as no matches`() =
+        assertEquals(CoverSearchPhase.NO_MATCHES, coverSearchPhase(listOf(
+            SourceOutcome.Failed(CoverSourceId.AUDIOBOOK_COVERS),
+            SourceOutcome.Found(CoverSourceId.OPEN_LIBRARY, emptyList()),
+        ), emptyList()))
+
     @Test fun `the same cover twice shows once`() =
         assertEquals(1, mergeCoverSources(listOf(SourceOutcome.Found(CoverSourceId.OPEN_LIBRARY, listOf(cand("a"), cand("a"))))).size)
 

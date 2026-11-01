@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Open Library asks apps to name themselves and give a contact address. */
+/** Cover services get the app name and a contact address (Open Library asks for it). */
 internal const val COVER_SEARCH_CONTACT = "Static@StaticHum.Studio"
 
 internal fun coverSearchUserAgent(versionName: String): String = "NineLivesAudio/$versionName ($COVER_SEARCH_CONTACT)"
@@ -31,7 +31,7 @@ internal const val MAX_PHOTO_BYTES = 25L * 1024 * 1024
  * TLS setup carry over (the self signed relaxation only covers the configured server's
  * host), with every app interceptor removed: no Audiobookshelf token, base URL rewrite,
  * cover URL rewrite or debug log can reach a third party. Its own dispatcher holds
- * requests to 3 per host at once, Open Library's limit for an identified app.
+ * requests to 3 per host at once (Open Library's limit for an identified app).
  */
 fun coverSearchHttpClient(appClient: OkHttpClient, userAgent: String): OkHttpClient {
     val builder = appClient.newBuilder()

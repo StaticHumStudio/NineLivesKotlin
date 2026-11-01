@@ -5,7 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
-import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
+import com.ninelivesaudio.app.service.cover.AudiobookCoversSource
 import com.ninelivesaudio.app.service.cover.CoverDownloader
 import com.ninelivesaudio.app.service.cover.CoverPicker
 import com.ninelivesaudio.app.service.cover.CoverResult
@@ -46,17 +46,20 @@ data class CoverSearchUiState(
 
 /**
  * Find a cover for one local book. Opening the screen sends nothing: the field starts
- * with the book's title and author, and only the Search button asks Open Library.
+ * with the book's title and author, and only the Search button asks the cover services.
  */
 @HiltViewModel
 class CoverSearchViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: AudioBookRepository,
-    private val openLibrary: OpenLibraryCoverSource,
+    audiobookCovers: AudiobookCoversSource,
+    openLibrary: OpenLibraryCoverSource,
     private val downloader: CoverDownloader,
     private val picker: CoverPicker,
-    private val effectiveSettings: EffectiveSettingsRepository,
 ) : ViewModel() {
+
+    /** Every source, asked in parallel once per Search tap. Add a source here. */
+    private val sources = listOf(audiobookCovers, openLibrary)
 
     private val bookId: String = savedStateHandle.get<String>("bookId").orEmpty()
 
@@ -89,11 +92,10 @@ class CoverSearchViewModel @Inject constructor(
         val state = _uiState.value
         if (state.saving) return
         val text = normalizedSearchText(state.query) ?: return
-        if (!effectiveSettings.isUnlockedNow) return
         searchJob?.cancel()
         _uiState.update { it.copy(phase = CoverSearchUiState.Phase.SEARCHING, results = emptyList(), notice = null) }
         searchJob = viewModelScope.launch {
-            val outcome = runCoverSearch(text, listOf(openLibrary), downloader::thumbnail)
+            val outcome = runCoverSearch(text, sources, downloader::thumbnail)
             val phase = when (outcome.phase) {
                 CoverSearchPhase.RESULTS -> CoverSearchUiState.Phase.RESULTS
                 CoverSearchPhase.NO_MATCHES -> CoverSearchUiState.Phase.NO_MATCHES

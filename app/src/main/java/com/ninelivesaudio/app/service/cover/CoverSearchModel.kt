@@ -6,8 +6,12 @@ package com.ninelivesaudio.app.service.cover
  * screen says when nothing came back.
  */
 
-/** Where a cover came from. The order here is the order sources appear in the grid. */
-enum class CoverSourceId { OPEN_LIBRARY }
+/**
+ * Where a cover came from. The order here is the order sources appear in the grid:
+ * audiobookcovers.com first (square audiobook art), then Open Library (book covers).
+ * A new source is a new value here plus a [CoverSearchSource].
+ */
+enum class CoverSourceId { AUDIOBOOK_COVERS, OPEN_LIBRARY }
 
 /** One cover a source offered, before its thumbnail is fetched. */
 data class CoverCandidate(

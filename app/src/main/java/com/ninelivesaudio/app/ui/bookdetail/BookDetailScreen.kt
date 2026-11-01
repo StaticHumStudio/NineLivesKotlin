@@ -30,7 +30,6 @@ import com.ninelivesaudio.app.domain.util.toClockString
 import com.ninelivesaudio.app.domain.util.toHumanReadableString
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
-import com.ninelivesaudio.app.ui.components.GatedControl
 import com.ninelivesaudio.app.ui.coversearch.CoverCopy
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.ui.theme.unhinged.*
@@ -394,14 +393,13 @@ private fun BookDetailContent(
                     }
                 }
 
-                // Find a cover (local books only, part of the unlock). Nothing is
+                // Find a cover (local books only, free for everyone). Nothing is
                 // sent from here: the cover screen searches only on its Search button.
                 if (uiState.coverActions.showFindCover) {
                     CoverActionsBlock(
                         actions = uiState.coverActions,
                         onFindCover = onFindCover,
                         onUseOriginalCover = onUseOriginalCover,
-                        onNavigateToUnlock = onNavigateToUnlock,
                     )
                 }
 
@@ -655,38 +653,30 @@ private fun CoverActionsBlock(
     actions: CoverActions,
     onFindCover: () -> Unit,
     onUseOriginalCover: () -> Unit,
-    onNavigateToUnlock: () -> Unit,
 ) {
     val colors = NineLivesTheme.colors
     Column(modifier = Modifier.fillMaxWidth()) {
-        GatedControl(
-            locked = actions.findCoverLocked,
-            onLockedTap = onNavigateToUnlock,
-            label = CoverCopy.FIND_A_COVER,
+        OutlinedButton(
+            onClick = onFindCover,
             modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.goldFilament),
+            border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                brush = androidx.compose.ui.graphics.SolidColor(colors.goldFilament.copy(alpha = 0.5f)),
+            ),
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(vertical = 14.dp),
         ) {
-            OutlinedButton(
-                onClick = onFindCover,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.goldFilament),
-                border = ButtonDefaults.outlinedButtonBorder(true).copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(colors.goldFilament.copy(alpha = 0.5f)),
-                ),
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(vertical = 14.dp),
-            ) {
-                Icon(
-                    Icons.Outlined.ImageSearch,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = CoverCopy.FIND_A_COVER,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                )
-            }
+            Icon(
+                Icons.Outlined.ImageSearch,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = CoverCopy.FIND_A_COVER,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+            )
         }
         Text(
             text = CoverCopy.PRIVACY_LINE,

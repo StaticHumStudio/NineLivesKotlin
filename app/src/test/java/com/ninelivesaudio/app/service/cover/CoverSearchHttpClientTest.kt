@@ -90,7 +90,7 @@ class CoverSearchHttpClientTest {
 
     @Test fun `a search that answers 500 fails the source`() = runBlocking {
         try {
-            OpenLibraryCoverSource.onCoverClient(clientThatAnswers(500, "busy")).search("x")
+            OpenLibraryCoverSource.onCoverClient(clientThatAnswers(500, "busy")).search(CoverQuery("x", "x", null))
             fail("expected IOException")
         } catch (_: IOException) {
         }
@@ -98,7 +98,7 @@ class CoverSearchHttpClientTest {
 
     @Test fun `a search that answers html fails the source`() = runBlocking {
         try {
-            OpenLibraryCoverSource.onCoverClient(clientThatAnswers(200, "<html>")).search("x")
+            OpenLibraryCoverSource.onCoverClient(clientThatAnswers(200, "<html>")).search(CoverQuery("x", "x", null))
             fail("expected IOException")
         } catch (_: IOException) {
         }

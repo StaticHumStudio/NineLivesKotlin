@@ -7,69 +7,107 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 
-/** Bodies are trimmed copies of a live /api/search answer (2026-10-31). */
+/**
+ * The fixtures are the real audiobookcovers.com book search pages (2026-10-31), saved
+ * whole: Project Hail Mary by Andy Weir has 9 matched covers, Carmilla has none.
+ */
 class AudiobookCoversTest {
 
-    private fun result(id: String) =
-        """{"id":"$id","url":"https://images.audiobookcovers.com/original/$id.jpg","source":"https://redd.it/x","score":0.21,""" +
-            """"images":{"jpeg":{"320":"https://images.audiobookcovers.com/jpeg/320/$id.jpg","640":"https://images.audiobookcovers.com/jpeg/640/$id.jpg","1280":"https://images.audiobookcovers.com/jpeg/1280/$id.jpg"}}}"""
+    private fun fixture(name: String): String =
+        requireNotNull(javaClass.classLoader!!.getResource("cover/$name")) { "missing fixture $name" }.readText()
 
-    @Test fun `the search sends only the text`() {
-        val url = audiobookCoversSearchUrl("carmilla le fanu")
+    private val hailMary get() = fixture("abc-book-search-project-hail-mary.html")
+    private val carmilla get() = fixture("abc-book-search-carmilla.html")
+
+    private fun clientThatAnswers(code: Int, body: String) = coverSearchHttpClient(OkHttpClient(), "UA").newBuilder()
+        .addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(code).message("x")
+                .body(body.toResponseBody()).build()
+        }.build()
+
+    @Test fun `the search asks the book search page for the title and author`() {
+        val url = audiobookCoversSearchUrl(CoverQuery("Project Hail Mary Andy Weir", "Project Hail Mary", "Andy Weir"))
         assertEquals("https", url.scheme)
         assertEquals("audiobookcovers.com", url.host)
-        assertEquals("/api/search", url.encodedPath)
-        assertEquals("carmilla le fanu", url.queryParameter("q"))
-        assertEquals(setOf("q"), url.queryParameterNames)
+        assertEquals("/search", url.encodedPath)
+        assertEquals("Project Hail Mary", url.queryParameter("title"))
+        assertEquals("Andy Weir", url.queryParameter("author"))
+        assertEquals(setOf("title", "author"), url.queryParameterNames)
     }
 
-    @Test fun `results become candidates with the 320 thumbnail and the 1280 image`() {
-        val c = parseAudiobookCoversSearch("""{"results":[${result("abc")}],"count":1,"query":"carmilla","model":"jina-clip-v2"}""")!!.single()
-        assertEquals(CoverSourceId.AUDIOBOOK_COVERS, c.source)
-        assertEquals("abc:abc", c.key)
-        assertEquals("https://images.audiobookcovers.com/jpeg/320/abc.jpg", c.thumbnailUrl)
-        assertEquals("https://images.audiobookcovers.com/jpeg/1280/abc.jpg", c.fullUrl)
+    @Test fun `no author sends only the title`() {
+        val url = audiobookCoversSearchUrl(CoverQuery("carmilla le fanu", "carmilla le fanu", null))
+        assertEquals("carmilla le fanu", url.queryParameter("title"))
+        assertEquals(setOf("title"), url.queryParameterNames)
     }
 
-    @Test fun `a result without sized images falls back to the original`() {
-        val c = parseAudiobookCoversSearch("""{"results":[{"id":"x","url":"https://images.audiobookcovers.com/original/x.png"}]}""")!!.single()
-        assertEquals("https://images.audiobookcovers.com/original/x.png", c.thumbnailUrl)
-        assertEquals("https://images.audiobookcovers.com/original/x.png", c.fullUrl)
+    @Test fun `the hail mary page has its 9 matched covers`() {
+        val found = parseAudiobookCoversPage(hailMary)
+        assertTrue(found is AudiobookCoversPage.Covers)
+        val covers = (found as AudiobookCoversPage.Covers).candidates
+        assertEquals(9, covers.size)
+        assertEquals(9, covers.map { it.fullUrl }.toSet().size)
+        covers.forEach {
+            assertEquals(CoverSourceId.AUDIOBOOK_COVERS, it.source)
+            assertTrue(it.key, it.key.startsWith("abc:"))
+            assertTrue(it.thumbnailUrl, it.thumbnailUrl.startsWith("https://images.audiobookcovers.com/jpeg/320/"))
+            assertTrue(it.fullUrl, it.fullUrl.startsWith("https://images.audiobookcovers.com/jpeg/1280/"))
+        }
+        val first = covers.first()
+        assertEquals("abc:0aec0ced-1758-446a-8c57-3364f46ef8b6", first.key)
+        assertEquals("https://images.audiobookcovers.com/jpeg/320/0aec0ced-1758-446a-8c57-3364f46ef8b6.jpg", first.thumbnailUrl)
+        assertEquals("https://images.audiobookcovers.com/jpeg/1280/0aec0ced-1758-446a-8c57-3364f46ef8b6.jpg", first.fullUrl)
     }
 
-    @Test fun `a result with no image or no id is skipped`() =
-        assertEquals(0, parseAudiobookCoversSearch("""{"results":[{"id":"x"},{"url":"https://images.audiobookcovers.com/original/y.jpg"}]}""")!!.size)
+    @Test fun `the carmilla page is a real answer with no covers`() =
+        assertEquals(AudiobookCoversPage.Covers(emptyList()), parseAudiobookCoversPage(carmilla))
 
-    @Test fun `only https images are used`() =
-        assertEquals(0, parseAudiobookCoversSearch("""{"results":[{"id":"x","url":"http://images.audiobookcovers.com/original/x.jpg"}]}""")!!.size)
-
-    @Test fun `its similarity search always answers, so only the closest few are kept`() {
-        val body = """{"results":[${(1..20).joinToString(",") { result("r$it") }}]}"""
-        assertEquals((1..AUDIOBOOK_COVERS_MAX_RESULTS).map { "abc:r$it" }, parseAudiobookCoversSearch(body)!!.map { it.key })
+    @Test fun `a page it does not recognise is unparseable, not empty`() {
+        assertEquals(AudiobookCoversPage.Unparseable, parseAudiobookCoversPage("<html><body>We moved things around</body></html>"))
+        assertEquals(AudiobookCoversPage.Unparseable, parseAudiobookCoversPage(""))
+        assertEquals(AudiobookCoversPage.Unparseable, parseAudiobookCoversPage("""{"results":[]}"""))
     }
 
-    @Test fun `no results is an empty list`() =
-        assertEquals(emptyList<CoverCandidate>(), parseAudiobookCoversSearch("""{"results":[],"count":0}"""))
+    @Test fun `a results list whose entries changed shape is unparseable`() {
+        val reshaped = hailMary.replace("{id:\"", "{imageId:\"")
+        assertEquals(AudiobookCoversPage.Unparseable, parseAudiobookCoversPage(reshaped))
+    }
 
-    @Test fun `a body that is not search json is a failure`() {
-        assertNull(parseAudiobookCoversSearch("<html>busy</html>"))
-        assertNull(parseAudiobookCoversSearch("""{"error":"x"}"""))
+    @Test fun `only https images on the image host are used`() {
+        val elsewhere = hailMary.replace("https://images.audiobookcovers.com/", "http://images.audiobookcovers.com/")
+        assertEquals(AudiobookCoversPage.Unparseable, parseAudiobookCoversPage(elsewhere))
+    }
+
+    @Test fun `the source keeps the matched covers`() = runBlocking {
+        val found = AudiobookCoversSource.onCoverClient(clientThatAnswers(200, hailMary))
+            .search(CoverQuery("Project Hail Mary Andy Weir", "Project Hail Mary", "Andy Weir"))
+        assertEquals(9, found.size)
+    }
+
+    @Test fun `the source answers nothing for carmilla`() = runBlocking {
+        assertEquals(emptyList<CoverCandidate>(), AudiobookCoversSource.onCoverClient(clientThatAnswers(200, carmilla))
+            .search(CoverQuery("Carmilla", "Carmilla", null)))
+    }
+
+    @Test fun `a changed page makes the source unparseable`() = runBlocking {
+        try {
+            AudiobookCoversSource.onCoverClient(clientThatAnswers(200, "<html>new look</html>")).search(CoverQuery("x", "x", null))
+            fail("expected UnparseableCoverPageException")
+        } catch (_: UnparseableCoverPageException) {
+        }
     }
 
     @Test fun `a search that answers 503 fails the source`() = runBlocking {
-        val client = coverSearchHttpClient(OkHttpClient(), "UA").newBuilder()
-            .addInterceptor { chain ->
-                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(503).message("x")
-                    .body("busy".toResponseBody()).build()
-            }.build()
         try {
-            AudiobookCoversSource.onCoverClient(client).search("x")
+            AudiobookCoversSource.onCoverClient(clientThatAnswers(503, "busy")).search(CoverQuery("x", "x", null))
             fail("expected IOException")
-        } catch (_: IOException) {
+        } catch (e: IOException) {
+            assertNull(e as? UnparseableCoverPageException)
         }
     }
 }

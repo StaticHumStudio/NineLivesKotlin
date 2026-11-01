@@ -35,7 +35,19 @@ sealed interface SourceOutcome {
 
     data class Found(override val source: CoverSourceId, val candidates: List<CoverCandidate>) : SourceOutcome
     data class Failed(override val source: CoverSourceId) : SourceOutcome
+
+    /** It answered, but with a page this app no longer understands. Dropped like a failure. */
+    data class Unparseable(override val source: CoverSourceId) : SourceOutcome
 }
+
+/**
+ * What one Search tap asks for. [text] is the whole box (Open Library searches it as is).
+ * [title] and [author] are for a source that matches on each (audiobookcovers.com).
+ */
+data class CoverQuery(val text: String, val title: String, val author: String?)
+
+/** A source whose answer arrived but no longer has a shape this app recognises. */
+class UnparseableCoverPageException : Exception("cover page not recognised")
 
 enum class CoverSearchPhase { RESULTS, NO_MATCHES, UNREACHABLE }
 
@@ -44,7 +56,7 @@ class CoverSearchOutcome(val phase: CoverSearchPhase, val results: List<CoverRes
 /** A cover service. A throw from [search] means the source failed and drops out. */
 interface CoverSearchSource {
     val id: CoverSourceId
-    suspend fun search(query: String): List<CoverCandidate>
+    suspend fun search(query: CoverQuery): List<CoverCandidate>
 }
 
 /** At most this many thumbnails are fetched per search (Open Library asks for restraint). */
@@ -60,10 +72,24 @@ fun normalizedSearchText(input: String): String? =
 /** The author the folder scan writes when a book has no author tag. Not worth searching for. */
 private const val UNKNOWN_AUTHOR_PLACEHOLDER = "Unknown Author"
 
+private fun realAuthor(author: String?): String? =
+    author?.let { normalizedSearchText(it) }?.takeUnless { it.equals(UNKNOWN_AUTHOR_PLACEHOLDER, ignoreCase = true) }
+
 /** What the search box starts with: the book's title and author. */
-fun prefillSearchText(title: String, author: String?): String {
-    val realAuthor = author?.takeUnless { it.trim().equals(UNKNOWN_AUTHOR_PLACEHOLDER, ignoreCase = true) }
-    return normalizedSearchText("$title ${realAuthor.orEmpty()}").orEmpty()
+fun prefillSearchText(title: String, author: String?): String =
+    normalizedSearchText("$title ${realAuthor(author).orEmpty()}").orEmpty()
+
+/**
+ * The query for what is in the box. Untouched (still the prefill, spacing aside), it sends
+ * the book's own title and author tags. Edited, the whole box is the title and no author
+ * is sent, since there is no telling which words the user meant as the author.
+ * Null when the box is blank.
+ */
+fun coverQueryFor(boxText: String, bookTitle: String, bookAuthor: String?): CoverQuery? {
+    val text = normalizedSearchText(boxText) ?: return null
+    val untouched = text == prefillSearchText(bookTitle, bookAuthor)
+    val title = if (untouched) normalizedSearchText(bookTitle) else null
+    return if (title != null) CoverQuery(text, title, realAuthor(bookAuthor)) else CoverQuery(text, text, null)
 }
 
 /** Square, or within 5 percent of it. */
@@ -85,9 +111,12 @@ fun mergeCoverSources(outcomes: List<SourceOutcome>, max: Int = MAX_COVER_RESULT
         .take(max)
 }
 
-/** Square covers first (they fit the player as they are), otherwise the order they came in. */
+/**
+ * Source order first (audiobookcovers.com title matches, then Open Library), then square
+ * covers within a source (they fit the player as they are), otherwise the order they came in.
+ */
 fun rankCoverResults(results: List<CoverResult>): List<CoverResult> =
-    results.sortedBy { if (isSquare(it.thumb.width, it.thumb.height)) 0 else 1 }
+    results.sortedWith(compareBy({ it.candidate.source.ordinal }, { if (isSquare(it.thumb.width, it.thumb.height)) 0 else 1 }))
 
 /**
  * Results when any came back. No matches only when a source really answered "nothing".

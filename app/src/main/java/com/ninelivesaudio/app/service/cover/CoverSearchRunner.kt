@@ -16,11 +16,12 @@ internal val COVER_THUMB_TIMEOUT = 6.seconds
 /**
  * One Search tap: every source in parallel, each under its own timeout, a failure or a
  * timeout dropping only that source. Then every thumbnail in parallel (needed to know
- * which covers are square), a failure dropping only that cover. Then square first.
+ * which covers are square), a failure dropping only that cover. Then source order, square first
+ * within each source. A source whose page changed shape drops out with one warning.
  * Cancelling the caller cancels every request.
  */
 internal suspend fun runCoverSearch(
-    query: String,
+    query: CoverQuery,
     sources: List<CoverSearchSource>,
     fetchThumbnail: suspend (CoverCandidate) -> CoverThumb?,
     sourceTimeout: Duration = COVER_SOURCE_TIMEOUT,
@@ -29,8 +30,14 @@ internal suspend fun runCoverSearch(
 ): CoverSearchOutcome = coroutineScope {
     val outcomes = sources.map { source ->
         async {
-            val found = guarded { withTimeoutOrNull(sourceTimeout) { source.search(query) } }
-            if (found == null) SourceOutcome.Failed(source.id) else SourceOutcome.Found(source.id, found)
+            try {
+                val found = guarded(rethrowUnparseable = true) { withTimeoutOrNull(sourceTimeout) { source.search(query) } }
+                if (found == null) SourceOutcome.Failed(source.id) else SourceOutcome.Found(source.id, found)
+            } catch (_: UnparseableCoverPageException) {
+                // One warning, no search text: the page changed and this source is out until a fix ships.
+                runCatching { android.util.Log.w("CoverSearch", "${source.id} answered a page this version cannot read, skipped") }
+                SourceOutcome.Unparseable(source.id)
+            }
         }
     }.awaitAll()
     val candidates = mergeCoverSources(outcomes, maxResults)
@@ -44,11 +51,17 @@ internal suspend fun runCoverSearch(
     CoverSearchOutcome(coverSearchPhase(outcomes, ranked), ranked)
 }
 
-/** Null on any failure, but a real cancellation of the caller still cancels. */
-private suspend fun <T> guarded(block: suspend () -> T?): T? = try {
+/**
+ * Null on any failure, but a real cancellation of the caller still cancels, and an
+ * unparseable page is passed on when asked so the caller can tell it from a failure.
+ */
+private suspend fun <T> guarded(rethrowUnparseable: Boolean = false, block: suspend () -> T?): T? = try {
     block()
 } catch (e: CancellationException) {
     currentCoroutineContext().ensureActive()
+    null
+} catch (e: UnparseableCoverPageException) {
+    if (rethrowUnparseable) throw e
     null
 } catch (_: Exception) {
     null

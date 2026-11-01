@@ -78,8 +78,8 @@ class OpenLibraryCoverSource private constructor(
 
     override val id = CoverSourceId.OPEN_LIBRARY
 
-    override suspend fun search(query: String): List<CoverCandidate> {
-        val body = client.getCapped(openLibrarySearchUrl(query).toString(), MAX_SEARCH_BODY_BYTES)
+    override suspend fun search(query: CoverQuery): List<CoverCandidate> {
+        val body = client.getCapped(openLibrarySearchUrl(query.text).toString(), MAX_SEARCH_BODY_BYTES)
         val candidates = parseOpenLibrarySearch(body.toString(Charsets.UTF_8))
             ?: throw java.io.IOException("not a search.json body")
         // Never log the search text: it is the user's book.

@@ -12,7 +12,7 @@ import com.ninelivesaudio.app.service.cover.CoverResult
 import com.ninelivesaudio.app.service.cover.CoverSaveResult
 import com.ninelivesaudio.app.service.cover.CoverSearchPhase
 import com.ninelivesaudio.app.service.cover.OpenLibraryCoverSource
-import com.ninelivesaudio.app.service.cover.normalizedSearchText
+import com.ninelivesaudio.app.service.cover.coverQueryFor
 import com.ninelivesaudio.app.service.cover.prefillSearchText
 import com.ninelivesaudio.app.service.cover.runCoverSearch
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -91,11 +91,11 @@ class CoverSearchViewModel @Inject constructor(
     fun search() {
         val state = _uiState.value
         if (state.saving) return
-        val text = normalizedSearchText(state.query) ?: return
+        val query = coverQueryFor(state.query, state.bookTitle, state.bookAuthor) ?: return
         searchJob?.cancel()
         _uiState.update { it.copy(phase = CoverSearchUiState.Phase.SEARCHING, results = emptyList(), notice = null) }
         searchJob = viewModelScope.launch {
-            val outcome = runCoverSearch(text, sources, downloader::thumbnail)
+            val outcome = runCoverSearch(query, sources, downloader::thumbnail)
             val phase = when (outcome.phase) {
                 CoverSearchPhase.RESULTS -> CoverSearchUiState.Phase.RESULTS
                 CoverSearchPhase.NO_MATCHES -> CoverSearchUiState.Phase.NO_MATCHES

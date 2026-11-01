@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.ui.copy.unhinged.catalog
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -10,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
 import com.ninelivesaudio.app.ui.animation.unhinged.motion.MotionTokens
@@ -98,26 +100,30 @@ fun WhisperHost(
  * Whisper Card — The visual container for whisper text
  */
 @Composable
-private fun WhisperCard(
+internal fun WhisperCard(
     text: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    textColor: Color = NineLivesTheme.colors.archiveTextFlavor,
+    borderColor: Color? = null,
 ) {
+    val shape = RoundedCornerShape(12.dp)
     Box(
         modifier = modifier
             .shadow(
                 elevation = 4.dp,
-                shape = RoundedCornerShape(12.dp)
+                shape = shape
             )
             .background(
                 color = NineLivesTheme.colors.archiveVoidElevated,
-                shape = RoundedCornerShape(12.dp)
+                shape = shape
             )
+            .let { if (borderColor != null) it.border(1.dp, borderColor, shape) else it }
             .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
-            color = NineLivesTheme.colors.archiveTextFlavor
+            color = textColor
         )
     }
 }

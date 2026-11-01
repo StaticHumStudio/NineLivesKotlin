@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -42,6 +43,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
+import com.ninelivesaudio.app.service.PlaybackErrorGate
+import com.ninelivesaudio.app.service.userMessage
 import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import com.ninelivesaudio.app.review.InAppReviewManager
@@ -51,6 +54,7 @@ import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import com.ninelivesaudio.app.ui.components.CosmicBackgroundGradient
 import com.ninelivesaudio.app.ui.components.MiniPlayer
+import com.ninelivesaudio.app.ui.components.PlaybackErrorHost
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.IdleWhisperTrigger
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperContext
@@ -109,6 +113,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var downloadManager: DownloadManager
 
+    /** Hosts the failed-Play message. Owned here so it outlives recomposition. */
+    private val snackbarHostState = SnackbarHostState()
+
     /** Elapsed-realtime of the last touch, read by the idle whisper. */
     private val lastInteractionAt = MutableStateFlow(0L)
 
@@ -139,6 +146,22 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 playbackManager.bookCompleted.collect {
                     inAppReviewManager.maybeRequestReview(this@MainActivity)
+                }
+            }
+        }
+
+        // A failed Play says why. The events flow has no replay, so a rotation
+        // never re-shows an old failure, and a failure that lands while the app
+        // is not on screen is dropped rather than shown later out of context.
+        // A cancelled load never emits, so a book switch stays silent.
+        lifecycleScope.launch {
+            val gate = PlaybackErrorGate(clock = SystemClock::elapsedRealtime)
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                playbackManager.events.collect { event ->
+                    val message = event.userMessage() ?: return@collect
+                    if (!gate.accept(message)) return@collect
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    launch { snackbarHostState.showSnackbar(message) }
                 }
             }
         }
@@ -278,11 +301,20 @@ class MainActivity : ComponentActivity() {
 
                                 // Content stack: NavHost + MiniPlayer overlay
                                 Column(modifier = Modifier.fillMaxSize()) {
-                                    NineLivesNavHost(
-                                        navController = navController,
-                                        startDestination = startDestination,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    // The error message sits at the bottom of the screen
+                                    // content, so it is always above the mini player
+                                    // and the navigation bar.
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        NineLivesNavHost(
+                                            navController = navController,
+                                            startDestination = startDestination,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        PlaybackErrorHost(
+                                            state = snackbarHostState,
+                                            modifier = Modifier.align(Alignment.BottomCenter),
+                                        )
+                                    }
                                     if (currentRoute != Routes.PLAYER && currentRoute != Routes.WELCOME) {
                                         MiniPlayer(
                                             playbackManager = playbackManager,

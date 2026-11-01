@@ -329,6 +329,9 @@ class DownloadManager @Inject constructor(
     private val _downloadRemoved = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val downloadRemoved: SharedFlow<String> = _downloadRemoved.asSharedFlow()
 
+    /** Marks a book while its download is being removed, so the player stays quiet about its files. */
+    val removalGuard = RemovalSuppression(clock = android.os.SystemClock::elapsedRealtime)
+
     // ─── Queue Operations ────────────────────────────────────────────────────
 
     /**
@@ -792,6 +795,15 @@ class DownloadManager @Inject constructor(
      * be proven this book's, so they stayed and the book stays downloaded.
      */
     suspend fun deleteDownload(audioBookId: String): Boolean = finishInOwnerScope(scope) {
+        removalGuard.begin(audioBookId)
+        try {
+            deleteDownloadMarked(audioBookId)
+        } finally {
+            removalGuard.end(audioBookId)
+        }
+    }
+
+    private suspend fun deleteDownloadMarked(audioBookId: String): Boolean {
         // Held through the file deletion like cancel, so no resume or drain
         // start lands on this book while its files are being judged.
         var removed = true
@@ -812,7 +824,7 @@ class DownloadManager @Inject constructor(
             enqueueDrain(replace = true)
         }
         if (removed) _downloadRemoved.tryEmit(audioBookId)
-        removed
+        return removed
     }
 
     private suspend fun deleteDownloadedFilesAndRows(audioBookId: String, downloadId: String?): Boolean {

@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.widget
 
+import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -141,5 +142,29 @@ class WidgetPlaybackTest {
 
     @Test fun `the handoff screen waits two seconds at most`() {
         assertTrue(WIDGET_HANDOFF_CAP <= 2.seconds)
+    }
+
+    @Test fun `a cold tap waits for the first server check before calling a streamed book unplayable`() = runBlocking {
+        // A process just started: the monitor still says OFFLINE until its first probe.
+        var status = ConnectivityMonitor.ConnectionStatus.OFFLINE
+        var settled = 0
+        val result = settledConnectionStatus(current = { status }) {
+            settled++
+            status = ConnectivityMonitor.ConnectionStatus.CONNECTED
+        }
+        assertEquals(ConnectivityMonitor.ConnectionStatus.CONNECTED, result)
+        assertEquals(1, settled)
+    }
+
+    @Test fun `a connected app plays without waiting on another check`() = runBlocking {
+        var settled = 0
+        val result = settledConnectionStatus(current = { ConnectivityMonitor.ConnectionStatus.CONNECTED }) { settled++ }
+        assertEquals(ConnectivityMonitor.ConnectionStatus.CONNECTED, result)
+        assertEquals(0, settled)
+    }
+
+    @Test fun `a server that is really down is still reported after the check`() = runBlocking {
+        val result = settledConnectionStatus(current = { ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE }) {}
+        assertEquals(ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE, result)
     }
 }

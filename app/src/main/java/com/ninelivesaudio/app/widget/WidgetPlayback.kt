@@ -112,6 +112,26 @@ internal suspend fun decideBinderTap(
     return decideUnlocked()
 }
 
+/**
+ * The connection status a widget tap judges a streamed book by. A process a
+ * widget tap just started still reads OFFLINE (the monitor's starting value)
+ * until its first server check, so anything short of connected runs [settle]
+ * (that check) once and reads again. Without this, a cold Play with no book
+ * retained called every streamed book unplayable and opened its page.
+ */
+internal suspend fun settledConnectionStatus(
+    current: () -> ConnectivityMonitor.ConnectionStatus,
+    settle: suspend () -> Unit,
+): ConnectivityMonitor.ConnectionStatus {
+    val now = current()
+    if (now == ConnectivityMonitor.ConnectionStatus.CONNECTED || now == ConnectivityMonitor.ConnectionStatus.SYNCING) return now
+    settle()
+    return current()
+}
+
+/** How long a widget tap waits for that first server check. */
+internal val WIDGET_SERVER_CHECK_WAIT: Duration = 8.seconds
+
 /** The longest the invisible handoff screen may sit over the home screen. */
 internal val WIDGET_HANDOFF_CAP: Duration = 2.seconds
 
@@ -158,7 +178,11 @@ class WidgetPlayback @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val effectiveSettings: EffectiveSettingsRepository,
 ) {
-    /** Book Detail's Play gates: not archived, source reachable, remote media not blocked. */
+    /**
+     * Book Detail's Play gates: not archived, source reachable, remote media
+     * not blocked. A streamed book that reads blocked gets one server check
+     * first (see [settledConnectionStatus]), since a cold process has not run one.
+     */
     internal suspend fun isPlayable(book: AudioBook): Boolean {
         val library = book.libraryId?.let { libraryRepository.getById(it) }
         val access = reconcileLocalBookAccess(
@@ -166,11 +190,17 @@ class WidgetPlayback @Inject constructor(
             localFolderAccess.accessibleLibraryIds(listOfNotNull(library)),
         )
         if (!canPlayBook(access.book.isArchived, access.isPlayable || access.book.isArchived)) return false
-        return remoteMediaAccessDecision(
+        fun decision(status: ConnectivityMonitor.ConnectionStatus) = remoteMediaAccessDecision(
             book = access.book,
             serverUrl = settingsManager.currentSettings.serverUrl,
-            connectionStatus = connectivityMonitor.connectionStatus.value,
-        ) !is RemoteMediaAccessDecision.Blocked
+            connectionStatus = status,
+        )
+        if (decision(connectivityMonitor.connectionStatus.value) !is RemoteMediaAccessDecision.Blocked) return true
+        val status = settledConnectionStatus(current = { connectivityMonitor.connectionStatus.value }) {
+            connectivityMonitor.refreshIsOnlineFromSystem()
+            withTimeoutOrNull(WIDGET_SERVER_CHECK_WAIT) { connectivityMonitor.checkServerReachable() }
+        }
+        return decision(status) !is RemoteMediaAccessDecision.Blocked
     }
 
     /**

@@ -268,7 +268,6 @@ class MainActivity : ComponentActivity() {
                     pendingWidgetRoute.value = null
                     if (!appSettings.onboardingComplete) return@LaunchedEffect
                     when (route) {
-                        WidgetRoute.Home -> navController.navigateToTab(Routes.HOME)
                         is WidgetRoute.Book -> navController.navigate(Routes.bookDetail(route.bookId)) {
                             launchSingleTop = true
                         }

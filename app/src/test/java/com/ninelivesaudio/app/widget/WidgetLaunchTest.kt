@@ -18,8 +18,11 @@ class WidgetLaunchTest {
         assertNull(parseWidgetLaunch(null, null))
     }
 
+    @Test fun `opening the app works like the launcher icon and leaves the screen alone`() {
+        assertNull(widgetRoute(WidgetLaunch.OpenApp))
+    }
+
     @Test fun `open launches map to app screens and play stays in the trampoline`() {
-        assertEquals(WidgetRoute.Home, widgetRoute(WidgetLaunch.OpenApp))
         assertEquals(WidgetRoute.Book("b1"), widgetRoute(WidgetLaunch.OpenBook("b1")))
         assertEquals(WidgetRoute.Unlock, widgetRoute(WidgetLaunch.OpenUnlock))
         assertNull(widgetRoute(WidgetLaunch.PlayBook("b1")))

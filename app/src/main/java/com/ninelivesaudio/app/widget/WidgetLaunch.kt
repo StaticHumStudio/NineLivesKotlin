@@ -46,14 +46,17 @@ internal fun parseWidgetLaunch(action: String?, bookId: String?): WidgetLaunch? 
 
 /** The screen `MainActivity` opens for a widget launch. */
 internal sealed interface WidgetRoute {
-    data object Home : WidgetRoute
     data class Book(val bookId: String) : WidgetRoute
     data object Unlock : WidgetRoute
 }
 
-/** Play never routes: the trampoline handles it and opens a page only on refusal. */
+/**
+ * Opening the app works like the launcher icon: the app comes forward where
+ * it was left (Home on a cold start), so it never routes. Play never routes
+ * either: the trampoline handles it and opens a page only on refusal.
+ */
 internal fun widgetRoute(launch: WidgetLaunch): WidgetRoute? = when (launch) {
-    WidgetLaunch.OpenApp -> WidgetRoute.Home
+    WidgetLaunch.OpenApp -> null
     is WidgetLaunch.OpenBook -> WidgetRoute.Book(launch.bookId)
     WidgetLaunch.OpenUnlock -> WidgetRoute.Unlock
     is WidgetLaunch.PlayBook -> null

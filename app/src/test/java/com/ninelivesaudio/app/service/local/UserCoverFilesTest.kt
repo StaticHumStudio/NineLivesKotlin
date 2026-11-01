@@ -104,4 +104,48 @@ class UserCoverFilesTest {
         assertNull(coverToCarryOnMove(old, own, dir))
         assertNull(coverToCarryOnMove(fileUriString(File(scanDir, "a.jpg")), null, dir))
     }
+
+    // A pick whose file is gone (a phone transfer that brought the row but not the file)
+
+    @Test fun `a pick whose file is missing counts as no pick, so the scan's art shows`() {
+        assertNull(keptUserCover(fileUriString(File(dir, "gone-1.jpg")), dir))
+    }
+
+    @Test fun `a pick whose file is there is kept`() {
+        val f = File(dir, "here-1.jpg").apply { writeBytes(byteArrayOf(1)) }
+        assertEquals(fileUriString(f), keptUserCover(fileUriString(f), dir))
+    }
+
+    @Test fun `anything that is not a pick is kept as it is`() {
+        assertNull(keptUserCover(null, dir))
+        val scanArt = fileUriString(File(scanDir, "x.jpg"))
+        assertEquals(scanArt, keptUserCover(scanArt, dir))
+    }
+
+    // The sweep after each scan
+
+    private val hour = 60 * 60 * 1000L
+    private val now = 10 * hour
+
+    private fun file(name: String, ageMs: Long) = File(dir, name).apply {
+        writeBytes(byteArrayOf(1))
+        setLastModified(now - ageMs)
+    }
+
+    @Test fun `files no row points at and older than an hour are swept, temp files included`() {
+        val kept = file("kept-1.jpg", 5 * hour)
+        val orphan = file("orphan-1.jpg", 2 * hour)
+        val oldTemp = file("pick-123.tmp", 2 * hour)
+        val sweep = userCoverFilesToSweep(dir, listOf(fileUriString(kept), null, "content://x"), now)
+        assertEquals(setOf(orphan.name, oldTemp.name), sweep.map { it.name }.toSet())
+    }
+
+    @Test fun `a fresh file is never swept, it may be a save in progress`() {
+        file("new-1.jpg", 10 * 60 * 1000L)
+        file("pick-9.tmp", 59 * 60 * 1000L)
+        assertTrue(userCoverFilesToSweep(dir, emptyList(), now).isEmpty())
+    }
+
+    @Test fun `no folder yet is nothing to sweep`() =
+        assertTrue(userCoverFilesToSweep(File(tempFolder.root, "missing"), emptyList(), now).isEmpty())
 }

@@ -6,6 +6,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -42,6 +44,9 @@ fun coverSearchHttpClient(appClient: OkHttpClient, userAgent: String): OkHttpCli
         .addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build())
         }
+        // Redirects are followed by hand in [getCapped], so every hop is checked.
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .callTimeout(8, TimeUnit.SECONDS)
@@ -83,10 +88,45 @@ private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont 
     })
 }
 
-/** GET [url] and return the whole body, or throw IOException on a non 2xx code or a body over [maxBytes]. */
+/** At most this many redirects per request. Open Library covers take 2 (to archive.org, then a node). */
+internal const val MAX_COVER_REDIRECTS = 3
+
+/**
+ * The only hosts a cover request may reach, on any hop: Open Library, the Internet
+ * Archive hosts its covers redirect to (archive.org, then an `ia*.us.archive.org` node),
+ * and audiobookcovers.com with its image host.
+ */
+internal fun isCoverServiceHost(host: String): Boolean {
+    val h = host.lowercase()
+    return h == "openlibrary.org" || h == "covers.openlibrary.org" ||
+        h == "archive.org" || h.endsWith(".archive.org") ||
+        h == "audiobookcovers.com" || h == "images.audiobookcovers.com"
+}
+
+private fun checkCoverUrl(url: HttpUrl) {
+    if (!url.isHttps || !isCoverServiceHost(url.host)) throw IOException("cover request off the cover hosts")
+}
+
+/**
+ * GET [url] and return the whole body, or throw IOException on a non 2xx code, a body
+ * over [maxBytes], a redirect off https or off the cover hosts, or too many redirects.
+ */
 internal suspend fun OkHttpClient.getCapped(url: String, maxBytes: Long): ByteArray {
-    val response = newCall(Request.Builder().url(url).get().build()).await()
-    return response.use {
+    var target = url.toHttpUrlOrNull() ?: throw IOException("bad url")
+    var hops = 0
+    while (true) {
+        checkCoverUrl(target)
+        val response = newCall(Request.Builder().url(target).get().build()).await()
+        if (!response.isRedirect) return response.readCapped(maxBytes)
+        val next = response.use { it.header("Location")?.let { loc -> target.resolve(loc) } }
+            ?: throw IOException("redirect without a location")
+        if (++hops > MAX_COVER_REDIRECTS) throw IOException("too many redirects")
+        target = next
+    }
+}
+
+private suspend fun Response.readCapped(maxBytes: Long): ByteArray {
+    return use {
         if (!it.isSuccessful) throw IOException("HTTP ${it.code}")
         val body = it.body ?: throw IOException("no body")
         runInterruptible(Dispatchers.IO) { readCapped(body.byteStream(), maxBytes) }

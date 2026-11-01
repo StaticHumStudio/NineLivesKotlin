@@ -92,3 +92,38 @@ internal fun coverToCarryOnMove(vanishedLocalCoverPath: String?, arrivedLocalCov
     } else {
         null
     }
+
+/**
+ * The pick to keep on a rescan. A pick whose file is gone (a phone transfer that brought
+ * the row but not the file) counts as no pick, so the scan's own art shows instead of a
+ * blank. Anything that is not a pick is returned as it is.
+ */
+internal fun keptUserCover(localCoverPath: String?, userCoversDir: File): String? {
+    if (!isUserPickedCover(localCoverPath, userCoversDir)) return localCoverPath
+    val file = runCatching { File(URI(localCoverPath!!).path) }.getOrNull() ?: return null
+    return if (file.isFile) localCoverPath else null
+}
+
+/** A file this young may be a save still in progress (written, row not updated yet). */
+internal const val USER_COVER_SWEEP_MIN_AGE_MS = 60 * 60 * 1000L
+
+/**
+ * Files in [userCoversDir] that no book row points at (left by a rolled back move, a save
+ * cancelled after the write, or a crash mid write, `pick-*.tmp` included), older than
+ * [minAgeMs]. [referencedPaths] is every LocalCoverPath in the database.
+ */
+internal fun userCoverFilesToSweep(
+    userCoversDir: File,
+    referencedPaths: List<String?>,
+    nowMs: Long,
+    minAgeMs: Long = USER_COVER_SWEEP_MIN_AGE_MS,
+): List<File> {
+    val files = userCoversDir.listFiles()?.filter { it.isFile } ?: return emptyList()
+    val referenced = referencedPaths
+        .filter { isUserPickedCover(it, userCoversDir) }
+        .mapNotNull { p -> runCatching { File(URI(p!!).path).absoluteFile.normalize() }.getOrNull() }
+        .toSet()
+    return files.filter { f ->
+        f.absoluteFile.normalize() !in referenced && nowMs - f.lastModified() > minAgeMs
+    }
+}

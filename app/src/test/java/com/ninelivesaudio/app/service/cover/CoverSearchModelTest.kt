@@ -114,4 +114,10 @@ class CoverSearchModelTest {
 
     @Test fun `matches whose every thumbnail failed read as unreachable`() =
         assertEquals(CoverSearchPhase.UNREACHABLE, coverSearchPhase(listOf(SourceOutcome.Found(CoverSourceId.OPEN_LIBRARY, listOf(cand("a")))), emptyList()))
+
+    @Test fun `covers that came back but whose thumbnails all failed read as unreachable, not no matches`() =
+        assertEquals(CoverSearchPhase.UNREACHABLE, coverSearchPhase(listOf(
+            SourceOutcome.Found(CoverSourceId.AUDIOBOOK_COVERS, emptyList()),
+            SourceOutcome.Found(CoverSourceId.OPEN_LIBRARY, listOf(cand("a"), cand("b"))),
+        ), emptyList()))
 }

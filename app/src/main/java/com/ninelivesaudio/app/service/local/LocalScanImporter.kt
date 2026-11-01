@@ -107,6 +107,7 @@ class LocalScanImporter @Inject constructor(
             existingIds = existingIds,
             seenIds = seenIds,
         )
+        audioBookRepository.sweepUserCovers()
 
         if (!scanResult.coverageComplete) return
 

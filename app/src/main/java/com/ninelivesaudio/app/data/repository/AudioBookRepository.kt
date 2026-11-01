@@ -33,6 +33,8 @@ import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
 import com.ninelivesaudio.app.service.local.sameLocalBook
 import com.ninelivesaudio.app.service.local.setAsideId
 import com.ninelivesaudio.app.service.local.USER_COVERS_DIR
+import com.ninelivesaudio.app.service.local.keptUserCover
+import com.ninelivesaudio.app.service.local.userCoverFilesToSweep
 import com.ninelivesaudio.app.service.local.copyUserCoverFile
 import com.ninelivesaudio.app.service.local.coverToCarryOnMove
 import com.ninelivesaudio.app.service.local.deleteUserCoverFile
@@ -606,7 +608,8 @@ class AudioBookRepository @Inject constructor(
                     // A scanned book never carries localCoverPath, so this line is
                     // what keeps a cover the user picked across rescans. Embedded
                     // or folder art only ever lands in coverPath.
-                    localCoverPath = book.localCoverPath ?: existing?.localCoverPath,
+                    // A pick whose file is missing (a phone transfer) drops so the art shows.
+                    localCoverPath = book.localCoverPath ?: keptUserCover(existing?.localCoverPath, userCoversDir),
                     currentTime = existing?.currentTimeSeconds?.seconds ?: book.currentTime,
                     progress = existing?.progress ?: book.progress,
                     isFinished = existing?.isFinished?.let { it == 1 } ?: book.isFinished,
@@ -767,6 +770,18 @@ class AudioBookRepository @Inject constructor(
     // ─── Covers the user picked (Find a cover) ───────────────────────────
 
     private val userCoversDir get() = java.io.File(context.filesDir, USER_COVERS_DIR)
+
+    /**
+     * Deletes files in user_covers that no row points at and that are over an hour old
+     * (orphans from a rolled back move, a cancelled save or a crash mid write). Runs after
+     * each local scan. Best effort: a failure here never fails the scan.
+     */
+    suspend fun sweepUserCovers(nowMs: Long = System.currentTimeMillis()) = withContext(Dispatchers.IO) {
+        runCatching {
+            userCoverFilesToSweep(userCoversDir, audioBookDao.getAllLocalCoverPaths(), nowMs).forEach { it.delete() }
+        }
+        Unit
+    }
 
     /** True when the book shows a cover the user picked rather than the scan's own art. */
     fun hasUserCover(book: AudioBook): Boolean = isUserPickedCover(book.localCoverPath, userCoversDir)

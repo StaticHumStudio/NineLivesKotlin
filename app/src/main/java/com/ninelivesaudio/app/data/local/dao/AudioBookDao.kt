@@ -214,6 +214,10 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET LocalCoverPath = :path WHERE Id = :id AND IsLocal = 1")
     suspend fun setUserCoverPath(id: String, path: String): Int
 
+    /** Every LocalCoverPath, for the sweep of user_covers files no row points at. */
+    @Query("SELECT LocalCoverPath FROM AudioBooks WHERE LocalCoverPath IS NOT NULL")
+    suspend fun getAllLocalCoverPaths(): List<String>
+
     /** Drop the user's pick, only while the row still holds [expected]. */
     @Query("UPDATE AudioBooks SET LocalCoverPath = NULL WHERE Id = :id AND IsLocal = 1 AND LocalCoverPath = :expected")
     suspend fun clearUserCoverPath(id: String, expected: String): Int

@@ -119,12 +119,14 @@ fun rankCoverResults(results: List<CoverResult>): List<CoverResult> =
     results.sortedWith(compareBy({ it.candidate.source.ordinal }, { if (isSquare(it.thumb.width, it.thumb.height)) 0 else 1 }))
 
 /**
- * Results when any came back. No matches only when a source really answered "nothing".
+ * Results when any came back. No matches only when every source that answered said "nothing".
  * Otherwise unreachable: every source failed, or every thumbnail did, and saying
  * "No covers found" then would be a lie.
  */
 fun coverSearchPhase(outcomes: List<SourceOutcome>, results: List<CoverResult>): CoverSearchPhase = when {
     results.isNotEmpty() -> CoverSearchPhase.RESULTS
-    outcomes.any { it is SourceOutcome.Found && it.candidates.isEmpty() } -> CoverSearchPhase.NO_MATCHES
+    outcomes.filterIsInstance<SourceOutcome.Found>().let { found ->
+        found.isNotEmpty() && found.all { it.candidates.isEmpty() }
+    } -> CoverSearchPhase.NO_MATCHES
     else -> CoverSearchPhase.UNREACHABLE
 }

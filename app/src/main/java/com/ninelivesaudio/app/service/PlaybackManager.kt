@@ -1634,7 +1634,7 @@ class PlaybackManager @Inject constructor(
                 LoadedTracks.SUPERSEDED -> return false
                 LoadedTracks.EMPTY -> {
                     Log.w(TAG, "loadAudioBook: no media items for '${effectiveBook.title}'")
-                    return failLoad(loadRequest, "Failed to load: no audio tracks for this book.")
+                    return failLoad(loadRequest, "This book has no audio to play.")
                 }
                 LoadedTracks.READY -> Unit
             }
@@ -1720,7 +1720,7 @@ class PlaybackManager @Inject constructor(
         } catch (e: Exception) {
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             Log.e(TAG, "loadAudioBook: FAILED: ${e.message}", e)
-            return failLoad(loadRequest, "Failed to load: ${e.message}")
+            return failLoad(loadRequest, loadFailureMessage(e))
         } finally {
             stagedLoad.clear(loadRequest)
         }
@@ -1762,11 +1762,11 @@ class PlaybackManager @Inject constructor(
      * ownership check, so a load whose page closed (its scope is cancelled
      * and the release below throws) does not stay LOADING.
      */
-    private suspend fun failLoad(loadRequest: Long, message: String): Boolean {
+    private suspend fun failLoad(loadRequest: Long, message: String?): Boolean {
         if (!playbackLoadOwner.isCurrent(loadRequest)) return false
         exoPlayer?.clearMediaItems()
         _playbackState.value = PlaybackState.STOPPED
-        _events.tryEmit(PlaybackEvent.Error(message))
+        if (message != null) _events.tryEmit(PlaybackEvent.Error(message))
         syncManager.setActivePlaybackItem(null) {
             playbackLoadOwner.isCurrent(loadRequest)
         }
@@ -2848,7 +2848,7 @@ class PlaybackManager @Inject constructor(
         override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "onPlayerError: ${error.errorCodeName} — ${error.message}", error)
             finishPlayback(PlaybackTermination.ERROR)
-            _events.tryEmit(PlaybackEvent.Error("Playback error: ${error.message}"))
+            _events.tryEmit(PlaybackEvent.Error(playerErrorMessage(error.errorCode)))
         }
     }
 

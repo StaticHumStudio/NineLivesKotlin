@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An empty CD sleeve: dark pocket, gilt edge, the faint ring of a missing disc. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <!-- archiveVoidElevated -->
+            <solid android:color="#FF251945" />
+            <!-- goldFilamentFaint -->
+            <stroke android:width="1dp" android:color="#FF3D3520" />
+            <corners android:radius="10dp" />
+        </shape>
+    </item>
+    <item android:width="56dp" android:height="56dp" android:gravity="center">
+        <shape android:shape="oval">
+            <!-- goldFilamentFaint -->
+            <stroke android:width="1dp" android:color="#FF3D3520" />
+        </shape>
+    </item>
+    <item android:width="14dp" android:height="14dp" android:gravity="center">
+        <shape android:shape="oval">
+            <stroke android:width="1dp" android:color="#FF3D3520" />
+        </shape>
+    </item>
+</layer-list>

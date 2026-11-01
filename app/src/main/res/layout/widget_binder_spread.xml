@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One spread: left sleeve, the hinge, right sleeve. Each sleeve is its own tap target. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/binder_spread"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal">
+
+    <FrameLayout
+        android:id="@+id/binder_left"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@drawable/widget_sleeve">
+
+        <ImageView
+            android:id="@+id/binder_left_cover"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop" />
+
+        <TextView
+            android:id="@+id/binder_left_title"
+            style="@style/NineLivesWidgetSleeveTitle"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <FrameLayout
+        android:layout_width="@dimen/widget_hinge_width"
+        android:layout_height="match_parent"
+        android:layout_marginHorizontal="@dimen/widget_hinge_gap"
+        android:background="@drawable/widget_hinge" />
+
+    <FrameLayout
+        android:id="@+id/binder_right"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@drawable/widget_sleeve">
+
+        <ImageView
+            android:id="@+id/binder_right_cover"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop" />
+
+        <TextView
+            android:id="@+id/binder_right_title"
+            style="@style/NineLivesWidgetSleeveTitle"
+            android:visibility="gone" />
+    </FrameLayout>
+</LinearLayout>

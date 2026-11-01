@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="widget_binder_padding">6dp</dimen>
+    <dimen name="widget_hinge_width">8dp</dimen>
+    <dimen name="widget_hinge_gap">3dp</dimen>
+    <dimen name="widget_eye_padding">4dp</dimen>
+</resources>

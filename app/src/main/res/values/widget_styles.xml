@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A book title shown in a sleeve when its cover has not arrived. -->
+    <style name="NineLivesWidgetSleeveTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:gravity">center</item>
+        <item name="android:padding">6dp</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:maxLines">4</item>
+        <item name="android:fontFamily">serif</item>
+        <item name="android:textSize">11sp</item>
+        <!-- vintageTextGold -->
+        <item name="android:textColor">#FFC4A96A</item>
+    </style>
+</resources>

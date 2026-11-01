@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="com.ninelivesaudio.app.widget.binder.BinderConfigActivity"
+    android:description="@string/widget_binder_description"
+    android:initialLayout="@layout/widget_binder_message"
+    android:minHeight="40dp"
+    android:minWidth="110dp"
+    android:previewImage="@drawable/widget_eye"
+    android:previewLayout="@layout/widget_binder_preview"
+    android:resizeMode="none"
+    android:targetCellHeight="1"
+    android:targetCellWidth="2"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable" />

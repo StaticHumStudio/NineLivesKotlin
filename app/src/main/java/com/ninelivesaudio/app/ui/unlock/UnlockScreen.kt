@@ -44,6 +44,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ninelivesaudio.app.ui.components.ArchiveScreenHeader
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
+import com.ninelivesaudio.app.widget.WidgetCopy
 
 /**
  * The purchase surface.
@@ -400,6 +401,7 @@ private val UNLOCK_BENEFITS = listOf(
     "The AMOLED and Candlelight themes",          // NOIR and BRIGHT are free
     "Series, author and genre grouping",          // every sort order is free
     "The Archive Shelf, and Dossier reports beyond 30 days",
+    WidgetCopy.UNLOCK_BENEFIT,                    // the Binder and Nine Lives widgets
 )
 
 /**

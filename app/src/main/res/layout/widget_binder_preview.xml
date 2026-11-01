@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widget picker preview: the eye, the hinge, and an empty sleeve waiting for a disc. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_frame"
+    android:padding="@dimen/widget_binder_padding">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@drawable/widget_sleeve">
+
+            <ImageView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:importantForAccessibility="no"
+                android:padding="@dimen/widget_eye_padding"
+                android:scaleType="fitCenter"
+                android:src="@drawable/widget_eye" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:layout_width="@dimen/widget_hinge_width"
+            android:layout_height="match_parent"
+            android:layout_marginHorizontal="@dimen/widget_hinge_gap"
+            android:background="@drawable/widget_hinge" />
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@drawable/widget_sleeve_empty" />
+    </LinearLayout>
+</FrameLayout>

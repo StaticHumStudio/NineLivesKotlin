@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
 /**
  * The Binder: a 2x1 home screen widget that flips through the library's
  * covers like an old CD binder. Updates come from the app's own events
- * through `WidgetRefresher`, and the 30 minute system update is a backstop
+ * through `WidgetRefresher`, and the hourly system update is a backstop
  * that relocks a widget after a trial ends with the app closed.
  */
 class BinderWidgetProvider : AppWidgetProvider() {

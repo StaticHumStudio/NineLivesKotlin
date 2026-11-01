@@ -3815,19 +3815,41 @@ class PlaybackManager @Inject constructor(
      * keeps the existing period/position when the underlying media (URI)
      * hasn't changed, only the metadata has. Must run on the Main thread.
      */
-    private fun republishArtwork(bookId: String, artworkBytes: ByteArray) {
+    private fun republishArtwork(bookId: String, artworkBytes: ByteArray?) {
         val player = exoPlayer ?: return
         val itemCount = player.mediaItemCount
         if (!shouldRepublishArtwork(_currentBook.value?.id, bookId, itemCount)) return
         val updatedItems = (0 until itemCount).map { index ->
             val item = player.getMediaItemAt(index)
+            // Null clears the old art (Use the original cover with no folder art).
             val updatedMetadata = item.mediaMetadata.buildUpon()
-                .setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                .setArtworkData(artworkBytes, if (artworkBytes == null) null else MediaMetadata.PICTURE_TYPE_FRONT_COVER)
                 .build()
             item.buildUpon().setMediaMetadata(updatedMetadata).build()
         }
         player.replaceMediaItems(0, itemCount, updatedItems)
         Log.d(TAG, "republishArtwork: applied late-arriving cover bookId=$bookId tracks=$itemCount")
+    }
+
+    /**
+     * A local book's cover changed (Find a cover, or Use the original cover). When it is
+     * the book in the player, the mini player, full player, notification, lock screen and
+     * Android Auto all show the new cover at once, with no restart and no jump in
+     * position. Only the cover fields of the held book change, so nothing else the player
+     * holds in memory is replaced by the row. A book that is only staged (still loading)
+     * is left alone: its load reads the row after the pick, or publishes the old cover
+     * once, which the next play fixes.
+     */
+    suspend fun onCoverChanged(bookId: String) {
+        if (_currentBook.value?.id != bookId) return
+        val fresh = withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) } ?: return
+        val current = _currentBook.value
+        // Another book may have taken the player while the row was read.
+        if (current?.id != bookId) return
+        val updated = current.copy(coverPath = fresh.coverPath, localCoverPath = fresh.localCoverPath)
+        _currentBook.value = updated
+        val bytes = withContext(Dispatchers.IO) { loadLocalArtworkBytes(updated) }
+        withContext(Dispatchers.Main) { republishArtwork(bookId, bytes) }
     }
 
     // ─── MediaSession / Playback Service Management ─────────────────────────

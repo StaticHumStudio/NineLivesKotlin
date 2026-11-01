@@ -17,6 +17,7 @@ import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
 import com.ninelivesaudio.app.entitlement.FreeTier
+import com.ninelivesaudio.app.service.cover.CoverPicker
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -122,6 +123,19 @@ internal fun shouldFetchDetailChapters(
 internal fun detailChapters(stored: List<Chapter>, fetched: List<Chapter>?): List<Chapter> =
     stored.ifEmpty { fetched.orEmpty() }.sortedBy { it.start }
 
+/** What the book page offers for its cover. */
+data class CoverActions(val showFindCover: Boolean, val showUseOriginal: Boolean)
+
+/**
+ * Find a cover is for local books (server books have Audiobookshelf's own cover tools)
+ * and free for everyone. Use the original cover shows only when there is a pick to undo.
+ */
+internal fun coverActions(isLocal: Boolean, hasUserCover: Boolean): CoverActions =
+    CoverActions(
+        showFindCover = isLocal,
+        showUseOriginal = isLocal && hasUserCover,
+    )
+
 /** Tracks resumes for one ViewModel lifetime, never across process recreation. */
 internal class BookDetailResumeTracker {
     private var hasResumed = false
@@ -141,6 +155,7 @@ class BookDetailViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val localFolderAccess: LocalFolderAccess,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val coverPicker: CoverPicker,
 ) : ViewModel() {
 
     private val bookId: String = savedStateHandle["bookId"] ?: ""
@@ -201,6 +216,7 @@ class BookDetailViewModel @Inject constructor(
         val isHistoryLoading: Boolean = false,
         val historyLoadStatus: HistoryLoadStatus = HistoryLoadStatus.NOT_LOADED,
         val historyMessage: String? = null,
+        val coverActions: CoverActions = CoverActions(false, false),
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -334,6 +350,7 @@ class BookDetailViewModel @Inject constructor(
                 chapters = detailChapters(book.chapters, serverChapters),
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
+                coverActions = coverActions(book.isLocal, audioBookRepository.hasUserCover(book)),
             )
         }
     }
@@ -594,6 +611,15 @@ class BookDetailViewModel @Inject constructor(
                 playbackManager.seekTo(session.currentTime)
                 onReady()
             }
+        }
+    }
+
+    /** Use the original cover: drop the user's pick and show the scan's art again. */
+    fun useOriginalCover() {
+        val id = _uiState.value.book?.id ?: return
+        viewModelScope.launch {
+            coverPicker.useOriginal(id)
+            loadBook()
         }
     }
 

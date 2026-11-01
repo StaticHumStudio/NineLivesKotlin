@@ -30,6 +30,7 @@ import com.ninelivesaudio.app.domain.util.toClockString
 import com.ninelivesaudio.app.domain.util.toHumanReadableString
 import com.ninelivesaudio.app.ui.bookdetail.BookDetailViewModel.DownloadButtonState
 import com.ninelivesaudio.app.ui.components.ContainmentFrame
+import com.ninelivesaudio.app.ui.coversearch.CoverCopy
 import com.ninelivesaudio.app.ui.components.FluorescentSquareProgress
 import com.ninelivesaudio.app.ui.theme.unhinged.*
 import com.ninelivesaudio.app.ui.theme.NineLivesTheme
@@ -50,6 +51,7 @@ fun BookDetailScreen(
     onNavigateToPlayer: () -> Unit = {},
     onNavigateToUnlock: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onFindCover: () -> Unit = {},
     viewModel: BookDetailViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -115,6 +117,8 @@ fun BookDetailScreen(
                         viewModel.jumpToSession(session, onReady = onNavigateToPlayer)
                     },
                     onDeleteForever = { viewModel.deleteForever(onDeleted = onNavigateBack) },
+                    onFindCover = onFindCover,
+                    onUseOriginalCover = { viewModel.useOriginalCover() },
                     modifier = Modifier.padding(innerPadding),
                 )
             }
@@ -133,6 +137,8 @@ private fun BookDetailContent(
     onDeleteForever: () -> Unit,
     onNavigateToUnlock: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onFindCover: () -> Unit,
+    onUseOriginalCover: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -387,6 +393,16 @@ private fun BookDetailContent(
                     }
                 }
 
+                // Find a cover (local books only, free for everyone). Nothing is
+                // sent from here: the cover screen searches only on its Search button.
+                if (uiState.coverActions.showFindCover) {
+                    CoverActionsBlock(
+                        actions = uiState.coverActions,
+                        onFindCover = onFindCover,
+                        onUseOriginalCover = onUseOriginalCover,
+                    )
+                }
+
                 // Archived: the source folder was unscanned, so the audio file is
                 // gone. Surface that and offer a permanent delete.
                 if (uiState.isArchived) {
@@ -627,6 +643,66 @@ private fun BookDetailContent(
             },
             containerColor = NineLivesTheme.colors.archiveVoidSurface,
         )
+    }
+}
+
+// ─── Cover actions ────────────────────────────────────────────────────────
+
+@Composable
+private fun CoverActionsBlock(
+    actions: CoverActions,
+    onFindCover: () -> Unit,
+    onUseOriginalCover: () -> Unit,
+) {
+    val colors = NineLivesTheme.colors
+    Column(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = onFindCover,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.goldFilament),
+            border = ButtonDefaults.outlinedButtonBorder(true).copy(
+                brush = androidx.compose.ui.graphics.SolidColor(colors.goldFilament.copy(alpha = 0.5f)),
+            ),
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(vertical = 14.dp),
+        ) {
+            Icon(
+                Icons.Outlined.ImageSearch,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = CoverCopy.FIND_A_COVER,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+            )
+        }
+        Text(
+            text = CoverCopy.PRIVACY_LINE,
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.archiveTextMuted,
+            modifier = Modifier.padding(top = 6.dp, start = 4.dp, end = 4.dp),
+        )
+        if (actions.showUseOriginal) {
+            TextButton(
+                onClick = onUseOriginalCover,
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Restore,
+                    contentDescription = null,
+                    tint = colors.archiveTextSecondary,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = CoverCopy.USE_ORIGINAL,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.archiveTextSecondary,
+                )
+            }
+        }
     }
 }
 

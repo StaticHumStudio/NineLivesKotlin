@@ -3,6 +3,11 @@ package com.ninelivesaudio.app.widget
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapShader
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Shader
 import android.net.Uri
 import android.util.Log
 import com.ninelivesaudio.app.domain.model.AudioBook
@@ -99,16 +104,37 @@ class WidgetCoverLoader @Inject constructor(
         }
     }
 
-    /** Center crops to a [px] square, so every sleeve carries exactly the budgeted bytes. */
+    /**
+     * Bakes a [px] square cover: the whole cover fitted inside it (never
+     * cropped), corners rounded like the sleeves, on the Binder's colours.
+     * RemoteViews cannot clip an image, so the rounding has to be in the pixels.
+     */
     private fun squareRgb565(bytes: ByteArray, px: Int): Bitmap? {
-        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
-        val src = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
-        val side = minOf(src.width, src.height)
-        val cropped = Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side)
-        val scaled = Bitmap.createScaledBitmap(cropped, px, px, true)
-        if (cropped !== src && cropped !== scaled) cropped.recycle()
-        if (src !== scaled) src.recycle()
-        return scaled
+        val src = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        val fit = fitInSquare(src.width, src.height, px)
+        val art = Bitmap.createBitmap(px, px, Bitmap.Config.RGB_565)
+        Canvas(art).apply {
+            drawColor(SLEEVE_COLOR)
+            drawBitmap(
+                src,
+                null,
+                RectF(fit.left.toFloat(), fit.top.toFloat(), (fit.left + fit.width).toFloat(), (fit.top + fit.height).toFloat()),
+                Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG),
+            )
+        }
+        src.recycle()
+        val out = Bitmap.createBitmap(px, px, Bitmap.Config.RGB_565)
+        val radius = coverCornerRadiusPx(px).toFloat()
+        Canvas(out).apply {
+            // Outside the rounded corners is the Binder's board.
+            drawColor(FRAME_COLOR)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                shader = BitmapShader(art, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            }
+            drawRoundRect(RectF(0f, 0f, px.toFloat(), px.toFloat()), radius, radius, paint)
+        }
+        art.recycle()
+        return out
     }
 
     /** Mirrors the Android Auto artwork fetch: local file or content first, else the server thumbnail. */
@@ -154,5 +180,11 @@ class WidgetCoverLoader @Inject constructor(
         const val MAX_DOWNLOAD_BYTES = 3L * 1024 * 1024
         const val MAX_EMBED_BYTES = 48 * 1024
         const val MIN_QUALITY = 50
+
+        /** archiveVoidSurface, the board under the sleeves (widget_frame.xml). */
+        const val FRAME_COLOR = 0xFF1A1135.toInt()
+
+        /** archiveVoidDeep, a filled sleeve (widget_sleeve.xml). */
+        const val SLEEVE_COLOR = 0xFF0A0520.toInt()
     }
 }

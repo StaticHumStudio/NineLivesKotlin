@@ -13,4 +13,14 @@
         <!-- vintageTextGold -->
         <item name="android:textColor">#FFC4A96A</item>
     </style>
+
+    <!-- The invisible square that sizes a sleeve (see widget_square.xml). -->
+    <style name="NineLivesWidgetSquare">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:adjustViewBounds">true</item>
+        <item name="android:importantForAccessibility">no</item>
+        <item name="android:scaleType">fitXY</item>
+        <item name="android:src">@drawable/widget_square</item>
+    </style>
 </resources>

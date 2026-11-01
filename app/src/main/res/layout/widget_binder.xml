@@ -24,16 +24,30 @@
         <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="@drawable/widget_sleeve">
+            android:layout_weight="1">
 
-            <ImageView
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:importantForAccessibility="no"
-                android:padding="@dimen/widget_eye_padding"
-                android:scaleType="fitCenter"
-                android:src="@drawable/widget_eye" />
+            <RelativeLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:background="@drawable/widget_sleeve">
+
+                <ImageView
+                    android:id="@+id/binder_stack_eye_square"
+                    style="@style/NineLivesWidgetSquare" />
+
+                <ImageView
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_stack_eye_square"
+                    android:layout_alignStart="@id/binder_stack_eye_square"
+                    android:layout_alignEnd="@id/binder_stack_eye_square"
+                    android:layout_alignTop="@id/binder_stack_eye_square"
+                    android:importantForAccessibility="no"
+                    android:padding="@dimen/widget_eye_padding"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/widget_eye" />
+            </RelativeLayout>
         </FrameLayout>
 
         <FrameLayout
@@ -45,7 +59,18 @@
         <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="@drawable/widget_sleeve_empty" />
+            android:layout_weight="1">
+
+            <RelativeLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/widget_sleeve_empty">
+
+                <ImageView
+                    android:id="@+id/binder_stack_empty_square"
+                    style="@style/NineLivesWidgetSquare" />
+            </RelativeLayout>
+        </FrameLayout>
     </LinearLayout>
 </FrameLayout>

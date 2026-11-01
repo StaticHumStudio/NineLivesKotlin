@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An invisible, very large square. An ImageView showing it with adjustViewBounds
+     and wrap_content comes out as the largest square its slot can hold, which is
+     how a sleeve stays square on any launcher (RemoteViews has no aspect ratio). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@android:color/transparent" />
+    <size android:width="2000dp" android:height="2000dp" />
+</shape>

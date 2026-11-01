@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The Binder with nothing to flip through: locked, signed out, or empty.
-     The eye on the left, one calm line on the right. Never a book or a cover. -->
+     The eye on the left, one calm line on the right. Never a book or a cover.
+     Both sleeves are squares hugging the hinge, like a spread (widget_binder_spread.xml). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"
@@ -17,16 +18,30 @@
         <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="@drawable/widget_sleeve">
+            android:layout_weight="1">
 
-            <ImageView
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:importantForAccessibility="no"
-                android:padding="@dimen/widget_eye_padding"
-                android:scaleType="fitCenter"
-                android:src="@drawable/widget_eye" />
+            <RelativeLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:background="@drawable/widget_sleeve">
+
+                <ImageView
+                    android:id="@+id/binder_message_eye_square"
+                    style="@style/NineLivesWidgetSquare" />
+
+                <ImageView
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_message_eye_square"
+                    android:layout_alignStart="@id/binder_message_eye_square"
+                    android:layout_alignEnd="@id/binder_message_eye_square"
+                    android:layout_alignTop="@id/binder_message_eye_square"
+                    android:importantForAccessibility="no"
+                    android:padding="@dimen/widget_eye_padding"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/widget_eye" />
+            </RelativeLayout>
         </FrameLayout>
 
         <FrameLayout
@@ -35,34 +50,53 @@
             android:layout_marginHorizontal="@dimen/widget_hinge_gap"
             android:background="@drawable/widget_hinge" />
 
-        <LinearLayout
+        <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:background="@drawable/widget_sleeve_plain"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:padding="6dp">
+            android:layout_weight="1">
 
-            <ImageView
-                android:id="@+id/binder_lock"
-                android:layout_width="18dp"
-                android:layout_height="18dp"
-                android:layout_marginBottom="4dp"
-                android:importantForAccessibility="no"
-                android:src="@drawable/widget_lock"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/binder_message"
+            <RelativeLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:fontFamily="sans-serif-medium"
-                android:gravity="center"
-                android:maxLines="4"
-                android:textColor="#FFE0E0E5"
-                android:textSize="11sp" />
-        </LinearLayout>
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/widget_sleeve_plain">
+
+                <ImageView
+                    android:id="@+id/binder_message_square"
+                    style="@style/NineLivesWidgetSquare" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_message_square"
+                    android:layout_alignStart="@id/binder_message_square"
+                    android:layout_alignEnd="@id/binder_message_square"
+                    android:layout_alignTop="@id/binder_message_square"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="6dp">
+
+                    <ImageView
+                        android:id="@+id/binder_lock"
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:layout_marginBottom="4dp"
+                        android:importantForAccessibility="no"
+                        android:src="@drawable/widget_lock"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/binder_message"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:maxLines="4"
+                        android:textColor="#FFE0E0E5"
+                        android:textSize="11sp" />
+                </LinearLayout>
+            </RelativeLayout>
+        </FrameLayout>
     </LinearLayout>
 </FrameLayout>

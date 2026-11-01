@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One spread: left sleeve, the hinge, right sleeve. Each sleeve is its own tap target.
+<!-- One page of the stack: left sleeve, a gap, right sleeve. Each sleeve is its own tap
+     target. The hinge is not on the page: one fixed hinge sits over the stack in
+     widget_binder.xml, in the gap every page leaves for it.
      Each sleeve is the largest square its half can hold (see widget_square.xml), and the
-     two squares hug the hinge, so the hinge stays centred and covers are never cropped.
-     The board colour behind them is opaque, so the spreads stacked behind this one only
-     peek out above it (as StackView draws them) and never show through the gaps.
+     two squares sit against the gap, so covers are never cropped. The page is opaque and
+     inset (widget_page.xml), so pages fanned out behind it show only their gilt edge.
      StackView measures a page with AT_MOST, so the first child (a huge image with no
      adjustViewBounds) makes the page take all the room StackView offers. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/binder_spread"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FF1A1135">
+    android:background="@drawable/widget_page"
+    android:padding="@dimen/widget_page_padding">
 
     <ImageView
         android:layout_width="match_parent"
@@ -63,10 +65,8 @@
         </FrameLayout>
 
         <FrameLayout
-            android:layout_width="@dimen/widget_hinge_width"
-            android:layout_height="match_parent"
-            android:layout_marginHorizontal="@dimen/widget_hinge_gap"
-            android:background="@drawable/widget_hinge" />
+            android:layout_width="@dimen/widget_hinge_slot"
+            android:layout_height="match_parent" />
 
         <FrameLayout
             android:layout_width="0dp"

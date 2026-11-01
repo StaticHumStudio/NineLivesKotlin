@@ -80,8 +80,12 @@ internal fun togglePlan(
     bookLoading: Boolean,
     shownBookId: String?,
     shownPlayable: Boolean,
+    shownInActiveLibrary: Boolean = true,
 ): WidgetPlayPlan = when {
     !isUnlocked -> WidgetPlayPlan.OPEN_UNLOCK
+    // A stale button (widget not yet redrawn after a library or mode switch)
+    // never touches the new library's playback.
+    !shownInActiveLibrary -> WidgetPlayPlan.IGNORE
     isLoading(state, bookLoading) -> WidgetPlayPlan.IGNORE
     isAudible(state) -> WidgetPlayPlan.PAUSE
     currentBookId != null -> WidgetPlayPlan.RESUME_CURRENT
@@ -355,6 +359,7 @@ class WidgetPlayback @Inject constructor(
             bookLoading = playbackManager.loadingBook.value != null,
             shownBookId = shown?.id,
             shownPlayable = shown != null && isPlayable(shown),
+            shownInActiveLibrary = shown != null,
         )
         launchAct(plan, shown, act)
         plan

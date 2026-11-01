@@ -48,6 +48,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Widget Play taps land here and decide without showing a screen. -->
+        <activity
+            android:name=".widget.WidgetActionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NineLivesAudio.WidgetTrampoline" />
+
         <!-- Media3 Playback Service for background audio + Android Auto browsing -->
         <service
             android:name=".service.PlaybackService"

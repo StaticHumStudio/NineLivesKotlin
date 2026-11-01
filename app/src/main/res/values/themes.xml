@@ -5,4 +5,10 @@
         <!-- Window background for splash/startup -->
         <item name="android:windowBackground">@color/void_deep</item>
     </style>
+
+    <!-- Invisible trampoline for widget Play taps (WidgetActionActivity). -->
+    <style name="Theme.NineLivesAudio.WidgetTrampoline" parent="android:Theme.Translucent.NoTitleBar">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoDisplay">false</item>
+    </style>
 </resources>

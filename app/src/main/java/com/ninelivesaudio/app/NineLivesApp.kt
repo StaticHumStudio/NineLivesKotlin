@@ -33,6 +33,7 @@ import org.acra.config.dialog
 import org.acra.config.mailSender
 import org.acra.data.StringFormat
 import org.acra.ktx.initAcra
+import com.ninelivesaudio.app.widget.WidgetRefresher
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -69,6 +70,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
     // dynamic base URL, so cover requests authenticate like every other call.
     @Inject
     lateinit var okHttpClient: OkHttpClient
+
+    @Inject
+    lateinit var widgetRefresher: WidgetRefresher
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -189,6 +193,8 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             connectivityMonitor.startMonitoring()
             playbackManager.restoreCurrentItem()
             syncManager.start()
+            // Widgets redraw on the app's own events from here on.
+            widgetRefresher.start(appScope)
         }
 
         // Re-resolve the download slot whenever entitlement is or becomes free.

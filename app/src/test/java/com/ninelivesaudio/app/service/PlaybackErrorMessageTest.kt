@@ -114,4 +114,29 @@ class PlaybackErrorMessageTest {
         now = 10_000
         assertTrue(gate.accept("B"))
     }
+
+    @Test
+    fun `a restored session stays quiet until the user presses play`() {
+        val quiet = RestoreQuiet()
+        assertTrue(quiet.reports())
+        quiet.enterLoad(reportErrors = false)
+        assertFalse(quiet.reports())
+        quiet.userPlay()
+        assertTrue(quiet.reports())
+    }
+
+    @Test
+    fun `a load the user started ends the quiet`() {
+        val quiet = RestoreQuiet()
+        quiet.enterLoad(reportErrors = false)
+        quiet.enterLoad(reportErrors = true)
+        assertTrue(quiet.reports())
+    }
+
+    @Test
+    fun `removal only silences playback from the removed local files`() {
+        assertTrue(removalSilencesError(guardSuppresses = true, playingLocalFiles = true))
+        assertFalse(removalSilencesError(guardSuppresses = true, playingLocalFiles = false))
+        assertFalse(removalSilencesError(guardSuppresses = false, playingLocalFiles = true))
+    }
 }

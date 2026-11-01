@@ -1257,6 +1257,7 @@ class PlaybackManager @Inject constructor(
     val isLocalFile: StateFlow<Boolean> = _isLocalFile.asStateFlow()
 
     // Events
+    private val restoreQuiet = RestoreQuiet()
     private val _events = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<PlaybackEvent> = _events.asSharedFlow()
 
@@ -1392,6 +1393,7 @@ class PlaybackManager @Inject constructor(
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBookOwned must be called from the Main thread"
         }
+        restoreQuiet.enterLoad(reportErrors)
         if (!book.isLocal && book.isDownloaded && !book.localPath.isNullOrEmpty()) {
             playbackLoadOwner.trackLoad(loadRequest, book.id)
         }
@@ -2154,6 +2156,7 @@ class PlaybackManager @Inject constructor(
     // ─── Playback Controls ────────────────────────────────────────────────
 
     fun play() {
+        restoreQuiet.userPlay()
         val retained = _currentBook.value
         when (
             playAction(
@@ -2853,7 +2856,12 @@ class PlaybackManager @Inject constructor(
             val book = _currentBook.value
             // The user just removed this book's download, so the player losing
             // its file is expected, not a failure to report.
-            if (book != null && downloadManagerLazy.get().removalGuard.suppresses(book.id)) return
+            if (!restoreQuiet.reports()) return
+            if (book != null && removalSilencesError(
+                    guardSuppresses = downloadManagerLazy.get().removalGuard.suppresses(book.id),
+                    playingLocalFiles = _isLocalFile.value,
+                )
+            ) return
             val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
             _events.tryEmit(PlaybackEvent.Error(playerErrorMessage(error.errorCode, status, book?.isLocal == true)))
         }

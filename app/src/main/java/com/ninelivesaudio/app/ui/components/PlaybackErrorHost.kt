@@ -6,6 +6,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.ninelivesaudio.app.ui.theme.NineLivesTheme
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperCard
 
 /**
@@ -19,5 +20,9 @@ fun PlaybackErrorHost(state: SnackbarHostState, modifier: Modifier = Modifier) {
     SnackbarHost(
         hostState = state,
         modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-    ) { data -> WhisperCard(text = data.visuals.message) }
+    ) { data -> WhisperCard(
+            text = data.visuals.message,
+            textColor = NineLivesTheme.colors.archiveTextPrimary,
+            borderColor = NineLivesTheme.colors.archiveError,
+        ) }
 }

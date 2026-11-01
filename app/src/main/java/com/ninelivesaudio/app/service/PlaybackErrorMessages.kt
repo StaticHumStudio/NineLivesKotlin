@@ -100,3 +100,22 @@ class PlaybackErrorGate(
         return true
     }
 }
+
+/**
+ * A session restored at app start is quiet end to end: its load, and the
+ * player failure that can follow while it prepares, say nothing until the user
+ * presses Play or starts a load themselves.
+ */
+class RestoreQuiet {
+    private val quiet = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun enterLoad(reportErrors: Boolean) = quiet.set(!reportErrors)
+
+    fun userPlay() = quiet.set(false)
+
+    fun reports(): Boolean = !quiet.get()
+}
+
+/** Removing a download only explains an error from the removed local files, never from streaming. */
+fun removalSilencesError(guardSuppresses: Boolean, playingLocalFiles: Boolean): Boolean =
+    guardSuppresses && playingLocalFiles

@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.widget
 
+import android.content.Context
 import android.util.Log
 import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
@@ -19,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -26,6 +28,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /** What a widget play tap turns into. */
 internal enum class WidgetPlayPlan { IGNORE, PAUSE, RESUME_CURRENT, LOAD_BOOK, OPEN_BOOK_PAGE, OPEN_UNLOCK }
@@ -75,6 +78,65 @@ internal fun togglePlan(
     else -> WidgetPlayPlan.LOAD_BOOK
 }
 
+/**
+ * A Binder cover tap set to Open its page. Runs the same checks Play runs: a
+ * locked widget goes to Unlock, and a tap carrying a book from another mode,
+ * server or library (a widget not yet redrawn after a switch) is ignored.
+ */
+internal fun binderOpenPlan(isUnlocked: Boolean, inActiveLibrary: Boolean): WidgetPlayPlan = when {
+    !isUnlocked -> WidgetPlayPlan.OPEN_UNLOCK
+    !inActiveLibrary -> WidgetPlayPlan.IGNORE
+    else -> WidgetPlayPlan.OPEN_BOOK_PAGE
+}
+
+/** The screen a plan opens for the tapped book. Only a refusal or an Open opens one. */
+internal fun refusalLaunch(plan: WidgetPlayPlan, bookId: String): WidgetLaunch? = when (plan) {
+    WidgetPlayPlan.OPEN_BOOK_PAGE -> WidgetLaunch.OpenBook(bookId)
+    WidgetPlayPlan.OPEN_UNLOCK -> WidgetLaunch.OpenUnlock
+    else -> null
+}
+
+/**
+ * The lock is read first, from entitlement state that is ready the moment the
+ * process starts, so a locked tap never waits on anything. Only an unlocked
+ * tap waits for [awaitReady] (settings, or the startup restore) before
+ * [decideUnlocked] reads the book.
+ */
+internal suspend fun decideBinderTap(
+    isUnlocked: () -> Boolean,
+    awaitReady: suspend () -> Unit,
+    decideUnlocked: suspend () -> WidgetPlayPlan,
+): WidgetPlayPlan {
+    if (!isUnlocked()) return WidgetPlayPlan.OPEN_UNLOCK
+    awaitReady()
+    return decideUnlocked()
+}
+
+/** The longest the invisible handoff screen may sit over the home screen. */
+internal val WIDGET_HANDOFF_CAP: Duration = 2.seconds
+
+/**
+ * The handoff screen's wait. A plan decided within [cap] goes to [onPlan]
+ * while the screen is still up (so a refusal can open a page). A slower one
+ * (a cold start with a slow restore) closes the screen at [cap] and goes to
+ * [onLatePlan] still running. [finish] always runs, and closing the screen
+ * never cancels [decision], so a play carries on in the background.
+ */
+internal suspend fun handOff(
+    decision: Deferred<WidgetPlayPlan>,
+    cap: Duration,
+    onPlan: suspend (WidgetPlayPlan) -> Unit,
+    onLatePlan: (Deferred<WidgetPlayPlan>) -> Unit,
+    finish: () -> Unit,
+) {
+    try {
+        val plan = withTimeoutOrNull(cap) { decision.await() }
+        if (plan != null) onPlan(plan) else onLatePlan(decision)
+    } finally {
+        finish()
+    }
+}
+
 /** Waits for [gate] for at most [timeout], then runs [block] either way. */
 internal suspend fun awaitThen(gate: Deferred<Unit>, timeout: Duration, block: suspend () -> Unit) {
     withTimeoutOrNull(timeout) { gate.await() }
@@ -120,34 +182,65 @@ class WidgetPlayback @Inject constructor(
      */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    internal suspend fun playFromBinder(bookId: String): WidgetPlayPlan =
-        scope.async { playFromBinderOwned(bookId) }.await()
+    /**
+     * Starts a Binder tap's decision on this class's scope and hands it back
+     * at once, so the handoff screen can stop waiting without stopping it.
+     */
+    internal fun binderTap(launch: WidgetLaunch.PlayBook): Deferred<WidgetPlayPlan> =
+        scope.async { playFromBinderOwned(launch.bookId) }
+
+    internal fun binderTap(launch: WidgetLaunch.OpenBook): Deferred<WidgetPlayPlan> =
+        scope.async { openFromBinderOwned(launch.bookId) }
+
+    /**
+     * A refusal or Open decided after the handoff screen closed. Opens its
+     * screen from the app. The tap just happened, so Android normally allows
+     * it. If it does not, the home screen already has its touch back and the
+     * next tap acts at once.
+     */
+    internal fun openWhenDecided(context: Context, bookId: String, decision: Deferred<WidgetPlayPlan>) {
+        val app = context.applicationContext
+        scope.launch {
+            val launch = refusalLaunch(decision.await(), bookId) ?: return@launch
+            runCatching { app.startActivity(widgetMainIntent(app, launch)) }
+                .onFailure { Log.w(TAG, "late open refused: ${it.message}") }
+        }
+    }
 
     internal suspend fun toggle(shownBookId: String?): WidgetPlayPlan =
         scope.async { toggleOwned(shownBookId) }.await()
 
-    private suspend fun playFromBinderOwned(bookId: String): WidgetPlayPlan {
-        playbackManager.awaitStartupRestore()
-        val unlocked = effectiveSettings.isUnlockedNow
+    /** The tapped book, only if it belongs to the library the app shows now. */
+    private suspend fun activeBook(bookId: String): AudioBook? =
+        withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) }
+            ?.takeIf { it.isInActiveLibrary(settingsManager.currentSettings) }
+
+    private suspend fun playFromBinderOwned(bookId: String): WidgetPlayPlan = decideBinderTap(
+        isUnlocked = { effectiveSettings.isUnlockedNow },
+        awaitReady = { playbackManager.awaitStartupRestore() },
+    ) {
         // A tap from a widget not yet redrawn after a mode or account switch
         // carries a book from the old library. It never plays or opens.
-        val book = if (unlocked) {
-            withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) }
-                ?.takeIf { it.isInActiveLibrary(settingsManager.currentSettings) }
-                ?: return WidgetPlayPlan.IGNORE
-        } else {
-            null
-        }
+        val book = activeBook(bookId) ?: return@decideBinderTap WidgetPlayPlan.IGNORE
         val plan = binderPlayPlan(
-            isUnlocked = unlocked,
+            isUnlocked = true,
             bookId = bookId,
             currentBookId = playbackManager.currentBook.value?.id,
             state = playbackManager.playbackState.value,
             bookLoading = playbackManager.loadingBook.value != null,
-            playable = book != null && isPlayable(book),
+            playable = isPlayable(book),
         )
         launchAct(plan, book)
-        return plan
+        plan
+    }
+
+    private suspend fun openFromBinderOwned(bookId: String): WidgetPlayPlan = decideBinderTap(
+        isUnlocked = { effectiveSettings.isUnlockedNow },
+        // The active library is a setting, so a cold tap waits for settings
+        // (not the playback restore, which Open does not need).
+        awaitReady = { settingsManager.isLoaded.first { it } },
+    ) {
+        binderOpenPlan(isUnlocked = true, inActiveLibrary = activeBook(bookId) != null)
     }
 
     private suspend fun toggleOwned(shownBookId: String?): WidgetPlayPlan {

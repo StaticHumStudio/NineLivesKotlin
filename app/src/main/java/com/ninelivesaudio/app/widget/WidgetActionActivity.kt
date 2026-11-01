@@ -20,11 +20,14 @@ import kotlin.time.Duration.Companion.seconds
 internal const val TRAMPOLINE_HOLDS_UNTIL_PLAYING = false
 
 /**
- * An invisible activity a widget tap lands on. Open taps go straight to
- * `MainActivity`. Play taps decide here, through [WidgetPlayback], and only
- * open a screen when Play is refused (locked, or the book cannot play now).
- * An activity rather than a broadcast, because a foreground service start is
- * allowed from an activity a user just tapped.
+ * An invisible activity a widget tap lands on. Open app taps go straight to
+ * `MainActivity`. Play and Open its page taps decide here, through
+ * [WidgetPlayback], with the same lock and active library checks, and only
+ * open a screen for an Open or a refusal (locked, or the book cannot play
+ * now). It never sits over the home screen longer than [WIDGET_HANDOFF_CAP]:
+ * a slower decision carries on in [WidgetPlayback]'s own scope. An activity
+ * rather than a broadcast, because a foreground service start is allowed
+ * from an activity a user just tapped.
  */
 @AndroidEntryPoint
 class WidgetActionActivity : ComponentActivity() {
@@ -36,32 +39,35 @@ class WidgetActionActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val launch = intent.widgetLaunchOrNull()
-        if (launch == null) {
-            finish()
-            return
-        }
-        if (launch !is WidgetLaunch.PlayBook) {
-            startActivity(widgetMainIntent(this, launch))
-            finish()
-            return
+        val (bookId, decision) = when (launch) {
+            is WidgetLaunch.PlayBook -> launch.bookId to widgetPlayback.binderTap(launch)
+            is WidgetLaunch.OpenBook -> launch.bookId to widgetPlayback.binderTap(launch)
+            null -> {
+                finish()
+                return
+            }
+            else -> {
+                startActivity(widgetMainIntent(this, launch))
+                finish()
+                return
+            }
         }
         lifecycleScope.launch {
-            try {
-                when (widgetPlayback.playFromBinder(launch.bookId)) {
-                    WidgetPlayPlan.OPEN_BOOK_PAGE ->
-                        startActivity(widgetMainIntent(this@WidgetActionActivity, WidgetLaunch.OpenBook(launch.bookId)))
-                    WidgetPlayPlan.OPEN_UNLOCK ->
-                        startActivity(widgetMainIntent(this@WidgetActionActivity, WidgetLaunch.OpenUnlock))
-                    WidgetPlayPlan.LOAD_BOOK, WidgetPlayPlan.RESUME_CURRENT -> if (TRAMPOLINE_HOLDS_UNTIL_PLAYING) {
+            handOff(
+                decision = decision,
+                cap = WIDGET_HANDOFF_CAP,
+                onPlan = { plan ->
+                    refusalLaunch(plan, bookId)?.let { startActivity(widgetMainIntent(this@WidgetActionActivity, it)) }
+                    val loading = plan == WidgetPlayPlan.LOAD_BOOK || plan == WidgetPlayPlan.RESUME_CURRENT
+                    if (TRAMPOLINE_HOLDS_UNTIL_PLAYING && loading) {
                         withTimeoutOrNull(8.seconds) {
                             playbackManager.playbackState.first { it != PlaybackState.LOADING }
                         }
                     }
-                    else -> Unit
-                }
-            } finally {
-                finish()
-            }
+                },
+                onLatePlan = { late -> widgetPlayback.openWhenDecided(this@WidgetActionActivity, bookId, late) },
+                finish = ::finish,
+            )
         }
     }
 }

@@ -41,10 +41,10 @@ internal class WidgetTap(val plan: Deferred<WidgetPlayPlan>, val act: Deferred<U
 /** What a widget play tap turns into. */
 internal enum class WidgetPlayPlan { IGNORE, PAUSE, RESUME_CURRENT, LOAD_BOOK, OPEN_BOOK_PAGE, OPEN_UNLOCK }
 
-private fun isLoading(state: PlaybackState, bookLoading: Boolean) =
+internal fun isLoading(state: PlaybackState, bookLoading: Boolean) =
     bookLoading || state == PlaybackState.LOADING
 
-private fun isAudible(state: PlaybackState) =
+internal fun isAudible(state: PlaybackState) =
     state == PlaybackState.PLAYING || state == PlaybackState.BUFFERING
 
 /**
@@ -81,6 +81,22 @@ internal fun togglePlan(
     shownBookId: String?,
     shownPlayable: Boolean,
     shownInActiveLibrary: Boolean = true,
+): WidgetPlayPlan = togglePlanLazy(
+    isUnlocked, currentBookId, state, bookLoading, shownBookId, shownInActiveLibrary,
+) { shownPlayable }
+
+/**
+ * Same decision as [togglePlan], but playability is only asked for when the
+ * tap would load a book. Pausing never waits on a server probe.
+ */
+internal inline fun togglePlanLazy(
+    isUnlocked: Boolean,
+    currentBookId: String?,
+    state: PlaybackState,
+    bookLoading: Boolean,
+    shownBookId: String?,
+    shownInActiveLibrary: Boolean = true,
+    shownPlayable: () -> Boolean,
 ): WidgetPlayPlan = when {
     !isUnlocked -> WidgetPlayPlan.OPEN_UNLOCK
     // A stale button (widget not yet redrawn after a library or mode switch)
@@ -90,7 +106,7 @@ internal fun togglePlan(
     isAudible(state) -> WidgetPlayPlan.PAUSE
     currentBookId != null -> WidgetPlayPlan.RESUME_CURRENT
     shownBookId == null -> WidgetPlayPlan.IGNORE
-    !shownPlayable -> WidgetPlayPlan.OPEN_BOOK_PAGE
+    !shownPlayable() -> WidgetPlayPlan.OPEN_BOOK_PAGE
     else -> WidgetPlayPlan.LOAD_BOOK
 }
 
@@ -352,14 +368,14 @@ class WidgetPlayback @Inject constructor(
         // A tap from a widget not yet redrawn after a mode or account switch
         // carries a book from the old library. It never plays or opens.
         val shown = activeBook(shownBookId)
-        val plan = togglePlan(
+        val plan = togglePlanLazy(
             isUnlocked = true,
             currentBookId = playbackManager.currentBook.value?.id,
             state = playbackManager.playbackState.value,
             bookLoading = playbackManager.loadingBook.value != null,
             shownBookId = shown?.id,
-            shownPlayable = shown != null && isPlayable(shown),
             shownInActiveLibrary = shown != null,
+            shownPlayable = { shown != null && isPlayable(shown) },
         )
         launchAct(plan, shown, act)
         plan

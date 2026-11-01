@@ -53,6 +53,18 @@ class WidgetPlaybackTest {
         assertEquals(WidgetPlayPlan.PAUSE, togglePlan(true, "b1", PlaybackState.PLAYING, false, shownBookId = "b1", shownPlayable = true, shownInActiveLibrary = true))
     }
 
+    @Test fun `a pause tap never runs the playability probe`() = runBlocking {
+        var probed = 0
+        val probe: suspend () -> Boolean = { probed++; awaitCancellation() }
+        assertEquals(WidgetPlayPlan.PAUSE, togglePlanLazy(true, "b1", PlaybackState.PLAYING, false, "b1", true) { probe() })
+        assertEquals(WidgetPlayPlan.PAUSE, togglePlanLazy(true, "b1", PlaybackState.BUFFERING, false, "b1", true) { probe() })
+        assertEquals(WidgetPlayPlan.IGNORE, togglePlanLazy(true, "new", PlaybackState.PLAYING, false, "old", false) { probe() })
+        assertEquals(0, probed)
+        var loadProbed = 0
+        assertEquals(WidgetPlayPlan.LOAD_BOOK, togglePlanLazy(true, null, PlaybackState.STOPPED, false, "b3", true) { loadProbed++; true })
+        assertEquals(1, loadProbed)
+    }
+
     @Test fun `with nothing retained play loads the book the widget shows`() {
         assertEquals(WidgetPlayPlan.LOAD_BOOK, togglePlan(true, null, PlaybackState.STOPPED, false, shownBookId = "b3", shownPlayable = true))
         // Like a Binder cover: a book that cannot play right now opens its page, which says why.

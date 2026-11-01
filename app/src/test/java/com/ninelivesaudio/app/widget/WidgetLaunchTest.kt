@@ -7,13 +7,14 @@ import org.junit.Test
 class WidgetLaunchTest {
 
     @Test fun `every launch survives the intent extras`() {
-        for (l in listOf(WidgetLaunch.OpenApp, WidgetLaunch.OpenBook("b1"), WidgetLaunch.PlayBook("b1"), WidgetLaunch.OpenUnlock))
+        for (l in listOf(WidgetLaunch.OpenApp, WidgetLaunch.OpenBook("b1"), WidgetLaunch.PlayBook("b1"), WidgetLaunch.OpenUnlock, WidgetLaunch.TogglePlay("b1")))
             assertEquals(l, parseWidgetLaunch(l.actionName(), l.bookIdOrNull))
     }
 
     @Test fun `a book launch without a book is no launch`() {
         assertNull(parseWidgetLaunch("open_book", null))
         assertNull(parseWidgetLaunch("play_book", " "))
+        assertNull(parseWidgetLaunch("toggle_play", null))
         assertNull(parseWidgetLaunch("something_else", "b1"))
         assertNull(parseWidgetLaunch(null, null))
     }
@@ -26,5 +27,6 @@ class WidgetLaunchTest {
         assertEquals(WidgetRoute.Book("b1"), widgetRoute(WidgetLaunch.OpenBook("b1")))
         assertEquals(WidgetRoute.Unlock, widgetRoute(WidgetLaunch.OpenUnlock))
         assertNull(widgetRoute(WidgetLaunch.PlayBook("b1")))
+        assertNull(widgetRoute(WidgetLaunch.TogglePlay("b1")))
     }
 }

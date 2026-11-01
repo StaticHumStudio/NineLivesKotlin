@@ -12,4 +12,6 @@
     <!-- Widgets (draft copy pending Jeff) -->
     <string name="widget_binder_label">Binder</string>
     <string name="widget_binder_description">Flip through your books like an old CD binder</string>
+    <string name="widget_home_label">Nine Lives</string>
+    <string name="widget_home_description">Your rank, your current book, and your next lives</string>
 </resources>

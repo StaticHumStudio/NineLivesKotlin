@@ -25,6 +25,7 @@ espressoCore = "3.6.1"
 ksp = "2.2.10-2.0.2"
 coroutines = "1.10.2"
 work = "2.9.1"
+glance = "1.1.1"
 # Play Billing. Floor is 8.0 for any update submitted after 2026-08-31, so
 # integrate on current and skip the migration entirely.
 billing = "9.1.0"
@@ -96,6 +97,7 @@ kotlinx-coroutines-guava = { group = "org.jetbrains.kotlinx", name = "kotlinx-co
 # WorkManager (background downloads)
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 androidx-work-testing = { group = "androidx.work", name = "work-testing", version.ref = "work" }
+androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 
 # Play Billing (one-time unlock)
 billing-ktx = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }

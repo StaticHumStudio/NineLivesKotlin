@@ -272,6 +272,7 @@ dependencies {
 
     // WorkManager (background downloads, foreground-service notification)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.glance.appwidget)
 
     // Play Billing (one-time unlock)
     implementation(libs.billing.ktx)

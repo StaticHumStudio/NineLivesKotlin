@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Widget picker preview: the eye, the hinge, and an empty sleeve waiting for a disc. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layoutDirection="ltr"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"

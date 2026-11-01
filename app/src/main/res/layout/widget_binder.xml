@@ -2,6 +2,7 @@
 <!-- The Binder when it has books: a stack of pages under one fixed hinge. A vertical
      fling turns the page (StackView is the only RemoteViews collection that takes a fling). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layoutDirection="ltr"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -102,7 +103,9 @@
          StackView sizes every page at 90% of its width and height and draws the front
          page against its left and bottom edges (the pages behind fan up and right), so
          this 1 : 9 by 9 : 1 grid puts the hinge in the middle of the front page, in the
-         gap each page leaves for it (widget_binder_spread.xml). -->
+         gap each page leaves for it (widget_binder_spread.xml). StackView never mirrors
+         its fan, so every Binder layout is pinned left to right: in an RTL locale this
+         grid would otherwise mirror and put the hinge over the right cover. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"

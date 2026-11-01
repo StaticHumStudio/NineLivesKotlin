@@ -8,6 +8,7 @@
      StackView measures a page with AT_MOST, so the first child (a huge image with no
      adjustViewBounds) makes the page take all the room StackView offers. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layoutDirection="ltr"
     android:id="@+id/binder_spread"
     android:layout_width="match_parent"
     android:layout_height="match_parent"

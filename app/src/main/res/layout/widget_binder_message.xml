@@ -3,6 +3,7 @@
      The eye on the left, one calm line on the right. Never a book or a cover.
      Both sleeves are squares hugging the hinge, like a spread (widget_binder_spread.xml). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layoutDirection="ltr"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"

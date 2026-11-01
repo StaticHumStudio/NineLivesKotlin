@@ -113,6 +113,11 @@ class RestoreQuiet {
 
     fun userPlay() = quiet.set(false)
 
+    /** Play from any source (headset, notification, Android Auto) ends the quiet. */
+    fun onPlayWhenReadyChanged(playWhenReady: Boolean) {
+        if (playWhenReady) userPlay()
+    }
+
     fun reports(): Boolean = !quiet.get()
 }
 

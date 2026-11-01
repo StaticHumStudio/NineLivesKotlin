@@ -139,4 +139,14 @@ class PlaybackErrorMessageTest {
         assertFalse(removalSilencesError(guardSuppresses = true, playingLocalFiles = false))
         assertFalse(removalSilencesError(guardSuppresses = false, playingLocalFiles = true))
     }
+
+    @Test
+    fun `play from a headset or notification after a restore ends the quiet`() {
+        val quiet = RestoreQuiet()
+        quiet.enterLoad(reportErrors = false)
+        quiet.onPlayWhenReadyChanged(playWhenReady = false)
+        assertFalse(quiet.reports())
+        quiet.onPlayWhenReadyChanged(playWhenReady = true)
+        assertTrue(quiet.reports())
+    }
 }

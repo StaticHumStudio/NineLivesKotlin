@@ -2806,6 +2806,9 @@ class PlaybackManager @Inject constructor(
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // A play from the headset, notification or Android Auto never goes
+            // through play(), so the restore's quiet ends here for any source.
+            restoreQuiet.onPlayWhenReadyChanged(playWhenReady)
             // Controller intent can change without a playback-state callback.
             // Apply it in both READY and BUFFERING so a pause during a network
             // stall stops active playback work exactly once.

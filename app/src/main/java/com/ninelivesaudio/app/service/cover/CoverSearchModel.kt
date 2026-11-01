@@ -53,9 +53,14 @@ private val WHITESPACE_RUN = Regex("\\s+")
 fun normalizedSearchText(input: String): String? =
     input.trim().replace(WHITESPACE_RUN, " ").take(MAX_SEARCH_TEXT).trim().ifEmpty { null }
 
+/** The author the folder scan writes when a book has no author tag. Not worth searching for. */
+private const val UNKNOWN_AUTHOR_PLACEHOLDER = "Unknown Author"
+
 /** What the search box starts with: the book's title and author. */
-fun prefillSearchText(title: String, author: String?): String =
-    normalizedSearchText("$title ${author.orEmpty()}").orEmpty()
+fun prefillSearchText(title: String, author: String?): String {
+    val realAuthor = author?.takeUnless { it.trim().equals(UNKNOWN_AUTHOR_PLACEHOLDER, ignoreCase = true) }
+    return normalizedSearchText("$title ${realAuthor.orEmpty()}").orEmpty()
+}
 
 /** Square, or within 5 percent of it. */
 fun isSquare(width: Int, height: Int): Boolean {

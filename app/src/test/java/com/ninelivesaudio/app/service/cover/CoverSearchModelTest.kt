@@ -19,6 +19,9 @@ class CoverSearchModelTest {
         assertEquals("Plain Test", prefillSearchText("Plain Test", ""))
     }
 
+    @Test fun `the scan's unknown author placeholder is not searched for`() =
+        assertEquals("Plain Test", prefillSearchText("Plain Test", "Unknown Author"))
+
     @Test fun `a blank box cannot search`() = assertNull(normalizedSearchText(" \n\t "))
 
     @Test fun `runaway text is cut at 200 characters`() = assertEquals(200, normalizedSearchText("x".repeat(500))!!.length)

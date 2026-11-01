@@ -109,14 +109,14 @@ private fun HomeWidgetFace(snapshot: HomeWidgetSnapshot?) {
             .cornerRadius(16.dp)
             .clickable(actionStartActivity(widgetMainIntent(context, rootLaunch)))
             .semantics { contentDescription = rootLabel }
-            .padding(12.dp),
+            .padding(if (layout == HomeLayout.CURRENT_ONLY) 10.dp else 12.dp),
         contentAlignment = Alignment.Center,
     ) {
         when {
             model == null -> Message(line = null, locked = false, layout = layout)
             model.content == WidgetContent.LOCKED -> Message(WidgetCopy.HOME_LOCKED, locked = true, layout = layout)
             model.content != WidgetContent.READY -> Message(WidgetCopy.emptyLine(model.content, model.isLocalMode), locked = false, layout = layout)
-            else -> Ready(model, snapshot.art, layout, size.width.value)
+            else -> Ready(model, snapshot.art, layout, size.width.value, isTallCurrentOnly(size.width.value, size.height.value))
         }
     }
 }
@@ -170,7 +170,7 @@ private fun Message(line: String?, locked: Boolean, layout: HomeLayout) {
 }
 
 @Composable
-private fun Ready(model: HomeWidgetModel, art: HomeWidgetArt, layout: HomeLayout, widthDp: Float) {
+private fun Ready(model: HomeWidgetModel, art: HomeWidgetArt, layout: HomeLayout, widthDp: Float, tall: Boolean) {
     val context = LocalContext.current
     Column(
         modifier = GlanceModifier.fillMaxSize(),
@@ -181,7 +181,9 @@ private fun Ready(model: HomeWidgetModel, art: HomeWidgetArt, layout: HomeLayout
             RankSlab(rank, actionStartActivity(widgetMainIntent(context, WidgetLaunch.OpenApp)))
             Spacer(GlanceModifier.height(10.dp))
         }
-        model.current?.let { CurrentBook(it, art.current, compact = layout == HomeLayout.CURRENT_ONLY) }
+        model.current?.let {
+            if (tall) CurrentBookStacked(it, art.current) else CurrentBook(it, art.current, compact = layout == HomeLayout.CURRENT_ONLY)
+        }
         val lives = model.lives.take(livesSlotsFor(widthDp))
         if (layout == HomeLayout.FULL && lives.isNotEmpty()) {
             Spacer(GlanceModifier.height(10.dp))
@@ -247,12 +249,40 @@ private fun CurrentBook(current: CurrentCard, cover: android.graphics.Bitmap?, c
     val context = LocalContext.current
     val open = openBook(context, current.bookId)
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Cover(bitmap = cover, label = current.title, sizeDp = if (compact) 56 else 64, action = open)
-        Spacer(GlanceModifier.width(10.dp))
+        Cover(bitmap = cover, label = current.title, sizeDp = if (compact) 48 else 64, action = open)
+        Spacer(GlanceModifier.width(if (compact) 8.dp else 10.dp))
         Column(
             modifier = GlanceModifier.defaultWeight().clickable(open),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(
+                text = current.title,
+                maxLines = 2,
+                style = TextStyle(color = textPrimary, fontSize = if (compact) 13.sp else 14.sp, fontWeight = FontWeight.Medium),
+            )
+            current.chapterTitle?.let {
+                Spacer(GlanceModifier.height(2.dp))
+                Text(text = it, maxLines = 1, style = TextStyle(color = textSecondary, fontSize = 12.sp))
+            }
+        }
+        Spacer(GlanceModifier.width(if (compact) 6.dp else 8.dp))
+        PlayButton(current, open, if (compact) 40 else 44)
+    }
+}
+
+/** A 2x2: cover and play side by side on top, the title and chapter under them. */
+@Composable
+private fun CurrentBookStacked(current: CurrentCard, cover: android.graphics.Bitmap?) {
+    val context = LocalContext.current
+    val open = openBook(context, current.bookId)
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Cover(bitmap = cover, label = current.title, sizeDp = 72, action = open)
+            Spacer(GlanceModifier.defaultWeight())
+            PlayButton(current, open, 44)
+        }
+        Spacer(GlanceModifier.height(10.dp))
+        Column(modifier = GlanceModifier.fillMaxWidth().clickable(open)) {
             Text(
                 text = current.title,
                 maxLines = 2,
@@ -263,21 +293,25 @@ private fun CurrentBook(current: CurrentCard, cover: android.graphics.Bitmap?, c
                 Text(text = it, maxLines = 1, style = TextStyle(color = textSecondary, fontSize = 12.sp))
             }
         }
-        Spacer(GlanceModifier.width(8.dp))
-        val (icon, label, action) = when (current.button) {
-            CurrentButton.PLAY -> Triple(R.drawable.widget_home_play, WidgetCopy.CD_PLAY, toggle(context, current.bookId))
-            CurrentButton.PAUSE -> Triple(R.drawable.widget_home_pause, WidgetCopy.CD_PAUSE, toggle(context, current.bookId))
-            // Loading: the app ignores a tap now, and so does this one (the plan says IGNORE),
-            // but the button still carries an action so it never keeps an old one.
-            CurrentButton.WAIT -> Triple(R.drawable.widget_home_wait, WidgetCopy.CD_PLAY, toggle(context, current.bookId))
-            CurrentButton.OPEN -> Triple(R.drawable.widget_home_open, current.title, open)
-        }
-        Image(
-            provider = ImageProvider(icon),
-            contentDescription = label,
-            modifier = GlanceModifier.size(44.dp).clickable(action),
-        )
     }
+}
+
+@Composable
+private fun PlayButton(current: CurrentCard, open: Action, sizeDp: Int) {
+    val context = LocalContext.current
+    val (icon, label, action) = when (current.button) {
+        CurrentButton.PLAY -> Triple(R.drawable.widget_home_play, WidgetCopy.CD_PLAY, toggle(context, current.bookId))
+        CurrentButton.PAUSE -> Triple(R.drawable.widget_home_pause, WidgetCopy.CD_PAUSE, toggle(context, current.bookId))
+        // Loading: the app ignores a tap now, and so does this one (the plan says IGNORE),
+        // but the button still carries an action so it never keeps an old one.
+        CurrentButton.WAIT -> Triple(R.drawable.widget_home_wait, WidgetCopy.CD_PLAY, toggle(context, current.bookId))
+        CurrentButton.OPEN -> Triple(R.drawable.widget_home_open, current.title, open)
+    }
+    Image(
+        provider = ImageProvider(icon),
+        contentDescription = label,
+        modifier = GlanceModifier.size(sizeDp.dp).clickable(action),
+    )
 }
 
 /**

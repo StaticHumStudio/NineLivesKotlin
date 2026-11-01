@@ -16,9 +16,14 @@ class HomeWidgetLayoutTest {
 
     @Test fun `every responsive bucket maps to a layout that keeps play`() {
         assertEquals(
-            listOf(HomeLayout.CURRENT_ONLY, HomeLayout.RANK_AND_CURRENT, HomeLayout.FULL, HomeLayout.FULL),
+            listOf(HomeLayout.CURRENT_ONLY, HomeLayout.CURRENT_ONLY, HomeLayout.RANK_AND_CURRENT, HomeLayout.FULL, HomeLayout.FULL),
             HOME_WIDGET_SIZES.map { (w, h) -> homeLayoutFor(w, h) },
         )
+    }
+
+    @Test fun `the smallest bucket is the resize floor and keeps play`() {
+        assertEquals(160f to 80f, HOME_WIDGET_SIZES.first())
+        assertEquals(HomeLayout.CURRENT_ONLY, homeLayoutFor(160f, 80f))
     }
 
     @Test fun `wider widgets show four lives`() {
@@ -35,5 +40,14 @@ class HomeWidgetLayoutTest {
 
     @Test fun `the large widget stays inside the bitmap budget at every size`() {
         assertTrue(homeWorstCaseBitmapBytes() <= WIDGET_BITMAP_BUDGET_BYTES)
+        // Lives only count where they are drawn.
+        assertEquals(192 * 192 * 2, homeBucketBitmapBytes(250f, 180f))
+        assertEquals(192 * 192 * 2 + 4 * 96 * 96 * 2, homeBucketBitmapBytes(300f, 260f))
+    }
+
+    @Test fun `a 2x2 stacks the current book, a short one keeps it in a row`() {
+        assertTrue(isTallCurrentOnly(160f, 180f))
+        assertTrue(!isTallCurrentOnly(160f, 80f))
+        assertTrue(!isTallCurrentOnly(250f, 180f))
     }
 }

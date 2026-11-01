@@ -68,6 +68,17 @@ internal sealed interface SleeveFill {
     data object Empty : SleeveFill
 }
 
+/**
+ * What a tap on this sleeve asks for. Every fill has one, because a recycled
+ * StackView row keeps its last fill in intent, and RemoteViews cannot clear it.
+ */
+internal fun SleeveFill.clickLaunch(): WidgetLaunch = when (this) {
+    SleeveFill.Icon -> WidgetLaunch.OpenApp
+    is SleeveFill.Cover -> launch
+    is SleeveFill.TitleOnly -> launch
+    SleeveFill.Empty -> WidgetLaunch.Nothing
+}
+
 /** One spread in the stack. */
 internal fun binderSpreadViews(context: Context, left: SleeveFill, right: SleeveFill): RemoteViews =
     RemoteViews(context.packageName, R.layout.widget_binder_spread).apply {
@@ -85,7 +96,6 @@ private fun fill(views: RemoteViews, fill: SleeveFill, sleeve: Int, cover: Int, 
             views.setViewPadding(cover, padPx, padPx, padPx, padPx)
             views.setViewVisibility(title, View.GONE)
             views.setContentDescription(sleeve, WidgetCopy.CD_OPEN_APP)
-            views.setOnClickFillInIntent(sleeve, Intent().putWidgetLaunch(WidgetLaunch.OpenApp))
         }
         is SleeveFill.Cover -> {
             views.setInt(sleeve, "setBackgroundResource", R.drawable.widget_sleeve)
@@ -94,7 +104,6 @@ private fun fill(views: RemoteViews, fill: SleeveFill, sleeve: Int, cover: Int, 
             views.setViewPadding(cover, 0, 0, 0, 0)
             views.setViewVisibility(title, View.GONE)
             views.setContentDescription(sleeve, fill.title)
-            views.setOnClickFillInIntent(sleeve, Intent().putWidgetLaunch(fill.launch))
         }
         is SleeveFill.TitleOnly -> {
             views.setInt(sleeve, "setBackgroundResource", R.drawable.widget_sleeve_plain)
@@ -102,7 +111,6 @@ private fun fill(views: RemoteViews, fill: SleeveFill, sleeve: Int, cover: Int, 
             views.setViewVisibility(title, View.VISIBLE)
             views.setTextViewText(title, fill.title)
             views.setContentDescription(sleeve, fill.title)
-            views.setOnClickFillInIntent(sleeve, Intent().putWidgetLaunch(fill.launch))
         }
         SleeveFill.Empty -> {
             views.setInt(sleeve, "setBackgroundResource", R.drawable.widget_sleeve_empty)
@@ -111,4 +119,5 @@ private fun fill(views: RemoteViews, fill: SleeveFill, sleeve: Int, cover: Int, 
             views.setContentDescription(sleeve, null)
         }
     }
+    views.setOnClickFillInIntent(sleeve, Intent().putWidgetLaunch(fill.clickLaunch()))
 }

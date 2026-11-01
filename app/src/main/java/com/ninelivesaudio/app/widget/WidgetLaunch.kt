@@ -13,6 +13,9 @@ internal sealed interface WidgetLaunch {
     data class OpenBook(val bookId: String) : WidgetLaunch
     data class PlayBook(val bookId: String) : WidgetLaunch
     data object OpenUnlock : WidgetLaunch
+
+    /** A tap on an empty sleeve. The trampoline finishes without launching anything. */
+    data object Nothing : WidgetLaunch
 }
 
 internal const val EXTRA_WIDGET_ACTION = "com.ninelivesaudio.app.widget.ACTION"
@@ -23,6 +26,7 @@ internal fun WidgetLaunch.actionName(): String = when (this) {
     is WidgetLaunch.OpenBook -> "open_book"
     is WidgetLaunch.PlayBook -> "play_book"
     WidgetLaunch.OpenUnlock -> "open_unlock"
+    WidgetLaunch.Nothing -> "empty"
 }
 
 internal val WidgetLaunch.bookIdOrNull: String?
@@ -38,6 +42,7 @@ internal fun parseWidgetLaunch(action: String?, bookId: String?): WidgetLaunch? 
     return when (action) {
         "open_app" -> WidgetLaunch.OpenApp
         "open_unlock" -> WidgetLaunch.OpenUnlock
+        "empty" -> WidgetLaunch.Nothing
         "open_book" -> id?.let { WidgetLaunch.OpenBook(it) }
         "play_book" -> id?.let { WidgetLaunch.PlayBook(it) }
         else -> null
@@ -56,7 +61,7 @@ internal sealed interface WidgetRoute {
  * either: the trampoline handles it and opens a page only on refusal.
  */
 internal fun widgetRoute(launch: WidgetLaunch): WidgetRoute? = when (launch) {
-    WidgetLaunch.OpenApp -> null
+    WidgetLaunch.OpenApp, WidgetLaunch.Nothing -> null
     is WidgetLaunch.OpenBook -> WidgetRoute.Book(launch.bookId)
     WidgetLaunch.OpenUnlock -> WidgetRoute.Unlock
     is WidgetLaunch.PlayBook -> null

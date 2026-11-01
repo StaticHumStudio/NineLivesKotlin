@@ -43,7 +43,7 @@ class WidgetActionActivity : ComponentActivity() {
         val (bookId, tap) = when (launch) {
             is WidgetLaunch.PlayBook -> launch.bookId to widgetPlayback.binderTap(launch)
             is WidgetLaunch.OpenBook -> launch.bookId to widgetPlayback.binderTap(launch)
-            null -> {
+            null, WidgetLaunch.Nothing -> {
                 finish()
                 return
             }

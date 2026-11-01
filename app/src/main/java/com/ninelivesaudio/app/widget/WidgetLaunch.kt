@@ -55,6 +55,14 @@ internal fun parseWidgetLaunch(action: String?, bookId: String?): WidgetLaunch? 
     }
 }
 
+/**
+ * Whether a widget's Open tap needs a new book page. Only the same book
+ * already on top is left alone. Navigation's single top matches the route
+ * pattern, not the book, so it would keep another book's page instead.
+ */
+internal fun opensNewBookPage(topRoute: String?, topBookId: String?, bookId: String): Boolean =
+    !(topRoute == com.ninelivesaudio.app.ui.navigation.Routes.BOOK_DETAIL && topBookId == bookId)
+
 /** The screen `MainActivity` opens for a widget launch. */
 internal sealed interface WidgetRoute {
     data class Book(val bookId: String) : WidgetRoute

@@ -29,4 +29,12 @@ class WidgetLaunchTest {
         assertNull(widgetRoute(WidgetLaunch.PlayBook("b1")))
         assertNull(widgetRoute(WidgetLaunch.TogglePlay("b1")))
     }
+
+    @Test fun `a widget tap for another book opens that book even when a book page is on top`() {
+        // Single top matched the route pattern, so book B reused book A's page.
+        assertEquals(true, opensNewBookPage(topRoute = "book_detail/{bookId}", topBookId = "a", bookId = "b"))
+        assertEquals(false, opensNewBookPage(topRoute = "book_detail/{bookId}", topBookId = "b", bookId = "b"))
+        assertEquals(true, opensNewBookPage(topRoute = "home", topBookId = null, bookId = "b"))
+        assertEquals(true, opensNewBookPage(topRoute = null, topBookId = null, bookId = "b"))
+    }
 }

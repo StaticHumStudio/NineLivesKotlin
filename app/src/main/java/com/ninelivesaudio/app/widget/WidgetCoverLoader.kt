@@ -12,11 +12,11 @@ import android.net.Uri
 import android.util.Log
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.service.ArtworkCodec
-import com.ninelivesaudio.app.service.BoundedInputStream
 import com.ninelivesaudio.app.service.artworkVersionKey
 import com.ninelivesaudio.app.service.autoArtworkRemoteUrl
 import com.ninelivesaudio.app.service.savedCoverModifiedMs
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -26,7 +26,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
-import okhttp3.Request
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -45,6 +45,8 @@ class WidgetCoverLoader @Inject constructor(
     @ApplicationContext private val context: Context,
     private val okHttpClient: OkHttpClient,
 ) {
+    private val downloader = WidgetCoverDownloader(okHttpClient)
+
     private val dir: File get() = File(context.cacheDir, "widget_covers").apply { mkdirs() }
 
     internal fun fileName(book: AudioBook, px: Int): String = widgetCoverFileName(
@@ -87,7 +89,7 @@ class WidgetCoverLoader @Inject constructor(
         }
     }
 
-    private fun fetchToDisk(book: AudioBook, px: Int): Boolean {
+    private suspend fun fetchToDisk(book: AudioBook, px: Int): Boolean {
         val bytes = coverBytes(book, px) ?: return false
         val square = runCatching { squareRgb565(bytes, px) }.getOrNull() ?: return false
         val target = File(dir, fileName(book, px))
@@ -100,6 +102,7 @@ class WidgetCoverLoader @Inject constructor(
             tmp.delete()
             false
         } finally {
+            tmp.delete()
             square.recycle()
         }
     }
@@ -138,7 +141,7 @@ class WidgetCoverLoader @Inject constructor(
     }
 
     /** Mirrors the Android Auto artwork fetch: local file or content first, else the server thumbnail. */
-    private fun coverBytes(book: AudioBook, px: Int): ByteArray? {
+    private suspend fun coverBytes(book: AudioBook, px: Int): ByteArray? {
         val source = book.effectiveCoverPath ?: return null
         val uri = runCatching { Uri.parse(source) }.getOrNull() ?: return null
         val localOpener: (() -> InputStream)? = when (uri.scheme?.lowercase()) {
@@ -148,36 +151,25 @@ class WidgetCoverLoader @Inject constructor(
             }
             else -> null
         }
-        val opener = localOpener ?: autoArtworkRemoteUrl(book.coverPath, px)?.let { url -> { openRemote(url) } }
-            ?: return null
         return try {
+            val opener = localOpener ?: run {
+                val url = autoArtworkRemoteUrl(book.coverPath, px) ?: return null
+                // Downloaded first, cancellably and time-bounded, then decoded from memory.
+                val bytes = downloader.fetch(url)
+                val stream: () -> InputStream = { ByteArrayInputStream(bytes) }
+                stream
+            }
             ArtworkCodec.decodeAndCompress(opener, px * 2, MAX_EMBED_BYTES, MIN_QUALITY)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "cover read failed ${book.id}: ${e.message}")
             null
         }
     }
 
-    private fun openRemote(url: String): InputStream {
-        val response = okHttpClient.newCall(Request.Builder().url(url).build()).execute()
-        if (!response.isSuccessful) {
-            response.close()
-            throw IOException("http ${response.code}")
-        }
-        val body = response.body ?: run {
-            response.close()
-            throw IOException("empty body")
-        }
-        if (body.contentLength() > MAX_DOWNLOAD_BYTES) {
-            response.close()
-            throw IOException("cover too large")
-        }
-        return BoundedInputStream(body.byteStream(), MAX_DOWNLOAD_BYTES)
-    }
-
     private companion object {
         const val TAG = "WidgetCoverLoader"
-        const val MAX_DOWNLOAD_BYTES = 3L * 1024 * 1024
         const val MAX_EMBED_BYTES = 48 * 1024
         const val MIN_QUALITY = 50
 

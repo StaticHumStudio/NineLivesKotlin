@@ -53,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
@@ -219,8 +220,11 @@ private fun SearchHeader(
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = colors.goldFilament.copy(alpha = 0.95f),
                 unfocusedBorderColor = colors.archiveOutline,
-                focusedContainerColor = colors.archiveVoidSurface,
-                unfocusedContainerColor = colors.archiveVoidSurface,
+                // No fill: the floating label's notch would show the page color
+                // as a box cut into a filled field.
+                focusedContainerColor = Color.Transparent,
+                unfocusedContainerColor = Color.Transparent,
+                disabledContainerColor = Color.Transparent,
                 focusedTextColor = colors.archiveTextPrimary,
                 unfocusedTextColor = colors.archiveTextPrimary,
                 focusedLabelColor = colors.goldFilament,

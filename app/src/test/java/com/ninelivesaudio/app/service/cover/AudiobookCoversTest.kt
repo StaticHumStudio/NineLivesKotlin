@@ -59,9 +59,22 @@ class AudiobookCoversTest {
             assertTrue(it.fullUrl, it.fullUrl.startsWith("https://images.audiobookcovers.com/jpeg/1280/"))
         }
         val first = covers.first()
-        assertEquals("abc:0aec0ced-1758-446a-8c57-3364f46ef8b6", first.key)
-        assertEquals("https://images.audiobookcovers.com/jpeg/320/0aec0ced-1758-446a-8c57-3364f46ef8b6.jpg", first.thumbnailUrl)
-        assertEquals("https://images.audiobookcovers.com/jpeg/1280/0aec0ced-1758-446a-8c57-3364f46ef8b6.jpg", first.fullUrl)
+        assertEquals("abc:3b7548e0-004e-4918-b845-825f5683305b", first.key)
+        assertEquals("https://images.audiobookcovers.com/jpeg/320/3b7548e0-004e-4918-b845-825f5683305b.jpg", first.thumbnailUrl)
+        assertEquals("https://images.audiobookcovers.com/jpeg/1280/3b7548e0-004e-4918-b845-825f5683305b.jpg", first.fullUrl)
+    }
+
+    /**
+     * The site ties each cover to an Open Library book with a confidence. On this page an
+     * omnibus (The Martian / Artemis / Project Hail Mary) pulls in Martian covers as LIKELY
+     * and UNCERTAIN, while the one CONFIRMED cover is the real Project Hail Mary art.
+     */
+    @Test fun `surer matches come first, then the page's own order`() {
+        val keys = (parseAudiobookCoversPage(hailMary) as AudiobookCoversPage.Covers).candidates.map { it.key.removePrefix("abc:").take(8) }
+        assertEquals(
+            listOf("3b7548e0", "0aec0ced", "692d7e8f", "a4fcbb00", "cecf4fb3", "d127ccd1", "fd488e6d", "a12e9a15", "ef363b50"),
+            keys,
+        )
     }
 
     @Test fun `the carmilla page is a real answer with no covers`() =

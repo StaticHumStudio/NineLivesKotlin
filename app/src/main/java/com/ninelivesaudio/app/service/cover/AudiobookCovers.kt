@@ -61,9 +61,21 @@ fun parseAudiobookCoversPage(html: String): AudiobookCoversPage {
     val candidates = records.mapIndexedNotNull { i, record ->
         val id = record.groupValues[1]
         val body = list.substring(record.range.first, records.getOrNull(i + 1)?.range?.first ?: list.length)
-        candidateFrom(id, body)
-    }.distinctBy { it.fullUrl }
+        candidateFrom(id, body)?.let { it to matchRank(body) }
+    }.sortedBy { it.second }.map { it.first }.distinctBy { it.fullUrl }
     return if (candidates.isEmpty()) AudiobookCoversPage.Unparseable else AudiobookCoversPage.Covers(candidates)
+}
+
+private val MATCH_CONFIDENCE = Regex("""confidence:"([A-Z_]+)"""")
+
+/**
+ * How sure the site is that a cover belongs to the book it matched: checked by a person
+ * or confirmed first, then likely, then uncertain or unstated. Ties keep the page order.
+ */
+private fun matchRank(record: String): Int = when (MATCH_CONFIDENCE.find(record)?.groupValues?.get(1)) {
+    "HUMAN", "CONFIRMED" -> 0
+    "LIKELY" -> 1
+    else -> 2
 }
 
 private fun candidateFrom(id: String, record: String): CoverCandidate? {

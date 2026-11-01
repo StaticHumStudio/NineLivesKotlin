@@ -39,7 +39,7 @@
             android:importantForAccessibility="no"
             android:src="@drawable/widget_sleeve_empty" />
 
-        <View
+        <FrameLayout
             android:layout_width="0dp"
             android:layout_height="1dp"
             android:layout_weight="1" />
@@ -51,7 +51,7 @@
             android:src="@drawable/widget_home_play" />
     </LinearLayout>
 
-    <View
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:layout_marginVertical="10dp"

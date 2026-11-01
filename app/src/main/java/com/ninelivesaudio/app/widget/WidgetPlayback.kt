@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -111,8 +112,11 @@ class WidgetPlayback @Inject constructor(
     }
 
     /**
-     * The work runs on this class's own scope, so the trampoline finishing or
-     * being destroyed never cancels a book load halfway.
+     * Decisions and loads run on this class's own scope. The caller gets the
+     * plan as soon as it is decided, and a book load carries on here, so the
+     * invisible trampoline can close at once instead of covering the home
+     * screen (and swallowing taps) for the whole load. Its finishing never
+     * cancels a load halfway.
      */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -142,7 +146,7 @@ class WidgetPlayback @Inject constructor(
             bookLoading = playbackManager.loadingBook.value != null,
             playable = book != null && isPlayable(book),
         )
-        act(plan, book)
+        launchAct(plan, book)
         return plan
     }
 
@@ -163,13 +167,13 @@ class WidgetPlayback @Inject constructor(
             shownBookId = shown?.id,
             shownPlayable = shown != null && isPlayable(shown),
         )
-        act(plan, shown)
+        launchAct(plan, shown)
         return plan
     }
 
-    private suspend fun act(plan: WidgetPlayPlan, book: AudioBook?) {
+    private fun launchAct(plan: WidgetPlayPlan, book: AudioBook?) {
         Log.d(TAG, "plan $plan for ${book?.id}")
-        withContext(Dispatchers.Main) {
+        scope.launch {
             when (plan) {
                 WidgetPlayPlan.RESUME_CURRENT -> playbackManager.play()
                 WidgetPlayPlan.PAUSE -> playbackManager.pause()

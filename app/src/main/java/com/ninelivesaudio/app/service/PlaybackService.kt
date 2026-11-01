@@ -208,6 +208,17 @@ class PlaybackService : MediaLibraryService() {
         Log.d(TAG, "onCreate: PlaybackService created, session=${playbackManager.getMediaSession() != null}")
     }
 
+    /**
+     * Media3 calls this for every notification update and starts the service
+     * in the foreground inside super when [startInForegroundRequired] is set.
+     * Reported after super so a widget's handoff screen can close.
+     */
+    @OptIn(UnstableApi::class)
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        super.onUpdateNotification(session, startInForegroundRequired)
+        if (startInForegroundRequired) PlaybackForegroundStarts.onForegroundStart()
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         val session = playbackManager.getMediaSession() as? MediaLibrarySession
         Log.d(TAG, "onGetSession: pkg=${controllerInfo.packageName} hasSession=${session != null}")

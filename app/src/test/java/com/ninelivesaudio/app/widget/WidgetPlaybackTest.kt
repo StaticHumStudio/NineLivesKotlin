@@ -108,40 +108,87 @@ class WidgetPlaybackTest {
             .forEach { assertNull(refusalLaunch(it, "b1")) }
     }
 
-    @Test fun `a quick decision is acted on before the handoff screen closes`() = runBlocking {
+    @Test fun `a refusal is acted on and the handoff closes without waiting for playback`() = runBlocking {
         val order = mutableListOf<String>()
         handOff(
             decision = CompletableDeferred(WidgetPlayPlan.OPEN_UNLOCK),
-            cap = 2.seconds,
+            cap = 30.seconds,
             onPlan = { order += "plan $it" },
+            awaitStarted = { order += "waited"; awaitCancellation() },
             onLatePlan = { order += "late" },
             finish = { order += "finish" },
         )
         assertEquals(listOf("plan OPEN_UNLOCK", "finish"), order)
     }
 
-    @Test(timeout = 2_000) fun `a slow cold start closes the handoff screen at the cap and the tap carries on`() = runBlocking {
+    @Test(timeout = 2_000) fun `a play holds the handoff until the playback service has started, then closes`() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val order = mutableListOf<String>()
+        val job = launch {
+            handOff(
+                decision = CompletableDeferred(WidgetPlayPlan.LOAD_BOOK),
+                cap = 30.seconds,
+                onPlan = { order += "plan $it" },
+                awaitStarted = { started.await(); order += "service started" },
+                onLatePlan = { order += "late" },
+                finish = { order += "finish" },
+            )
+        }
+        yield()
+        assertEquals(listOf("plan LOAD_BOOK"), order)
+        started.complete(Unit)
+        job.join()
+        assertEquals(listOf("plan LOAD_BOOK", "service started", "finish"), order)
+    }
+
+    @Test(timeout = 2_000) fun `a decision slower than the cap closes the handoff and carries on`() = runBlocking {
         val decision = CompletableDeferred<WidgetPlayPlan>()
         val order = mutableListOf<String>()
-        val started = System.nanoTime()
         handOff(
             decision = decision,
             cap = 150.milliseconds,
             onPlan = { order += "plan" },
+            awaitStarted = { order += "waited" },
             onLatePlan = { late -> order += "late"; assertTrue(late === decision) },
             finish = { order += "finish" },
         )
-        val waitedMs = (System.nanoTime() - started) / 1_000_000
         assertEquals(listOf("late", "finish"), order)
-        assertTrue("waited $waitedMs ms", waitedMs < 1_000)
-        // The decision itself is never cancelled by the screen closing.
         assertTrue(decision.isActive)
-        decision.complete(WidgetPlayPlan.LOAD_BOOK)
-        assertEquals(WidgetPlayPlan.LOAD_BOOK, decision.await())
     }
 
-    @Test fun `the handoff screen waits two seconds at most`() {
-        assertTrue(WIDGET_HANDOFF_CAP <= 2.seconds)
+    @Test(timeout = 2_000) fun `a service that never starts cannot hold the handoff past the cap`() = runBlocking {
+        val order = mutableListOf<String>()
+        handOff(
+            decision = CompletableDeferred(WidgetPlayPlan.RESUME_CURRENT),
+            cap = 150.milliseconds,
+            onPlan = { order += "plan" },
+            awaitStarted = { awaitCancellation() },
+            onLatePlan = { order += "late" },
+            finish = { order += "finish" },
+        )
+        assertEquals(listOf("plan", "finish"), order)
+    }
+
+    @Test(timeout = 2_000) fun `the hold ends when the service starts`() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val load = CompletableDeferred<Unit>()
+        val wait = async { awaitServiceStart(started, load, grace = 10.seconds) }
+        yield()
+        started.complete(Unit)
+        wait.await()
+    }
+
+    @Test(timeout = 2_000) fun `a load that ends without playing ends the hold after a short grace`() = runBlocking {
+        val load = CompletableDeferred<Unit>()
+        val wait = async { awaitServiceStart(CompletableDeferred(), load, grace = 100.milliseconds) }
+        yield()
+        assertFalse(wait.isCompleted)
+        load.complete(Unit)
+        wait.await()
+    }
+
+    @Test fun `the handoff can never stay up for long`() {
+        assertTrue(WIDGET_HANDOFF_CAP <= 30.seconds)
     }
 
     @Test fun `a cold tap waits for the first server check before calling a streamed book unplayable`() = runBlocking {

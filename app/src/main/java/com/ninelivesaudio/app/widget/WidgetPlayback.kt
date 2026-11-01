@@ -16,12 +16,14 @@ import com.ninelivesaudio.app.service.local.LocalFolderAccess
 import com.ninelivesaudio.app.service.local.reconcileLocalBookAccess
 import com.ninelivesaudio.app.service.remoteMediaAccessDecision
 import com.ninelivesaudio.app.ui.bookdetail.canPlayBook
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -29,6 +31,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+
+/** One Binder tap: its decision, and the load or resume it starts (done when that returns). */
+internal class WidgetTap(val plan: Deferred<WidgetPlayPlan>, val act: Deferred<Unit>)
 
 /** What a widget play tap turns into. */
 internal enum class WidgetPlayPlan { IGNORE, PAUSE, RESUME_CURRENT, LOAD_BOOK, OPEN_BOOK_PAGE, OPEN_UNLOCK }
@@ -132,28 +137,52 @@ internal suspend fun settledConnectionStatus(
 /** How long a widget tap waits for that first server check. */
 internal val WIDGET_SERVER_CHECK_WAIT: Duration = 8.seconds
 
-/** The longest the invisible handoff screen may sit over the home screen. */
-internal val WIDGET_HANDOFF_CAP: Duration = 2.seconds
+/**
+ * The longest the handoff screen may stay. It is invisible and lets every
+ * touch through to the home screen (see WidgetActionActivity), so a long
+ * hold costs the user nothing, but it still never stays past this.
+ */
+internal val WIDGET_HANDOFF_CAP: Duration = 30.seconds
 
 /**
- * The handoff screen's wait. A plan decided within [cap] goes to [onPlan]
- * while the screen is still up (so a refusal can open a page). A slower one
- * (a cold start with a slow restore) closes the screen at [cap] and goes to
- * [onLatePlan] still running. [finish] always runs, and closing the screen
- * never cancels [decision], so a play carries on in the background.
+ * The handoff screen's life. A refusal or Open goes to [onPlan] and the
+ * screen closes. A Play (load or resume) keeps it up until [awaitStarted]
+ * says the playback service has started, because Android 12 and later only
+ * lets a foreground service start while the app has a screen up, and a slow
+ * cold start can take far longer than the tap's own grace window. [cap]
+ * bounds all of it. A decision still running at [cap] goes to [onLatePlan]
+ * and carries on, since closing the screen never cancels [decision].
  */
 internal suspend fun handOff(
     decision: Deferred<WidgetPlayPlan>,
     cap: Duration,
     onPlan: suspend (WidgetPlayPlan) -> Unit,
+    awaitStarted: suspend () -> Unit,
     onLatePlan: (Deferred<WidgetPlayPlan>) -> Unit,
     finish: () -> Unit,
 ) {
     try {
-        val plan = withTimeoutOrNull(cap) { decision.await() }
-        if (plan != null) onPlan(plan) else onLatePlan(decision)
+        withTimeoutOrNull(cap) {
+            val plan = decision.await()
+            onPlan(plan)
+            if (plan == WidgetPlayPlan.LOAD_BOOK || plan == WidgetPlayPlan.RESUME_CURRENT) awaitStarted()
+        }
+        if (!decision.isCompleted) onLatePlan(decision)
     } finally {
         finish()
+    }
+}
+
+/**
+ * Returns when the playback service has started ([started]), or [grace]
+ * after the load or resume itself ([act]) is done, whichever is first. The
+ * grace covers a load that ended without playing (a failure the app reports
+ * itself), and Media3 posting its notification just after the load returns.
+ */
+internal suspend fun awaitServiceStart(started: Deferred<Unit>, act: Deferred<Unit>, grace: Duration) {
+    select {
+        started.onAwait {}
+        act.onAwait { withTimeoutOrNull(grace) { started.await() } }
     }
 }
 
@@ -216,11 +245,17 @@ class WidgetPlayback @Inject constructor(
      * Starts a Binder tap's decision on this class's scope and hands it back
      * at once, so the handoff screen can stop waiting without stopping it.
      */
-    internal fun binderTap(launch: WidgetLaunch.PlayBook): Deferred<WidgetPlayPlan> =
-        scope.async { playFromBinderOwned(launch.bookId) }
+    internal fun binderTap(launch: WidgetLaunch.PlayBook): WidgetTap {
+        val act = CompletableDeferred<Unit>()
+        val plan = scope.async { playFromBinderOwned(launch.bookId, act) }
+        plan.invokeOnCompletion { if (it != null) act.complete(Unit) }
+        return WidgetTap(plan, act)
+    }
 
-    internal fun binderTap(launch: WidgetLaunch.OpenBook): Deferred<WidgetPlayPlan> =
-        scope.async { openFromBinderOwned(launch.bookId) }
+    internal fun binderTap(launch: WidgetLaunch.OpenBook): WidgetTap {
+        val act = CompletableDeferred(Unit)
+        return WidgetTap(scope.async { openFromBinderOwned(launch.bookId) }, act)
+    }
 
     /**
      * A refusal or Open decided after the handoff screen closed. Opens its
@@ -245,13 +280,13 @@ class WidgetPlayback @Inject constructor(
         withContext(Dispatchers.IO) { audioBookRepository.getById(bookId) }
             ?.takeIf { it.isInActiveLibrary(settingsManager.currentSettings) }
 
-    private suspend fun playFromBinderOwned(bookId: String): WidgetPlayPlan = decideBinderTap(
+    private suspend fun playFromBinderOwned(bookId: String, act: CompletableDeferred<Unit>): WidgetPlayPlan = decideBinderTap(
         isUnlocked = { effectiveSettings.isUnlockedNow },
         awaitReady = { playbackManager.awaitStartupRestore() },
     ) {
         // A tap from a widget not yet redrawn after a mode or account switch
         // carries a book from the old library. It never plays or opens.
-        val book = activeBook(bookId) ?: return@decideBinderTap WidgetPlayPlan.IGNORE
+        val book = activeBook(bookId) ?: return@decideBinderTap WidgetPlayPlan.IGNORE.also { act.complete(Unit) }
         val plan = binderPlayPlan(
             isUnlocked = true,
             bookId = bookId,
@@ -260,9 +295,9 @@ class WidgetPlayback @Inject constructor(
             bookLoading = playbackManager.loadingBook.value != null,
             playable = isPlayable(book),
         )
-        launchAct(plan, book)
+        launchAct(plan, book, act)
         plan
-    }
+    }.also { if (it == WidgetPlayPlan.OPEN_UNLOCK) act.complete(Unit) }
 
     private suspend fun openFromBinderOwned(bookId: String): WidgetPlayPlan = decideBinderTap(
         isUnlocked = { effectiveSettings.isUnlockedNow },
@@ -294,15 +329,23 @@ class WidgetPlayback @Inject constructor(
         return plan
     }
 
-    private fun launchAct(plan: WidgetPlayPlan, book: AudioBook?) {
+    private fun launchAct(plan: WidgetPlayPlan, book: AudioBook?, done: CompletableDeferred<Unit>? = null) {
         Log.d(TAG, "plan $plan for ${book?.id}")
         scope.launch {
-            when (plan) {
-                WidgetPlayPlan.RESUME_CURRENT -> playbackManager.play()
-                WidgetPlayPlan.PAUSE -> playbackManager.pause()
-                WidgetPlayPlan.LOAD_BOOK -> book?.let { playbackManager.loadAudioBook(it) }
-                else -> Unit
+            try {
+                act(plan, book)
+            } finally {
+                done?.complete(Unit)
             }
+        }
+    }
+
+    private suspend fun act(plan: WidgetPlayPlan, book: AudioBook?) {
+        when (plan) {
+            WidgetPlayPlan.RESUME_CURRENT -> playbackManager.play()
+            WidgetPlayPlan.PAUSE -> playbackManager.pause()
+            WidgetPlayPlan.LOAD_BOOK -> book?.let { playbackManager.loadAudioBook(it) }
+            else -> Unit
         }
     }
 

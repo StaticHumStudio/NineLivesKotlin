@@ -123,7 +123,8 @@ class LocalUserCoverInstrumentedTest {
         database.audioBookDao().archiveByIds(listOf("A"), archivedAt)
         val different = kit.scanned(
             "A", "Dracula", "New Book",
-            listOf(Triple("01.mp3", 2_000L, null as String?), Triple("02.mp3", 3_000L, null as String?)),
+            // Different files and a different count, so it is not the same book (#47).
+            listOf(Triple("new_01.mp3", 2_000L, null as String?), Triple("new_02.mp3", 3_000L, null as String?), Triple("new_03.mp3", 4_000L, null as String?)),
         )
         kit.repository.importLocalBooksCarryingMoves(LIB, listOf(different), emptyList(), listOf("A"))
         kit.repository.removeMissingLocalBooks(LIB, listOf("A"))

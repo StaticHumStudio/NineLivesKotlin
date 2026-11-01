@@ -59,3 +59,31 @@ fun parseOpenLibrarySearch(body: String): List<CoverCandidate>? {
         )
     }
 }
+
+/** Open Library as a [CoverSearchSource]: one search.json request per Search tap. */
+@javax.inject.Singleton
+class OpenLibraryCoverSource private constructor(
+    private val client: okhttp3.OkHttpClient,
+    @Suppress("UNUSED_PARAMETER") ready: Unit,
+) : CoverSearchSource {
+
+    @javax.inject.Inject
+    constructor(appClient: okhttp3.OkHttpClient) :
+        this(coverSearchHttpClient(appClient, coverSearchUserAgent(com.ninelivesaudio.app.BuildConfig.VERSION_NAME)), Unit)
+
+    internal companion object {
+        /** A source on a client that is already the cover client (tests). */
+        fun onCoverClient(client: okhttp3.OkHttpClient) = OpenLibraryCoverSource(client, Unit)
+    }
+
+    override val id = CoverSourceId.OPEN_LIBRARY
+
+    override suspend fun search(query: String): List<CoverCandidate> {
+        val body = client.getCapped(openLibrarySearchUrl(query).toString(), MAX_SEARCH_BODY_BYTES)
+        val candidates = parseOpenLibrarySearch(body.toString(Charsets.UTF_8))
+            ?: throw java.io.IOException("not a search.json body")
+        // Never log the search text: it is the user's book.
+        runCatching { android.util.Log.d("CoverSearch", "openlibrary search: ${candidates.size} candidates") }
+        return candidates
+    }
+}

@@ -18,7 +18,7 @@ internal const val BINDER_COVER_PX = 192
 internal const val HOME_CURRENT_COVER_PX = 192
 
 /** One of the large widget's next Lives tiles (W2). */
-internal const val HOME_LIFE_COVER_PX = 96
+internal const val HOME_LIFE_COVER_PX = 128
 
 /** Bitmap bytes one RemoteViews payload may carry, well under the 1 MB transaction. */
 internal const val WIDGET_BITMAP_BUDGET_BYTES = 600 * 1024

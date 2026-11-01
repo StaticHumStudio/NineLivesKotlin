@@ -22,6 +22,19 @@ internal fun homeLayoutFor(widthDp: Float, heightDp: Float): HomeLayout = when {
 /** How many next Lives fit (decision J3): three under 300dp wide, four from 300dp. */
 internal fun livesSlotsFor(widthDp: Float): Int = if (widthDp < 300f) 3 else 4
 
+/** The widest a Lives tile grows, so the full face still fits its height. */
+internal const val MAX_LIFE_TILE_DP = 72f
+
+/** Gap between two Lives tiles. */
+internal const val LIFE_GAP_DP = 10f
+
+/**
+ * One square Lives tile, in dp: [slots] tiles and their gaps share the width
+ * inside the widget's 12dp padding, capped at [MAX_LIFE_TILE_DP].
+ */
+internal fun lifeTileDp(widthDp: Float, slots: Int): Float =
+    minOf(MAX_LIFE_TILE_DP, (widthDp - 24f - LIFE_GAP_DP * (slots - 1)) / slots)
+
 /** Most Lives any layout shows. */
 internal const val MAX_LIVES = 4
 

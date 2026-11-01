@@ -42,12 +42,27 @@ class HomeWidgetLayoutTest {
         assertTrue(homeWorstCaseBitmapBytes() <= WIDGET_BITMAP_BUDGET_BYTES)
         // Lives only count where they are drawn.
         assertEquals(192 * 192 * 2, homeBucketBitmapBytes(250f, 180f))
-        assertEquals(192 * 192 * 2 + 4 * 96 * 96 * 2, homeBucketBitmapBytes(300f, 260f))
+        assertEquals(192 * 192 * 2 + 4 * 128 * 128 * 2, homeBucketBitmapBytes(300f, 260f))
     }
 
     @Test fun `a 2x2 stacks the current book, a short one keeps it in a row`() {
         assertTrue(isTallCurrentOnly(160f, 180f))
         assertTrue(!isTallCurrentOnly(160f, 80f))
         assertTrue(!isTallCurrentOnly(250f, 180f))
+    }
+
+    @Test fun `the lives share the row width evenly, square, with 10dp gaps`() {
+        // 12dp padding a side, so the tiles and their gaps span the width inside it.
+        assertEquals((300f - 24f - 3 * 10f) / 4, lifeTileDp(300f, 4), 0.01f)
+        assertEquals((250f - 24f - 2 * 10f) / 3, lifeTileDp(250f, 3), 0.01f)
+        // A very wide widget stops growing the tiles, so the column still fits its height.
+        assertEquals(MAX_LIFE_TILE_DP, lifeTileDp(600f, 3), 0.01f)
+    }
+
+    @Test fun `the full face fits its smallest height with the tiles at their size`() {
+        // Rank slab 56, current book 64, rule 1 plus its 10dp gap, the tiles, 12dp padding a side.
+        for ((w, h) in HOME_WIDGET_SIZES.filter { homeLayoutFor(it.first, it.second) == HomeLayout.FULL }) {
+            assertTrue("$w x $h", 56f + 64f + 11f + lifeTileDp(w, livesSlotsFor(w)) + 24f <= h)
+        }
     }
 }

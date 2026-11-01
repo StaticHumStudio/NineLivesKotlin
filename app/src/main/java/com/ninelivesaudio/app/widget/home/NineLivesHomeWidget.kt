@@ -169,40 +169,59 @@ private fun Message(line: String?, locked: Boolean, layout: HomeLayout) {
     }
 }
 
+/**
+ * The rank card anchors to the top and the Lives to the bottom, with the
+ * current book between them, and equal weighted gaps take whatever height the
+ * launcher gives. Without Lives the current book sits in the middle of the
+ * space under the rank card. Only the one row face stays centered.
+ */
 @Composable
 private fun Ready(model: HomeWidgetModel, art: HomeWidgetArt, layout: HomeLayout, widthDp: Float, tall: Boolean) {
     val context = LocalContext.current
-    Column(
-        modifier = GlanceModifier.fillMaxSize(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val rank = model.rank
-        if (layout != HomeLayout.CURRENT_ONLY && rank != null) {
-            RankSlab(rank, actionStartActivity(widgetMainIntent(context, WidgetLaunch.OpenApp)))
-            Spacer(GlanceModifier.height(10.dp))
+    if (layout == HomeLayout.CURRENT_ONLY) {
+        Column(
+            modifier = GlanceModifier.fillMaxSize(),
+            verticalAlignment = if (tall) Alignment.Top else Alignment.CenterVertically,
+        ) {
+            model.current?.let {
+                if (tall) CurrentBookStacked(it, art.current) else CurrentBook(it, art.current, compact = true)
+            }
         }
-        model.current?.let {
-            if (tall) CurrentBookStacked(it, art.current) else CurrentBook(it, art.current, compact = layout == HomeLayout.CURRENT_ONLY)
-        }
-        val lives = model.lives.take(livesSlotsFor(widthDp))
+        return
+    }
+    Column(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.Top) {
+        model.rank?.let { RankSlab(it, actionStartActivity(widgetMainIntent(context, WidgetLaunch.OpenApp))) }
+        Spacer(GlanceModifier.defaultWeight())
+        model.current?.let { CurrentBook(it, art.current, compact = false) }
+        Spacer(GlanceModifier.defaultWeight())
+        val slots = livesSlotsFor(widthDp)
+        val lives = model.lives.take(slots)
         if (layout == HomeLayout.FULL && lives.isNotEmpty()) {
-            Spacer(GlanceModifier.height(10.dp))
             Image(
                 provider = ImageProvider(R.drawable.widget_home_rule),
                 contentDescription = null,
                 contentScale = ContentScale.FillBounds,
                 modifier = GlanceModifier.fillMaxWidth().height(1.dp),
             )
-            Spacer(GlanceModifier.height(10.dp))
+            Spacer(GlanceModifier.height(LIFE_GAP_DP.dp))
+            // Every slot is laid out, the first and last flush with the edges and
+            // equal weighted gaps between, so the tiles span the full width at any
+            // real width. A slot without a Life stays empty, as on Home's grid.
+            val tile = lifeTileDp(widthDp, slots).toInt()
             Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                lives.forEachIndexed { i, life ->
-                    if (i > 0) Spacer(GlanceModifier.width(10.dp))
-                    Cover(
-                        bitmap = art.lives[life.bookId],
-                        label = life.title,
-                        sizeDp = 48,
-                        action = openBook(context, life.bookId),
-                    )
+                repeat(slots) { i ->
+                    if (i > 0) Spacer(GlanceModifier.defaultWeight())
+                    val life = lives.getOrNull(i)
+                    if (life != null) {
+                        Cover(
+                            bitmap = art.lives[life.bookId],
+                            label = life.title,
+                            sizeDp = tile,
+                            action = openBook(context, life.bookId),
+                        )
+                    } else {
+                        Spacer(GlanceModifier.size(tile.dp))
+                    }
                 }
             }
         }
@@ -270,18 +289,19 @@ private fun CurrentBook(current: CurrentCard, cover: android.graphics.Bitmap?, c
     }
 }
 
-/** A 2x2: cover and play side by side on top, the title and chapter under them. */
+/** A 2x2: cover and play side by side at the top, the title and chapter anchored to the bottom. */
 @Composable
 private fun CurrentBookStacked(current: CurrentCard, cover: android.graphics.Bitmap?) {
     val context = LocalContext.current
     val open = openBook(context, current.bookId)
-    Column(modifier = GlanceModifier.fillMaxWidth()) {
+    Column(modifier = GlanceModifier.fillMaxSize()) {
         Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Cover(bitmap = cover, label = current.title, sizeDp = 72, action = open)
             Spacer(GlanceModifier.defaultWeight())
             PlayButton(current, open, 44)
         }
         Spacer(GlanceModifier.height(10.dp))
+        Spacer(GlanceModifier.defaultWeight())
         Column(modifier = GlanceModifier.fillMaxWidth().clickable(open)) {
             Text(
                 text = current.title,

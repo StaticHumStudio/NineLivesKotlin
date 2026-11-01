@@ -214,4 +214,28 @@ class WidgetPlaybackTest {
         val result = settledConnectionStatus(current = { ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE }) {}
         assertEquals(ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE, result)
     }
+
+    @Test(timeout = 3_000) fun `a resume that reloads the book holds until the reload clears`() = runBlocking {
+        val busy = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val order = mutableListOf<String>()
+        val wait = launch { awaitResumeSettled(busy, kotlinx.coroutines.flow.MutableStateFlow(false), startWindow = 1.seconds); order += "settled" }
+        kotlinx.coroutines.delay(50)
+        busy.value = true // play() launched the reload
+        kotlinx.coroutines.delay(200)
+        assertTrue(wait.isActive)
+        order += "reload done"
+        busy.value = false
+        wait.join()
+        assertEquals(listOf("reload done", "settled"), order)
+    }
+
+    @Test(timeout = 2_000) fun `a resume that plays straight away settles at once`() = runBlocking {
+        awaitResumeSettled(kotlinx.coroutines.flow.MutableStateFlow(false), kotlinx.coroutines.flow.MutableStateFlow(true), startWindow = 10.seconds)
+    }
+
+    @Test(timeout = 2_000) fun `a resume that starts nothing settles after the start window`() = runBlocking {
+        val started = System.nanoTime()
+        awaitResumeSettled(kotlinx.coroutines.flow.MutableStateFlow(false), kotlinx.coroutines.flow.MutableStateFlow(false), startWindow = 100.milliseconds)
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 1_000)
+    }
 }

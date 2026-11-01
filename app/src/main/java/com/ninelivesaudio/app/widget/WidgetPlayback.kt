@@ -21,7 +21,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.Dispatchers
@@ -186,6 +189,20 @@ internal suspend fun awaitServiceStart(started: Deferred<Unit>, act: Deferred<Un
     }
 }
 
+/**
+ * After a resume ([PlaybackManager.play]): a cold process has the book only
+ * restored, so play() reloads it in the background and returns at once. This
+ * waits for that reload, so the handoff stays up until playback can start in
+ * the foreground: done when [audible], or when [busy] (a load) has come and
+ * gone. If nothing starts within [startWindow], there is nothing to wait for.
+ */
+internal suspend fun awaitResumeSettled(busy: Flow<Boolean>, audible: Flow<Boolean>, startWindow: Duration) {
+    val state = combine(busy, audible) { b, a -> b to a }
+    val first = withTimeoutOrNull(startWindow) { state.first { (b, a) -> b || a } } ?: return
+    if (first.second) return
+    state.first { (b, a) -> a || !b }
+}
+
 /** Waits for [gate] for at most [timeout], then runs [block] either way. */
 internal suspend fun awaitThen(gate: Deferred<Unit>, timeout: Duration, block: suspend () -> Unit) {
     withTimeoutOrNull(timeout) { gate.await() }
@@ -342,7 +359,16 @@ class WidgetPlayback @Inject constructor(
 
     private suspend fun act(plan: WidgetPlayPlan, book: AudioBook?) {
         when (plan) {
-            WidgetPlayPlan.RESUME_CURRENT -> playbackManager.play()
+            WidgetPlayPlan.RESUME_CURRENT -> {
+                playbackManager.play()
+                awaitResumeSettled(
+                    busy = combine(playbackManager.loadingBook, playbackManager.playbackState) { book, state ->
+                        book != null || state == PlaybackState.LOADING
+                    },
+                    audible = playbackManager.playbackState.map { isAudible(it) },
+                    startWindow = 2.seconds,
+                )
+            }
             WidgetPlayPlan.PAUSE -> playbackManager.pause()
             WidgetPlayPlan.LOAD_BOOK -> book?.let { playbackManager.loadAudioBook(it) }
             else -> Unit

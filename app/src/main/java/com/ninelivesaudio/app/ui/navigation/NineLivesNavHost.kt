@@ -206,7 +206,12 @@ fun NineLivesNavHost(
                 },
                 onNavigateToPlayer = {
                     navController.navigateToTab(Routes.PLAYER)
-                }
+                },
+                onFindCover = {
+                    navController.navigate(Routes.coverSearch(bookId)) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

@@ -16,7 +16,9 @@ import com.ninelivesaudio.app.domain.model.DownloadStatus
 import com.ninelivesaudio.app.domain.model.ListeningSession
 import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.isInActiveLibrary
+import com.ninelivesaudio.app.entitlement.EffectiveSettingsRepository
 import com.ninelivesaudio.app.entitlement.FreeTier
+import com.ninelivesaudio.app.service.cover.CoverPicker
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
@@ -122,6 +124,21 @@ internal fun shouldFetchDetailChapters(
 internal fun detailChapters(stored: List<Chapter>, fetched: List<Chapter>?): List<Chapter> =
     stored.ifEmpty { fetched.orEmpty() }.sortedBy { it.start }
 
+/** What the book page offers for its cover. */
+data class CoverActions(val showFindCover: Boolean, val findCoverLocked: Boolean, val showUseOriginal: Boolean)
+
+/**
+ * Find a cover is for local books (server books have Audiobookshelf's own cover tools)
+ * and is part of the unlock. Use the original cover is never gated, so a pick made while
+ * unlocked can always be undone.
+ */
+internal fun coverActions(isLocal: Boolean, unlocked: Boolean, hasUserCover: Boolean): CoverActions =
+    CoverActions(
+        showFindCover = isLocal,
+        findCoverLocked = isLocal && !unlocked,
+        showUseOriginal = isLocal && hasUserCover,
+    )
+
 /** Tracks resumes for one ViewModel lifetime, never across process recreation. */
 internal class BookDetailResumeTracker {
     private var hasResumed = false
@@ -141,6 +158,8 @@ class BookDetailViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val localFolderAccess: LocalFolderAccess,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val effectiveSettings: EffectiveSettingsRepository,
+    private val coverPicker: CoverPicker,
 ) : ViewModel() {
 
     private val bookId: String = savedStateHandle["bookId"] ?: ""
@@ -201,6 +220,7 @@ class BookDetailViewModel @Inject constructor(
         val isHistoryLoading: Boolean = false,
         val historyLoadStatus: HistoryLoadStatus = HistoryLoadStatus.NOT_LOADED,
         val historyMessage: String? = null,
+        val coverActions: CoverActions = CoverActions(false, false, false),
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -218,6 +238,19 @@ class BookDetailViewModel @Inject constructor(
             loadBook()
             observeDownloadState()
             observeDownloadProgress()
+            observeUnlock()
+        }
+    }
+
+    /** Starting the trial on the unlock screen and coming back opens Find a cover. */
+    private fun observeUnlock() {
+        viewModelScope.launch {
+            effectiveSettings.isUnlocked.collect { unlocked ->
+                _uiState.update { state ->
+                    val book = state.book ?: return@update state
+                    state.copy(coverActions = coverActions(book.isLocal, unlocked, audioBookRepository.hasUserCover(book)))
+                }
+            }
         }
     }
 
@@ -334,6 +367,7 @@ class BookDetailViewModel @Inject constructor(
                 chapters = detailChapters(book.chapters, serverChapters),
                 addedAt = book.addedAt,
                 downloadState = if (book.isDownloaded) DownloadButtonState.COMPLETED else it.downloadState,
+                coverActions = coverActions(book.isLocal, effectiveSettings.isUnlocked.value, audioBookRepository.hasUserCover(book)),
             )
         }
     }
@@ -594,6 +628,15 @@ class BookDetailViewModel @Inject constructor(
                 playbackManager.seekTo(session.currentTime)
                 onReady()
             }
+        }
+    }
+
+    /** Use the original cover: drop the user's pick and show the scan's art again. */
+    fun useOriginalCover() {
+        val id = _uiState.value.book?.id ?: return
+        viewModelScope.launch {
+            coverPicker.useOriginal(id)
+            loadBook()
         }
     }
 

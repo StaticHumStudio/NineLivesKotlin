@@ -98,7 +98,7 @@ fun WhisperHost(
  * Whisper Card — The visual container for whisper text
  */
 @Composable
-private fun WhisperCard(
+internal fun WhisperCard(
     text: String,
     modifier: Modifier = Modifier
 ) {

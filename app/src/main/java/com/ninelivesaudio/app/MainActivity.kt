@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +54,7 @@ import com.ninelivesaudio.app.settings.unhinged.UnhingedSettings
 import com.ninelivesaudio.app.settings.unhinged.UnhingedSettingsRepository
 import com.ninelivesaudio.app.ui.components.CosmicBackgroundGradient
 import com.ninelivesaudio.app.ui.components.MiniPlayer
+import com.ninelivesaudio.app.ui.components.PlaybackErrorHost
 import com.ninelivesaudio.app.service.DownloadManager
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.IdleWhisperTrigger
 import com.ninelivesaudio.app.ui.copy.unhinged.catalog.WhisperContext
@@ -272,7 +272,6 @@ class MainActivity : ComponentActivity() {
 
                     Scaffold(
                         modifier = Modifier.fillMaxSize(),
-                        snackbarHost = { SnackbarHost(snackbarHostState) },
                         bottomBar = {
                             if (!useRailNavigation && currentRoute != Routes.WELCOME) {
                                 BottomNavBar(
@@ -302,11 +301,20 @@ class MainActivity : ComponentActivity() {
 
                                 // Content stack: NavHost + MiniPlayer overlay
                                 Column(modifier = Modifier.fillMaxSize()) {
-                                    NineLivesNavHost(
-                                        navController = navController,
-                                        startDestination = startDestination,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    // The error message sits at the bottom of the screen
+                                    // content, so it is always above the mini player
+                                    // and the navigation bar.
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        NineLivesNavHost(
+                                            navController = navController,
+                                            startDestination = startDestination,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        PlaybackErrorHost(
+                                            state = snackbarHostState,
+                                            modifier = Modifier.align(Alignment.BottomCenter),
+                                        )
+                                    }
                                     if (currentRoute != Routes.PLAYER && currentRoute != Routes.WELCOME) {
                                         MiniPlayer(
                                             playbackManager = playbackManager,

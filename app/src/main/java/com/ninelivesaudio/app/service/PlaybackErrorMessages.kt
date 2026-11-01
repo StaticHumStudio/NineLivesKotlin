@@ -19,15 +19,69 @@ fun PlaybackEvent.userMessage(): String? = when (this) {
 fun loadFailureMessage(cause: Throwable): String? =
     if (cause is CancellationException) null else GENERIC_PLAYBACK_ERROR
 
-/** Plain words for an ExoPlayer failure, chosen by cause. */
-fun playerErrorMessage(errorCode: Int): String = when (errorCode) {
+const val SIGNED_OUT_PLAYBACK_ERROR = "Your sign in has expired. Sign in again in Settings."
+const val BOOK_GONE_PLAYBACK_ERROR = "This book is no longer on the server."
+const val FOLDER_ACCESS_LOST_ERROR = "Folder access was lost. Reconnect it in Settings."
+
+/**
+ * Plain words for an ExoPlayer failure, chosen by cause. [httpStatus] is the
+ * server's answer when there was one.
+ */
+fun playerErrorMessage(
+    errorCode: Int,
+    httpStatus: Int? = null,
+    isLocalBook: Boolean = false,
+): String = when (errorCode) {
     PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
-    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
         "Could not reach the server to play this book. Check the connection and try again."
+    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> when (httpStatus) {
+        401, 403 -> SIGNED_OUT_PLAYBACK_ERROR
+        404 -> BOOK_GONE_PLAYBACK_ERROR
+        else -> GENERIC_PLAYBACK_ERROR
+    }
     PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
-        "An audio file is missing. Try downloading the book again."
+        if (isLocalBook) FOLDER_ACCESS_LOST_ERROR
+        else "An audio file is missing. Try downloading the book again."
     else -> GENERIC_PLAYBACK_ERROR
+}
+
+/**
+ * The error event for a failed load, or null when there is nothing to say. A
+ * load nobody asked for (the paused restore at app start) stays silent.
+ */
+fun loadErrorEvent(message: String?, reportErrors: Boolean): PlaybackEvent.Error? =
+    if (reportErrors && message != null) PlaybackEvent.Error(message) else null
+
+/**
+ * Books whose download the user is removing. A player that loses its file in
+ * that window is the app's own doing, so it says nothing. The mark outlives
+ * the removal by [graceMillis] because the player reports a moment late.
+ */
+class RemovalSuppression(
+    private val graceMillis: Long = 5_000,
+    private val clock: () -> Long,
+) {
+    private val active = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val endedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun begin(bookId: String) {
+        endedAt.remove(bookId)
+        active.add(bookId)
+    }
+
+    fun end(bookId: String) {
+        endedAt[bookId] = clock()
+        active.remove(bookId)
+    }
+
+    fun suppresses(bookId: String): Boolean {
+        if (bookId in active) return true
+        val ended = endedAt[bookId] ?: return false
+        if (clock() - ended < graceMillis) return true
+        endedAt.remove(bookId)
+        return false
+    }
 }
 
 /** Drops an identical message that arrives while the same one is still fresh. */

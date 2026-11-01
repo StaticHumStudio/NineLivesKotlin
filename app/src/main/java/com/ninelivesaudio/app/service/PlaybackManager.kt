@@ -16,6 +16,7 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import android.media.MediaMetadataRetriever
 import androidx.media3.exoplayer.ExoPlayer
@@ -1068,7 +1069,7 @@ class PlaybackManager @Inject constructor(
             }
 
             withContext(Dispatchers.Main) {
-                loadAudioBookOwned(loadRequest, plan.book, autoPlay = plan.playWhenReady)
+                loadAudioBookOwned(loadRequest, plan.book, autoPlay = plan.playWhenReady, reportErrors = false)
             }
         }
     }
@@ -1386,6 +1387,7 @@ class PlaybackManager @Inject constructor(
         book: AudioBook,
         skipServiceStart: Boolean = false,
         autoPlay: Boolean = true,
+        reportErrors: Boolean = true,
     ): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBookOwned must be called from the Main thread"
@@ -1395,7 +1397,7 @@ class PlaybackManager @Inject constructor(
         }
         if (!book.isInActiveLibrary(settingsManager.currentSettings)) {
             if (playbackLoadOwner.abandon(loadRequest)) {
-                _events.tryEmit(PlaybackEvent.Error("That book is not in the active library."))
+                loadErrorEvent("That book is not in the active library.", reportErrors)?.let { _events.tryEmit(it) }
             }
             return false
         }
@@ -1407,7 +1409,7 @@ class PlaybackManager @Inject constructor(
             )
             if (!access.isPlayable) {
                 if (playbackLoadOwner.abandon(loadRequest)) {
-                    _events.tryEmit(PlaybackEvent.Error("Folder access was lost. Reconnect it in Settings."))
+                    loadErrorEvent("Folder access was lost. Reconnect it in Settings.", reportErrors)?.let { _events.tryEmit(it) }
                 }
                 return false
             }
@@ -1419,7 +1421,7 @@ class PlaybackManager @Inject constructor(
         )
         if (remoteAccess is RemoteMediaAccessDecision.Blocked) {
             if (playbackLoadOwner.abandon(loadRequest)) {
-                _events.tryEmit(PlaybackEvent.Error(remoteAccess.message))
+                loadErrorEvent(remoteAccess.message, reportErrors)?.let { _events.tryEmit(it) }
             }
             return false
         }
@@ -1431,7 +1433,7 @@ class PlaybackManager @Inject constructor(
         // the session being torn down, so it is left alone.
         if (disconnectBarrierBlocksLoad(disconnectBarrier.isUp, book.isLocal)) {
             if (playbackLoadOwner.abandon(loadRequest)) {
-                _events.tryEmit(PlaybackEvent.Error("Signing out. Try again once you're disconnected."))
+                loadErrorEvent("Signing out. Try again once you're disconnected.", reportErrors)?.let { _events.tryEmit(it) }
             }
             return false
         }
@@ -1634,7 +1636,7 @@ class PlaybackManager @Inject constructor(
                 LoadedTracks.SUPERSEDED -> return false
                 LoadedTracks.EMPTY -> {
                     Log.w(TAG, "loadAudioBook: no media items for '${effectiveBook.title}'")
-                    return failLoad(loadRequest, "This book has no audio to play.")
+                    return failLoad(loadRequest, "This book has no audio to play.", reportErrors)
                 }
                 LoadedTracks.READY -> Unit
             }
@@ -1720,7 +1722,7 @@ class PlaybackManager @Inject constructor(
         } catch (e: Exception) {
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             Log.e(TAG, "loadAudioBook: FAILED: ${e.message}", e)
-            return failLoad(loadRequest, loadFailureMessage(e))
+            return failLoad(loadRequest, loadFailureMessage(e), reportErrors)
         } finally {
             stagedLoad.clear(loadRequest)
         }
@@ -1762,11 +1764,11 @@ class PlaybackManager @Inject constructor(
      * ownership check, so a load whose page closed (its scope is cancelled
      * and the release below throws) does not stay LOADING.
      */
-    private suspend fun failLoad(loadRequest: Long, message: String?): Boolean {
+    private suspend fun failLoad(loadRequest: Long, message: String?, reportErrors: Boolean): Boolean {
         if (!playbackLoadOwner.isCurrent(loadRequest)) return false
         exoPlayer?.clearMediaItems()
         _playbackState.value = PlaybackState.STOPPED
-        if (message != null) _events.tryEmit(PlaybackEvent.Error(message))
+        loadErrorEvent(message, reportErrors)?.let { _events.tryEmit(it) }
         syncManager.setActivePlaybackItem(null) {
             playbackLoadOwner.isCurrent(loadRequest)
         }
@@ -2848,7 +2850,12 @@ class PlaybackManager @Inject constructor(
         override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "onPlayerError: ${error.errorCodeName} — ${error.message}", error)
             finishPlayback(PlaybackTermination.ERROR)
-            _events.tryEmit(PlaybackEvent.Error(playerErrorMessage(error.errorCode)))
+            val book = _currentBook.value
+            // The user just removed this book's download, so the player losing
+            // its file is expected, not a failure to report.
+            if (book != null && downloadManagerLazy.get().removalGuard.suppresses(book.id)) return
+            val status = (error.cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode
+            _events.tryEmit(PlaybackEvent.Error(playerErrorMessage(error.errorCode, status, book?.isLocal == true)))
         }
     }
 

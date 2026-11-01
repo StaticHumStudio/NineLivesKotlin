@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One page of the stack: left sleeve, a gap, right sleeve. Each sleeve is its own tap
+     target. The hinge is not on the page: one fixed hinge sits over the stack in
+     widget_binder.xml, in the gap every page leaves for it.
+     Each sleeve is the largest square its half can hold (see widget_square.xml), and the
+     two squares sit against the gap, so covers are never cropped. The page is opaque and
+     inset (widget_page.xml), so pages fanned out behind it show only their gilt edge.
+     StackView measures a page with AT_MOST, so the first child (a huge image with no
+     adjustViewBounds) makes the page take all the room StackView offers. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layoutDirection="ltr"
+    android:id="@+id/binder_spread"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_page"
+    android:padding="@dimen/widget_page_padding">
+
+    <ImageView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:src="@drawable/widget_square" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1">
+
+            <RelativeLayout
+                android:id="@+id/binder_left"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:background="@drawable/widget_sleeve">
+
+                <ImageView
+                    android:id="@+id/binder_left_square"
+                    style="@style/NineLivesWidgetSquare" />
+
+                <ImageView
+                    android:id="@+id/binder_left_cover"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_left_square"
+                    android:layout_alignStart="@id/binder_left_square"
+                    android:layout_alignEnd="@id/binder_left_square"
+                    android:layout_alignTop="@id/binder_left_square"
+                    android:scaleType="fitCenter" />
+
+                <TextView
+                    android:id="@+id/binder_left_title"
+                    style="@style/NineLivesWidgetSleeveTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_left_square"
+                    android:layout_alignStart="@id/binder_left_square"
+                    android:layout_alignEnd="@id/binder_left_square"
+                    android:layout_alignTop="@id/binder_left_square"
+                    android:visibility="gone" />
+            </RelativeLayout>
+        </FrameLayout>
+
+        <FrameLayout
+            android:layout_width="@dimen/widget_hinge_slot"
+            android:layout_height="match_parent" />
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1">
+
+            <RelativeLayout
+                android:id="@+id/binder_right"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/widget_sleeve">
+
+                <ImageView
+                    android:id="@+id/binder_right_square"
+                    style="@style/NineLivesWidgetSquare" />
+
+                <ImageView
+                    android:id="@+id/binder_right_cover"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_right_square"
+                    android:layout_alignStart="@id/binder_right_square"
+                    android:layout_alignEnd="@id/binder_right_square"
+                    android:layout_alignTop="@id/binder_right_square"
+                    android:scaleType="fitCenter" />
+
+                <TextView
+                    android:id="@+id/binder_right_title"
+                    style="@style/NineLivesWidgetSleeveTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_right_square"
+                    android:layout_alignStart="@id/binder_right_square"
+                    android:layout_alignEnd="@id/binder_right_square"
+                    android:layout_alignTop="@id/binder_right_square"
+                    android:visibility="gone" />
+            </RelativeLayout>
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

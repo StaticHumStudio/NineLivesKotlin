@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="widget_binder_padding">6dp</dimen>
+    <dimen name="widget_hinge_width">8dp</dimen>
+    <dimen name="widget_hinge_gap">3dp</dimen>
+    <dimen name="widget_eye_padding">4dp</dimen>
+    <!-- Inset of the sleeves inside a binder page, so a page fanned out behind the
+         front one shows its gilt edge rather than a sliver of cover art. -->
+    <dimen name="widget_page_padding">8dp</dimen>
+    <!-- The gap a page leaves for the fixed hinge: the hinge plus a gap each side. -->
+    <dimen name="widget_hinge_slot">14dp</dimen>
+</resources>

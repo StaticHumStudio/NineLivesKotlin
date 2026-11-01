@@ -9,4 +9,7 @@
     <string name="trial_reminder_body_many">Your Nine Lives trial ends in %1$d days. This is the only reminder.</string>
     <string name="crash_dialog_text">Nine Lives hit something unexpected. Send a crash report to help us fix it?</string>
     <string name="crash_dialog_comment">What were you doing when this happened? (optional)</string>
+    <!-- Widgets (draft copy pending Jeff) -->
+    <string name="widget_binder_label">Binder</string>
+    <string name="widget_binder_description">Flip through your books like an old CD binder</string>
 </resources>

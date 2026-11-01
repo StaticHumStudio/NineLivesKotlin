@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
@@ -26,6 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 
@@ -70,6 +72,9 @@ import com.ninelivesaudio.app.ui.navigation.LeftNavRail
 import com.ninelivesaudio.app.ui.navigation.NineLivesNavHost
 import com.ninelivesaudio.app.ui.navigation.Routes
 import com.ninelivesaudio.app.ui.theme.NineLivesAudioTheme
+import com.ninelivesaudio.app.widget.WidgetRoute
+import com.ninelivesaudio.app.widget.widgetLaunchOrNull
+import com.ninelivesaudio.app.widget.widgetRoute
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -116,6 +121,9 @@ class MainActivity : ComponentActivity() {
     /** Hosts the failed-Play message. Owned here so it outlives recomposition. */
     private val snackbarHostState = SnackbarHostState()
 
+    /** A screen a home screen widget asked for, consumed once the app can navigate. */
+    private val pendingWidgetRoute = MutableStateFlow<WidgetRoute?>(null)
+
     /** Elapsed-realtime of the last touch, read by the idle whisper. */
     private val lastInteractionAt = MutableStateFlow(0L)
 
@@ -128,6 +136,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate: MainActivity starting")
         enableEdgeToEdge()
+        if (savedInstanceState == null) {
+            pendingWidgetRoute.value = intent?.widgetLaunchOrNull()?.let(::widgetRoute)
+        }
 
         // Request POST_NOTIFICATIONS permission (required on Android 13+ / API 33)
         // Without this, Media3 cannot post the foreground service notification.
@@ -249,6 +260,23 @@ class MainActivity : ComponentActivity() {
                     startDestinationFor(appSettings.onboardingComplete)
                 }
 
+                // A widget tap that opens a screen. Before onboarding is done
+                // the app opens normally and the request is dropped.
+                val widgetRouteRequest by pendingWidgetRoute.collectAsStateWithLifecycle()
+                LaunchedEffect(widgetRouteRequest, appSettings.onboardingComplete) {
+                    val route = widgetRouteRequest ?: return@LaunchedEffect
+                    pendingWidgetRoute.value = null
+                    if (!appSettings.onboardingComplete) return@LaunchedEffect
+                    when (route) {
+                        is WidgetRoute.Book -> navController.navigate(Routes.bookDetail(route.bookId)) {
+                            launchSingleTop = true
+                        }
+                        WidgetRoute.Unlock -> navController.navigate(Routes.UNLOCK) {
+                            launchSingleTop = true
+                        }
+                    }
+                }
+
                 // WhisperHost wraps all content to show atmospheric whisper overlays
                 WhisperHost(modifier = Modifier.fillMaxSize()) {
                     // Whispers wait for the stored settings (whispers toggle, Reduced Motion).
@@ -330,6 +358,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.widgetLaunchOrNull()?.let(::widgetRoute)?.let { pendingWidgetRoute.value = it }
     }
 
     override fun onStart() {

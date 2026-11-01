@@ -48,6 +48,43 @@
             </intent-filter>
         </activity>
 
+        <!-- Widget Play taps land here and decide without showing a screen. -->
+        <activity
+            android:name=".widget.WidgetActionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NineLivesAudio.WidgetTrampoline" />
+
+        <!-- The Binder home screen widget: provider, its stack's data, its setup screen. -->
+        <receiver
+            android:name=".widget.binder.BinderWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_binder_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_binder_info" />
+        </receiver>
+
+        <service
+            android:name=".widget.binder.BinderRemoteViewsService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+        <activity
+            android:name=".widget.binder.BinderConfigActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.NineLivesAudio">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <!-- Media3 Playback Service for background audio + Android Auto browsing -->
         <service
             android:name=".service.PlaybackService"

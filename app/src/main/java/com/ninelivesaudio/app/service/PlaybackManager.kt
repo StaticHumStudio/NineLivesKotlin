@@ -75,6 +75,7 @@ import javax.inject.Singleton
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import com.ninelivesaudio.app.widget.awaitThen
 
 enum class PlaybackState {
     STOPPED, LOADING, PLAYING, PAUSED, BUFFERING
@@ -1038,7 +1039,23 @@ class PlaybackManager @Inject constructor(
     }
 
     /** Restore the last current item after ordinary process death, always paused. */
-    suspend fun restoreCurrentItem(): Boolean {
+    suspend fun restoreCurrentItem(): Boolean = try {
+        restoreCurrentItemOwned()
+    } finally {
+        startupRestore.complete(Unit)
+    }
+
+    /**
+     * Returns once the first [restoreCurrentItem] has finished, or after
+     * [timeout]. A widget tap that wakes a dead process waits here, so it acts
+     * on the restored book instead of racing the restore's staged load, which
+     * [play] ignores (widgets plan, Design delta 4).
+     */
+    suspend fun awaitStartupRestore(timeout: Duration = 10.seconds) {
+        awaitThen(startupRestore, timeout) {}
+    }
+
+    private suspend fun restoreCurrentItemOwned(): Boolean {
         return withNewLoadRequest { loadRequest ->
             val persistedBookId = settingsManager.getCurrentPlaybackBookId()
                 ?: return@withNewLoadRequest false
@@ -1096,6 +1113,8 @@ class PlaybackManager @Inject constructor(
     private val playbackProgressOwner = PlaybackProgressOwner()
     private val pendingTerminalOwner = PendingTerminalOwner()
     private val playbackLoadOwner = PlaybackLoadOwner()
+    // Completed when the first startup restore finishes. Completing it again is a no op.
+    private val startupRestore = CompletableDeferred<Unit>()
 
     // A count of in-flight confirmed disconnects, not a single flag. Raised
     // by SettingsViewModel's disconnect flow before it starts tearing the

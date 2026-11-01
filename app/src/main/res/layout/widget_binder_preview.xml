@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widget picker preview: the eye, the hinge, and an empty sleeve waiting for a disc. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layoutDirection="ltr"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_frame"
+    android:padding="@dimen/widget_binder_padding">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1">
+
+            <RelativeLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end|center_vertical"
+                android:background="@drawable/widget_sleeve">
+
+                <ImageView
+                    android:id="@+id/binder_preview_eye_square"
+                    style="@style/NineLivesWidgetSquare" />
+
+                <ImageView
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_preview_eye_square"
+                    android:layout_alignStart="@id/binder_preview_eye_square"
+                    android:layout_alignEnd="@id/binder_preview_eye_square"
+                    android:layout_alignTop="@id/binder_preview_eye_square"
+                    android:importantForAccessibility="no"
+                    android:padding="@dimen/widget_eye_padding"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/widget_eye" />
+            </RelativeLayout>
+        </FrameLayout>
+
+        <FrameLayout
+            android:layout_width="@dimen/widget_hinge_width"
+            android:layout_height="match_parent"
+            android:layout_marginHorizontal="@dimen/widget_hinge_gap"
+            android:background="@drawable/widget_hinge" />
+
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1">
+
+            <RelativeLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/widget_sleeve_empty">
+
+                <ImageView
+                    android:id="@+id/binder_preview_empty_square"
+                    style="@style/NineLivesWidgetSquare" />
+            </RelativeLayout>
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A filled sleeve behind a cover. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <!-- archiveVoidDeep -->
+    <solid android:color="#FF0A0520" />
+    <corners android:radius="10dp" />
+</shape>

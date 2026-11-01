@@ -41,6 +41,14 @@ class WidgetRefreshTriggersTest {
             assertEquals(setOf(WidgetTarget.HOME), widgetRefreshTargets(t0, next))
     }
 
+    @Test fun `a load starting or ending redraws only the large widget`() {
+        // A failed load leaves the same book, not audible: without this the
+        // large widget kept the dimmed loading button until some other event.
+        val loading = t0.copy(isLoading = true)
+        assertEquals(setOf(WidgetTarget.HOME), widgetRefreshTargets(t0, loading))
+        assertEquals(setOf(WidgetTarget.HOME), widgetRefreshTargets(loading, t0))
+    }
+
     @Test fun `nothing changed means no redraw`() {
         assertEquals(emptySet<WidgetTarget>(), widgetRefreshTargets(t0, t0.copy()))
     }

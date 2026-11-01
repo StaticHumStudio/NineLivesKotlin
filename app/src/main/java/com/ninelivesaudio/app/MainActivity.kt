@@ -73,6 +73,7 @@ import com.ninelivesaudio.app.ui.navigation.NineLivesNavHost
 import com.ninelivesaudio.app.ui.navigation.Routes
 import com.ninelivesaudio.app.ui.theme.NineLivesAudioTheme
 import com.ninelivesaudio.app.widget.WidgetRoute
+import com.ninelivesaudio.app.widget.opensNewBookPage
 import com.ninelivesaudio.app.widget.widgetLaunchOrNull
 import com.ninelivesaudio.app.widget.widgetRoute
 import dagger.hilt.android.AndroidEntryPoint
@@ -268,8 +269,11 @@ class MainActivity : ComponentActivity() {
                     pendingWidgetRoute.value = null
                     if (!appSettings.onboardingComplete) return@LaunchedEffect
                     when (route) {
-                        is WidgetRoute.Book -> navController.navigate(Routes.bookDetail(route.bookId)) {
-                            launchSingleTop = true
+                        is WidgetRoute.Book -> {
+                            val top = navController.currentBackStackEntry
+                            if (opensNewBookPage(top?.destination?.route, top?.arguments?.getString("bookId"), route.bookId)) {
+                                navController.navigate(Routes.bookDetail(route.bookId))
+                            }
                         }
                         WidgetRoute.Unlock -> navController.navigate(Routes.UNLOCK) {
                             launchSingleTop = true

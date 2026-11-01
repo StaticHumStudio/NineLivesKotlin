@@ -132,7 +132,7 @@ class HomeViewModel @Inject constructor(
                     if (libraryId != null && canShowHomeBooks(settings, hasAuthToken)) {
                         // The recent-books flow re-emits on any AudioBooks change, so
                         // a folder import refreshes the book count along with it.
-                        audioBookDao.observeRecentlyPlayedByLibrary(libraryId, 9)
+                        audioBookDao.observeRecentlyPlayedByLibrary(libraryId, RECENT_LIVES_LIMIT)
                             .collect { results -> processRecentlyPlayed(results, libraryId) }
                     } else {
                         processRecentlyPlayed(emptyList(), libraryId = null)
@@ -154,7 +154,7 @@ class HomeViewModel @Inject constructor(
                     )
                 }
                 val results = if (visibleLibraryId != null) {
-                    audioBookDao.getRecentlyPlayedByLibrary(visibleLibraryId, 9)
+                    audioBookDao.getRecentlyPlayedByLibrary(visibleLibraryId, RECENT_LIVES_LIMIT)
                 } else {
                     emptyList()
                 }
@@ -243,7 +243,7 @@ class HomeViewModel @Inject constructor(
         }
 
         // Aggregate total listening time
-        val totalSeconds = results.sumOf { it.audioBook.currentTimeSeconds }
+        val totalSeconds = totalTimeGivenSeconds(results.map { it.audioBook.currentTimeSeconds })
         val totalText = formatListeningTime(totalSeconds)
 
         // Counted only when Home is empty. A failed count reads as no books,
@@ -302,17 +302,6 @@ class HomeViewModel @Inject constructor(
         (a + (b - a) * t).roundToInt().coerceIn(0, 255)
 
     // ─── Time Formatting ─────────────────────────────────────────────────────
-
-    /** Formats seconds as compact listening time: "< 1m", "45m", "3h 22m" */
-    private fun formatListeningTime(totalSeconds: Double): String {
-        val totalMinutes = totalSeconds / 60.0
-        if (totalMinutes < 1) return "< 1m"
-        val totalHours = totalSeconds / 3600.0
-        if (totalHours < 1) return "${totalMinutes.toInt()}m"
-        val hours = totalHours.toInt()
-        val mins = ((totalSeconds % 3600) / 60).toInt()
-        return "${hours}h ${mins}m"
-    }
 
     /** Formats an ISO-8601 timestamp as relative time: "3h ago", "Yesterday", etc. */
     private fun formatRelativeTime(timestamp: String?): String {

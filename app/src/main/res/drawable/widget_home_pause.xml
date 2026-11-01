@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Nine Lives widget's pause button: a goldFilament disc, the bars in archiveVoidDeep. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="44dp"
+    android:height="44dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#FFE8C468"
+        android:pathData="M24,2a22,22 0 1,0 0.01,0z" />
+    <path
+        android:fillColor="#FF0A0520"
+        android:pathData="M17,14h5v20h-5zM26,14h5v20h-5z" />
+</vector>

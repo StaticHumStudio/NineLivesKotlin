@@ -41,10 +41,10 @@ internal class WidgetTap(val plan: Deferred<WidgetPlayPlan>, val act: Deferred<U
 /** What a widget play tap turns into. */
 internal enum class WidgetPlayPlan { IGNORE, PAUSE, RESUME_CURRENT, LOAD_BOOK, OPEN_BOOK_PAGE, OPEN_UNLOCK }
 
-private fun isLoading(state: PlaybackState, bookLoading: Boolean) =
+internal fun isLoading(state: PlaybackState, bookLoading: Boolean) =
     bookLoading || state == PlaybackState.LOADING
 
-private fun isAudible(state: PlaybackState) =
+internal fun isAudible(state: PlaybackState) =
     state == PlaybackState.PLAYING || state == PlaybackState.BUFFERING
 
 /**
@@ -68,7 +68,11 @@ internal fun binderPlayPlan(
     else -> WidgetPlayPlan.LOAD_BOOK
 }
 
-/** A play or pause button on a widget, acting like the mini player's. */
+/**
+ * A play or pause button on a widget, acting like the mini player's. A locked
+ * tap goes to Unlock, and a shown book that cannot play right now opens its
+ * page, the same as a Binder cover (plan Design delta 5).
+ */
 internal fun togglePlan(
     isUnlocked: Boolean,
     currentBookId: String?,
@@ -76,13 +80,33 @@ internal fun togglePlan(
     bookLoading: Boolean,
     shownBookId: String?,
     shownPlayable: Boolean,
+    shownInActiveLibrary: Boolean = true,
+): WidgetPlayPlan = togglePlanLazy(
+    isUnlocked, currentBookId, state, bookLoading, shownBookId, shownInActiveLibrary,
+) { shownPlayable }
+
+/**
+ * Same decision as [togglePlan], but playability is only asked for when the
+ * tap would load a book. Pausing never waits on a server probe.
+ */
+internal inline fun togglePlanLazy(
+    isUnlocked: Boolean,
+    currentBookId: String?,
+    state: PlaybackState,
+    bookLoading: Boolean,
+    shownBookId: String?,
+    shownInActiveLibrary: Boolean = true,
+    shownPlayable: () -> Boolean,
 ): WidgetPlayPlan = when {
-    !isUnlocked -> WidgetPlayPlan.IGNORE
+    !isUnlocked -> WidgetPlayPlan.OPEN_UNLOCK
+    // A stale button (widget not yet redrawn after a library or mode switch)
+    // never touches the new library's playback.
+    !shownInActiveLibrary -> WidgetPlayPlan.IGNORE
     isLoading(state, bookLoading) -> WidgetPlayPlan.IGNORE
     isAudible(state) -> WidgetPlayPlan.PAUSE
     currentBookId != null -> WidgetPlayPlan.RESUME_CURRENT
     shownBookId == null -> WidgetPlayPlan.IGNORE
-    !shownPlayable -> WidgetPlayPlan.IGNORE
+    !shownPlayable() -> WidgetPlayPlan.OPEN_BOOK_PAGE
     else -> WidgetPlayPlan.LOAD_BOOK
 }
 
@@ -228,8 +252,10 @@ class WidgetPlayback @Inject constructor(
      * Book Detail's Play gates: not archived, source reachable, remote media
      * not blocked. A streamed book that reads blocked gets one server check
      * first (see [settledConnectionStatus]), since a cold process has not run one.
+     * A redraw passes [settle] false: it reads the status as it is, and the
+     * check landing later redraws the widget anyway.
      */
-    internal suspend fun isPlayable(book: AudioBook): Boolean {
+    internal suspend fun isPlayable(book: AudioBook, settle: Boolean = true): Boolean {
         val library = book.libraryId?.let { libraryRepository.getById(it) }
         val access = reconcileLocalBookAccess(
             book,
@@ -242,6 +268,7 @@ class WidgetPlayback @Inject constructor(
             connectionStatus = status,
         )
         if (decision(connectivityMonitor.connectionStatus.value) !is RemoteMediaAccessDecision.Blocked) return true
+        if (!settle) return false
         val status = settledConnectionStatus(current = { connectivityMonitor.connectionStatus.value }) {
             connectivityMonitor.refreshIsOnlineFromSystem()
             withTimeoutOrNull(WIDGET_SERVER_CHECK_WAIT) { connectivityMonitor.checkServerReachable() }
@@ -289,8 +316,17 @@ class WidgetPlayback @Inject constructor(
         }
     }
 
-    internal suspend fun toggle(shownBookId: String?): WidgetPlayPlan =
-        scope.async { toggleOwned(shownBookId) }.await()
+    /**
+     * The large widget's play or pause button. Decided on this class's scope
+     * like a Binder tap, so the handoff screen can hold for the foreground
+     * start (WidgetActionActivity) without owning the load.
+     */
+    internal fun toggleTap(launch: WidgetLaunch.TogglePlay): WidgetTap {
+        val act = CompletableDeferred<Unit>()
+        val plan = scope.async { toggleOwned(launch.bookId, act) }
+        plan.invokeOnCompletion { if (it != null) act.complete(Unit) }
+        return WidgetTap(plan, act)
+    }
 
     /** The tapped book, only if it belongs to the library the app shows now. */
     private suspend fun activeBook(bookId: String): AudioBook? =
@@ -325,26 +361,25 @@ class WidgetPlayback @Inject constructor(
         binderOpenPlan(isUnlocked = true, inActiveLibrary = activeBook(bookId) != null)
     }
 
-    private suspend fun toggleOwned(shownBookId: String?): WidgetPlayPlan {
-        playbackManager.awaitStartupRestore()
-        val unlocked = effectiveSettings.isUnlockedNow
-        val shown = if (unlocked && shownBookId != null) {
-            withContext(Dispatchers.IO) { audioBookRepository.getById(shownBookId) }
-                ?.takeIf { it.isInActiveLibrary(settingsManager.currentSettings) }
-        } else {
-            null
-        }
-        val plan = togglePlan(
-            isUnlocked = unlocked,
+    private suspend fun toggleOwned(shownBookId: String, act: CompletableDeferred<Unit>): WidgetPlayPlan = decideBinderTap(
+        isUnlocked = { effectiveSettings.isUnlockedNow },
+        awaitReady = { playbackManager.awaitStartupRestore() },
+    ) {
+        // A tap from a widget not yet redrawn after a mode or account switch
+        // carries a book from the old library. It never plays or opens.
+        val shown = activeBook(shownBookId)
+        val plan = togglePlanLazy(
+            isUnlocked = true,
             currentBookId = playbackManager.currentBook.value?.id,
             state = playbackManager.playbackState.value,
             bookLoading = playbackManager.loadingBook.value != null,
             shownBookId = shown?.id,
-            shownPlayable = shown != null && isPlayable(shown),
+            shownInActiveLibrary = shown != null,
+            shownPlayable = { shown != null && isPlayable(shown) },
         )
-        launchAct(plan, shown)
-        return plan
-    }
+        launchAct(plan, shown, act)
+        plan
+    }.also { if (it == WidgetPlayPlan.OPEN_UNLOCK) act.complete(Unit) }
 
     private fun launchAct(plan: WidgetPlayPlan, book: AudioBook?, done: CompletableDeferred<Unit>? = null) {
         Log.d(TAG, "plan $plan for ${book?.id}")

@@ -15,6 +15,10 @@ import com.ninelivesaudio.app.service.cover.CoverPicker
 import com.ninelivesaudio.app.service.local.LocalScanCoordinator
 import com.ninelivesaudio.app.service.local.LocalScanState
 import com.ninelivesaudio.app.widget.binder.BinderWidgetUpdater
+import com.ninelivesaudio.app.widget.home.HomeWidgetStore
+import com.ninelivesaudio.app.widget.home.NineLivesHomeWidget
+import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.updateAll
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +58,7 @@ class WidgetRefresher @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     private val binderUpdater: BinderWidgetUpdater,
     private val coverPicker: CoverPicker,
+    private val homeStore: HomeWidgetStore,
 ) {
     private var started = false
     private val pushLock = Mutex()
@@ -100,7 +105,8 @@ class WidgetRefresher @Inject constructor(
             playbackManager.currentBook.map { it?.id },
             playbackManager.playbackState.map { isPlayingForWidget(it) },
             playbackManager.currentChapterIndex,
-        ) { id, playing, chapter -> Triple(id, playing, chapter) }
+            playbackManager.loadingBook.map { it != null },
+        ) { id, playing, chapter, loading -> PlaybackTrigger(id, playing, chapter, loading) }
         val counters = combine(syncCount, scanCount, tick, coverPicker.changeCount) { a, b, c, d -> listOf(a, b, c, d) }
         val reachable = connectivityMonitor.connectionStatus.map { it == ConnectivityMonitor.ConnectionStatus.CONNECTED }
 
@@ -110,9 +116,10 @@ class WidgetRefresher @Inject constructor(
                 WidgetTrigger(
                     isUnlocked = unlocked,
                     identity = id,
-                    currentBookId = play.first,
-                    isPlaying = play.second,
-                    chapterIndex = play.third,
+                    currentBookId = play.bookId,
+                    isPlaying = play.isPlaying,
+                    chapterIndex = play.chapterIndex,
+                    isLoading = play.isLoading,
                     serverReachable = reach,
                     syncCount = count[0],
                     scanCount = count[1],
@@ -138,13 +145,22 @@ class WidgetRefresher @Inject constructor(
         }
     }
 
-    /** Redraws [targets] now. HOME is a no op until the large widget exists (W2). */
+    /** Redraws [targets] now. A widget kind with none on the home screen reads nothing. */
     suspend fun pushNow(targets: Set<WidgetTarget>) = withContext(Dispatchers.IO) {
         pushLock.withLock {
             Log.d(TAG, "push $targets")
             if (WidgetTarget.BINDER in targets && binderUpdater.widgetIds().isNotEmpty()) {
                 runCatching { binderUpdater.updateAll() }
                     .onFailure { Log.w(TAG, "binder update failed: ${it.message}") }
+            }
+            if (WidgetTarget.HOME in targets) {
+                runCatching {
+                    val placed = GlanceAppWidgetManager(context).getGlanceIds(NineLivesHomeWidget::class.java)
+                    if (placed.isNotEmpty()) {
+                        homeStore.refresh()
+                        NineLivesHomeWidget().updateAll(context)
+                    }
+                }.onFailure { Log.w(TAG, "home update failed: ${it.message}") }
             }
         }
     }

@@ -14,6 +14,9 @@ internal sealed interface WidgetLaunch {
     data class PlayBook(val bookId: String) : WidgetLaunch
     data object OpenUnlock : WidgetLaunch
 
+    /** The large widget's play or pause button, for the book it shows. */
+    data class TogglePlay(val bookId: String) : WidgetLaunch
+
     /** A tap on an empty sleeve. The trampoline finishes without launching anything. */
     data object Nothing : WidgetLaunch
 }
@@ -27,12 +30,14 @@ internal fun WidgetLaunch.actionName(): String = when (this) {
     is WidgetLaunch.PlayBook -> "play_book"
     WidgetLaunch.OpenUnlock -> "open_unlock"
     WidgetLaunch.Nothing -> "empty"
+    is WidgetLaunch.TogglePlay -> "toggle_play"
 }
 
 internal val WidgetLaunch.bookIdOrNull: String?
     get() = when (this) {
         is WidgetLaunch.OpenBook -> bookId
         is WidgetLaunch.PlayBook -> bookId
+        is WidgetLaunch.TogglePlay -> bookId
         else -> null
     }
 
@@ -45,9 +50,18 @@ internal fun parseWidgetLaunch(action: String?, bookId: String?): WidgetLaunch? 
         "empty" -> WidgetLaunch.Nothing
         "open_book" -> id?.let { WidgetLaunch.OpenBook(it) }
         "play_book" -> id?.let { WidgetLaunch.PlayBook(it) }
+        "toggle_play" -> id?.let { WidgetLaunch.TogglePlay(it) }
         else -> null
     }
 }
+
+/**
+ * Whether a widget's Open tap needs a new book page. Only the same book
+ * already on top is left alone. Navigation's single top matches the route
+ * pattern, not the book, so it would keep another book's page instead.
+ */
+internal fun opensNewBookPage(topRoute: String?, topBookId: String?, bookId: String): Boolean =
+    !(topRoute == com.ninelivesaudio.app.ui.navigation.Routes.BOOK_DETAIL && topBookId == bookId)
 
 /** The screen `MainActivity` opens for a widget launch. */
 internal sealed interface WidgetRoute {
@@ -65,6 +79,7 @@ internal fun widgetRoute(launch: WidgetLaunch): WidgetRoute? = when (launch) {
     is WidgetLaunch.OpenBook -> WidgetRoute.Book(launch.bookId)
     WidgetLaunch.OpenUnlock -> WidgetRoute.Unlock
     is WidgetLaunch.PlayBook -> null
+    is WidgetLaunch.TogglePlay -> null
 }
 
 internal fun Intent.putWidgetLaunch(launch: WidgetLaunch): Intent = apply {
@@ -80,6 +95,16 @@ internal fun widgetMainIntent(context: Context, launch: WidgetLaunch): Intent =
     Intent(context, MainActivity::class.java)
         .putWidgetLaunch(launch)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+/**
+ * A tap the trampoline decides (Play, Open its page, play or pause), as a
+ * finished intent. The data URI keeps each launch's PendingIntent its own,
+ * since Android ignores extras when it matches PendingIntents.
+ */
+internal fun widgetActionIntent(context: Context, launch: WidgetLaunch): Intent =
+    widgetActionIntent(context)
+        .putWidgetLaunch(launch)
+        .setData(android.net.Uri.parse("ninelives-widget://${launch.actionName()}/${launch.bookIdOrNull.orEmpty()}"))
 
 /** The Binder's fill in template. Each cover adds its own extras. */
 internal fun widgetActionIntent(context: Context): Intent =

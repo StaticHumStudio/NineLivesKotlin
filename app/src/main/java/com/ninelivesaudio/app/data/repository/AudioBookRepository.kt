@@ -32,6 +32,14 @@ import com.ninelivesaudio.app.service.local.folderNameOfTrackUri
 import com.ninelivesaudio.app.service.local.matchMovedLocalBooks
 import com.ninelivesaudio.app.service.local.sameLocalBook
 import com.ninelivesaudio.app.service.local.setAsideId
+import com.ninelivesaudio.app.service.local.USER_COVERS_DIR
+import com.ninelivesaudio.app.service.local.copyUserCoverFile
+import com.ninelivesaudio.app.service.local.coverToCarryOnMove
+import com.ninelivesaudio.app.service.local.deleteUserCoverFile
+import com.ninelivesaudio.app.service.local.fileUriString
+import com.ninelivesaudio.app.service.local.isUserPickedCover
+import com.ninelivesaudio.app.service.local.setAsideLocalCover
+import com.ninelivesaudio.app.service.local.writeUserCoverFile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -566,8 +574,17 @@ class AudioBookRepository @Inject constructor(
             // The scan wrote any cover of the new book to local_covers/<id>.jpg
             // before this ran. With none of its own, that file is still the old
             // book's art: keep it for the archived row under its own name.
+            // A cover the user picked for the old book goes with it. The new book
+            // at this path starts with no pick: its id is removed from
+            // existingById below, so the import never copies the pick onto it.
             val keptCover = if (book.coverPath == null) keepCoverForSetAside(old.id, asideId) else null
-            audioBookDao.upsert(old.copy(id = asideId, coverPath = keptCover, localCoverPath = keptCover))
+            audioBookDao.upsert(
+                old.copy(
+                    id = asideId,
+                    coverPath = keptCover,
+                    localCoverPath = setAsideLocalCover(old.localCoverPath, keptCover, userCoversDir),
+                )
+            )
             playbackProgressDao.moveToBook(old.id, asideId)
             localBookmarkDao.moveToBook(old.id, asideId)
             localListeningSessionDao.moveToBook(old.id, asideId)
@@ -586,6 +603,9 @@ class AudioBookRepository @Inject constructor(
                     // hiccuped) — a REPLACE upsert would otherwise null it out
                     // and orphan the local_covers file still on disk.
                     coverPath = book.coverPath ?: existing?.coverPath,
+                    // A scanned book never carries localCoverPath, so this line is
+                    // what keeps a cover the user picked across rescans. Embedded
+                    // or folder art only ever lands in coverPath.
                     localCoverPath = book.localCoverPath ?: existing?.localCoverPath,
                     currentTime = existing?.currentTimeSeconds?.seconds ?: book.currentTime,
                     progress = existing?.progress ?: book.progress,
@@ -654,6 +674,12 @@ class AudioBookRepository @Inject constructor(
             // had a saved place (issue #46).
             localBookmarkDao.moveToBook(from, to)
             localListeningSessionDao.moveToBook(from, to)
+            // A cover the user picked follows the moved book too (issue #46), as
+            // its own copy so the archived old row keeps a working cover and
+            // deleting either one forever never breaks the other.
+            coverToCarryOnMove(vanishedById[from]?.localCoverPath, audioBookDao.getById(to)?.localCoverPath, userCoversDir)
+                ?.let { copyUserCoverFile(it, userCoversDir, to, System.currentTimeMillis()) }
+                ?.let { audioBookDao.setUserCoverPath(to, fileUriString(it)) }
             val progress = playbackProgressDao.getByAudioBookId(from) ?: continue
             // The destination row was just imported with a fresh zero position,
             // so there is nothing of the user's here to overwrite. The progress
@@ -727,6 +753,7 @@ class AudioBookRepository @Inject constructor(
      * folder is re-added later.
      */
     suspend fun deleteLocalBookForever(bookId: String) {
+        val pick = audioBookDao.getById(bookId)?.localCoverPath
         audioBookDao.deleteById(bookId)
         playbackProgressDao.deleteByAudioBookId(bookId)
         localListeningSessionDao.deleteByAudioBookId(bookId)
@@ -734,6 +761,43 @@ class AudioBookRepository @Inject constructor(
         runCatching {
             java.io.File(java.io.File(context.filesDir, "local_covers"), "$bookId.jpg").delete()
         }
+        runCatching { deleteUserCoverFile(pick, userCoversDir) }
+    }
+
+    // ─── Covers the user picked (Find a cover) ───────────────────────────
+
+    private val userCoversDir get() = java.io.File(context.filesDir, USER_COVERS_DIR)
+
+    /** True when the book shows a cover the user picked rather than the scan's own art. */
+    fun hasUserCover(book: AudioBook): Boolean = isUserPickedCover(book.localCoverPath, userCoversDir)
+
+    /**
+     * Save [jpegBytes] as a local book's picked cover and point the row at it with one
+     * UPDATE. The previous pick's file is deleted once the new one is in place. False for
+     * a missing row, a server book, or a file that did not write.
+     */
+    suspend fun setUserCover(bookId: String, jpegBytes: ByteArray, nowMs: Long = System.currentTimeMillis()): Boolean =
+        withContext(Dispatchers.IO) {
+            val row = audioBookDao.getById(bookId) ?: return@withContext false
+            if (row.isLocal != 1) return@withContext false
+            val file = writeUserCoverFile(jpegBytes, userCoversDir, bookId, nowMs) ?: return@withContext false
+            val path = fileUriString(file)
+            if (audioBookDao.setUserCoverPath(bookId, path) == 0) {
+                file.delete()
+                return@withContext false
+            }
+            if (row.localCoverPath != path) runCatching { deleteUserCoverFile(row.localCoverPath, userCoversDir) }
+            true
+        }
+
+    /** "Use the original cover": drop the pick so the scan's art (or the placeholder) shows. */
+    suspend fun clearUserCover(bookId: String): Boolean = withContext(Dispatchers.IO) {
+        val row = audioBookDao.getById(bookId) ?: return@withContext false
+        val pick = row.localCoverPath
+        if (!isUserPickedCover(pick, userCoversDir)) return@withContext false
+        val changed = audioBookDao.clearUserCoverPath(bookId, pick!!) == 1
+        if (changed) runCatching { deleteUserCoverFile(pick, userCoversDir) }
+        changed
     }
 
     /** Cascade-delete a set of local books (used by the archive sweep). */

@@ -206,6 +206,18 @@ interface AudioBookDao {
     @Query("UPDATE AudioBooks SET CoverPath = :coverPath WHERE Id = :id")
     suspend fun updateCoverPath(id: String, coverPath: String)
 
+    /**
+     * Point a local book at the cover the user picked. One statement, never a whole row
+     * write, so it cannot undo a rescan that lands at the same moment. 0 when the row is
+     * gone or is a server book.
+     */
+    @Query("UPDATE AudioBooks SET LocalCoverPath = :path WHERE Id = :id AND IsLocal = 1")
+    suspend fun setUserCoverPath(id: String, path: String): Int
+
+    /** Drop the user's pick, only while the row still holds [expected]. */
+    @Query("UPDATE AudioBooks SET LocalCoverPath = NULL WHERE Id = :id AND IsLocal = 1 AND LocalCoverPath = :expected")
+    suspend fun clearUserCoverPath(id: String, expected: String): Int
+
     // ─── Readers outside the Library shelf ───────────────────────────────
     //
     // Screens and services that only need a handful of books ask for those

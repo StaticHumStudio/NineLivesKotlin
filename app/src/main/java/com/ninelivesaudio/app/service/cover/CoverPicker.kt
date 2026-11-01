@@ -8,6 +8,9 @@ import com.ninelivesaudio.app.service.PlaybackManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,6 +29,18 @@ class CoverPicker @Inject constructor(
     private val fitter: CoverImageFitter,
     private val playbackManager: PlaybackManager,
 ) {
+
+    private val _changeCount = MutableStateFlow(0L)
+
+    /**
+     * Counts every saved pick and every undo, for any book, so home screen
+     * widgets redraw with the new cover at once instead of at the next sync.
+     */
+    val changeCount: StateFlow<Long> = _changeCount.asStateFlow()
+
+    private fun coverChanged() {
+        _changeCount.value = _changeCount.value + 1
+    }
 
     /** The large image, or the thumbnail the user saw when the large one fails. */
     suspend fun saveFromSearch(bookId: String, result: CoverResult): CoverSaveResult {
@@ -51,7 +66,10 @@ class CoverPicker @Inject constructor(
     /** Use the original cover. Never gated. True when a pick was removed. */
     suspend fun useOriginal(bookId: String): Boolean {
         val changed = repository.clearUserCover(bookId)
-        if (changed) playbackManager.onCoverChanged(bookId)
+        if (changed) {
+            coverChanged()
+            playbackManager.onCoverChanged(bookId)
+        }
         return changed
     }
 
@@ -59,6 +77,7 @@ class CoverPicker @Inject constructor(
         val fitted = withContext(Dispatchers.Default) { fitter.fitToSquareJpeg(bytes) }
             ?: return CoverSaveResult.NOT_SAVED
         if (!repository.setUserCover(bookId, fitted)) return CoverSaveResult.NOT_SAVED
+        coverChanged()
         playbackManager.onCoverChanged(bookId)
         return CoverSaveResult.SAVED
     }

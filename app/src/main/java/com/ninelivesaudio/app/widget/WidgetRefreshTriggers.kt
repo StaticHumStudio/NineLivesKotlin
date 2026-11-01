@@ -25,13 +25,15 @@ internal data class WidgetTrigger(
     val syncCount: Long,
     val scanCount: Long,
     val tick: Long,
+    /** Covers picked or undone in the app (CoverPicker). */
+    val coverCount: Long = 0,
 )
 
 enum class WidgetTarget { BINDER, HOME }
 
 /**
- * Which widgets need a redraw. Unlock, identity, sync, scan and the current
- * book change what both show. Play state, chapter, reachability and the
+ * Which widgets need a redraw. Unlock, identity, sync, scan, a picked or
+ * undone cover and the current book change what both show. Play state, chapter, reachability and the
  * playing tick only change the large widget's current book card.
  */
 internal fun widgetRefreshTargets(prev: WidgetTrigger?, next: WidgetTrigger): Set<WidgetTarget> {
@@ -40,6 +42,7 @@ internal fun widgetRefreshTargets(prev: WidgetTrigger?, next: WidgetTrigger): Se
         prev.identity != next.identity ||
         prev.syncCount != next.syncCount ||
         prev.scanCount != next.scanCount ||
+        prev.coverCount != next.coverCount ||
         prev.currentBookId != next.currentBookId
     ) return setOf(WidgetTarget.BINDER, WidgetTarget.HOME)
     if (prev.isPlaying != next.isPlaying ||

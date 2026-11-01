@@ -32,6 +32,10 @@ class WidgetRefreshTriggersTest {
             assertEquals(setOf(WidgetTarget.BINDER, WidgetTarget.HOME), widgetRefreshTargets(t0, next))
     }
 
+    @Test fun `a picked or undone cover redraws both widgets at once`() {
+        assertEquals(setOf(WidgetTarget.BINDER, WidgetTarget.HOME), widgetRefreshTargets(t0, t0.copy(coverCount = 1)))
+    }
+
     @Test fun `play state, chapter and the playing tick only touch the large widget`() {
         for (next in listOf(t0.copy(isPlaying = true), t0.copy(chapterIndex = 1), t0.copy(tick = 1), t0.copy(serverReachable = false)))
             assertEquals(setOf(WidgetTarget.HOME), widgetRefreshTargets(t0, next))

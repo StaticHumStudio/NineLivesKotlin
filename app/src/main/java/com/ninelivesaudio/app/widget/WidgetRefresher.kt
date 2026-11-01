@@ -11,6 +11,7 @@ import com.ninelivesaudio.app.service.ConnectivityMonitor
 import com.ninelivesaudio.app.service.PlaybackManager
 import com.ninelivesaudio.app.service.SettingsManager
 import com.ninelivesaudio.app.service.SyncManager
+import com.ninelivesaudio.app.service.cover.CoverPicker
 import com.ninelivesaudio.app.service.local.LocalScanCoordinator
 import com.ninelivesaudio.app.service.local.LocalScanState
 import com.ninelivesaudio.app.widget.binder.BinderWidgetUpdater
@@ -35,7 +36,8 @@ import javax.inject.Singleton
 
 /**
  * Pushes widget redraws when something a widget shows has changed: unlock,
- * mode, server, account or library, sync or scan finished, the current book,
+ * mode, server, account or library, sync or scan finished, a cover picked or
+ * undone, the current book,
  * and (for the large widget) play state, chapter, and a slow tick while
  * playing. Nothing polls while paused, and a burst of events is one redraw,
  * which keeps the design's battery anti goal.
@@ -51,6 +53,7 @@ class WidgetRefresher @Inject constructor(
     private val localScanCoordinator: LocalScanCoordinator,
     private val connectivityMonitor: ConnectivityMonitor,
     private val binderUpdater: BinderWidgetUpdater,
+    private val coverPicker: CoverPicker,
 ) {
     private var started = false
     private val pushLock = Mutex()
@@ -98,7 +101,7 @@ class WidgetRefresher @Inject constructor(
             playbackManager.playbackState.map { isPlayingForWidget(it) },
             playbackManager.currentChapterIndex,
         ) { id, playing, chapter -> Triple(id, playing, chapter) }
-        val counters = combine(syncCount, scanCount, tick) { a, b, c -> Triple(a, b, c) }
+        val counters = combine(syncCount, scanCount, tick, coverPicker.changeCount) { a, b, c, d -> listOf(a, b, c, d) }
         val reachable = connectivityMonitor.connectionStatus.map { it == ConnectivityMonitor.ConnectionStatus.CONNECTED }
 
         scope.launch {
@@ -111,9 +114,10 @@ class WidgetRefresher @Inject constructor(
                     isPlaying = play.second,
                     chapterIndex = play.third,
                     serverReachable = reach,
-                    syncCount = count.first,
-                    scanCount = count.second,
-                    tick = count.third,
+                    syncCount = count[0],
+                    scanCount = count[1],
+                    tick = count[2],
+                    coverCount = count[3],
                 )
             }
                 .distinctUntilChanged()

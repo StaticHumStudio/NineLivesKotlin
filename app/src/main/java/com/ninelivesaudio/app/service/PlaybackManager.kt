@@ -1549,12 +1549,18 @@ class PlaybackManager @Inject constructor(
                     hasLocalSession = synchronized(sessionLock) { currentLocalSessionId != null },
                 ) == ListeningSessionKind.SERVER
             ) {
-                when (loadSessionOpen(remoteAccess.usesLocalTracks(), connectivityMonitor.connectionStatus.value)) {
-                    LoadSessionOpen.AWAIT -> openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
-                    LoadSessionOpen.BOUNDED -> withTimeoutOrNull(DOWNLOADED_SESSION_OPEN_TIMEOUT) {
+                // The open runs in the playback scope, so leaving the page or
+                // the downloaded book's time limit ends only the wait. A late
+                // answer is refused and closed instead of lost (#105).
+                val sessionOpenTimeout = when (loadSessionOpen(remoteAccess.usesLocalTracks(), connectivityMonitor.connectionStatus.value)) {
+                    LoadSessionOpen.AWAIT -> null
+                    LoadSessionOpen.BOUNDED -> DOWNLOADED_SESSION_OPEN_TIMEOUT
+                    LoadSessionOpen.DEFER -> Duration.ZERO
+                }
+                if (sessionOpenTimeout != Duration.ZERO) {
+                    awaitLoadSessionOpen(scope, loadSession, sessionOpenTimeout) {
                         openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
                     }
-                    LoadSessionOpen.DEFER -> Unit
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             }
@@ -1884,13 +1890,16 @@ class PlaybackManager @Inject constructor(
                                 requestedBookId = book.id,
                                 // A load's book is staged, not current, until it publishes.
                                 currentBookId = playerBookId(stagedLoad.book.value, _currentBook.value),
-                            )
+                            ) &&
+                            // A load that stopped waiting (it timed out, or its
+                            // page closed) refuses its late session, which is
+                            // closed below (#105).
+                            loadSession?.opened(session.id) != false
                         ) {
                             currentSession = session
                             serverListening = ServerSessionListening()
                             progressRepository.invalidatePendingProgressLifetime(book.id)
                             lastSyncTimestamp = System.currentTimeMillis()
-                            loadSession?.opened(session.id)
                             if (loadRequest != null) {
                                 // A load's chapters stay staged until it publishes.
                                 stagedLoad.fillChaptersIfEmpty(loadRequest, session.chapters)

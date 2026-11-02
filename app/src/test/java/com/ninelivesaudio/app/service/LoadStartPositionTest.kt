@@ -12,7 +12,8 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Where a reloaded book starts (#106). A finished book starts over, and a
+ * Where a reloaded book starts (#106). A finished book parks at its end
+ * (Jeff decided 2026-11-02: finished books reopen from the end), and a
  * position held in memory from the end of a book never beats a saved spot
  * from after the restart.
  */
@@ -20,18 +21,36 @@ class LoadStartPositionTest {
 
     private val end = 10.hours
 
-    /** Mirrors the load: in memory positions, then the saved one, then the end of book reset. */
-    private fun startOfReload(bookTime: Duration, sessionTime: Duration, saved: Duration?): Duration = runBlocking {
+    /** Mirrors the load: in memory positions, then the saved one, then where the book is placed. */
+    /** A null [sessionTime] is a load with no server session open. */
+    private fun placementOfReload(bookTime: Duration, sessionTime: Duration?, saved: Duration?): LoadPlacement = runBlocking {
         var written: Duration? = null
         val resolved = PlaybackProgressOwner().resolveAndSavePlaybackPosition(
             bookId = "book",
-            candidate = latestInMemoryPosition(listOf(bookTime, sessionTime), end),
+            candidate = latestInMemoryPosition(listOfNotNull(bookTime, sessionTime), end),
             readDurable = { saved },
             save = { written = it },
             bookDuration = end,
         )
         assertEquals(resolved, written)
-        loadStartPosition(resolved, end)
+        loadPlacement(resolved, end, autoPlay = true)
+    }
+
+    /** Where the reload shows the book, for a book that is not parked at its end. */
+    private fun startOfReload(bookTime: Duration, sessionTime: Duration?, saved: Duration?): Duration {
+        val placement = placementOfReload(bookTime, sessionTime, saved)
+        assertFalse(placement.parkedAtEnd)
+        assertEquals(placement.shownPosition, placement.playerStart)
+        assertTrue(placement.playWhenReady)
+        return placement.shownPosition
+    }
+
+    /** A finished book parks: shown at its end, paused, the player waiting at 0:00. */
+    private fun assertParkedAtEnd(placement: LoadPlacement, shownEnd: Duration = end) {
+        assertTrue(placement.parkedAtEnd)
+        assertEquals(shownEnd, placement.shownPosition)
+        assertEquals(Duration.ZERO, placement.playerStart)
+        assertFalse(placement.playWhenReady)
     }
 
     @Test
@@ -46,14 +65,19 @@ class LoadStartPositionTest {
         assertEquals(3.minutes, startOfReload(bookTime = Duration.ZERO, sessionTime = end, saved = 3.minutes))
     }
 
+    // Changed expectation: these two started over at 0:00. Jeff decided
+    // 2026-11-02: finished books reopen from the end.
     @Test
-    fun `a book reloaded right after it finished starts over`() {
-        assertEquals(Duration.ZERO, startOfReload(bookTime = end, sessionTime = end, saved = end))
+    fun `a book reloaded right after it finished parks at its end`() {
+        assertParkedAtEnd(placementOfReload(bookTime = end, sessionTime = end, saved = end))
     }
 
     @Test
-    fun `a finished book with no saved row starts over`() {
-        assertEquals(Duration.ZERO, startOfReload(bookTime = end, sessionTime = Duration.ZERO, saved = null))
+    fun `a finished book with no saved row parks at its end`() {
+        // No server session open (a paused restore, or a download offline).
+        // A missing session is no position at all, not a 0:00 that would hide
+        // the book's end.
+        assertParkedAtEnd(placementOfReload(bookTime = end, sessionTime = null, saved = null))
     }
 
     @Test
@@ -86,11 +110,14 @@ class LoadStartPositionTest {
         assertEquals(10.minutes, startOfReload(bookTime = Duration.ZERO, sessionTime = nearEnd, saved = 10.minutes))
     }
 
+    // Changed expectation: this started over at 0:00. Jeff decided
+    // 2026-11-02: finished books reopen from the end, and a book stopped in
+    // its last second is a finished book.
     @Test
-    fun `a book stopped half a second from the end starts over`() {
+    fun `a book stopped half a second from the end parks at its end like a finished one`() {
         val nearEnd = end - 500.milliseconds
-        assertEquals(Duration.ZERO, startOfReload(bookTime = nearEnd, sessionTime = nearEnd, saved = nearEnd))
-        assertEquals(Duration.ZERO, loadStartPosition(nearEnd, end))
+        assertParkedAtEnd(placementOfReload(bookTime = nearEnd, sessionTime = nearEnd, saved = nearEnd))
+        assertEquals(loadPlacement(end, end, autoPlay = true), loadPlacement(nearEnd, end, autoPlay = true))
     }
 
     @Test
@@ -108,7 +135,9 @@ class LoadStartPositionTest {
         val trackSumEnd = end - 300.milliseconds
         assertTrue(positionAtBookEnd(trackSumEnd, end))
         assertEquals(10.minutes, startOfReload(bookTime = trackSumEnd, sessionTime = Duration.ZERO, saved = 10.minutes))
-        // A track sum a little longer is past the server end, which is the end too.
-        assertEquals(Duration.ZERO, loadStartPosition(end + 300.milliseconds, end))
+        // A track sum a little longer is past the server end, which is the end
+        // too. Changed expectation: this started over at 0:00 (Jeff decided
+        // 2026-11-02: finished books reopen from the end).
+        assertParkedAtEnd(loadPlacement(end + 300.milliseconds, end, autoPlay = true))
     }
 }

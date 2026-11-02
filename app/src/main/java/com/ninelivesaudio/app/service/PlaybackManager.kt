@@ -481,11 +481,57 @@ internal fun latestInMemoryPosition(positions: List<Duration>, bookDuration: Dur
         ?: Duration.ZERO
 
 /**
- * Where a load starts the player. A position at or past the end is a
- * finished book, which starts over, or the player ends at once.
+ * Where a load puts a book. [playerStart] is where the player is prepared,
+ * [shownPosition] is what the screen, chapter list, notification and Android
+ * Auto show, and [playWhenReady] is whether it starts playing.
  */
-internal fun loadStartPosition(resolved: Duration, bookDuration: Duration): Duration =
-    if (positionAtBookEnd(resolved, bookDuration)) Duration.ZERO else resolved
+internal data class LoadPlacement(
+    val playerStart: Duration,
+    val shownPosition: Duration,
+    val parkedAtEnd: Boolean,
+    val playWhenReady: Boolean,
+)
+
+/**
+ * A book at its end (finished, or stopped in its last second) reopens parked
+ * at the end, paused (Jeff's call, 2026-11-02). Only the screen shows the end.
+ * The player waits at 0:00, because a player prepared at the end of its media
+ * ends at once and that end writes the book as finished again (the reason the
+ * old load reset finished books to 0:00). Waiting at 0:00 also means Play,
+ * from anywhere (app, notification, headset, Android Auto), starts the book
+ * over. [shownEnd] is the player's length, which can run a little short of
+ * the server's. Any other book starts where it was.
+ */
+internal fun loadPlacement(
+    resolved: Duration,
+    bookDuration: Duration,
+    autoPlay: Boolean,
+    shownEnd: Duration = bookDuration,
+): LoadPlacement =
+    if (positionAtBookEnd(resolved, bookDuration)) {
+        LoadPlacement(playerStart = Duration.ZERO, shownPosition = shownEnd, parkedAtEnd = true, playWhenReady = false)
+    } else {
+        LoadPlacement(playerStart = resolved, shownPosition = resolved, parkedAtEnd = false, playWhenReady = autoPlay)
+    }
+
+/**
+ * Whether the load saves the book's place as finished. A parked book is still
+ * finished, so opening it never marks it unfinished. A restart or a seek back
+ * does that, through the usual position saves.
+ */
+internal fun loadSavesFinished(resolved: Duration, bookDuration: Duration): Boolean =
+    positionAtBookEnd(resolved, bookDuration)
+
+internal enum class ParkedSeek { STAY_PARKED, RESUME_FROM_TARGET }
+
+/**
+ * A seek on a book parked at its end. One that lands at the end (skip
+ * forward, next chapter, the scrubber dragged to the end) leaves it parked, so
+ * the player never seeks into its end and finishes the book again. Anything
+ * earlier resumes the book from there.
+ */
+internal fun parkedSeek(target: Duration, bookDuration: Duration): ParkedSeek =
+    if (positionAtBookEnd(target, bookDuration)) ParkedSeek.STAY_PARKED else ParkedSeek.RESUME_FROM_TARGET
 
 internal class PendingTerminalOwner {
     private val lock = Any()
@@ -1165,6 +1211,32 @@ class PlaybackManager @Inject constructor(
     // Auto-rewind: timestamp of last pause
     private var pausedAtTimestamp: Long? = null
 
+    // A finished book reopened parked at its end (see loadPlacement). The
+    // screen shows the end while the player waits at 0:00. Play starts the
+    // book over, and a seek back resumes it from there.
+    private var parkedAtEnd = false
+
+    private fun setParkedAtEnd(parked: Boolean) {
+        parkedAtEnd = parked
+        chapterPlayer?.parkedAtEnd = parked
+    }
+
+    /**
+     * Playback began on a parked book (Play from the app, the notification, a
+     * headset or Android Auto), so it starts over from where the player
+     * waited, 0:00. Runs before the resume rewind, which would otherwise
+     * rewind from the shown end.
+     */
+    private fun startOverFromParkedEnd() {
+        if (!parkedAtEnd) return
+        setParkedAtEnd(false)
+        pausedAtTimestamp = null
+        val position = getCurrentPosition()
+        _position.value = position
+        chapterPlayer?.absolutePositionMs = position.inWholeMilliseconds
+        updateCurrentChapter(position)
+    }
+
     // ─── State ────────────────────────────────────────────────────────────
 
     private val _playbackState = MutableStateFlow(PlaybackState.STOPPED)
@@ -1179,6 +1251,7 @@ class PlaybackManager @Inject constructor(
                 // A resume that arrives through the intent owner (notification,
                 // Android Auto) re-arms the terminal flush the same way play() does.
                 exoPlayer?.let { if (it.mediaItemCount > 0) retainedBookFinalized = false }
+                startOverFromParkedEnd()
                 _currentBook.value?.id?.let(playbackProgressOwner::invalidateSnapshots)
                 val requestedGeneration = nextPlaybackGeneration()
                 applyResumeBookkeeping()
@@ -1527,6 +1600,7 @@ class PlaybackManager @Inject constructor(
             exoPlayer!!.clearMediaItems()
 
             // Reset chapter state on the wrapper
+            setParkedAtEnd(false)
             chapterPlayer?.currentChapter = null
             chapterPlayer?.chapters = emptyList()
             chapterPlayer?.currentChapterIndex = -1
@@ -1618,9 +1692,10 @@ class PlaybackManager @Inject constructor(
             // Resolve the best known position from all sources
             var startPosition = effectiveBook.currentTime
             withContext(Dispatchers.IO) {
-                // Check server session for a more recent position
-                val sessionTime = synchronized(sessionLock) { (currentSession?.currentTime ?: 0.0).seconds }
-                startPosition = latestInMemoryPosition(listOf(startPosition, sessionTime), effectiveBook.duration)
+                // Check server session for a more recent position. No session
+                // is no position, not a 0:00 that would hide a finished book's end.
+                val sessionTime = synchronized(sessionLock) { currentSession?.currentTime?.seconds }
+                startPosition = latestInMemoryPosition(listOfNotNull(startPosition, sessionTime), effectiveBook.duration)
 
                 // Re-read durable progress and save the resolved position under
                 // one per-book gate. Polling cannot advance between the read and
@@ -1633,16 +1708,18 @@ class PlaybackManager @Inject constructor(
                             progressRepository.getPlaybackProgress(effectiveBook.id)?.first
                         },
                         save = { resolvedPosition ->
+                            // A book at its end parks there and stays finished.
+                            val finished = loadSavesFinished(resolvedPosition, effectiveBook.duration)
                             progressRepository.savePlaybackProgress(
                                 audioBookId = effectiveBook.id,
                                 position = resolvedPosition,
-                                isFinished = false,
+                                isFinished = finished,
                                 onPersisted = {
                                     updateAudioBookProgress(
                                         bookId = effectiveBook.id,
                                         positionSeconds = resolvedPosition.toDouble(kotlin.time.DurationUnit.SECONDS),
                                         durationSeconds = effectiveBook.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
-                                        isFinished = false,
+                                        isFinished = finished,
                                     )
                                 },
                             )
@@ -1655,14 +1732,7 @@ class PlaybackManager @Inject constructor(
             }
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
 
-            // If the resolved position is at or beyond the book's duration (finished book),
-            // reset to the beginning so the player doesn't immediately trigger STATE_ENDED.
-            val bookDuration = effectiveBook.duration
-            val loadStart = loadStartPosition(startPosition, bookDuration)
-            if (loadStart != startPosition) {
-                Log.d(TAG, "loadAudioBook: position at/past end ($startPosition >= $bookDuration), resetting to start")
-                startPosition = loadStart
-            }
+            val resolvedPosition = startPosition
 
             // Determine source and load
             val isLocal = remoteAccess.usesLocalTracks()
@@ -1711,9 +1781,22 @@ class PlaybackManager @Inject constructor(
             attachEqualizer()
             attachLoudnessEnhancer()
 
+            // A finished book parks at its end: shown there, paused, with the
+            // player waiting at 0:00 so it cannot end again on load.
+            val placement = loadPlacement(
+                resolved = resolvedPosition,
+                bookDuration = effectiveBook.duration,
+                autoPlay = autoPlay,
+                shownEnd = calculateTotalDuration(effectiveBook),
+            )
+            if (placement.parkedAtEnd) {
+                Log.d(TAG, "loadAudioBook: finished ($resolvedPosition of ${effectiveBook.duration}), parked at the end")
+            }
+            startPosition = placement.shownPosition
+
             // Seek to saved position before prepare
-            if (startPosition > Duration.ZERO) {
-                seekToPosition(startPosition)
+            if (placement.playerStart > Duration.ZERO) {
+                seekToPosition(placement.playerStart)
             }
 
             // Eagerly set the initial chapter so ChapterAwareForwardingPlayer
@@ -1741,6 +1824,7 @@ class PlaybackManager @Inject constructor(
 
             // Nothing from here to playWhenReady suspends, so the new book
             // becomes current in the same main thread turn that prepares it.
+            setParkedAtEnd(placement.parkedAtEnd)
             publishLoadedBook(loadRequest, effectiveBook, startPosition, isLocal, initialChapter, initialChapterIndex)
             loadSession.published()
 
@@ -1754,13 +1838,15 @@ class PlaybackManager @Inject constructor(
             // Prepare and play — the persistent MediaSession already wraps this player.
             // prepare() first so state listeners don't fire before media is loaded.
             player.prepare()
-            player.playWhenReady = autoPlay
+            player.playWhenReady = placement.playWhenReady
 
             // Only a book that reached this point is current with a position and
             // duration of its own. A load that bailed out earlier (superseded by
             // another tap, or a failed session open) left the previous book
             // current and finalized, so the next load does not finalize it again.
-            retainedBookFinalized = false
+            // A parked book has nothing to finalize: no listening, and it is
+            // already saved as finished. Play or a seek back re-arms it.
+            retainedBookFinalized = placement.parkedAtEnd
             _events.tryEmit(PlaybackEvent.BookLoaded(effectiveBook))
 
             settingsManager.saveCurrentPlaybackBookId(effectiveBook.id)
@@ -2245,7 +2331,12 @@ class PlaybackManager @Inject constructor(
             // Resuming that would prepare an empty playlist, which ends at once
             // and marks the book finished. Reload it instead.
             PlayAction.RELOAD_RETAINED -> {
-                scope.launch { loadAudioBook(retained!!) }
+                scope.launch {
+                    // A finished book reloads parked at its end. This load came
+                    // from Play, so it starts over at once, the way Play on a
+                    // parked book does.
+                    if (loadAudioBook(retained!!) && parkedAtEnd && _currentBook.value?.id == retained.id) play()
+                }
                 return
             }
             PlayAction.RETRY_AFTER_TERMINAL -> {
@@ -2349,6 +2440,7 @@ class PlaybackManager @Inject constructor(
 
     private fun finishPlayback(reason: PlaybackTermination, keepServiceConnection: Boolean = false) {
         pausedAtTimestamp = null
+        setParkedAtEnd(false)
         pendingPauseSnapshot = null
         invalidatePlaybackGeneration()
         val book = _currentBook.value
@@ -2478,6 +2570,21 @@ class PlaybackManager @Inject constructor(
         // While a book loads, the screen shows the previous book. A seek from
         // it would land in the incoming book's playlist (#42).
         if (stagedLoad.book.value != null) return
+        if (parkedAtEnd) {
+            // Skip forward or next chapter from the end stays parked, so the
+            // player never seeks into its end and finishes the book again.
+            if (parkedSeek(position, _duration.value) == ParkedSeek.STAY_PARKED) return
+            // A seek back resumes the book from there and plays, the way a
+            // seek on a book that just finished does. Its save marks the book
+            // unfinished through the usual rule.
+            setParkedAtEnd(false)
+            seekToPosition(position)
+            _position.value = position
+            chapterPlayer?.absolutePositionMs = position.inWholeMilliseconds
+            updateCurrentChapter(position)
+            exoPlayer?.playWhenReady = true
+            return
+        }
         val player = exoPlayer
         val bookId = _currentBook.value?.id
         if (player?.playbackState == Player.STATE_ENDED && bookId != null) {
@@ -3024,6 +3131,14 @@ class PlaybackManager @Inject constructor(
      * uses. The server push keeps its usual throttle.
      */
     private fun onSeekApplied() {
+        // A controller seek that reached the player directly still moves a
+        // parked book off its end, to where the player now is.
+        if (parkedAtEnd) {
+            setParkedAtEnd(false)
+            val moved = getCurrentPosition()
+            _position.value = moved
+            chapterPlayer?.absolutePositionMs = moved.inWholeMilliseconds
+        }
         requestImmediateProgressSave()
         if (positionPollingJob?.isActive == true) return
         if (_playbackState.value != PlaybackState.PAUSED) return

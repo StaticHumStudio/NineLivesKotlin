@@ -454,12 +454,38 @@ internal suspend fun PlaybackProgressOwner.resolveAndSavePlaybackPosition(
     candidate: Duration,
     readDurable: suspend () -> Duration?,
     save: suspend (Duration) -> Unit,
+    bookDuration: Duration = Duration.ZERO,
 ): Duration = sync(bookId) {
     val durable = readDurable()
-    val resolved = if (durable != null && durable > candidate) durable else candidate
+    val resolved = when {
+        // An end position held in memory records a finish, not a newer spot.
+        // After a finished book restarts, the saved position is the newer
+        // one, and letting the end win sent the book back to 0:00 (#106).
+        durable != null && positionAtBookEnd(candidate, bookDuration) -> durable
+        durable != null && durable > candidate -> durable
+        else -> candidate
+    }
     save(resolved)
     resolved
 }
+
+/**
+ * The latest of the positions a load holds in memory (the book it was handed
+ * and the server session's), skipping any at the end of the book while one
+ * short of it exists. An end position there can be stale from before the
+ * book was finished and restarted (#106).
+ */
+internal fun latestInMemoryPosition(positions: List<Duration>, bookDuration: Duration): Duration =
+    positions.filterNot { positionAtBookEnd(it, bookDuration) }.maxOrNull()
+        ?: positions.maxOrNull()
+        ?: Duration.ZERO
+
+/**
+ * Where a load starts the player. A position at or past the end is a
+ * finished book, which starts over, or the player ends at once.
+ */
+internal fun loadStartPosition(resolved: Duration, bookDuration: Duration): Duration =
+    if (positionAtBookEnd(resolved, bookDuration)) Duration.ZERO else resolved
 
 internal class PendingTerminalOwner {
     private val lock = Any()
@@ -1461,6 +1487,7 @@ class PlaybackManager @Inject constructor(
         pendingTerminalOwner.await(book.id)
         if (!playbackLoadOwner.claim(loadRequest)) return false
         var effectiveBook = book
+        val loadSession = LoadServerSession()
         try {
             stagedLoad.stage(loadRequest, book)
             playbackProgressOwner.invalidateSnapshots(book.id)
@@ -1522,12 +1549,18 @@ class PlaybackManager @Inject constructor(
                     hasLocalSession = synchronized(sessionLock) { currentLocalSessionId != null },
                 ) == ListeningSessionKind.SERVER
             ) {
-                when (loadSessionOpen(remoteAccess.usesLocalTracks(), connectivityMonitor.connectionStatus.value)) {
-                    LoadSessionOpen.AWAIT -> openServerListeningSession(book, requestedGeneration, loadRequest)
-                    LoadSessionOpen.BOUNDED -> withTimeoutOrNull(DOWNLOADED_SESSION_OPEN_TIMEOUT) {
-                        openServerListeningSession(book, requestedGeneration, loadRequest)
+                // The open runs in the playback scope, so leaving the page or
+                // the downloaded book's time limit ends only the wait. A late
+                // answer is refused and closed instead of lost (#105).
+                val sessionOpenTimeout = when (loadSessionOpen(remoteAccess.usesLocalTracks(), connectivityMonitor.connectionStatus.value)) {
+                    LoadSessionOpen.AWAIT -> null
+                    LoadSessionOpen.BOUNDED -> DOWNLOADED_SESSION_OPEN_TIMEOUT
+                    LoadSessionOpen.DEFER -> Duration.ZERO
+                }
+                if (sessionOpenTimeout != Duration.ZERO) {
+                    awaitLoadSessionOpen(scope, loadSession, sessionOpenTimeout) {
+                        openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
                     }
-                    LoadSessionOpen.DEFER -> Unit
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             }
@@ -1587,9 +1620,7 @@ class PlaybackManager @Inject constructor(
             withContext(Dispatchers.IO) {
                 // Check server session for a more recent position
                 val sessionTime = synchronized(sessionLock) { (currentSession?.currentTime ?: 0.0).seconds }
-                if (sessionTime > startPosition) {
-                    startPosition = sessionTime
-                }
+                startPosition = latestInMemoryPosition(listOf(startPosition, sessionTime), effectiveBook.duration)
 
                 // Re-read durable progress and save the resolved position under
                 // one per-book gate. Polling cannot advance between the read and
@@ -1616,6 +1647,7 @@ class PlaybackManager @Inject constructor(
                                 },
                             )
                         },
+                        bookDuration = effectiveBook.duration,
                     )
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -1626,9 +1658,10 @@ class PlaybackManager @Inject constructor(
             // If the resolved position is at or beyond the book's duration (finished book),
             // reset to the beginning so the player doesn't immediately trigger STATE_ENDED.
             val bookDuration = effectiveBook.duration
-            if (bookDuration > Duration.ZERO && startPosition >= bookDuration) {
+            val loadStart = loadStartPosition(startPosition, bookDuration)
+            if (loadStart != startPosition) {
                 Log.d(TAG, "loadAudioBook: position at/past end ($startPosition >= $bookDuration), resetting to start")
-                startPosition = Duration.ZERO
+                startPosition = loadStart
             }
 
             // Determine source and load
@@ -1709,6 +1742,7 @@ class PlaybackManager @Inject constructor(
             // Nothing from here to playWhenReady suspends, so the new book
             // becomes current in the same main thread turn that prepares it.
             publishLoadedBook(loadRequest, effectiveBook, startPosition, isLocal, initialChapter, initialChapterIndex)
+            loadSession.published()
 
             // Start the foreground service (MediaController connect triggers startForeground).
             // Skipped when called from Android Auto's onSetMediaItems callback to avoid
@@ -1746,6 +1780,18 @@ class PlaybackManager @Inject constructor(
             return failLoad(loadRequest, loadFailureMessage(e), reportErrors)
         } finally {
             stagedLoad.clear(loadRequest)
+            // A load that ends without making its book current (leaving the
+            // page cancels it, or it failed or was superseded) closes the
+            // server session it opened, if no newer load already took it.
+            // Waiting for the next load to find the orphan left it open on
+            // the server whenever no next load came (#105). The close runs
+            // in the playback scope, so a cancelled page cannot stop it.
+            val abandonedSession = synchronized(sessionLock) {
+                loadSession.sessionToClose(currentSession?.id)?.also { currentSession = null }
+            }
+            if (abandonedSession != null) {
+                scope.launch(Dispatchers.IO) { closeSession(abandonedSession) }
+            }
         }
     }
 
@@ -1829,6 +1875,7 @@ class PlaybackManager @Inject constructor(
         book: AudioBook,
         requestedGeneration: Long,
         loadRequest: Long? = null,
+        loadSession: LoadServerSession? = null,
     ) {
         withContext(Dispatchers.IO) {
             try {
@@ -1843,7 +1890,11 @@ class PlaybackManager @Inject constructor(
                                 requestedBookId = book.id,
                                 // A load's book is staged, not current, until it publishes.
                                 currentBookId = playerBookId(stagedLoad.book.value, _currentBook.value),
-                            )
+                            ) &&
+                            // A load that stopped waiting (it timed out, or its
+                            // page closed) refuses its late session, which is
+                            // closed below (#105).
+                            loadSession?.opened(session.id) != false
                         ) {
                             currentSession = session
                             serverListening = ServerSessionListening()

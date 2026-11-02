@@ -2,9 +2,13 @@ package com.ninelivesaudio.app.service
 
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration
 
 /**
  * The book a load is filling the player with, before it becomes the current
@@ -137,3 +141,76 @@ internal fun playerHoldsBook(current: AudioBook?, loading: AudioBook?, bookId: S
 /** Whether the player holds a server book, current or loading (sign out). */
 internal fun playerHoldsRemoteBook(current: AudioBook?, loading: AudioBook?): Boolean =
     current?.isLocal == false || loading?.isLocal == false
+
+/**
+ * The server session a load opened, kept so a load that ends without making
+ * its book current can close that session itself (#105). Leaving a book's
+ * page cancels its load, and before this a session the load had already
+ * opened stayed open on the server until some later load or stop happened to
+ * close it, or forever if none did.
+ *
+ * The open request outlives the load (see [awaitLoadSessionOpen]), so its
+ * answer can arrive after the load stopped waiting for it. Once the load has
+ * stopped waiting or ended, [opened] refuses the session and the opener
+ * closes it. Before that, [opened] records it and the load's end closes it.
+ * Either way, every session the server opened for this load gets closed
+ * exactly once unless the load published its book.
+ */
+internal class LoadServerSession {
+    private val lock = Any()
+    private var openedId: String? = null
+    private var published = false
+    private var waiting = true
+
+    /**
+     * Offers the session the server opened. True when the load still waits
+     * for it, so the player takes it. False when the load stopped waiting or
+     * ended, and the caller must close it.
+     */
+    fun opened(sessionId: String): Boolean = synchronized(lock) {
+        if (!waiting) return false
+        openedId = sessionId
+        true
+    }
+
+    /** The load gave up waiting for the open (it timed out, left or ended). */
+    fun stopWaiting() = synchronized(lock) { waiting = false }
+
+    /** The load made its book current, so the session now belongs to that book. */
+    fun published() = synchronized(lock) { published = true }
+
+    /**
+     * Ends the load and returns the session to close, or null. Only an
+     * unpublished load's own session, and only while it is still the player's
+     * session: a newer load that already took it (and closes it) or opened its
+     * own is left alone.
+     */
+    fun sessionToClose(currentSessionId: String?): String? = synchronized(lock) {
+        waiting = false
+        val id = openedId
+        if (published || id == null || id != currentSessionId) null else id
+    }
+}
+
+/**
+ * Runs a load's server session open in [playbackScope] and waits for it, for
+ * at most [timeout] when one is given (#105). The request is not part of the
+ * load, so leaving the page or the timeout only ends the wait: the request
+ * still finishes and its answer still reaches [LoadServerSession.opened],
+ * which then refuses it so the opener closes it. Cancelling the request
+ * along with the load lost the answer while the server had already opened
+ * the session, so nothing ever closed it.
+ */
+internal suspend fun awaitLoadSessionOpen(
+    playbackScope: CoroutineScope,
+    loadSession: LoadServerSession,
+    timeout: Duration?,
+    open: suspend () -> Unit,
+) {
+    val opening = playbackScope.async { open() }
+    try {
+        if (timeout == null) opening.await() else withTimeoutOrNull(timeout) { opening.await() }
+    } finally {
+        loadSession.stopWaiting()
+    }
+}

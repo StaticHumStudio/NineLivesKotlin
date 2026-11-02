@@ -6,6 +6,8 @@ import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.setContent
 import androidx.compose.material3.Text
+import androidx.lifecycle.Lifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -105,13 +107,36 @@ class BackGestureRaceTest {
         }
         settle()
         assertNoCrash()
+        // The app's own pop already left the book page and cancelled the
+        // swipe. Lifting the finger still counts as a Back from the Library,
+        // so the user lands on Home.
+        assertSettledOn(Routes.HOME)
+    }
+
+    @Test fun backSwipeInProgressThenTheAppLeavesThePage() {
+        onMain { dispatcher.dispatchOnBackStarted(BackEventCompat(5f, 900f, 0f, BackEventCompat.EDGE_LEFT)) }
+        settle()
+        onMain { dispatcher.dispatchOnBackProgressed(BackEventCompat(200f, 900f, 0.3f, BackEventCompat.EDGE_LEFT)) }
+        settle()
+        // The host is mid-swipe on the book page when the app pops it.
+        onMain { nav.popBackStack() }
+        settle()
+        onMain {
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(300f, 900f, 0.5f, BackEventCompat.EDGE_LEFT))
+            dispatcher.onBackPressed()
+        }
+        settle()
+        assertNoCrash()
+        assertSettledOn(Routes.HOME)
     }
 
     @Test fun aPlainBackStillGoesToTheLibrary() {
+        val detail = currentEntry()
         onMain { dispatcher.onBackPressed() }
         settle()
         assertNoCrash()
-        onMain { assertEquals(Routes.LIBRARY, nav.currentDestination?.route) }
+        assertSettledOn(Routes.LIBRARY)
+        assertGone(detail)
     }
 
     @Test fun aPlainBackSwipeStillGoesToTheLibrary() {
@@ -119,10 +144,12 @@ class BackGestureRaceTest {
         settle()
         onMain { dispatcher.dispatchOnBackProgressed(BackEventCompat(300f, 900f, 0.5f, BackEventCompat.EDGE_LEFT)) }
         settle()
+        val detail = currentEntry()
         onMain { dispatcher.onBackPressed() }
         settle()
         assertNoCrash()
-        onMain { assertEquals(Routes.LIBRARY, nav.currentDestination?.route) }
+        assertSettledOn(Routes.LIBRARY)
+        assertGone(detail)
     }
 
     @Test fun twoQuickBacksGoToTheLibraryThenHome() {
@@ -138,6 +165,43 @@ class BackGestureRaceTest {
 
     private fun assertNoCrash() {
         failure.get()?.let { throw AssertionError("app crashed", it) }
+    }
+
+    private fun currentEntry(): NavBackStackEntry {
+        var entry: NavBackStackEntry? = null
+        onMain { entry = nav.currentBackStackEntry }
+        return entry!!
+    }
+
+    /**
+     * On [route], with the page animation finished: the page is RESUMED and
+     * it is the only page the host still draws.
+     */
+    private fun assertSettledOn(route: String) {
+        waitUntil("$route never settled") {
+            nav.currentDestination?.route == route &&
+                nav.currentBackStackEntry!!.lifecycle.currentState == Lifecycle.State.RESUMED &&
+                nav.visibleEntries.value.count { it.destination.navigatorName == "composable" } == 1
+        }
+        onMain { assertEquals(route, nav.currentDestination?.route) }
+    }
+
+    /** The popped page finished its exit and was torn down. */
+    private fun assertGone(entry: NavBackStackEntry) {
+        waitUntil("${entry.destination.route} was never destroyed") {
+            entry.lifecycle.currentState == Lifecycle.State.DESTROYED
+        }
+    }
+
+    private fun waitUntil(message: String, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (true) {
+            var met = false
+            onMain { met = condition() }
+            if (met) return
+            if (System.currentTimeMillis() > deadline) throw AssertionError(message)
+            Thread.sleep(50)
+        }
     }
 
     private fun onMain(block: () -> Unit) = scenario.onActivity { block() }

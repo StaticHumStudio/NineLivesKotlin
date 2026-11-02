@@ -25,6 +25,16 @@ import androidx.navigation.NavController
  * asked for is lost. A Back still in progress when the user lifts their
  * finger acts on whatever page is now on top.
  *
+ * The listener also fires once when it is registered (Navigation reports the
+ * current page to every new listener), and again after a configuration change
+ * re-registers it. Nothing is pending at those moments, so the cancel does
+ * nothing. That is intended, not a stray Back being dropped.
+ *
+ * It leans on two behaviors of activity-compose 1.9 and navigation-compose
+ * 2.8: the dispatcher's test-only cancel reaching the host's back handler,
+ * and that cancel stopping the queued work. BackGestureRaceTest is the gate
+ * for any activity or navigation version bump.
+ *
  * Call it next to the NavHost, with the same controller.
  */
 @SuppressLint("VisibleForTests") // the dispatcher's only way to cancel a Back

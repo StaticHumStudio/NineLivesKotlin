@@ -454,12 +454,41 @@ internal suspend fun PlaybackProgressOwner.resolveAndSavePlaybackPosition(
     candidate: Duration,
     readDurable: suspend () -> Duration?,
     save: suspend (Duration) -> Unit,
+    bookDuration: Duration = Duration.ZERO,
 ): Duration = sync(bookId) {
     val durable = readDurable()
-    val resolved = if (durable != null && durable > candidate) durable else candidate
+    val resolved = when {
+        // An end position held in memory records a finish, not a newer spot.
+        // After a finished book restarts, the saved position is the newer
+        // one, and letting the end win sent the book back to 0:00 (#106).
+        durable != null && positionAtEnd(candidate, bookDuration) -> durable
+        durable != null && durable > candidate -> durable
+        else -> candidate
+    }
     save(resolved)
     resolved
 }
+
+private fun positionAtEnd(position: Duration, bookDuration: Duration): Boolean =
+    bookDuration > Duration.ZERO && position >= bookDuration
+
+/**
+ * The latest of the positions a load holds in memory (the book it was handed
+ * and the server session's), skipping any at the end of the book while one
+ * short of it exists. An end position there can be stale from before the
+ * book was finished and restarted (#106).
+ */
+internal fun latestInMemoryPosition(positions: List<Duration>, bookDuration: Duration): Duration =
+    positions.filterNot { positionAtEnd(it, bookDuration) }.maxOrNull()
+        ?: positions.maxOrNull()
+        ?: Duration.ZERO
+
+/**
+ * Where a load starts the player. A position at or past the end is a
+ * finished book, which starts over, or the player ends at once.
+ */
+internal fun loadStartPosition(resolved: Duration, bookDuration: Duration): Duration =
+    if (positionAtEnd(resolved, bookDuration)) Duration.ZERO else resolved
 
 internal class PendingTerminalOwner {
     private val lock = Any()
@@ -1588,9 +1617,7 @@ class PlaybackManager @Inject constructor(
             withContext(Dispatchers.IO) {
                 // Check server session for a more recent position
                 val sessionTime = synchronized(sessionLock) { (currentSession?.currentTime ?: 0.0).seconds }
-                if (sessionTime > startPosition) {
-                    startPosition = sessionTime
-                }
+                startPosition = latestInMemoryPosition(listOf(startPosition, sessionTime), effectiveBook.duration)
 
                 // Re-read durable progress and save the resolved position under
                 // one per-book gate. Polling cannot advance between the read and
@@ -1617,6 +1644,7 @@ class PlaybackManager @Inject constructor(
                                 },
                             )
                         },
+                        bookDuration = effectiveBook.duration,
                     )
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -1627,9 +1655,10 @@ class PlaybackManager @Inject constructor(
             // If the resolved position is at or beyond the book's duration (finished book),
             // reset to the beginning so the player doesn't immediately trigger STATE_ENDED.
             val bookDuration = effectiveBook.duration
-            if (bookDuration > Duration.ZERO && startPosition >= bookDuration) {
+            val loadStart = loadStartPosition(startPosition, bookDuration)
+            if (loadStart != startPosition) {
                 Log.d(TAG, "loadAudioBook: position at/past end ($startPosition >= $bookDuration), resetting to start")
-                startPosition = Duration.ZERO
+                startPosition = loadStart
             }
 
             // Determine source and load

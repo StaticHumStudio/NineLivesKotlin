@@ -461,16 +461,13 @@ internal suspend fun PlaybackProgressOwner.resolveAndSavePlaybackPosition(
         // An end position held in memory records a finish, not a newer spot.
         // After a finished book restarts, the saved position is the newer
         // one, and letting the end win sent the book back to 0:00 (#106).
-        durable != null && positionAtEnd(candidate, bookDuration) -> durable
+        durable != null && positionAtBookEnd(candidate, bookDuration) -> durable
         durable != null && durable > candidate -> durable
         else -> candidate
     }
     save(resolved)
     resolved
 }
-
-private fun positionAtEnd(position: Duration, bookDuration: Duration): Boolean =
-    bookDuration > Duration.ZERO && position >= bookDuration
 
 /**
  * The latest of the positions a load holds in memory (the book it was handed
@@ -479,7 +476,7 @@ private fun positionAtEnd(position: Duration, bookDuration: Duration): Boolean =
  * book was finished and restarted (#106).
  */
 internal fun latestInMemoryPosition(positions: List<Duration>, bookDuration: Duration): Duration =
-    positions.filterNot { positionAtEnd(it, bookDuration) }.maxOrNull()
+    positions.filterNot { positionAtBookEnd(it, bookDuration) }.maxOrNull()
         ?: positions.maxOrNull()
         ?: Duration.ZERO
 
@@ -488,7 +485,7 @@ internal fun latestInMemoryPosition(positions: List<Duration>, bookDuration: Dur
  * finished book, which starts over, or the player ends at once.
  */
 internal fun loadStartPosition(resolved: Duration, bookDuration: Duration): Duration =
-    if (positionAtEnd(resolved, bookDuration)) Duration.ZERO else resolved
+    if (positionAtBookEnd(resolved, bookDuration)) Duration.ZERO else resolved
 
 internal class PendingTerminalOwner {
     private val lock = Any()

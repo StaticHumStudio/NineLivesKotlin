@@ -15,10 +15,22 @@ internal fun playbackResumePoint(state: Int, mediaItemIndex: Int, positionMs: Lo
     if (state == Player.STATE_ENDED) PlaybackResumePoint(0, 0)
     else PlaybackResumePoint(mediaItemIndex, positionMs)
 
+/**
+ * Whether [position] is the end of a book [bookDuration] long: within its
+ * last second, or past it. A stop there saves the book as finished, and a
+ * load treats it as a finished book, so both read this one rule (#106). The
+ * second of slack also covers the player's track sum running a little short
+ * of the server's length.
+ */
+internal fun positionAtBookEnd(position: Duration, bookDuration: Duration): Boolean =
+    bookDuration > Duration.ZERO &&
+        position >= (bookDuration - BOOK_END_WINDOW).coerceAtLeast(Duration.ZERO)
+
+private val BOOK_END_WINDOW = 1.seconds
+
 internal fun finishedAtTermination(reason: PlaybackTermination, position: Duration, duration: Duration): Boolean =
     reason == PlaybackTermination.COMPLETED ||
-        (reason == PlaybackTermination.STOP && duration > Duration.ZERO &&
-            position >= (duration - 1.seconds).coerceAtLeast(Duration.ZERO))
+        (reason == PlaybackTermination.STOP && positionAtBookEnd(position, duration))
 
 // Loading a book finalizes whatever was playing before it. A stop() already ran
 // that finalization, so re-running it here would flush the retained book a second

@@ -197,10 +197,11 @@ class SleepTimerManager @Inject constructor(
  * Where the sleep timer rewinds to when it runs out, or null for no seek.
  * Only a book that is playing rewinds. A seek on a paused book moves it for
  * nothing, and on a finished book parked at its end it would resume the book
- * and save it as unfinished.
+ * and save it as unfinished. A buffering book is left too: a parked book that
+ * just got Play on a stream is still parked until it starts playing.
  */
 internal fun sleepTimerRewindTarget(state: PlaybackState, position: Duration, rewindSeconds: Int): Duration? {
     if (rewindSeconds <= 0) return null
-    if (state != PlaybackState.PLAYING && state != PlaybackState.BUFFERING) return null
+    if (state != PlaybackState.PLAYING) return null
     return (position - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
 }

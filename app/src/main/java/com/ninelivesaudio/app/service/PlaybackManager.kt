@@ -517,10 +517,18 @@ internal fun loadPlacement(
 /**
  * Whether the load saves the book's place as finished. A parked book is still
  * finished, so opening it never marks it unfinished. A restart or a seek back
- * does that, through the usual position saves.
+ * does that, through the usual position saves. The load judges the end before
+ * its tracks are known, against the server's length, so a book whose tracks
+ * run short and finished at their end would read unfinished. Saving the same
+ * position as the saved row keeps that row's finished flag.
  */
-internal fun loadSavesFinished(resolved: Duration, bookDuration: Duration): Boolean =
-    positionAtBookEnd(resolved, bookDuration)
+internal fun loadSavesFinished(
+    resolved: Duration,
+    bookDuration: Duration,
+    savedPosition: Duration? = null,
+    savedFinished: Boolean = false,
+): Boolean =
+    positionAtBookEnd(resolved, bookDuration) || (savedFinished && savedPosition == resolved)
 
 /**
  * The length a load judges the end of a book against: the shorter of the
@@ -1722,6 +1730,7 @@ class PlaybackManager @Inject constructor(
 
             // Resolve the best known position from all sources
             var startPosition = effectiveBook.currentTime
+            var durableRow: Pair<Duration, Boolean>? = null
             withContext(Dispatchers.IO) {
                 // Check server session for a more recent position. No session
                 // is no position, not a 0:00 that would hide a finished book's end.
@@ -1736,11 +1745,18 @@ class PlaybackManager @Inject constructor(
                         bookId = effectiveBook.id,
                         candidate = startPosition,
                         readDurable = {
-                            progressRepository.getPlaybackProgress(effectiveBook.id)?.first
+                            progressRepository.getPlaybackProgress(effectiveBook.id)
+                                .also { durableRow = it }
+                                ?.first
                         },
                         save = { resolvedPosition ->
                             // A book at its end parks there and stays finished.
-                            val finished = loadSavesFinished(resolvedPosition, effectiveBook.duration)
+                            val finished = loadSavesFinished(
+                                resolved = resolvedPosition,
+                                bookDuration = effectiveBook.duration,
+                                savedPosition = durableRow?.first,
+                                savedFinished = durableRow?.second == true,
+                            )
                             progressRepository.savePlaybackProgress(
                                 audioBookId = effectiveBook.id,
                                 position = resolvedPosition,

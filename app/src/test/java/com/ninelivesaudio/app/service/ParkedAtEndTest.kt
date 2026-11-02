@@ -56,6 +56,18 @@ class ParkedAtEndTest {
     }
 
     @Test
+    fun `the load keeps a saved finished flag when it saves the same position`() {
+        // Tracks short of the server length: finished at the track end, which
+        // the server length does not count as the end.
+        val trackEnd = end - 2.seconds
+        assertTrue(loadSavesFinished(trackEnd, end, savedPosition = trackEnd, savedFinished = true))
+        // A different position is a new place and follows the end rule.
+        assertFalse(loadSavesFinished(3.minutes, end, savedPosition = trackEnd, savedFinished = true))
+        assertFalse(loadSavesFinished(trackEnd, end, savedPosition = trackEnd, savedFinished = false))
+        assertFalse(loadSavesFinished(trackEnd, end, savedPosition = null, savedFinished = false))
+    }
+
+    @Test
     fun `skip forward or next chapter from the end keeps the book parked`() {
         assertEquals(ParkedSeek.STAY_PARKED, parkedSeek(end, end))
         assertEquals(ParkedSeek.STAY_PARKED, parkedSeek(end + 30.seconds, end))

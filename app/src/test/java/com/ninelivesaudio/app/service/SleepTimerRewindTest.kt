@@ -17,7 +17,6 @@ class SleepTimerRewindTest {
     @Test
     fun `a playing book rewinds when the timer runs out`() {
         assertEquals(1.hours - 15.seconds, sleepTimerRewindTarget(PlaybackState.PLAYING, 1.hours, 15))
-        assertEquals(1.hours - 15.seconds, sleepTimerRewindTarget(PlaybackState.BUFFERING, 1.hours, 15))
         assertEquals(Duration.ZERO, sleepTimerRewindTarget(PlaybackState.PLAYING, 5.seconds, 15))
     }
 
@@ -26,6 +25,9 @@ class SleepTimerRewindTest {
         assertNull(sleepTimerRewindTarget(PlaybackState.PAUSED, 1.hours, 15))
         assertNull(sleepTimerRewindTarget(PlaybackState.STOPPED, 1.hours, 15))
         assertNull(sleepTimerRewindTarget(PlaybackState.LOADING, 1.hours, 15))
+        // A parked book that just got Play on a stream is still parked while
+        // it buffers. A rewind then would save it unfinished near its end.
+        assertNull(sleepTimerRewindTarget(PlaybackState.BUFFERING, 1.hours, 15))
     }
 
     @Test

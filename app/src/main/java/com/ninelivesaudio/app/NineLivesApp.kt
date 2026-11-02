@@ -34,45 +34,57 @@ import org.acra.config.mailSender
 import org.acra.data.StringFormat
 import org.acra.ktx.initAcra
 import com.ninelivesaudio.app.widget.WidgetRefresher
+import dagger.Lazy
 import javax.inject.Inject
 
 @HiltAndroidApp
 class NineLivesApp : Application(), ImageLoaderFactory {
 
     @Inject
-    lateinit var connectivityMonitor: ConnectivityMonitor
+    lateinit var connectivityMonitorLazy: Lazy<ConnectivityMonitor>
+    val connectivityMonitor: ConnectivityMonitor get() = connectivityMonitorLazy.get()
 
     @Inject
-    lateinit var syncManager: SyncManager
+    lateinit var syncManagerLazy: Lazy<SyncManager>
+    val syncManager: SyncManager get() = syncManagerLazy.get()
 
     @Inject
-    lateinit var settingsManager: SettingsManager
+    lateinit var settingsManagerLazy: Lazy<SettingsManager>
+    val settingsManager: SettingsManager get() = settingsManagerLazy.get()
 
     @Inject
-    lateinit var libraryRepository: LibraryRepository
+    lateinit var libraryRepositoryLazy: Lazy<LibraryRepository>
+    val libraryRepository: LibraryRepository get() = libraryRepositoryLazy.get()
 
     @Inject
-    lateinit var apiService: ApiService
+    lateinit var apiServiceLazy: Lazy<ApiService>
+    val apiService: ApiService get() = apiServiceLazy.get()
 
     @Inject
-    lateinit var billingManager: BillingManager
+    lateinit var billingManagerLazy: Lazy<BillingManager>
+    val billingManager: BillingManager get() = billingManagerLazy.get()
 
     @Inject
-    lateinit var downloadManager: DownloadManager
+    lateinit var downloadManagerLazy: Lazy<DownloadManager>
+    val downloadManager: DownloadManager get() = downloadManagerLazy.get()
 
     @Inject
-    lateinit var playbackManager: PlaybackManager
+    lateinit var playbackManagerLazy: Lazy<PlaybackManager>
+    val playbackManager: PlaybackManager get() = playbackManagerLazy.get()
 
     @Inject
-    lateinit var entitlementRepository: EntitlementRepository
+    lateinit var entitlementRepositoryLazy: Lazy<EntitlementRepository>
+    val entitlementRepository: EntitlementRepository get() = entitlementRepositoryLazy.get()
 
     // The app's OkHttpClient carries the auth token, self-signed cert config, and
     // dynamic base URL, so cover requests authenticate like every other call.
     @Inject
-    lateinit var okHttpClient: OkHttpClient
+    lateinit var okHttpClientLazy: Lazy<OkHttpClient>
+    val okHttpClient: OkHttpClient get() = okHttpClientLazy.get()
 
     @Inject
-    lateinit var widgetRefresher: WidgetRefresher
+    lateinit var widgetRefresherLazy: Lazy<WidgetRefresher>
+    val widgetRefresher: WidgetRefresher get() = widgetRefresherLazy.get()
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -117,6 +129,14 @@ class NineLivesApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+
+        // Android runs onCreate in every process the app has, including the
+        // crash dialog's own ":acra" process. Everything below belongs to the
+        // main process only. WorkManager, for one, is never set up in the
+        // crash process, so the widget refresher scheduling work there threw
+        // and took the crash dialog down with it. The dependencies above are
+        // injected lazily, so the crash process does not even build them.
+        if (!isMainAppProcess(getProcessName(), packageName)) return
 
         // No grandfather writer here, deliberately. The unconditional latch that
         // shipped in 2.0.2 was deleted for the free build. With PAID_ERA_CUTOFF
@@ -220,8 +240,10 @@ class NineLivesApp : Application(), ImageLoaderFactory {
     }
 
     override fun onTerminate() {
-        connectivityMonitor.stopMonitoring()
-        syncManager.stop()
+        if (isMainAppProcess(getProcessName(), packageName)) {
+            connectivityMonitor.stopMonitoring()
+            syncManager.stop()
+        }
         super.onTerminate()
     }
 

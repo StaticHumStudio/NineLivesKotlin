@@ -52,6 +52,7 @@ fun NineLivesNavHost(
     modifier: Modifier = Modifier,
     startDestination: String = Routes.HOME,
 ) {
+    CancelPendingBackOnNavigation(navController)
     NavHost(
         navController = navController,
         startDestination = startDestination,

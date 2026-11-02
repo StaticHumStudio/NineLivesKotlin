@@ -3,8 +3,13 @@ agp = "9.0.0"
 kotlin = "2.2.10"
 coreKtx = "1.15.0"
 lifecycleRuntimeKtx = "2.8.7"
+# Bumping activityCompose or navigationCompose? Run BackGestureRaceTest on a
+# device first. CancelPendingBackOnNavigation (#104) relies on the test-only
+# OnBackPressedDispatcher.dispatchOnBackCancelled reaching NavHost's back
+# handler, and a new version can quietly change that.
 activityCompose = "1.9.3"
 composeBom = "2025.06.00"
+# Same gate as activityCompose above: BackGestureRaceTest.
 navigationCompose = "2.8.5"
 hilt = "2.59.1"
 hiltNavigationCompose = "1.2.0"

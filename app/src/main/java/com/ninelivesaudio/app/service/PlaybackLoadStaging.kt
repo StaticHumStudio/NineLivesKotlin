@@ -137,3 +137,33 @@ internal fun playerHoldsBook(current: AudioBook?, loading: AudioBook?, bookId: S
 /** Whether the player holds a server book, current or loading (sign out). */
 internal fun playerHoldsRemoteBook(current: AudioBook?, loading: AudioBook?): Boolean =
     current?.isLocal == false || loading?.isLocal == false
+
+/**
+ * The server session a load opened, kept so a load that ends without making
+ * its book current can close that session itself (#105). Leaving a book's
+ * page cancels its load, and before this a session the load had already
+ * opened stayed open on the server until some later load or stop happened to
+ * close it, or forever if none did.
+ */
+internal class LoadServerSession {
+    private val lock = Any()
+    private var openedId: String? = null
+    private var published = false
+
+    /** Records the session this load opened and the player accepted. */
+    fun opened(sessionId: String) = synchronized(lock) { openedId = sessionId }
+
+    /** The load made its book current, so the session now belongs to that book. */
+    fun published() = synchronized(lock) { published = true }
+
+    /**
+     * The session to close as this load ends, or null. Only an unpublished
+     * load's own session, and only while it is still the player's session: a
+     * newer load that already took it (and closes it) or opened its own is
+     * left alone.
+     */
+    fun sessionToClose(currentSessionId: String?): String? = synchronized(lock) {
+        val id = openedId
+        if (published || id == null || id != currentSessionId) null else id
+    }
+}

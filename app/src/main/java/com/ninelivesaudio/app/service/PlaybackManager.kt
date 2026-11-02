@@ -1461,6 +1461,7 @@ class PlaybackManager @Inject constructor(
         pendingTerminalOwner.await(book.id)
         if (!playbackLoadOwner.claim(loadRequest)) return false
         var effectiveBook = book
+        val loadSession = LoadServerSession()
         try {
             stagedLoad.stage(loadRequest, book)
             playbackProgressOwner.invalidateSnapshots(book.id)
@@ -1523,9 +1524,9 @@ class PlaybackManager @Inject constructor(
                 ) == ListeningSessionKind.SERVER
             ) {
                 when (loadSessionOpen(remoteAccess.usesLocalTracks(), connectivityMonitor.connectionStatus.value)) {
-                    LoadSessionOpen.AWAIT -> openServerListeningSession(book, requestedGeneration, loadRequest)
+                    LoadSessionOpen.AWAIT -> openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
                     LoadSessionOpen.BOUNDED -> withTimeoutOrNull(DOWNLOADED_SESSION_OPEN_TIMEOUT) {
-                        openServerListeningSession(book, requestedGeneration, loadRequest)
+                        openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
                     }
                     LoadSessionOpen.DEFER -> Unit
                 }
@@ -1709,6 +1710,7 @@ class PlaybackManager @Inject constructor(
             // Nothing from here to playWhenReady suspends, so the new book
             // becomes current in the same main thread turn that prepares it.
             publishLoadedBook(loadRequest, effectiveBook, startPosition, isLocal, initialChapter, initialChapterIndex)
+            loadSession.published()
 
             // Start the foreground service (MediaController connect triggers startForeground).
             // Skipped when called from Android Auto's onSetMediaItems callback to avoid
@@ -1746,6 +1748,18 @@ class PlaybackManager @Inject constructor(
             return failLoad(loadRequest, loadFailureMessage(e), reportErrors)
         } finally {
             stagedLoad.clear(loadRequest)
+            // A load that ends without making its book current (leaving the
+            // page cancels it, or it failed or was superseded) closes the
+            // server session it opened, if no newer load already took it.
+            // Waiting for the next load to find the orphan left it open on
+            // the server whenever no next load came (#105). The close runs
+            // in the playback scope, so a cancelled page cannot stop it.
+            val abandonedSession = synchronized(sessionLock) {
+                loadSession.sessionToClose(currentSession?.id)?.also { currentSession = null }
+            }
+            if (abandonedSession != null) {
+                scope.launch(Dispatchers.IO) { closeSession(abandonedSession) }
+            }
         }
     }
 
@@ -1829,6 +1843,7 @@ class PlaybackManager @Inject constructor(
         book: AudioBook,
         requestedGeneration: Long,
         loadRequest: Long? = null,
+        loadSession: LoadServerSession? = null,
     ) {
         withContext(Dispatchers.IO) {
             try {
@@ -1849,6 +1864,7 @@ class PlaybackManager @Inject constructor(
                             serverListening = ServerSessionListening()
                             progressRepository.invalidatePendingProgressLifetime(book.id)
                             lastSyncTimestamp = System.currentTimeMillis()
+                            loadSession?.opened(session.id)
                             if (loadRequest != null) {
                                 // A load's chapters stay staged until it publishes.
                                 stagedLoad.fillChaptersIfEmpty(loadRequest, session.chapters)

@@ -67,4 +67,26 @@ class ParkedAtEndTest {
         assertEquals(ParkedSeek.RESUME_FROM_TARGET, parkedSeek(end - 10.seconds, end))
         assertEquals(ParkedSeek.RESUME_FROM_TARGET, parkedSeek(Duration.ZERO, end))
     }
+
+    @Test
+    fun `the end is judged against the shorter of the server length and the player's tracks`() {
+        // Tracks 2 s shorter than the server says. A book saved at the end of
+        // its tracks is finished, or the player would prepare at its own end
+        // and finish the book again.
+        val trackTotal = end - 2.seconds
+        assertEquals(trackTotal, bookEndLength(serverLength = end, trackTotal = trackTotal))
+        assertEquals(end, bookEndLength(serverLength = end, trackTotal = end + 2.seconds))
+        assertEquals(end, bookEndLength(serverLength = end, trackTotal = Duration.ZERO))
+        assertEquals(trackTotal, bookEndLength(serverLength = Duration.ZERO, trackTotal = trackTotal))
+        assertTrue(loadPlacement(trackTotal, bookEndLength(end, trackTotal), autoPlay = true, shownEnd = trackTotal).parkedAtEnd)
+    }
+
+    @Test
+    fun `a load made to play starts a parked book over`() {
+        assertTrue(playAfterLoad(loaded = true, parked = true, currentBookId = "b", loadedBookId = "b"))
+        assertFalse(playAfterLoad(loaded = true, parked = false, currentBookId = "b", loadedBookId = "b"))
+        assertFalse(playAfterLoad(loaded = false, parked = true, currentBookId = "b", loadedBookId = "b"))
+        // Another book took the player meanwhile.
+        assertFalse(playAfterLoad(loaded = true, parked = true, currentBookId = "other", loadedBookId = "b"))
+    }
 }

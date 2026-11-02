@@ -182,11 +182,7 @@ class SleepTimerManager @Inject constructor(
         Log.d(TAG, "onTimerExpired: pausing playback")
         val pm = playbackManagerLazy.get()
         val rewindSec = settingsManager.currentSettings.sleepTimerRewindSeconds
-        if (rewindSec > 0) {
-            val current = pm.position.value
-            val target = (current - rewindSec.seconds).coerceAtLeast(Duration.ZERO)
-            pm.seekTo(target)
-        }
+        sleepTimerRewindTarget(pm.playbackState.value, pm.position.value, rewindSec)?.let(pm::seekTo)
         pm.pause()
         // Reset state
         timerJob?.cancel()
@@ -195,4 +191,16 @@ class SleepTimerManager @Inject constructor(
         graceJob = null
         _state.value = SleepTimerState()
     }
+}
+
+/**
+ * Where the sleep timer rewinds to when it runs out, or null for no seek.
+ * Only a book that is playing rewinds. A seek on a paused book moves it for
+ * nothing, and on a finished book parked at its end it would resume the book
+ * and save it as unfinished.
+ */
+internal fun sleepTimerRewindTarget(state: PlaybackState, position: Duration, rewindSeconds: Int): Duration? {
+    if (rewindSeconds <= 0) return null
+    if (state != PlaybackState.PLAYING && state != PlaybackState.BUFFERING) return null
+    return (position - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
 }

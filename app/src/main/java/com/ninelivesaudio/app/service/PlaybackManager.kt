@@ -522,6 +522,27 @@ internal fun loadPlacement(
 internal fun loadSavesFinished(resolved: Duration, bookDuration: Duration): Boolean =
     positionAtBookEnd(resolved, bookDuration)
 
+/**
+ * The length a load judges the end of a book against: the shorter of the
+ * server's length and the player's track total. A track total a little short
+ * must still count its own end as the end, or the player would be prepared
+ * at its end and finish the book again. A length of zero is unknown.
+ */
+internal fun bookEndLength(serverLength: Duration, trackTotal: Duration): Duration = when {
+    serverLength <= Duration.ZERO -> trackTotal
+    trackTotal <= Duration.ZERO -> serverLength
+    else -> minOf(serverLength, trackTotal)
+}
+
+/**
+ * Whether a load that came from a Play tap (the mini player's reload, the
+ * widgets) plays once it lands. A finished book loads parked at its end, and
+ * Play on a parked book starts it over. Any other book already played on
+ * load. A book that lost the player meanwhile is left alone.
+ */
+internal fun playAfterLoad(loaded: Boolean, parked: Boolean, currentBookId: String?, loadedBookId: String): Boolean =
+    loaded && parked && currentBookId == loadedBookId
+
 internal enum class ParkedSeek { STAY_PARKED, RESUME_FROM_TARGET }
 
 /**
@@ -1216,6 +1237,16 @@ class PlaybackManager @Inject constructor(
     // book over, and a seek back resumes it from there.
     private var parkedAtEnd = false
 
+    /**
+     * Load [book] for a Play tap. A finished book loads parked at its end,
+     * and Play on a parked book starts it over, so this plays it.
+     */
+    suspend fun loadAudioBookForPlay(book: AudioBook): Boolean {
+        val loaded = loadAudioBook(book)
+        if (playAfterLoad(loaded, parkedAtEnd, _currentBook.value?.id, book.id)) play()
+        return loaded
+    }
+
     private fun setParkedAtEnd(parked: Boolean) {
         parkedAtEnd = parked
         chapterPlayer?.parkedAtEnd = parked
@@ -1783,11 +1814,12 @@ class PlaybackManager @Inject constructor(
 
             // A finished book parks at its end: shown there, paused, with the
             // player waiting at 0:00 so it cannot end again on load.
+            val trackTotal = calculateTotalDuration(effectiveBook)
             val placement = loadPlacement(
                 resolved = resolvedPosition,
-                bookDuration = effectiveBook.duration,
+                bookDuration = bookEndLength(effectiveBook.duration, trackTotal),
                 autoPlay = autoPlay,
-                shownEnd = calculateTotalDuration(effectiveBook),
+                shownEnd = trackTotal,
             )
             if (placement.parkedAtEnd) {
                 Log.d(TAG, "loadAudioBook: finished ($resolvedPosition of ${effectiveBook.duration}), parked at the end")
@@ -1919,6 +1951,7 @@ class PlaybackManager @Inject constructor(
      */
     private suspend fun failLoad(loadRequest: Long, message: String?, reportErrors: Boolean): Boolean {
         if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+        setParkedAtEnd(false)
         exoPlayer?.clearMediaItems()
         _playbackState.value = PlaybackState.STOPPED
         loadErrorEvent(message, reportErrors)?.let { _events.tryEmit(it) }
@@ -2331,12 +2364,8 @@ class PlaybackManager @Inject constructor(
             // Resuming that would prepare an empty playlist, which ends at once
             // and marks the book finished. Reload it instead.
             PlayAction.RELOAD_RETAINED -> {
-                scope.launch {
-                    // A finished book reloads parked at its end. This load came
-                    // from Play, so it starts over at once, the way Play on a
-                    // parked book does.
-                    if (loadAudioBook(retained!!) && parkedAtEnd && _currentBook.value?.id == retained.id) play()
-                }
+                // This load came from Play, so a finished book starts over.
+                scope.launch { loadAudioBookForPlay(retained!!) }
                 return
             }
             PlayAction.RETRY_AFTER_TERMINAL -> {
@@ -3135,6 +3164,8 @@ class PlaybackManager @Inject constructor(
         // parked book off its end, to where the player now is.
         if (parkedAtEnd) {
             setParkedAtEnd(false)
+            // The book moved, so its stop or the next load writes it again.
+            exoPlayer?.let { if (it.mediaItemCount > 0) retainedBookFinalized = false }
             val moved = getCurrentPosition()
             _position.value = moved
             chapterPlayer?.absolutePositionMs = moved.inWholeMilliseconds

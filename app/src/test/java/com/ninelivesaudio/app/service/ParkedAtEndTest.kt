@@ -94,6 +94,25 @@ class ParkedAtEndTest {
     }
 
     @Test
+    fun `a seek into a track is the book position after the tracks before it`() {
+        // Cumulative track ends in seconds, as the player keeps them.
+        val ends = listOf(600.0, 1_500.0, 3_600.0)
+        assertEquals(90.seconds, bookPositionOfTrack(ends, 0, 90_000L))
+        assertEquals(1_590.seconds, bookPositionOfTrack(ends, 2, 90_000L))
+        assertEquals(3_600.seconds, bookPositionOfTrack(ends, 2, 2_100_000L))
+        // No track list (one file): the position is the book's.
+        assertEquals(90.seconds, bookPositionOfTrack(emptyList(), 0, 90_000L))
+    }
+
+    @Test
+    fun `a parked book judges seeks against the same end it parked at`() {
+        // Tracks 3 s longer than the server says. The last chapter ends at the
+        // server length, so Next to it stays parked.
+        val parkedEnd = bookEndLength(serverLength = end, trackTotal = end + 3.seconds)
+        assertEquals(ParkedSeek.STAY_PARKED, parkedSeek(end, parkedEnd))
+    }
+
+    @Test
     fun `a load made to play starts a parked book over`() {
         assertTrue(playAfterLoad(loaded = true, parked = true, currentBookId = "b", loadedBookId = "b"))
         assertFalse(playAfterLoad(loaded = true, parked = false, currentBookId = "b", loadedBookId = "b"))

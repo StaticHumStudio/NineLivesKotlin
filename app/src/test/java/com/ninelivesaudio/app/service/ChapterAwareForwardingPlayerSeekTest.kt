@@ -57,6 +57,17 @@ class ChapterAwareForwardingPlayerSeekTest {
         assertEquals(listOf(3_600_000L), seeks)
     }
 
+    @Test
+    fun `an indexed controller seek on a parked book without chapters goes through the book's seek`() {
+        // Straight to the player, a seek into the last track's end would end the book again.
+        val player = ChapterAwareForwardingPlayer(singleTrackPlayer(durationMs = 3_600_000L, positionMs = 0L))
+        val seeks = mutableListOf<Pair<Int, Long>>()
+        player.indexedSeekHandler = { index, ms -> seeks += index to ms }
+        player.parkedAtEnd = true
+        player.seekTo(2, 90_000L)
+        assertEquals(listOf(2 to 90_000L), seeks)
+    }
+
     private fun singleTrackPlayer(durationMs: Long, positionMs: Long): Player = Proxy.newProxyInstance(
         Player::class.java.classLoader,
         arrayOf(Player::class.java),

@@ -551,6 +551,15 @@ internal fun bookEndLength(serverLength: Duration, trackTotal: Duration): Durati
 internal fun playAfterLoad(loaded: Boolean, parked: Boolean, currentBookId: String?, loadedBookId: String): Boolean =
     loaded && parked && currentBookId == loadedBookId
 
+/**
+ * The book position of [positionMs] into track [index], given the cumulative
+ * track ends in seconds. With no track list (one file) it is the book's.
+ */
+internal fun bookPositionOfTrack(trackEndsSeconds: List<Double>, index: Int, positionMs: Long): Duration {
+    val before = if (index > 0) trackEndsSeconds.getOrNull(index - 1) ?: 0.0 else 0.0
+    return before.seconds + positionMs.coerceAtLeast(0L).milliseconds
+}
+
 internal enum class ParkedSeek { STAY_PARKED, RESUME_FROM_TARGET }
 
 /**
@@ -1033,6 +1042,9 @@ class PlaybackManager @Inject constructor(
             wrapper.seekHandler = { absoluteMs -> seekTo(absoluteMs.milliseconds) }
             wrapper.seekBackHandler = { skipBackward(seconds = 10) }
             wrapper.seekForwardHandler = { skipForward(seconds = 30) }
+            wrapper.indexedSeekHandler = { index, positionMs ->
+                seekTo(bookPositionOfTrack(trackDurations, index, positionMs))
+            }
             // Every media-session controller goes through the wrapper, so the
             // entitlement clamp has to live there too, not only in setSpeed().
             wrapper.speedClamp = { requested ->
@@ -1244,6 +1256,10 @@ class PlaybackManager @Inject constructor(
     // screen shows the end while the player waits at 0:00. Play starts the
     // book over, and a seek back resumes it from there.
     private var parkedAtEnd = false
+
+    // The end a parked book was judged against (bookEndLength). Seeks on it
+    // are judged against the same end.
+    private var parkedEndLength = Duration.ZERO
 
     /**
      * Load [book] for a Play tap. A finished book loads parked at its end,
@@ -1873,6 +1889,7 @@ class PlaybackManager @Inject constructor(
             // Nothing from here to playWhenReady suspends, so the new book
             // becomes current in the same main thread turn that prepares it.
             setParkedAtEnd(placement.parkedAtEnd)
+            parkedEndLength = bookEndLength(effectiveBook.duration, trackTotal)
             publishLoadedBook(loadRequest, effectiveBook, startPosition, isLocal, initialChapter, initialChapterIndex)
             loadSession.published()
 
@@ -2618,7 +2635,7 @@ class PlaybackManager @Inject constructor(
         if (parkedAtEnd) {
             // Skip forward or next chapter from the end stays parked, so the
             // player never seeks into its end and finishes the book again.
-            if (parkedSeek(position, _duration.value) == ParkedSeek.STAY_PARKED) return
+            if (parkedSeek(position, parkedEndLength) == ParkedSeek.STAY_PARKED) return
             // A seek back resumes the book from there and plays, the way a
             // seek on a book that just finished does. Its save marks the book
             // unfinished through the usual rule.

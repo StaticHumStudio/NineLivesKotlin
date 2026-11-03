@@ -41,6 +41,12 @@ class ChapterAwareForwardingPlayer(
     var parkedAtEnd: Boolean = false
 
     /**
+     * Delegates a track-indexed seek on a parked book without chapters back
+     * to PlaybackManager, which turns the track position into a book position.
+     */
+    var indexedSeekHandler: ((Int, Long) -> Unit)? = null
+
+    /**
      * Lambda that delegates a chapter-relative seek back to PlaybackManager,
      * which knows how to translate an absolute position into the correct
      * ExoPlayer track + offset.
@@ -139,8 +145,12 @@ class ChapterAwareForwardingPlayer(
             // Chapter mode: interpret positionMs as chapter-relative
             seekTo(positionMs)
         } else {
-            // No chapters: pass through to the real player with the track index intact
-            super.seekTo(mediaItemIndex, positionMs)
+            // No chapters: pass through to the real player with the track
+            // index intact. Parked, it goes through the book's seek, which
+            // keeps a seek to the end from finishing the book again.
+            val handler = indexedSeekHandler
+            if (parkedAtEnd && handler != null) handler(mediaItemIndex, positionMs)
+            else super.seekTo(mediaItemIndex, positionMs)
         }
     }
 

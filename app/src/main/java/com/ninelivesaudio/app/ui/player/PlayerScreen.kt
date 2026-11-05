@@ -305,17 +305,17 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Restarts the current chapter, or goes back one near its start,
+            // so it stays usable in the first chapter too.
+            val canGoPrevious = uiState.chapters.isNotEmpty()
             IconButton(
-                onClick = {
-                    val prevIndex = uiState.currentChapterIndex - 1
-                    if (prevIndex >= 0) viewModel.seekToChapter(prevIndex)
-                },
-                enabled = uiState.currentChapterIndex > 0,
+                onClick = viewModel::skipToPreviousChapter,
+                enabled = canGoPrevious,
             ) {
                 Icon(
                     Icons.Outlined.SkipPrevious,
                     contentDescription = "Previous Chapter",
-                    tint = if (uiState.currentChapterIndex > 0) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.4f),
+                    tint = if (canGoPrevious) NineLivesTheme.colors.archiveTextSecondary else NineLivesTheme.colors.archiveTextMuted.copy(alpha = 0.4f),
                     modifier = Modifier.size(28.dp),
                 )
             }

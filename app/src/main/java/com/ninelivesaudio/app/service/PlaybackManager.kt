@@ -2876,6 +2876,22 @@ class PlaybackManager @Inject constructor(
         equalizer = null
     }
 
+    /**
+     * The Previous Chapter button: restarts the current chapter, or goes back
+     * one when you are already at its start. See [previousChapterTarget].
+     */
+    fun skipToPreviousChapter() {
+        val chapters = cachedChapters
+        val index = _currentChapterIndex.value
+        val chapterStart = chapters.getOrNull(index)?.startTime ?: Duration.ZERO
+        val target = previousChapterTarget(
+            currentIndex = index,
+            chapterCount = chapters.size,
+            positionInChapterMs = (_position.value - chapterStart).inWholeMilliseconds,
+        )
+        if (target >= 0) seekToChapter(target)
+    }
+
     fun seekToChapter(chapterIndex: Int) {
         if (stagedLoad.book.value != null) return
         if (chapterIndex < 0 || chapterIndex >= cachedChapters.size) return

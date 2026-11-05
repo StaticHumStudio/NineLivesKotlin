@@ -183,19 +183,13 @@ class ChapterAwareForwardingPlayer(
             return
         }
         val chapterStartMs = (ch.start * 1000).toLong()
-        val posInChapterMs = absolutePositionMs - chapterStartMs
-
-        if (posInChapterMs > 3000 && currentChapterIndex >= 0) {
-            // More than 3s into chapter: jump to start of current chapter
-            handler(chapterStartMs)
-        } else if (currentChapterIndex > 0) {
-            // Near start: jump to start of previous chapter
-            val prevChapter = chapters[currentChapterIndex - 1]
-            handler((prevChapter.start * 1000).toLong())
-        } else {
-            // First chapter: jump to beginning of book
-            handler(0L)
-        }
+        val target = previousChapterTarget(
+            currentIndex = currentChapterIndex,
+            chapterCount = chapters.size,
+            positionInChapterMs = absolutePositionMs - chapterStartMs,
+        )
+        val targetChapter = chapters.getOrNull(target)
+        handler(if (targetChapter != null) (targetChapter.start * 1000).toLong() else 0L)
     }
 
     override fun hasNextMediaItem(): Boolean {

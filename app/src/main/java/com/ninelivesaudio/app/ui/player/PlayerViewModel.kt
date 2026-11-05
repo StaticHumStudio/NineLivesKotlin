@@ -365,6 +365,10 @@ class PlayerViewModel @Inject constructor(
         playbackManager.seekToChapter(index)
     }
 
+    fun skipToPreviousChapter() {
+        playbackManager.skipToPreviousChapter()
+    }
+
     // ─── EQ Sheet ──────────────────────────────────────────────────────────
 
     fun toggleEqSheet() {

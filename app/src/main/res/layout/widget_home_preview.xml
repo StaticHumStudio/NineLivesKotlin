@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Widget picker preview for Nine Lives: generic art only, no book or rank.
      A small Home: the altar card with the eye and the wordmark, then two rows
-     of empty Lives, the first ringed in full gold with the play disc. -->
+     of empty square Lives, the first ringed in full gold with the play disc. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"
@@ -39,15 +39,14 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="10dp"
-        android:layout_weight="1"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
         android:orientation="horizontal">
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
             android:background="@drawable/widget_life_ring_current">
 
             <ImageView
@@ -59,45 +58,40 @@
         </FrameLayout>
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
             android:layout_marginStart="8dp"
-            android:layout_weight="1"
             android:background="@drawable/widget_life_ring" />
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
             android:layout_marginStart="8dp"
-            android:layout_weight="1"
             android:background="@drawable/widget_life_ring" />
     </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="0dp"
+        android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:layout_weight="1"
+        android:gravity="center"
         android:orientation="horizontal">
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
             android:background="@drawable/widget_life_ring" />
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
             android:layout_marginStart="8dp"
-            android:layout_weight="1"
             android:background="@drawable/widget_life_ring" />
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
+            android:layout_width="84dp"
+            android:layout_height="84dp"
             android:layout_marginStart="8dp"
-            android:layout_weight="1"
             android:background="@drawable/widget_life_ring" />
     </LinearLayout>
 </LinearLayout>

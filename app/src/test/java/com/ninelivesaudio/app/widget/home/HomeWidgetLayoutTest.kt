@@ -58,8 +58,9 @@ class HomeWidgetLayoutTest {
     }
 
     @Test fun `a taller widget gets the third row, Home's full nine`() {
-        // Pixel reports a 4x4 about 478dp high.
-        val p = plan(360f to 478f)
+        // At a Pixel 4x4 (about 478dp reported) two rows of 105 and three of 85
+        // cover about the same area and two rows win. A little taller, three do.
+        val p = plan(360f to 500f)
         assertEquals(AltarStyle.TALL, p.altar)
         assertEquals(3, p.rows)
         assertEquals(9, p.slots)
@@ -173,9 +174,10 @@ class HomeWidgetLayoutTest {
     }
 
     @Test fun `tracked caps put a thin space between letters`() {
-        assertEquals("N O V I C E", trackedCaps("Novice"))
-        assertEquals("N I N E   L I V E S", WORDMARK)
+        assertEquals("N\u2009O\u2009V\u2009I\u2009C\u2009E", trackedCaps("Novice"))
+        assertEquals("N\u2009I\u2009N\u2009E\u2009 \u2009L\u2009I\u2009V\u2009E\u2009S", WORDMARK)
         assertEquals("", trackedCaps(""))
+        assertEquals("L\u200AI\u200AF\u200AE\u200A \u200AI\u200AI", trackedLabel(lifeLabel(1)))
     }
 
     @Test fun `the disc is about a third of the tile, within bounds`() {

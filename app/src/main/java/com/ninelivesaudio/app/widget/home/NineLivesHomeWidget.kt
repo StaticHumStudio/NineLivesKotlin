@@ -375,7 +375,10 @@ private fun Altar(rank: RankCard, plan: HomePlan, openApp: Action) {
     if (plan.altar == AltarStyle.TALL) {
         Column(modifier = card.padding(horizontal = 10.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(text = trackedCaps(rank.epithet), maxLines = 1, style = TextStyle(color = textMuted, fontSize = 9.sp, fontWeight = FontWeight.Medium))
-            Spacer(GlanceModifier.height(4.dp))
+            Spacer(GlanceModifier.height(3.dp))
+            // Home's small gold dot between the rank and the eye.
+            Image(provider = ImageProvider(R.drawable.widget_altar_dot), contentDescription = null, modifier = GlanceModifier.size(4.dp))
+            Spacer(GlanceModifier.height(3.dp))
             Image(provider = ImageProvider(R.drawable.widget_eye), contentDescription = null, modifier = GlanceModifier.size(plan.eyeDp.dp))
             Spacer(GlanceModifier.height(4.dp))
             Wordmark(19)
@@ -527,7 +530,7 @@ private const val TILE_INSET_DP = 7
 private fun LifeLabel(label: String, sizeDp: Int, dim: Boolean) {
     Column(modifier = GlanceModifier.padding(bottom = if (sizeDp >= 80) 10.dp else 8.dp)) {
         Text(
-            text = label,
+            text = trackedLabel(label),
             maxLines = 1,
             modifier = GlanceModifier
                 .background(ImageProvider(R.drawable.widget_life_label))

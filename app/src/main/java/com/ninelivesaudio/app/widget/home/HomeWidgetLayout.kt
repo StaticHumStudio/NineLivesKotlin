@@ -107,8 +107,8 @@ internal const val TALL_ALTAR_BONUS = 1.2f
 
 /** Heights of the altar styles, in dp, without the altar line. */
 internal fun altarHeightDp(style: AltarStyle, eyeDp: Int = MIN_EYE_DP): Int = when (style) {
-    // padding 10 + rank 13 + 4 + eye + 4 + wordmark 24 + 2 + total 16 + padding 10
-    AltarStyle.TALL -> 83 + eyeDp
+    // padding 10 + rank 13 + 3 + dot 4 + 3 + eye + 4 + wordmark 24 + 2 + total 16 + padding 10
+    AltarStyle.TALL -> 89 + eyeDp
     // padding 8 + max(eye 44, rank 13 + wordmark 22 + total 16) + padding 8
     AltarStyle.COMPACT -> 16 + maxOf(COMPACT_EYE_DP, 51)
     // padding 8 + rank 12 + wordmark 20 + total 15 + padding 8
@@ -238,7 +238,13 @@ internal fun lifeNumeral(n: Int): String = NUMERALS.getOrNull(n - 1) ?: n.toStri
 internal fun trackedCaps(text: String): String =
     text.uppercase().toList().joinToString(THIN_SPACE)
 
-internal const val THIN_SPACE = " "
+internal const val THIN_SPACE = "\u2009"
+
+/** A hair space, for Home's lighter 1sp tracking on its 9sp LIFE numerals (about 0.1 em). */
+internal const val HAIR_SPACE = "\u200A"
+
+/** A LIFE numeral tracked like Home's, with a hair space between letters. */
+internal fun trackedLabel(text: String): String = text.toList().joinToString(HAIR_SPACE)
 
 /** Home's wordmark, tracked. */
 internal val WORDMARK: String = trackedCaps("Nine Lives")

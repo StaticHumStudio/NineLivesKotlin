@@ -58,6 +58,12 @@ class ChapterAwareForwardingPlayer(
     var seekForwardHandler: (() -> Unit)? = null
 
     /**
+     * Previous chapter, routed to PlaybackManager so the notification, media
+     * keys and Android Auto run the exact same code as the in app button.
+     */
+    var previousChapterHandler: (() -> Unit)? = null
+
+    /**
      * Clamps a requested speed by entitlement. Set by PlaybackManager.
      *
      * The MediaSession is built on THIS player, so Android Auto, the media
@@ -177,6 +183,7 @@ class ChapterAwareForwardingPlayer(
 
     override fun seekToPrevious() {
         val ch = currentChapter
+        if (ch != null) previousChapterHandler?.let { it(); return }
         val handler = seekHandler
         if (ch == null || handler == null) {
             super.seekToPrevious()

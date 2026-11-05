@@ -63,6 +63,34 @@ class PreviousChapterTargetTest {
         assertEquals(listOf(200_000L, 100_000L), seeks)
     }
 
+    @Test
+    fun `MediaSession previous goes through PlaybackManager when wired`() {
+        val calls = mutableListOf<String>()
+        val player = ChapterAwareForwardingPlayer(noOpPlayer()).apply {
+            chapters = listOf(Chapter(id = 0, start = 0.0, end = 100.0))
+            currentChapter = chapters[0]
+            currentChapterIndex = 0
+            seekHandler = { calls += "seek" }
+            previousChapterHandler = { calls += "manager" }
+        }
+
+        player.seekToPrevious()
+
+        assertEquals(listOf("manager"), calls)
+    }
+
+    @Test
+    fun `a book without chapters keeps the plain player previous`() {
+        val calls = mutableListOf<String>()
+        val player = ChapterAwareForwardingPlayer(noOpPlayer()).apply {
+            previousChapterHandler = { calls += "manager" }
+        }
+
+        player.seekToPrevious()
+
+        assertEquals(emptyList<String>(), calls)
+    }
+
     private fun noOpPlayer(): Player = Proxy.newProxyInstance(
         Player::class.java.classLoader,
         arrayOf(Player::class.java),

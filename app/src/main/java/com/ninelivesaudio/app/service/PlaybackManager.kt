@@ -1045,6 +1045,7 @@ class PlaybackManager @Inject constructor(
             wrapper.indexedSeekHandler = { index, positionMs ->
                 seekTo(bookPositionOfTrack(trackDurations, index, positionMs))
             }
+            wrapper.previousChapterHandler = { skipToPreviousChapter() }
             // Every media-session controller goes through the wrapper, so the
             // entitlement clamp has to live there too, not only in setSpeed().
             wrapper.speedClamp = { requested ->
@@ -2881,13 +2882,21 @@ class PlaybackManager @Inject constructor(
      * one when you are already at its start. See [previousChapterTarget].
      */
     fun skipToPreviousChapter() {
+        if (stagedLoad.book.value != null) return
         val chapters = cachedChapters
-        val index = _currentChapterIndex.value
+        if (chapters.isEmpty()) return
+        // Read the player live. _position is a 500 ms poll that freezes on
+        // pause, so near the 3 s line it can name the wrong chapter.
+        val position = if (exoPlayer != null) getCurrentPosition() else _position.value
+        val seconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
+        val index = chapters.indexOfFirst { seconds >= it.start && seconds < it.end }
+            .takeIf { it >= 0 }
+            ?: if (seconds >= chapters.last().end) chapters.lastIndex else _currentChapterIndex.value
         val chapterStart = chapters.getOrNull(index)?.startTime ?: Duration.ZERO
         val target = previousChapterTarget(
             currentIndex = index,
             chapterCount = chapters.size,
-            positionInChapterMs = (_position.value - chapterStart).inWholeMilliseconds,
+            positionInChapterMs = (position - chapterStart).inWholeMilliseconds,
         )
         if (target >= 0) seekToChapter(target)
     }

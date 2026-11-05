@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- One page of the stack: pockets either side of a gap the fixed spine sits in
-     (widget_binder.xml), and the arrows that turn the page. The pockets are added
-     at draw time (widget_binder_row.xml, widget_binder_pocket.xml), as many as the
-     widget's size holds (BinderLayout.kt). One row Binders put slim arrows either
-     side of the spine: the pages fanned out behind show at their top and right
-     edges, so an arrow on the outer edge would peek out from every page behind.
-     Taller ones put full size arrows and the page number underneath.
+     (widget_binder.xml), and the arrows that turn the page.
+     Every pocket slot a page can hold is here: two rows of two on each side,
+     binder_p0 to binder_p3 on the left page and binder_p4 to binder_p7 on the right,
+     row by row (BinderLayout.slotOf). A smaller Binder hides the second column and
+     row. The pockets live in this one layout, not in nested RemoteViews, because
+     Android 11 and 12 only wire a fill in intent's click on views of the item's own
+     RemoteViews, and a nested one would never play its book.
+     One row Binders put slim arrows either side of the spine: the pages fanned out
+     behind show at their top and right edges, so an arrow on the outer edge would
+     peek out from every page behind. Taller ones put full size arrows and the page
+     number underneath.
      StackView measures a page with AT_MOST, so the first child (a huge image with no
      adjustViewBounds) makes the page take all the room StackView offers. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -33,13 +38,353 @@
             android:layout_weight="1"
             android:orientation="horizontal">
 
-
             <LinearLayout
                 android:id="@+id/binder_side_left"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:orientation="vertical" />
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:id="@+id/binder_left_row0"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/binder_p0_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p0_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p0_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p0_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p0_square"
+                                    android:layout_alignEnd="@id/binder_p0_square"
+                                    android:layout_alignStart="@id/binder_p0_square"
+                                    android:layout_alignTop="@id/binder_p0_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p0_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p0_square"
+                                    android:layout_alignEnd="@id/binder_p0_square"
+                                    android:layout_alignStart="@id/binder_p0_square"
+                                    android:layout_alignTop="@id/binder_p0_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p0_square"
+                                    android:layout_alignEnd="@id/binder_p0_square"
+                                    android:layout_alignStart="@id/binder_p0_square"
+                                    android:layout_alignTop="@id/binder_p0_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p0_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/binder_p1_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p1_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p1_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p1_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p1_square"
+                                    android:layout_alignEnd="@id/binder_p1_square"
+                                    android:layout_alignStart="@id/binder_p1_square"
+                                    android:layout_alignTop="@id/binder_p1_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p1_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p1_square"
+                                    android:layout_alignEnd="@id/binder_p1_square"
+                                    android:layout_alignStart="@id/binder_p1_square"
+                                    android:layout_alignTop="@id/binder_p1_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p1_square"
+                                    android:layout_alignEnd="@id/binder_p1_square"
+                                    android:layout_alignStart="@id/binder_p1_square"
+                                    android:layout_alignTop="@id/binder_p1_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p1_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/binder_left_row1"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/binder_p2_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p2_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p2_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p2_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p2_square"
+                                    android:layout_alignEnd="@id/binder_p2_square"
+                                    android:layout_alignStart="@id/binder_p2_square"
+                                    android:layout_alignTop="@id/binder_p2_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p2_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p2_square"
+                                    android:layout_alignEnd="@id/binder_p2_square"
+                                    android:layout_alignStart="@id/binder_p2_square"
+                                    android:layout_alignTop="@id/binder_p2_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p2_square"
+                                    android:layout_alignEnd="@id/binder_p2_square"
+                                    android:layout_alignStart="@id/binder_p2_square"
+                                    android:layout_alignTop="@id/binder_p2_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p2_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/binder_p3_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p3_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p3_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p3_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p3_square"
+                                    android:layout_alignEnd="@id/binder_p3_square"
+                                    android:layout_alignStart="@id/binder_p3_square"
+                                    android:layout_alignTop="@id/binder_p3_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p3_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p3_square"
+                                    android:layout_alignEnd="@id/binder_p3_square"
+                                    android:layout_alignStart="@id/binder_p3_square"
+                                    android:layout_alignTop="@id/binder_p3_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p3_square"
+                                    android:layout_alignEnd="@id/binder_p3_square"
+                                    android:layout_alignStart="@id/binder_p3_square"
+                                    android:layout_alignTop="@id/binder_p3_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p3_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
 
             <FrameLayout
                 android:id="@+id/binder_edge_prev"
@@ -55,9 +400,11 @@
                     android:importantForAccessibility="no"
                     android:src="@drawable/widget_binder_edge_prev" />
             </FrameLayout>
+
             <FrameLayout
                 android:layout_width="@dimen/widget_binder_spine_slot"
                 android:layout_height="match_parent" />
+
             <FrameLayout
                 android:id="@+id/binder_edge_next"
                 android:layout_width="@dimen/widget_binder_edge_arrow"
@@ -78,8 +425,348 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:orientation="vertical" />
+                android:orientation="vertical">
 
+                <LinearLayout
+                    android:id="@+id/binder_right_row0"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/binder_p4_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p4_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p4_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p4_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p4_square"
+                                    android:layout_alignEnd="@id/binder_p4_square"
+                                    android:layout_alignStart="@id/binder_p4_square"
+                                    android:layout_alignTop="@id/binder_p4_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p4_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p4_square"
+                                    android:layout_alignEnd="@id/binder_p4_square"
+                                    android:layout_alignStart="@id/binder_p4_square"
+                                    android:layout_alignTop="@id/binder_p4_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p4_square"
+                                    android:layout_alignEnd="@id/binder_p4_square"
+                                    android:layout_alignStart="@id/binder_p4_square"
+                                    android:layout_alignTop="@id/binder_p4_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p4_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/binder_p5_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p5_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p5_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p5_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p5_square"
+                                    android:layout_alignEnd="@id/binder_p5_square"
+                                    android:layout_alignStart="@id/binder_p5_square"
+                                    android:layout_alignTop="@id/binder_p5_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p5_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p5_square"
+                                    android:layout_alignEnd="@id/binder_p5_square"
+                                    android:layout_alignStart="@id/binder_p5_square"
+                                    android:layout_alignTop="@id/binder_p5_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p5_square"
+                                    android:layout_alignEnd="@id/binder_p5_square"
+                                    android:layout_alignStart="@id/binder_p5_square"
+                                    android:layout_alignTop="@id/binder_p5_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p5_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/binder_right_row1"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:id="@+id/binder_p6_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p6_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p6_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p6_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p6_square"
+                                    android:layout_alignEnd="@id/binder_p6_square"
+                                    android:layout_alignStart="@id/binder_p6_square"
+                                    android:layout_alignTop="@id/binder_p6_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p6_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p6_square"
+                                    android:layout_alignEnd="@id/binder_p6_square"
+                                    android:layout_alignStart="@id/binder_p6_square"
+                                    android:layout_alignTop="@id/binder_p6_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p6_square"
+                                    android:layout_alignEnd="@id/binder_p6_square"
+                                    android:layout_alignStart="@id/binder_p6_square"
+                                    android:layout_alignTop="@id/binder_p6_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p6_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/binder_p7_cell"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical"
+                        android:padding="@dimen/widget_binder_pocket_gap">
+
+                        <LinearLayout
+                            android:id="@+id/binder_p7_box"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:gravity="center"
+                            android:orientation="horizontal">
+
+                            <RelativeLayout
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content">
+
+                                <ImageView
+                                    android:id="@+id/binder_p7_square"
+                                    style="@style/NineLivesWidgetSquare" />
+
+                                <ImageView
+                                    android:id="@+id/binder_p7_disc"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p7_square"
+                                    android:layout_alignEnd="@id/binder_p7_square"
+                                    android:layout_alignStart="@id/binder_p7_square"
+                                    android:layout_alignTop="@id/binder_p7_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY" />
+
+                                <TextView
+                                    android:id="@+id/binder_p7_title"
+                                    style="@style/NineLivesWidgetSleeveTitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p7_square"
+                                    android:layout_alignEnd="@id/binder_p7_square"
+                                    android:layout_alignStart="@id/binder_p7_square"
+                                    android:layout_alignTop="@id/binder_p7_square"
+                                    android:importantForAccessibility="no"
+                                    android:shadowColor="#FF0A0520"
+                                    android:shadowRadius="4"
+                                    android:visibility="gone" />
+
+                                <ImageView
+                                    android:layout_width="0dp"
+                                    android:layout_height="0dp"
+                                    android:layout_alignBottom="@id/binder_p7_square"
+                                    android:layout_alignEnd="@id/binder_p7_square"
+                                    android:layout_alignStart="@id/binder_p7_square"
+                                    android:layout_alignTop="@id/binder_p7_square"
+                                    android:importantForAccessibility="no"
+                                    android:scaleType="fitXY"
+                                    android:src="@drawable/widget_binder_sleeve" />
+                            </RelativeLayout>
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/binder_p7_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:fontFamily="serif"
+                            android:gravity="center_horizontal|top"
+                            android:importantForAccessibility="no"
+                            android:includeFontPadding="false"
+                            android:lineSpacingMultiplier="0.95"
+                            android:lines="2"
+                            android:textColor="#FFC4A96A"
+                            android:textSize="10sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
         </LinearLayout>
 
         <LinearLayout

@@ -71,9 +71,48 @@ class BinderLayoutTest {
         assertFalse(binderLayoutFor(360, 108).showPageNumber)
     }
 
-    @Test fun `pockets narrower than tall keep the disc and its title together`() {
-        assertTrue(binderLayoutFor(360, 233).wrapPockets)
-        assertFalse(binderLayoutFor(360, 108).wrapPockets)
+    @Test fun `pockets narrower than tall lift the disc and its title to the middle`() {
+        val l = binderLayoutFor(360, 233)
+        val room = pocketRoom(360, 233, l.columnsPerSide, l.rows, l.arrows)
+        assertEquals(((room.height - room.width) / 2 - 6).toInt(), l.pocketBottomPadDp)
+        assertTrue(l.pocketBottomPadDp > 0)
+        assertEquals(0, binderLayoutFor(360, 108).pocketBottomPadDp)
+    }
+
+    @Test fun `disc art shrinks so every page of fifty books fits a small screen's budget`() {
+        val two = binderLayoutFor(266, 233) // two pockets a page, 320 px preferred
+        assertEquals(320, two.preferredCoverPx)
+        // A few books never need shrinking.
+        assertEquals(320, binderCoverPx(two, 6, 1080L * 2400))
+        // Fifty books: the S26 Ultra keeps more than a Pixel 6, which keeps more than a 720 by 1600 phone.
+        val s26 = binderCoverPx(two, 50, 1440L * 3120)
+        val pixel = binderCoverPx(two, 50, 1080L * 2400)
+        val small = binderCoverPx(two, 50, 720L * 1600)
+        assertEquals(listOf(304, 224, 144), listOf(s26, pixel, small))
+        for ((px, screen) in listOf(s26 to 1440L * 3120, pixel to 1080L * 2400, small to 720L * 1600)) {
+            val share = screen * 6 * 9 / 10 / 2 * 8 / 10
+            assertTrue("$px on $screen", 50L * px * px * 2 <= share)
+            assertEquals(0, px % 16)
+        }
+    }
+
+    @Test fun `disc art never drops below the floor or rises above the layout's size`() {
+        val eight = binderLayoutFor(360, 358)
+        assertEquals(eight.preferredCoverPx, binderCoverPx(eight, 3, 1080L * 2400))
+        assertEquals(96, binderCoverPx(eight, 50, 100L * 100))
+        assertEquals(eight.preferredCoverPx, binderCoverPx(eight, 0, 0))
+    }
+
+    @Test fun `every pocket of a page lands in its own slot of the page layout`() {
+        for (c in 1..2) for (r in 1..2) {
+            val l = BinderLayout(c, r, BinderArrows.FOOTER, 1)
+            val slots = (0 until l.pocketsPerPage).map { pocketSlotIndex(l.slotOf(it)) }
+            assertEquals(slots.size, slots.toSet().size)
+            assertTrue(slots.all { it in 0..7 })
+            // Left page slots are 0 to 3, right page 4 to 7.
+            assertTrue(slots.take(l.pocketsPerSide).all { it < 4 } && slots.drop(l.pocketsPerSide).all { it >= 4 })
+        }
+        assertEquals(listOf(0, 4), (0 until 2).map { pocketSlotIndex(BINDER_FALLBACK_LAYOUT.slotOf(it)) })
     }
 
     @Test fun `a launcher that reports no size gets the smallest layout`() {
@@ -102,5 +141,16 @@ class BinderLayoutTest {
             (0 until 8).map { l.slotOf(it) },
         )
         assertEquals(listOf(BinderSide.LEFT, BinderSide.RIGHT), (0 until 2).map { BINDER_FALLBACK_LAYOUT.slotOf(it).side })
+    }
+
+    @Test fun `only six pages and up loop, because a short stack fakes its loop`() {
+        val four = binderLayoutFor(360, 233)
+        assertEquals(5, binderPageCount(17, four))
+        assertFalse(binderStackLoops(binderPageCount(17, four)))
+        assertEquals(6, binderPageCount(21, four))
+        assertTrue(binderStackLoops(binderPageCount(21, four)))
+        assertEquals(13, binderPageCount(50, four))
+        assertEquals(0, binderPageCount(0, four))
+        assertFalse(binderStackLoops(1))
     }
 }

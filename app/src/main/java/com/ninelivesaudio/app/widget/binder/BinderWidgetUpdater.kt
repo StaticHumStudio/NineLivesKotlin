@@ -14,7 +14,11 @@ import com.ninelivesaudio.app.widget.WidgetCopy
 import com.ninelivesaudio.app.widget.WidgetLaunch
 import com.ninelivesaudio.app.widget.widgetAccess
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -39,46 +43,74 @@ class BinderWidgetUpdater @Inject constructor(
         if (ids.isNotEmpty()) update(ids)
     }
 
+    /**
+     * One redraw at a time. On Android 16 each update also gathers every page
+     * of the stack from the factory, and a resize fires a burst of updates;
+     * overlapping ones were seen to leave a page's discs out of step with its
+     * titles until the next redraw.
+     */
+    private val drawLock = Mutex()
+
     suspend fun update(appWidgetIds: IntArray) {
         if (appWidgetIds.isEmpty()) return
+        withContext(Dispatchers.IO) { drawLock.withLock { updateLocked(appWidgetIds) } }
+    }
+
+    private suspend fun updateLocked(appWidgetIds: IntArray) {
         val access = currentAccess()
         for (id in appWidgetIds) {
             val model = loadBinderModel(access, configStore.get(id), source)
-            val layout = layoutFor(id)
-            Log.d(TAG, "update $id ${model.content} books=${model.books.size} size=${portraitSizeDp(id)} layout=$layout")
-            manager.updateAppWidget(id, viewsFor(id, model, layout))
+            Log.d(
+                TAG,
+                "update $id ${model.content} books=${model.books.size} " +
+                    "portrait=${sizeDp(id, BinderOrientation.PORTRAIT)} ${layoutFor(id, BinderOrientation.PORTRAIT)} " +
+                    "landscape=${sizeDp(id, BinderOrientation.LANDSCAPE)} ${layoutFor(id, BinderOrientation.LANDSCAPE)}",
+            )
+            manager.updateAppWidget(id, viewsFor(id, model))
         }
         manager.notifyAppWidgetViewDataChanged(appWidgetIds, R.id.binder_stack)
     }
 
     /**
-     * The page layout for the size the launcher reports. Portrait is the
-     * minimum width and the maximum height (AppWidgetManager's options).
+     * The page layout for the size the launcher reports in [orientation].
+     * Portrait is the minimum width and the maximum height, landscape the
+     * maximum width and the minimum height (AppWidgetManager's options).
      */
-    internal fun layoutFor(appWidgetId: Int): BinderLayout {
-        val (w, h) = portraitSizeDp(appWidgetId)
+    internal fun layoutFor(appWidgetId: Int, orientation: BinderOrientation): BinderLayout {
+        val (w, h) = sizeDp(appWidgetId, orientation)
         return binderLayoutFor(w, h)
     }
 
-    private fun portraitSizeDp(appWidgetId: Int): Pair<Int, Int> {
-        val options = manager.getAppWidgetOptions(appWidgetId)
-        return options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) to
-            options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
+    private fun sizeDp(appWidgetId: Int, orientation: BinderOrientation): Pair<Int, Int> {
+        val o = manager.getAppWidgetOptions(appWidgetId)
+        return when (orientation) {
+            BinderOrientation.PORTRAIT ->
+                o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) to o.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
+            BinderOrientation.LANDSCAPE ->
+                o.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH) to o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
+        }
     }
 
     /**
      * An arrow tap: turn the stack to [page]. A full update, because a partial
      * one would be merged into the saved views and lose the turn (BinderTurn.kt).
-     * The stack's data is not reloaded. A Binder that is no longer open (the
-     * trial ended, signed out) gets its proper face instead.
+     * The stack's pages are not rebuilt. The shelf is read only to know the
+     * page count (whether the stack loops) and that the Binder is still open.
+     * One that is not (the trial ended, signed out, emptied) gets its proper face.
      */
-    suspend fun turnTo(appWidgetId: Int, page: Int) {
-        if (currentAccess() !is WidgetAccess.Library) {
-            update(intArrayOf(appWidgetId))
-            return
+    suspend fun turnTo(appWidgetId: Int, page: Int) = withContext(Dispatchers.IO) {
+        drawLock.withLock {
+            val model = loadBinderModel(currentAccess(), configStore.get(appWidgetId), source)
+            if (model.content != WidgetContent.READY) {
+                updateLocked(intArrayOf(appWidgetId))
+                return@withLock
+            }
+            Log.d(TAG, "turn $appWidgetId to $page")
+            manager.updateAppWidget(
+                appWidgetId,
+                binderStackViews(context, appWidgetId, model.books.size, { layoutFor(appWidgetId, it) }, displayedPage = page),
+            )
         }
-        Log.d(TAG, "turn $appWidgetId to $page")
-        manager.updateAppWidget(appWidgetId, binderStackViews(context, appWidgetId, layoutFor(appWidgetId), displayedPage = page))
     }
 
     /** The model one Binder's stack draws, read fresh each time. */
@@ -101,8 +133,8 @@ class BinderWidgetUpdater @Inject constructor(
         )
     }
 
-    private fun viewsFor(appWidgetId: Int, model: BinderModel, layout: BinderLayout) = when (model.content) {
-        WidgetContent.READY -> binderStackViews(context, appWidgetId, layout)
+    private fun viewsFor(appWidgetId: Int, model: BinderModel) = when (model.content) {
+        WidgetContent.READY -> binderStackViews(context, appWidgetId, model.books.size, { layoutFor(appWidgetId, it) })
         WidgetContent.LOCKED ->
             binderMessageViews(context, appWidgetId, WidgetCopy.BINDER_LOCKED, locked = true, WidgetLaunch.OpenUnlock)
         else -> binderMessageViews(

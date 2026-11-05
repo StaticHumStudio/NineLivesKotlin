@@ -38,10 +38,10 @@ internal object BinderChrome {
  * How one Binder page is laid out at the widget's current size. A page is a
  * spread: [columnsPerSide] by [rows] pockets on each side of the spine.
  * [labelLines] is how many lines of title sit under each disc (0 for none).
- * [discDp] is the disc size this layout works out to. [wrapPockets] is true
- * when the pockets are narrower than they are tall, so each disc and its
- * title sit together in the middle of the pocket's cell instead of leaving a
- * gap above the disc. [showPageNumber] is false when the strip between the
+ * [discDp] is the disc size this layout works out to. [pocketBottomPadDp]
+ * lifts a disc and its title off the bottom of a pocket that is taller than
+ * it is wide, so the two sit together in the middle instead of leaving a gap
+ * above the disc. [showPageNumber] is false when the strip between the
  * arrows is too narrow for "13 / 25".
  */
 internal data class BinderLayout(
@@ -50,7 +50,7 @@ internal data class BinderLayout(
     val arrows: BinderArrows,
     val labelLines: Int,
     val discDp: Int = 0,
-    val wrapPockets: Boolean = false,
+    val pocketBottomPadDp: Int = 0,
     val showPageNumber: Boolean = false,
 ) {
     val pocketsPerSide: Int get() = columnsPerSide * rows
@@ -62,19 +62,20 @@ internal data class BinderLayout(
     val pocketGapDp: Int get() = if (compact) BinderChrome.GAP_COMPACT else BinderChrome.GAP_ROOMY
 
     /**
-     * Disc art size in pixels. Fewer, bigger pockets get sharper art, and a
-     * full page of discs always stays inside the bitmap budget, because every
-     * page is parcelled to the launcher on its own.
+     * The disc art size in pixels this layout would like. Fewer, bigger
+     * pockets get sharper art, and a full page of discs always stays inside
+     * the per page bitmap budget, because a launcher may fetch every page on
+     * its own. [binderCoverPx] can lower it for the whole Binder.
      */
-    val coverPx: Int
+    val preferredCoverPx: Int
         get() = when {
             pocketsPerPage <= 2 -> 320
             pocketsPerPage <= 4 -> 256
             else -> 192
         }
 
-    /** Bitmap bytes one full page carries. */
-    val pageBitmapBytes: Int get() = pocketsPerPage * rgb565Bytes(coverPx)
+    /** Bitmap bytes one full page carries at [preferredCoverPx]. */
+    val pageBitmapBytes: Int get() = pocketsPerPage * rgb565Bytes(preferredCoverPx)
 
     /** Which side and slot pocket [index] of a page lands in, left page first, row by row. */
     fun slotOf(index: Int): BinderSlot {
@@ -174,15 +175,23 @@ internal fun binderLayoutFor(widthDp: Int, heightDp: Int): BinderLayout {
         labelLines = labels,
         discDp = room.disc.toInt().coerceAtLeast(0),
         showPageNumber = arrows == BinderArrows.FOOTER && footerTextRoom(widthDp) >= PAGE_NUMBER_MIN_DP,
-        // Only with real slack, so a title never gets squeezed out by a disc that fills the height.
-        wrapPockets = labels > 0 && room.height - room.width >= WRAP_SLACK_DP,
+        // Half the slack under the title centres the pair. Only with real slack, so
+        // a title never gets squeezed by a disc that fills the height.
+        // Less half a line, because most titles fill one of their two lines.
+        pocketBottomPadDp = if (labels > 0 && room.height - room.width >= WRAP_SLACK_DP) {
+            ((room.height - room.width) / 2 - HALF_TITLE_LINE_DP).toInt().coerceAtLeast(0)
+        } else {
+            0
+        },
     )
 }
 
 /** How much disc (dp) a second line of title may cost on a two row page. */
 private const val TITLE_LINE_COST_DP = 4
 
-/** How much taller than wide a pocket must be before its disc and title sit together in the middle. */
+private const val HALF_TITLE_LINE_DP = 6
+
+/** How much taller than wide a pocket must be before its disc and title are lifted to the middle. */
 private const val WRAP_SLACK_DP = 8
 
 /** Room for the page number between the two footer arrows, in dp. */
@@ -193,3 +202,39 @@ internal fun footerTextRoom(widthDp: Int): Float {
 
 /** "13 / 25" in 11sp monospace, with a little air. */
 private const val PAGE_NUMBER_MIN_DP = 44
+
+/**
+ * The disc art size for a whole Binder. Android 16 can bundle every page of
+ * a widget's stack into one update, and that bundle's bitmaps must fit about
+ * 90% of six bytes per screen pixel, shared by each stack the widget has (a
+ * portrait and a landscape one). Past it, Android silently drops the later
+ * pages. So the art shrinks, in steps of 16 px, until every page of [books]
+ * books fits 80% of that share. Never above [layout]'s preferred size, never
+ * below 96 px.
+ */
+internal fun binderCoverPx(layout: BinderLayout, books: Int, screenPixels: Long, stacks: Int = 2): Int {
+    val preferred = layout.preferredCoverPx
+    if (books <= 0 || screenPixels <= 0) return preferred
+    val pocketsDrawn = ((books + layout.pocketsPerPage - 1) / layout.pocketsPerPage) * layout.pocketsPerPage
+    val share = screenPixels * 6 * 9 / 10 / stacks.coerceAtLeast(1) * 8 / 10
+    var px = preferred
+    while (px > MIN_COVER_PX && pocketsDrawn.toLong() * rgb565Bytes(px) > share) px -= 16
+    return px.coerceAtLeast(MIN_COVER_PX)
+}
+
+private const val MIN_COVER_PX = 96
+
+/** How many pages [books] books make at [layout]. */
+internal fun binderPageCount(books: Int, layout: BinderLayout): Int =
+    if (books <= 0) 0 else (books + layout.pocketsPerPage - 1) / layout.pocketsPerPage
+
+/**
+ * Whether the stack loops (widget_binder.xml) or stops at its ends
+ * (widget_binder_short.xml). StackView keeps five pages live, and with five
+ * or fewer it fakes its loop with a window five times the page count, which a
+ * fling past an end leaves half drawn. So only six pages and up loop. The
+ * arrows wrap either way.
+ */
+internal fun binderStackLoops(pages: Int): Boolean = pages > STACK_LIVE_PAGES
+
+private const val STACK_LIVE_PAGES = 5

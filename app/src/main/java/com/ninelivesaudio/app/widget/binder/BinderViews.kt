@@ -39,20 +39,47 @@ internal fun binderMessageViews(
     setOnClickPendingIntent(android.R.id.background, pending)
 }
 
+/** Which of the launcher's two orientations a Binder stack is drawn for. */
+internal enum class BinderOrientation { PORTRAIT, LANDSCAPE }
+
+/** Tells a stack's factory which orientation it feeds (BinderRemoteViewsService). */
+internal const val EXTRA_BINDER_LANDSCAPE = "com.ninelivesaudio.app.widget.binder.LANDSCAPE"
+
 /**
- * An open Binder: the StackView fed by [BinderRemoteViewsService], one factory
- * per widget, under one fixed spine. [displayedPage] turns the stack to that
- * page (an arrow tap). Left null, the stack stays where it is.
+ * An open Binder, both ways round: the launcher shows the portrait stack or
+ * the landscape one to match the home screen, and each gets its own page
+ * layout for its own size and its own factory. [layoutFor] picks the layout,
+ * and [books] decides whether a stack loops (binderStackLoops).
+ * [displayedPage] turns the stacks to that page (an arrow tap). Left null,
+ * a stack stays where it is.
  */
 internal fun binderStackViews(
     context: Context,
     appWidgetId: Int,
-    layout: BinderLayout,
+    books: Int,
+    layoutFor: (BinderOrientation) -> BinderLayout,
     displayedPage: Int? = null,
-): RemoteViews = RemoteViews(context.packageName, R.layout.widget_binder).apply {
+): RemoteViews = RemoteViews(
+    binderStackViews(context, appWidgetId, BinderOrientation.LANDSCAPE, layoutFor(BinderOrientation.LANDSCAPE), books, displayedPage),
+    binderStackViews(context, appWidgetId, BinderOrientation.PORTRAIT, layoutFor(BinderOrientation.PORTRAIT), books, displayedPage),
+)
+
+/** One orientation's stack, fed by [BinderRemoteViewsService], under one fixed spine. */
+private fun binderStackViews(
+    context: Context,
+    appWidgetId: Int,
+    orientation: BinderOrientation,
+    layout: BinderLayout,
+    books: Int,
+    displayedPage: Int?,
+): RemoteViews = RemoteViews(
+    context.packageName,
+    if (binderStackLoops(binderPageCount(books, layout))) R.layout.widget_binder else R.layout.widget_binder_short,
+).apply {
     val serviceIntent = Intent(context, BinderRemoteViewsService::class.java).apply {
         putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-        // A distinct data URI per widget, so two Binders never share a factory.
+        putExtra(EXTRA_BINDER_LANDSCAPE, orientation == BinderOrientation.LANDSCAPE)
+        // A distinct data URI per widget and orientation, so no two stacks share a factory.
         data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
     }
     @Suppress("DEPRECATION") // The collection items API is API 31+, and the factory streams covers.
@@ -108,6 +135,25 @@ private val PocketFill.title: String?
         PocketFill.Empty -> null
     }
 
+/** The views of one pocket slot in widget_binder_page.xml. */
+private class PocketIds(val cell: Int, val box: Int, val disc: Int, val title: Int, val label: Int)
+
+/** binder_p0 to binder_p7: left page then right page, row by row, two a row (BinderLayout.slotOf). */
+private val POCKETS = listOf(
+    PocketIds(R.id.binder_p0_cell, R.id.binder_p0_box, R.id.binder_p0_disc, R.id.binder_p0_title, R.id.binder_p0_label),
+    PocketIds(R.id.binder_p1_cell, R.id.binder_p1_box, R.id.binder_p1_disc, R.id.binder_p1_title, R.id.binder_p1_label),
+    PocketIds(R.id.binder_p2_cell, R.id.binder_p2_box, R.id.binder_p2_disc, R.id.binder_p2_title, R.id.binder_p2_label),
+    PocketIds(R.id.binder_p3_cell, R.id.binder_p3_box, R.id.binder_p3_disc, R.id.binder_p3_title, R.id.binder_p3_label),
+    PocketIds(R.id.binder_p4_cell, R.id.binder_p4_box, R.id.binder_p4_disc, R.id.binder_p4_title, R.id.binder_p4_label),
+    PocketIds(R.id.binder_p5_cell, R.id.binder_p5_box, R.id.binder_p5_disc, R.id.binder_p5_title, R.id.binder_p5_label),
+    PocketIds(R.id.binder_p6_cell, R.id.binder_p6_box, R.id.binder_p6_disc, R.id.binder_p6_title, R.id.binder_p6_label),
+    PocketIds(R.id.binder_p7_cell, R.id.binder_p7_box, R.id.binder_p7_disc, R.id.binder_p7_title, R.id.binder_p7_label),
+)
+
+/** The slot in widget_binder_page.xml that [slot] uses. */
+internal fun pocketSlotIndex(slot: BinderSlot): Int =
+    (if (slot.side == BinderSide.LEFT) 0 else 4) + slot.row * 2 + slot.column
+
 /**
  * One page of the stack at [layout]: the pockets on each side of the spine,
  * and the arrows that turn to the page before and after [position] of [count].
@@ -122,19 +168,22 @@ internal fun binderPageViews(
 ): RemoteViews = RemoteViews(context.packageName, R.layout.widget_binder_page).apply {
     val inset = context.dpPx(layout.pageInsetDp)
     setViewPadding(R.id.binder_page, inset, inset, inset, inset)
-    // A recycled page keeps the pockets it was given last time.
-    removeAllViews(R.id.binder_side_left)
-    removeAllViews(R.id.binder_side_right)
-    for (side in BinderSide.entries) {
-        val sideId = if (side == BinderSide.LEFT) R.id.binder_side_left else R.id.binder_side_right
-        for (row in 0 until layout.rows) {
-            val rowViews = RemoteViews(context.packageName, R.layout.widget_binder_row)
-            for (column in 0 until layout.columnsPerSide) {
-                val index = (0 until layout.pocketsPerPage).first { layout.slotOf(it) == BinderSlot(side, row, column) }
-                rowViews.addView(R.id.binder_row, pocketViews(context, layout, side, fills.getOrElse(index) { PocketFill.Empty }))
-            }
-            addView(sideId, rowViews)
+    val twoRows = if (layout.rows > 1) View.VISIBLE else View.GONE
+    setViewVisibility(R.id.binder_left_row1, twoRows)
+    setViewVisibility(R.id.binder_right_row1, twoRows)
+
+    val used = (0 until layout.pocketsPerPage).associateBy { pocketSlotIndex(layout.slotOf(it)) }
+    POCKETS.forEachIndexed { slot, ids ->
+        val index = used[slot]
+        // A slot this size does not use: gone, and its tap does nothing. A second
+        // column hides only when the layout has one; a second row hides as a row.
+        if (index == null) {
+            setViewVisibility(ids.cell, View.GONE)
+            setOnClickFillInIntent(ids.cell, Intent().putWidgetLaunch(WidgetLaunch.Nothing))
+            return@forEachIndexed
         }
+        setViewVisibility(ids.cell, View.VISIBLE)
+        pocket(context, layout, layout.slotOf(index).side, fills.getOrElse(index) { PocketFill.Empty }, ids)
     }
 
     val turns = count > 1
@@ -156,49 +205,45 @@ internal fun binderPageViews(
     setTextViewText(R.id.binder_page_number, if (turns && layout.showPageNumber) binderPageNumber(position, count) else "")
 }
 
-private fun pocketViews(context: Context, layout: BinderLayout, side: BinderSide, fill: PocketFill): RemoteViews =
-    RemoteViews(
-        context.packageName,
-        if (layout.wrapPockets) R.layout.widget_binder_pocket_wrap else R.layout.widget_binder_pocket,
-    ).apply {
-        val gap = context.dpPx(layout.pocketGapDp)
-        setViewPadding(R.id.binder_pocket_cell, gap, gap, gap, gap)
-        // On a one row page the discs hug the spine, like a spread. With titles
-        // under them they centre over their own title.
-        val across = when {
-            layout.labelLines > 0 -> Gravity.CENTER_HORIZONTAL
-            side == BinderSide.LEFT -> Gravity.END
-            else -> Gravity.START
-        }
-        val down = if (layout.labelLines > 0) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
-        setInt(R.id.binder_pocket_box, "setGravity", across or down)
-
-        val labels = layout.labelLines > 0
-        when (fill) {
-            is PocketFill.Disc -> {
-                setImageViewBitmap(R.id.binder_pocket_disc, fill.bitmap)
-                setViewVisibility(R.id.binder_pocket_title, View.GONE)
-            }
-            is PocketFill.TitleOnly -> {
-                setImageViewResource(R.id.binder_pocket_disc, R.drawable.widget_binder_disc_blank)
-                setViewVisibility(R.id.binder_pocket_title, if (labels) View.GONE else View.VISIBLE)
-                setTextViewText(R.id.binder_pocket_title, fill.title)
-            }
-            PocketFill.Empty -> {
-                setImageViewResource(R.id.binder_pocket_disc, R.drawable.widget_binder_pocket_empty)
-                setViewVisibility(R.id.binder_pocket_title, View.GONE)
-            }
-        }
-        val title = fill.title
-        if (labels) {
-            setViewVisibility(R.id.binder_pocket_label, View.VISIBLE)
-            setInt(R.id.binder_pocket_label, "setLines", layout.labelLines)
-            setTextViewText(R.id.binder_pocket_label, title.orEmpty())
-        } else {
-            setViewVisibility(R.id.binder_pocket_label, View.GONE)
-        }
-        setContentDescription(R.id.binder_pocket_cell, title)
-        setOnClickFillInIntent(R.id.binder_pocket_cell, Intent().putWidgetLaunch(fill.clickLaunch()))
+private fun RemoteViews.pocket(context: Context, layout: BinderLayout, side: BinderSide, fill: PocketFill, ids: PocketIds) {
+    val labels = layout.labelLines > 0
+    // On a one row page the discs hug the spine, like a spread. With titles
+    // under them they centre over their own title.
+    val across = when {
+        labels -> Gravity.CENTER_HORIZONTAL
+        side == BinderSide.LEFT -> Gravity.END
+        else -> Gravity.START
     }
+    val down = if (labels) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
+    setInt(ids.box, "setGravity", across or down)
+    val gap = context.dpPx(layout.pocketGapDp)
+    setViewPadding(ids.cell, gap, gap, gap, gap + context.dpPx(layout.pocketBottomPadDp))
+
+    when (fill) {
+        is PocketFill.Disc -> {
+            setImageViewBitmap(ids.disc, fill.bitmap)
+            setViewVisibility(ids.title, View.GONE)
+        }
+        is PocketFill.TitleOnly -> {
+            setImageViewResource(ids.disc, R.drawable.widget_binder_disc_blank)
+            setViewVisibility(ids.title, if (labels) View.GONE else View.VISIBLE)
+            setTextViewText(ids.title, fill.title)
+        }
+        PocketFill.Empty -> {
+            setImageViewResource(ids.disc, R.drawable.widget_binder_pocket_empty)
+            setViewVisibility(ids.title, View.GONE)
+        }
+    }
+    val title = fill.title
+    if (labels) {
+        setViewVisibility(ids.label, View.VISIBLE)
+        setInt(ids.label, "setLines", layout.labelLines)
+        setTextViewText(ids.label, title.orEmpty())
+    } else {
+        setViewVisibility(ids.label, View.GONE)
+    }
+    setContentDescription(ids.cell, title)
+    setOnClickFillInIntent(ids.cell, Intent().putWidgetLaunch(fill.clickLaunch()))
+}
 
 private fun Context.dpPx(dp: Int): Int = (dp * resources.displayMetrics.density + 0.5f).toInt()

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Binder with five pages or fewer: the same as widget_binder.xml, but the stack
+     does not loop. StackView keeps five pages live, and below six it fakes a loop
+     with a window five times the page count, which a fling past either end leaves
+     half drawn and an arrow's page number cannot follow. The arrows still wrap from
+     the last page to the first. The Binder when it has books: a stack of pages under
+     one fixed spine, on the padded cover. A vertical fling turns the page (StackView is the only RemoteViews
+     collection that takes a fling), and so do the arrows on every page (BinderTurn.kt). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_binder_cover"
+    android:layoutDirection="ltr"
+    android:padding="@dimen/widget_binder_cover_padding">
+
+    <StackView
+        android:id="@+id/binder_stack"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:loopViews="false" />
+
+    <include layout="@layout/widget_binder_overlay" />
+</FrameLayout>

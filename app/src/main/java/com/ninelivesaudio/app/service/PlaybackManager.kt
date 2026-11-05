@@ -1045,6 +1045,7 @@ class PlaybackManager @Inject constructor(
             wrapper.indexedSeekHandler = { index, positionMs ->
                 seekTo(bookPositionOfTrack(trackDurations, index, positionMs))
             }
+            wrapper.previousChapterHandler = { skipToPreviousChapter() }
             // Every media-session controller goes through the wrapper, so the
             // entitlement clamp has to live there too, not only in setSpeed().
             wrapper.speedClamp = { requested ->
@@ -2874,6 +2875,33 @@ class PlaybackManager @Inject constructor(
             equalizer?.release()
         } catch (_: Exception) {}
         equalizer = null
+    }
+
+    /**
+     * The Previous Chapter button: restarts the current chapter, or goes back
+     * one when you are already at its start. See [previousChapterTarget].
+     */
+    fun skipToPreviousChapter() {
+        if (stagedLoad.book.value != null) return
+        val chapters = cachedChapters
+        if (chapters.isEmpty()) return
+        // Read the player live. _position is a 500 ms poll that freezes on
+        // pause, so near the 3 s line it can name the wrong chapter. An empty
+        // player (a failed load of another book) reads 0, and so does a book
+        // parked at its end, so keep the shown position there.
+        val live = exoPlayer?.takeIf { it.mediaItemCount > 0 && !parkedAtEnd }
+        val position = if (live != null) getCurrentPosition() else _position.value
+        val seconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
+        val index = chapters.indexOfFirst { seconds >= it.start && seconds < it.end }
+            .takeIf { it >= 0 }
+            ?: if (seconds >= chapters.last().end) chapters.lastIndex else _currentChapterIndex.value
+        val chapterStart = chapters.getOrNull(index)?.startTime ?: Duration.ZERO
+        val target = previousChapterTarget(
+            currentIndex = index,
+            chapterCount = chapters.size,
+            positionInChapterMs = (position - chapterStart).inWholeMilliseconds,
+        )
+        if (target >= 0) seekToChapter(target)
     }
 
     fun seekToChapter(chapterIndex: Int) {

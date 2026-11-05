@@ -58,6 +58,12 @@ class ChapterAwareForwardingPlayer(
     var seekForwardHandler: (() -> Unit)? = null
 
     /**
+     * Previous chapter, routed to PlaybackManager so the notification, media
+     * keys and Android Auto run the exact same code as the in app button.
+     */
+    var previousChapterHandler: (() -> Unit)? = null
+
+    /**
      * Clamps a requested speed by entitlement. Set by PlaybackManager.
      *
      * The MediaSession is built on THIS player, so Android Auto, the media
@@ -177,25 +183,20 @@ class ChapterAwareForwardingPlayer(
 
     override fun seekToPrevious() {
         val ch = currentChapter
+        if (ch != null) previousChapterHandler?.let { it(); return }
         val handler = seekHandler
         if (ch == null || handler == null) {
             super.seekToPrevious()
             return
         }
         val chapterStartMs = (ch.start * 1000).toLong()
-        val posInChapterMs = absolutePositionMs - chapterStartMs
-
-        if (posInChapterMs > 3000 && currentChapterIndex >= 0) {
-            // More than 3s into chapter: jump to start of current chapter
-            handler(chapterStartMs)
-        } else if (currentChapterIndex > 0) {
-            // Near start: jump to start of previous chapter
-            val prevChapter = chapters[currentChapterIndex - 1]
-            handler((prevChapter.start * 1000).toLong())
-        } else {
-            // First chapter: jump to beginning of book
-            handler(0L)
-        }
+        val target = previousChapterTarget(
+            currentIndex = currentChapterIndex,
+            chapterCount = chapters.size,
+            positionInChapterMs = absolutePositionMs - chapterStartMs,
+        )
+        val targetChapter = chapters.getOrNull(target)
+        handler(if (targetChapter != null) (targetChapter.start * 1000).toLong() else 0L)
     }
 
     override fun hasNextMediaItem(): Boolean {

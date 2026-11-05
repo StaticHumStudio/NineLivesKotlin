@@ -68,4 +68,18 @@ class BinderPagesTest {
         assertEquals("1 / 13", binderPageNumber(0, 13))
         assertEquals("13 / 13", binderPageNumber(12, 13))
     }
+
+    @Test fun `a stack's version changes with its contents and nothing else`() {
+        val l = BinderLayout(2, 1, BinderArrows.FOOTER, 2)
+        val keys = listOf("b1|One|c1|true", "b2|Two|c2|false")
+        val v = binderStackVersion(keys, BinderTap.PLAY, l, 256)
+        assertEquals(v, binderStackVersion(keys.toList(), BinderTap.PLAY, l.copy(), 256))
+        assertNotEquals(v, binderStackVersion(keys.reversed(), BinderTap.PLAY, l, 256))
+        assertNotEquals(v, binderStackVersion(listOf("b1|One|c1|true", "b2|Two|c2|true"), BinderTap.PLAY, l, 256))
+        assertNotEquals(v, binderStackVersion(keys, BinderTap.OPEN, l, 256))
+        assertNotEquals(v, binderStackVersion(keys, BinderTap.PLAY, l.copy(rows = 2), 256))
+        assertNotEquals(v, binderStackVersion(keys, BinderTap.PLAY, l, 240))
+        // Joined keys never collide by shifting a boundary.
+        assertNotEquals(binderStackVersion(listOf("ab", "c"), BinderTap.PLAY, l, 256), binderStackVersion(listOf("a", "bc"), BinderTap.PLAY, l, 256))
+    }
 }

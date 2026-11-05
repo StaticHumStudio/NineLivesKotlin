@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.widget.RemoteViews
@@ -45,11 +46,16 @@ internal enum class BinderOrientation { PORTRAIT, LANDSCAPE }
 /** Tells a stack's factory which orientation it feeds (BinderRemoteViewsService). */
 internal const val EXTRA_BINDER_LANDSCAPE = "com.ninelivesaudio.app.widget.binder.LANDSCAPE"
 
+/** The fingerprint of a stack's contents (binderStackVersion), from Android 15. */
+internal const val EXTRA_BINDER_VERSION = "com.ninelivesaudio.app.widget.binder.VERSION"
+
 /**
- * An open Binder, both ways round: the launcher shows the portrait stack or
- * the landscape one to match the home screen, and each gets its own page
- * layout for its own size and its own factory. [layoutFor] picks the layout,
- * and [books] decides whether a stack loops (binderStackLoops).
+ * An open Binder. Before Android 15 it is drawn both ways round: the launcher
+ * shows the portrait stack or the landscape one to match the home screen, and
+ * each gets its own page layout for its own size and its own factory. From
+ * Android 15 it is the portrait stack only ([binderSingleStack]). [layoutFor] picks the layout,
+ * [books] decides whether a stack loops (binderStackLoops), and [versionFor]
+ * gives each stack's contents fingerprint, or null before Android 15.
  * [displayedPage] turns the stacks to that page (an arrow tap). Left null,
  * a stack stays where it is.
  */
@@ -58,11 +64,33 @@ internal fun binderStackViews(
     appWidgetId: Int,
     books: Int,
     layoutFor: (BinderOrientation) -> BinderLayout,
+    versionFor: (BinderOrientation) -> Long?,
     displayedPage: Int? = null,
-): RemoteViews = RemoteViews(
-    binderStackViews(context, appWidgetId, BinderOrientation.LANDSCAPE, layoutFor(BinderOrientation.LANDSCAPE), books, displayedPage),
-    binderStackViews(context, appWidgetId, BinderOrientation.PORTRAIT, layoutFor(BinderOrientation.PORTRAIT), books, displayedPage),
-)
+): RemoteViews {
+    val portrait = binderStackViews(
+        context, appWidgetId, BinderOrientation.PORTRAIT, layoutFor(BinderOrientation.PORTRAIT), books,
+        versionFor(BinderOrientation.PORTRAIT), displayedPage,
+    )
+    if (binderSingleStack) return portrait
+    val landscape = binderStackViews(
+        context, appWidgetId, BinderOrientation.LANDSCAPE, layoutFor(BinderOrientation.LANDSCAPE), books,
+        versionFor(BinderOrientation.LANDSCAPE), displayedPage,
+    )
+    return RemoteViews(landscape, portrait)
+}
+
+/**
+ * Android 15 and up can gather a stack's pages into the update itself
+ * (adapter conversion). There a portrait and landscape pair of stacks was
+ * seen to draw discs from the other stack's pages under the right titles, so
+ * from Android 15 the Binder is one stack laid out for the portrait size.
+ * Before that it is the pair, and the launcher shows the one that matches.
+ */
+internal val binderSingleStack: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM
+
+/** The orientations a Binder draws stacks for (see [binderSingleStack]). */
+internal val binderOrientations: List<BinderOrientation>
+    get() = if (binderSingleStack) listOf(BinderOrientation.PORTRAIT) else BinderOrientation.entries
 
 /** One orientation's stack, fed by [BinderRemoteViewsService], under one fixed spine. */
 private fun binderStackViews(
@@ -71,6 +99,7 @@ private fun binderStackViews(
     orientation: BinderOrientation,
     layout: BinderLayout,
     books: Int,
+    version: Long?,
     displayedPage: Int?,
 ): RemoteViews = RemoteViews(
     context.packageName,
@@ -79,6 +108,8 @@ private fun binderStackViews(
     val serviceIntent = Intent(context, BinderRemoteViewsService::class.java).apply {
         putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
         putExtra(EXTRA_BINDER_LANDSCAPE, orientation == BinderOrientation.LANDSCAPE)
+        // From Android 15 the contents' fingerprint, so new contents mean a new adapter (BinderWidgetUpdater).
+        if (version != null) putExtra(EXTRA_BINDER_VERSION, version)
         // A distinct data URI per widget and orientation, so no two stacks share a factory.
         data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
     }

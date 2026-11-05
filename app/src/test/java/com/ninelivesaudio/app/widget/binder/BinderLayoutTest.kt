@@ -79,29 +79,36 @@ class BinderLayoutTest {
         assertEquals(0, binderLayoutFor(360, 108).pocketBottomPadDp)
     }
 
-    @Test fun `disc art shrinks so fifty books fit Android 16's bitmap cap, twice over, in both orientations`() {
+    @Test fun `disc art shrinks so fifty books fit Android 16's bitmap cap in both orientations`() {
         val two = binderLayoutFor(266, 233) // two pockets a page, 320 px preferred
         assertEquals(320, two.preferredCoverPx)
         // A few books never need shrinking.
-        assertEquals(320, binderCoverPx(two, 6, 1080L * 2400))
+        assertEquals(320, binderCoverPx(two, 6, 1080L * 2400, stacks = 2))
         // Fifty books: the S26 Ultra keeps more than a Pixel 6, which keeps more than a 720 by 1600 phone.
-        val s26 = binderCoverPx(two, 50, 1440L * 3120)
-        val pixel = binderCoverPx(two, 50, 1080L * 2400)
-        val small = binderCoverPx(two, 50, 720L * 1600)
-        assertEquals(listOf(208, 160, 96), listOf(s26, pixel, small))
+        val s26 = binderCoverPx(two, 50, 1440L * 3120, stacks = 2)
+        val pixel = binderCoverPx(two, 50, 1080L * 2400, stacks = 2)
+        val small = binderCoverPx(two, 50, 720L * 1600, stacks = 2)
+        assertEquals(listOf(304, 224, 144), listOf(s26, pixel, small))
         for ((px, screen) in listOf(s26 to 1440L * 3120, pixel to 1080L * 2400, small to 720L * 1600)) {
-            // Two stacks, each held twice during a data refresh, inside 90% of six bytes a pixel.
-            val cap = screen * 6 * 9 / 10
-            assertTrue("$px on $screen", 2 * 2 * 50L * px * px * 2 <= cap)
+            // Two stacks inside 80% of 90% of six bytes a pixel.
+            val cap = screen * 6 * 9 / 10 * 8 / 10
+            assertTrue("$px on $screen", 2 * 50L * px * px * 2 <= cap)
             assertEquals(0, px % 16)
         }
     }
 
+    @Test fun `one stack gets the whole budget`() {
+        val two = binderLayoutFor(266, 233)
+        assertEquals(320, binderCoverPx(two, 50, 1440L * 3120, stacks = 1))
+        assertTrue(binderCoverPx(two, 50, 1080L * 2400, stacks = 1) > binderCoverPx(two, 50, 1080L * 2400, stacks = 2))
+        assertTrue(50L * 2 * 320 * 320 <= 1440L * 3120 * 6 * 9 / 10 * 8 / 10)
+    }
+
     @Test fun `disc art never drops below the floor or rises above the layout's size`() {
         val eight = binderLayoutFor(360, 358)
-        assertEquals(eight.preferredCoverPx, binderCoverPx(eight, 3, 1080L * 2400))
-        assertEquals(96, binderCoverPx(eight, 50, 100L * 100))
-        assertEquals(eight.preferredCoverPx, binderCoverPx(eight, 0, 0))
+        assertEquals(eight.preferredCoverPx, binderCoverPx(eight, 3, 1080L * 2400, stacks = 2))
+        assertEquals(96, binderCoverPx(eight, 50, 100L * 100, stacks = 2))
+        assertEquals(eight.preferredCoverPx, binderCoverPx(eight, 0, 0, stacks = 2))
     }
 
     @Test fun `every pocket of a page lands in its own slot of the page layout`() {

@@ -59,8 +59,7 @@ private class BinderFactory(
         runBlocking {
             val (model, config) = updater.model(appWidgetId)
             val size = updater.layoutFor(appWidgetId, orientation)
-            val metrics = context.resources.displayMetrics
-            val px = binderCoverPx(size, model.books.size, metrics.widthPixels.toLong() * metrics.heightPixels)
+            val px = updater.coverPxFor(appWidgetId, orientation, model.books.size)
             covers.warm(model.books, px)
             layout = size
             coverPx = px

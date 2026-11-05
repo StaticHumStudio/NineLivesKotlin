@@ -67,3 +67,27 @@ internal fun binderTurnTarget(position: Int, count: Int, forward: Boolean): Int 
 
 /** "3 / 13": the page number under the discs, one based. */
 internal fun binderPageNumber(position: Int, count: Int): String = "${position + 1} / $count"
+
+/**
+ * A fingerprint of everything one stack draws: the books in order with their
+ * titles and cover versions, which covers are on disk, the tap choice, the
+ * page layout and the art size. From Android 15 it goes in the stack's adapter
+ * intent (BinderViews.kt), so a change makes the launcher build the stack
+ * afresh and an unchanged Binder keeps its place.
+ */
+internal fun binderStackVersion(bookKeys: List<String>, tap: BinderTap, layout: BinderLayout, coverPx: Int): Long {
+    var h = -0x340d631b7bdddcdbL
+    fun mix(text: String) {
+        for (c in text) {
+            h = h xor c.code.toLong()
+            h *= 0x100000001b3L
+        }
+        h = h xor 0x1fL
+        h *= 0x100000001b3L
+    }
+    bookKeys.forEach(::mix)
+    mix(tap.name)
+    mix(layout.toString())
+    mix(coverPx.toString())
+    return h
+}

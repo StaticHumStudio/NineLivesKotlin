@@ -208,21 +208,27 @@ private const val PAGE_NUMBER_MIN_DP = 44
  * a widget's stack into one update, and that bundle's bitmaps must fit about
  * 90% of six bytes per screen pixel, shared by each stack the widget has (a
  * portrait and a landscape one). Past it, Android silently drops the later
- * pages. So the art shrinks, in steps of 16 px, until every page of [books]
- * books fits 80% of that share. Never above [layout]'s preferred size, never
- * below 96 px.
+ * pages. Its data refresh (notifyAppWidgetViewDataChanged) also gathers the
+ * pages again into the saved views without letting go of the old bitmaps,
+ * so for a moment two copies count against that cap, and an update over it
+ * is refused and the saved views cleared. So the art shrinks, in steps of
+ * 16 px, until two copies of every page of [books] books fit 80% of the
+ * stack's share. Never above [layout]'s preferred size, never below 96 px.
  */
 internal fun binderCoverPx(layout: BinderLayout, books: Int, screenPixels: Long, stacks: Int = 2): Int {
     val preferred = layout.preferredCoverPx
     if (books <= 0 || screenPixels <= 0) return preferred
     val pocketsDrawn = ((books + layout.pocketsPerPage - 1) / layout.pocketsPerPage) * layout.pocketsPerPage
-    val share = screenPixels * 6 * 9 / 10 / stacks.coerceAtLeast(1) * 8 / 10
+    val share = screenPixels * 6 * 9 / 10 / stacks.coerceAtLeast(1) / RETAINED_COPIES * 8 / 10
     var px = preferred
     while (px > MIN_COVER_PX && pocketsDrawn.toLong() * rgb565Bytes(px) > share) px -= 16
     return px.coerceAtLeast(MIN_COVER_PX)
 }
 
 private const val MIN_COVER_PX = 96
+
+/** The old and the new set of discs an Android 16 data refresh holds at once. */
+private const val RETAINED_COPIES = 2
 
 /** How many pages [books] books make at [layout]. */
 internal fun binderPageCount(books: Int, layout: BinderLayout): Int =

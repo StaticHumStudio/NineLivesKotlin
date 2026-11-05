@@ -79,7 +79,7 @@ class BinderLayoutTest {
         assertEquals(0, binderLayoutFor(360, 108).pocketBottomPadDp)
     }
 
-    @Test fun `disc art shrinks so every page of fifty books fits a small screen's budget`() {
+    @Test fun `disc art shrinks so fifty books fit Android 16's bitmap cap, twice over, in both orientations`() {
         val two = binderLayoutFor(266, 233) // two pockets a page, 320 px preferred
         assertEquals(320, two.preferredCoverPx)
         // A few books never need shrinking.
@@ -88,10 +88,11 @@ class BinderLayoutTest {
         val s26 = binderCoverPx(two, 50, 1440L * 3120)
         val pixel = binderCoverPx(two, 50, 1080L * 2400)
         val small = binderCoverPx(two, 50, 720L * 1600)
-        assertEquals(listOf(304, 224, 144), listOf(s26, pixel, small))
+        assertEquals(listOf(208, 160, 96), listOf(s26, pixel, small))
         for ((px, screen) in listOf(s26 to 1440L * 3120, pixel to 1080L * 2400, small to 720L * 1600)) {
-            val share = screen * 6 * 9 / 10 / 2 * 8 / 10
-            assertTrue("$px on $screen", 50L * px * px * 2 <= share)
+            // Two stacks, each held twice during a data refresh, inside 90% of six bytes a pixel.
+            val cap = screen * 6 * 9 / 10
+            assertTrue("$px on $screen", 2 * 2 * 50L * px * px * 2 <= cap)
             assertEquals(0, px % 16)
         }
     }

@@ -405,7 +405,8 @@ class WidgetPlayback @Inject constructor(
                 )
             }
             WidgetPlayPlan.PAUSE -> playbackManager.pause()
-            WidgetPlayPlan.LOAD_BOOK -> book?.let { playbackManager.loadAudioBook(it) }
+            // A Play tap, so a finished book starts over instead of parking.
+            WidgetPlayPlan.LOAD_BOOK -> book?.let { playbackManager.loadAudioBookForPlay(it) }
             else -> Unit
         }
     }

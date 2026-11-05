@@ -1,6 +1,7 @@
 package com.ninelivesaudio.app.service
 
 import androidx.annotation.OptIn
+import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -30,6 +31,20 @@ class ChapterAwareForwardingPlayer(
 
     /** Updated by PlaybackManager during position polling (absolute book position in ms). */
     var absolutePositionMs: Long = 0L
+
+    /**
+     * A finished book reopened parked at its end. The wrapped player waits at
+     * 0:00 (Play starts the book over), so a book without chapters reports the
+     * end here instead, and a controller seek goes through [seekHandler],
+     * which keeps a seek to the end from finishing the book again.
+     */
+    var parkedAtEnd: Boolean = false
+
+    /**
+     * Delegates a track-indexed seek on a parked book without chapters back
+     * to PlaybackManager, which turns the track position into a book position.
+     */
+    var indexedSeekHandler: ((Int, Long) -> Unit)? = null
 
     /**
      * Lambda that delegates a chapter-relative seek back to PlaybackManager,
@@ -67,9 +82,15 @@ class ChapterAwareForwardingPlayer(
     // ─── Position / Duration Overrides ──────────────────────────────────
 
     override fun getCurrentPosition(): Long {
-        val ch = currentChapter ?: return super.getCurrentPosition()
+        val ch = currentChapter ?: return parkedEndPositionMs() ?: super.getCurrentPosition()
         val chapterStartMs = (ch.start * 1000).toLong()
         return (absolutePositionMs - chapterStartMs).coerceAtLeast(0L)
+    }
+
+    /** The end of a parked single file book without chapters, when its length is known. */
+    private fun parkedEndPositionMs(): Long? {
+        if (!parkedAtEnd || super.getMediaItemCount() != 1) return null
+        return super.getDuration().takeIf { it != C.TIME_UNSET && it > 0L }
     }
 
     override fun getDuration(): Long {
@@ -96,7 +117,10 @@ class ChapterAwareForwardingPlayer(
     override fun seekTo(positionMs: Long) {
         val ch = currentChapter
         if (ch == null) {
-            super.seekTo(positionMs)
+            val handler = seekHandler
+            // Parked, the player sits on its first item, so this position is
+            // also the book's.
+            if (parkedAtEnd && handler != null) handler(positionMs) else super.seekTo(positionMs)
             return
         }
 
@@ -121,8 +145,12 @@ class ChapterAwareForwardingPlayer(
             // Chapter mode: interpret positionMs as chapter-relative
             seekTo(positionMs)
         } else {
-            // No chapters: pass through to the real player with the track index intact
-            super.seekTo(mediaItemIndex, positionMs)
+            // No chapters: pass through to the real player with the track
+            // index intact. Parked, it goes through the book's seek, which
+            // keeps a seek to the end from finishing the book again.
+            val handler = indexedSeekHandler
+            if (parkedAtEnd && handler != null) handler(mediaItemIndex, positionMs)
+            else super.seekTo(mediaItemIndex, positionMs)
         }
     }
 

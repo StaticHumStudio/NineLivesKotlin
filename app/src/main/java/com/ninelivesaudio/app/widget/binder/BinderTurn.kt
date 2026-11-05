@@ -70,7 +70,8 @@ internal fun <A> handleBinderPageTurn(activity: A, intent: Intent): Boolean wher
         .binderUpdater()
     activity.lifecycleScope.launch {
         try {
-            withTimeoutOrNull(4.seconds) { updater.turnTo(turn.appWidgetId, turn.page) }
+            // Longer than the updater's own 5 s wait for settings, so a slow cold start still turns.
+            withTimeoutOrNull(8.seconds) { updater.turnTo(turn.appWidgetId, turn.page) }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             Log.w("BinderWidget", "page turn failed: ${e.message}")

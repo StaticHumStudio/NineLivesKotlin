@@ -233,9 +233,14 @@ class SettingsManager @Inject constructor(
         _storageUnavailable.value = outcome.storageUnavailable
         // isLoaded flips true either way — the UI reads storageUnavailable to
         // tell "loaded normally" apart from "loaded degraded", but it still
-        // needs a terminal state to stop showing the launch screen.
-        _isLoaded.value = true
-        if (outcome.storageUnavailable) return outcome.settings
+        // needs a terminal state to stop showing the launch screen. It flips
+        // only after hasAuthToken is published too: widgets and the widget
+        // Play gate wait on isLoaded and then read hasAuthToken, and a cold
+        // start used to read "no token" there and draw a signed out widget.
+        if (outcome.storageUnavailable) {
+            _isLoaded.value = true
+            return outcome.settings
+        }
 
         // Read-then-publish must be serialized with saveAuthToken/clearAuthToken/
         // replaceAuthTokenIfCurrent's own read-then-publish. Without the shared
@@ -257,6 +262,8 @@ class SettingsManager @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "loadSettings: Auth token unreadable, treating as absent", e)
             _hasAuthToken.value = false
+        } finally {
+            _isLoaded.value = true
         }
         return outcome.settings
     }

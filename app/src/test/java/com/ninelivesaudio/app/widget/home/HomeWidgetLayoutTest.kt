@@ -132,6 +132,17 @@ class HomeWidgetLayoutTest {
         }
     }
 
+    @Test fun `the row face always leaves the title its room`() {
+        // Codex round 1: a 160 by 168 widget drew a 131dp cover in a 132dp row.
+        for (w in 160..520 step 4) for (h in 80..168 step 4) {
+            val p = homePlanFor(w.toFloat(), h.toFloat())
+            if (p.face != HomeFace.ROW) continue
+            assertTrue("$w x $h", p.tileDp + ROW_GAP_DP + ROW_TITLE_MIN_DP <= w - 2 * HOME_PAD_DP)
+            assertTrue("$w x $h", p.tileDp >= 1)
+        }
+        assertEquals(160 - 2 * HOME_PAD_DP - ROW_GAP_DP - ROW_TITLE_MIN_DP, homePlanFor(160f, 168f).tileDp)
+    }
+
     @Test fun `the One UI tall cell shape still fills, tall altar and two big rows`() {
         val p = plan(oneUi4x4)
         assertEquals(AltarStyle.TALL, p.altar)

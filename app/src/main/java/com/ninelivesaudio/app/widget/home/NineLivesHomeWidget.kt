@@ -327,7 +327,7 @@ private fun RowFace(model: HomeWidgetModel, art: HomeWidgetArt, plan: HomePlan, 
     val width = LocalSize.current.width.value - 2 * HOME_PAD_DP
     Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
         Life(art.current, current.title, lifeLabel(0), plan.tileDp, current)
-        Spacer(GlanceModifier.width(10.dp))
+        Spacer(GlanceModifier.width(ROW_GAP_DP.dp))
         Column(modifier = GlanceModifier.defaultWeight().clickable(openBook(context, current.bookId))) {
             Text(
                 text = current.title,
@@ -340,7 +340,7 @@ private fun RowFace(model: HomeWidgetModel, art: HomeWidgetArt, plan: HomePlan, 
             }
         }
         val rank = model.rank
-        if (rank != null && width - plan.tileDp - 10 >= ROW_RANK_MIN_DP) {
+        if (rank != null && width - plan.tileDp - ROW_GAP_DP >= ROW_RANK_MIN_DP) {
             Spacer(GlanceModifier.width(10.dp))
             Column(
                 modifier = GlanceModifier.clickable(openApp).semantics { contentDescription = rank.epithet + ". " + rank.totalTimeText },
@@ -373,21 +373,29 @@ private fun Altar(rank: RankCard, plan: HomePlan, openApp: Action) {
         .clickable(openApp)
         .semantics { contentDescription = rank.epithet + ". " + rank.totalTimeText }
     if (plan.altar == AltarStyle.TALL) {
+        // Gaps are padding, not Spacers: a Glance Column keeps only its first ten children.
         Column(modifier = card.padding(horizontal = 10.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(text = trackedCaps(rank.epithet), maxLines = 1, style = TextStyle(color = textMuted, fontSize = 9.sp, fontWeight = FontWeight.Medium))
-            Spacer(GlanceModifier.height(3.dp))
             // Home's small gold dot between the rank and the eye.
-            Image(provider = ImageProvider(R.drawable.widget_altar_dot), contentDescription = null, modifier = GlanceModifier.size(4.dp))
-            Spacer(GlanceModifier.height(3.dp))
-            Image(provider = ImageProvider(R.drawable.widget_eye), contentDescription = null, modifier = GlanceModifier.size(plan.eyeDp.dp))
-            Spacer(GlanceModifier.height(4.dp))
-            Wordmark(19)
-            if (plan.showPhrase && rank.phrase.isNotBlank()) {
-                Spacer(GlanceModifier.height(2.dp))
-                Text(text = rank.phrase, maxLines = 1, style = TextStyle(color = textSecondary, fontSize = 11.sp, textAlign = TextAlign.Center))
+            Box(modifier = GlanceModifier.padding(vertical = 3.dp)) {
+                Image(provider = ImageProvider(R.drawable.widget_altar_dot), contentDescription = null, modifier = GlanceModifier.size(4.dp))
             }
-            Spacer(GlanceModifier.height(2.dp))
-            Text(text = rank.totalTimeText, maxLines = 1, style = TextStyle(color = gold, fontSize = 11.sp, fontWeight = FontWeight.Medium))
+            Image(provider = ImageProvider(R.drawable.widget_eye), contentDescription = null, modifier = GlanceModifier.size(plan.eyeDp.dp))
+            Box(modifier = GlanceModifier.padding(top = 4.dp)) { Wordmark(19) }
+            if (plan.showPhrase && rank.phrase.isNotBlank()) {
+                Text(
+                    text = rank.phrase,
+                    maxLines = 1,
+                    modifier = GlanceModifier.padding(top = 2.dp),
+                    style = TextStyle(color = textSecondary, fontSize = 11.sp, textAlign = TextAlign.Center),
+                )
+            }
+            Text(
+                text = rank.totalTimeText,
+                maxLines = 1,
+                modifier = GlanceModifier.padding(top = 2.dp),
+                style = TextStyle(color = gold, fontSize = 11.sp, fontWeight = FontWeight.Medium),
+            )
         }
     } else {
         Row(

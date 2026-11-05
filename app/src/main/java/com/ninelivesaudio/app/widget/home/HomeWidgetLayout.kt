@@ -139,10 +139,7 @@ internal fun homePlanFor(widthDp: Float, heightDp: Float, tiles: Int = MAX_LIFE_
     val w = widthDp - 2 * HOME_PAD_DP
     val h = heightDp * (1f - REPORTED_SIZE_SLACK) - 2 * HOME_PAD_DP
 
-    if (h < ROW_FACE_MAX_INNER_DP) {
-        val tile = h.toInt().coerceAtLeast(1)
-        return HomePlan(HomeFace.ROW, AltarStyle.NONE, rows = 0, tileDp = tile, eyeDp = 0, showPhrase = false)
-    }
+    if (h < ROW_FACE_MAX_INNER_DP) return rowPlan(w, h)
     if (w < NARROW_FACE_MAX_INNER_DP) {
         val withAltar = h - altarHeightDp(AltarStyle.MINI) - SECTION_GAP_DP - LINE_GAP_DP - TITLE_BLOCK_DP
         val altar = if (withAltar >= MIN_TILE_DP + 20) AltarStyle.MINI else AltarStyle.NONE
@@ -176,9 +173,23 @@ internal fun homePlanFor(widthDp: Float, heightDp: Float, tiles: Int = MAX_LIFE_
             HomePlan(HomeFace.STACKED, altar, rows, tile.toInt(), eye, showPhrase = false)
         }
     }
-    best?.let { return it }
-    return HomePlan(HomeFace.ROW, AltarStyle.NONE, rows = 0, tileDp = h.toInt(), eyeDp = 0, showPhrase = false)
+    return best ?: rowPlan(w, h)
 }
+
+/**
+ * The one row face: LIFE I as tall as the row, but never so wide that the
+ * title and chapter beside it lose their [ROW_TITLE_MIN_DP].
+ */
+private fun rowPlan(w: Float, h: Float): HomePlan {
+    val tile = minOf(h, w - ROW_GAP_DP - ROW_TITLE_MIN_DP).toInt().coerceAtLeast(1)
+    return HomePlan(HomeFace.ROW, AltarStyle.NONE, rows = 0, tileDp = tile, eyeDp = 0, showPhrase = false)
+}
+
+/** The row face's gap between LIFE I and its title. */
+internal const val ROW_GAP_DP = 10
+
+/** The least width the row face keeps for the title and chapter. */
+internal const val ROW_TITLE_MIN_DP = 64
 
 /**
  * Spends the tall altar's [slack] (dp the grid does not need): the eye grows

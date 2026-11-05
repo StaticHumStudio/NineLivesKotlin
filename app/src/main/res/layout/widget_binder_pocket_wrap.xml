@@ -1,85 +1,93 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- A pocket narrower than it is tall: the same as widget_binder_pocket.xml, but the
      disc and its title sit together in the middle of the cell instead of the disc
-     filling the height (BinderLayout.wrapPockets). -->
+     filling the height (BinderLayout.wrapPockets). 
+     The root is only the weighted slot: Android keeps a fill in intent on a nested
+     layout's root as a tag and never wires a click to it, so the tap target is the
+     child below (BinderViews.kt sets it). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/binder_pocket_cell"
     android:layout_width="0dp"
     android:layout_height="match_parent"
     android:layout_weight="1"
-    android:clickable="true"
-    android:focusable="true"
-    android:gravity="center_vertical"
-    android:layoutDirection="ltr"
-    android:orientation="vertical"
-    android:padding="@dimen/widget_binder_pocket_gap">
+    android:layoutDirection="ltr">
 
     <LinearLayout
-        android:id="@+id/binder_pocket_box"
+        android:id="@+id/binder_pocket_cell"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center"
-        android:orientation="horizontal">
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:padding="@dimen/widget_binder_pocket_gap">
 
-        <RelativeLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content">
+        <LinearLayout
+            android:id="@+id/binder_pocket_box"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal">
 
-            <ImageView
-                android:id="@+id/binder_pocket_square"
-                style="@style/NineLivesWidgetSquare" />
+            <RelativeLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content">
 
-            <ImageView
-                android:id="@+id/binder_pocket_disc"
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_alignBottom="@id/binder_pocket_square"
-                android:layout_alignEnd="@id/binder_pocket_square"
-                android:layout_alignStart="@id/binder_pocket_square"
-                android:layout_alignTop="@id/binder_pocket_square"
-                android:importantForAccessibility="no"
-                android:scaleType="fitXY" />
+                <ImageView
+                    android:id="@+id/binder_pocket_square"
+                    style="@style/NineLivesWidgetSquare" />
 
-            <TextView
-                android:id="@+id/binder_pocket_title"
-                style="@style/NineLivesWidgetSleeveTitle"
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_alignBottom="@id/binder_pocket_square"
-                android:layout_alignEnd="@id/binder_pocket_square"
-                android:layout_alignStart="@id/binder_pocket_square"
-                android:layout_alignTop="@id/binder_pocket_square"
-                android:importantForAccessibility="no"
-                android:shadowColor="#FF0A0520"
-                android:shadowRadius="4"
-                android:visibility="gone" />
+                <ImageView
+                    android:id="@+id/binder_pocket_disc"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_pocket_square"
+                    android:layout_alignEnd="@id/binder_pocket_square"
+                    android:layout_alignStart="@id/binder_pocket_square"
+                    android:layout_alignTop="@id/binder_pocket_square"
+                    android:importantForAccessibility="no"
+                    android:scaleType="fitXY" />
 
-            <ImageView
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_alignBottom="@id/binder_pocket_square"
-                android:layout_alignEnd="@id/binder_pocket_square"
-                android:layout_alignStart="@id/binder_pocket_square"
-                android:layout_alignTop="@id/binder_pocket_square"
-                android:importantForAccessibility="no"
-                android:scaleType="fitXY"
-                android:src="@drawable/widget_binder_sleeve" />
-        </RelativeLayout>
+                <TextView
+                    android:id="@+id/binder_pocket_title"
+                    style="@style/NineLivesWidgetSleeveTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_pocket_square"
+                    android:layout_alignEnd="@id/binder_pocket_square"
+                    android:layout_alignStart="@id/binder_pocket_square"
+                    android:layout_alignTop="@id/binder_pocket_square"
+                    android:importantForAccessibility="no"
+                    android:shadowColor="#FF0A0520"
+                    android:shadowRadius="4"
+                    android:visibility="gone" />
+
+                <ImageView
+                    android:layout_width="0dp"
+                    android:layout_height="0dp"
+                    android:layout_alignBottom="@id/binder_pocket_square"
+                    android:layout_alignEnd="@id/binder_pocket_square"
+                    android:layout_alignStart="@id/binder_pocket_square"
+                    android:layout_alignTop="@id/binder_pocket_square"
+                    android:importantForAccessibility="no"
+                    android:scaleType="fitXY"
+                    android:src="@drawable/widget_binder_sleeve" />
+            </RelativeLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/binder_pocket_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:gravity="center_horizontal|top"
+            android:importantForAccessibility="no"
+            android:includeFontPadding="false"
+            android:lineSpacingMultiplier="0.95"
+            android:lines="2"
+            android:textColor="#FFC4A96A"
+            android:textSize="10sp"
+            android:visibility="gone" />
     </LinearLayout>
-
-    <TextView
-        android:id="@+id/binder_pocket_label"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:ellipsize="end"
-        android:fontFamily="serif"
-        android:gravity="center_horizontal|top"
-        android:importantForAccessibility="no"
-        android:includeFontPadding="false"
-        android:lineSpacingMultiplier="0.95"
-        android:lines="2"
-        android:textColor="#FFC4A96A"
-        android:textSize="10sp"
-        android:visibility="gone" />
 </LinearLayout>

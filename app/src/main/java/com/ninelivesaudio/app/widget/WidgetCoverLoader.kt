@@ -54,6 +54,9 @@ class WidgetCoverLoader @Inject constructor(
         px,
     )
 
+    /** Whether [book]'s cover is on disk at [px], without decoding it. */
+    internal fun isCached(book: AudioBook, px: Int): Boolean = File(dir, fileName(book, px)).exists()
+
     /** Disk only, never the network. Safe on the RemoteViews binder thread. */
     internal fun cached(book: AudioBook, px: Int): Bitmap? {
         val file = File(dir, fileName(book, px))

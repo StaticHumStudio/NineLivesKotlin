@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One blank disc in its sleeve, for the picker preview. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="0dp"
+    android:layout_height="match_parent"
+    android:layout_weight="1"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:padding="@dimen/widget_binder_pocket_gap">
+
+    <RelativeLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content">
+
+        <ImageView
+            android:id="@+id/binder_preview_square"
+            style="@style/NineLivesWidgetSquare" />
+
+        <ImageView
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_alignBottom="@id/binder_preview_square"
+            android:layout_alignEnd="@id/binder_preview_square"
+            android:layout_alignStart="@id/binder_preview_square"
+            android:layout_alignTop="@id/binder_preview_square"
+            android:importantForAccessibility="no"
+            android:scaleType="fitXY"
+            android:src="@drawable/widget_binder_disc_blank" />
+
+        <ImageView
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_alignBottom="@id/binder_preview_square"
+            android:layout_alignEnd="@id/binder_preview_square"
+            android:layout_alignStart="@id/binder_preview_square"
+            android:layout_alignTop="@id/binder_preview_square"
+            android:importantForAccessibility="no"
+            android:scaleType="fitXY"
+            android:src="@drawable/widget_binder_sleeve" />
+    </RelativeLayout>
+</LinearLayout>

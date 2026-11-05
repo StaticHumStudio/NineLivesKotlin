@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A slim page turn arrow beside the spine on a one row Binder. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="24dp"
+    android:viewportWidth="16"
+    android:viewportHeight="24">
+    <!-- goldFilament -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="2"
+        android:strokeColor="#FFE8C468"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M11,6 L5,12 L11,18" />
+</vector>

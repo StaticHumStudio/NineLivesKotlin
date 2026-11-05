@@ -3,7 +3,6 @@ package com.ninelivesaudio.app.widget
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.library.SortMode
 import com.ninelivesaudio.app.widget.binder.BinderConfig
-import com.ninelivesaudio.app.widget.binder.binderSpreads
 import com.ninelivesaudio.app.widget.binder.loadBinderModel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -41,7 +40,6 @@ class WidgetBookSourceTest {
         assertEquals(WidgetContent.READY, m.content)
         assertEquals(listOf("a", "b"), m.books.map { it.id })
         assertEquals("lib_s", src.lastLibraryId)
-        assertEquals(binderSpreads(m.books), m.spreads)
     }
 
     @Test fun `a server binder never asks about folders`() = runBlocking {
@@ -54,6 +52,6 @@ class WidgetBookSourceTest {
     @Test fun `an empty library shows its empty state`() = runBlocking {
         val m = loadBinderModel(WidgetAccess.Library("lib_s", false), BinderConfig(), FakeSource(books = emptyList()))
         assertEquals(WidgetContent.NO_BOOKS, m.content)
-        assertTrue(m.spreads.isEmpty())
+        assertTrue(m.books.isEmpty())
     }
 }

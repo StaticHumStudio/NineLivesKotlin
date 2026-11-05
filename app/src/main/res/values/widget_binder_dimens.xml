@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Keep these in step with BinderChrome (BinderLayout.kt), which sizes the pages from them.
+         A one row Binder sets smaller paddings at draw time. -->
+    <!-- The Binder's padded cover edge, between the stitching and the pages. -->
+    <dimen name="widget_binder_cover_padding">7dp</dimen>
+    <!-- Inset of the pockets inside a page, so a page fanned out behind the front
+         one shows its gilt edge rather than a sliver of disc. -->
+    <dimen name="widget_binder_page_inset">5dp</dimen>
+    <!-- The gap a page leaves for the fixed spine, and the spine itself. -->
+    <dimen name="widget_binder_spine_slot">14dp</dimen>
+    <dimen name="widget_binder_spine_width">10dp</dimen>
+    <!-- The slim arrows on a one row Binder's outer edges. -->
+    <dimen name="widget_binder_edge_arrow">16dp</dimen>
+    <!-- The strip under the discs: 48dp, so its arrows are full size touch targets. -->
+    <dimen name="widget_binder_footer">48dp</dimen>
+    <dimen name="widget_binder_footer_arrow">56dp</dimen>
+    <!-- Space around each pocket. -->
+    <dimen name="widget_binder_pocket_gap">2dp</dimen>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ring the eye is pressed into on a closed Binder's cover. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <!-- archiveVoidDeep -->
+    <solid android:color="#FF0A0520" />
+    <!-- goldFilamentDim -->
+    <stroke android:width="1dp" android:color="#99B89650" />
+</shape>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Home's wordmark in the Nine Lives widget's picker preview, tracked with thin spaces
+         like the widget itself (HomeWidgetLayout.kt WORDMARK). A name, so not translated. -->
+    <string name="widget_home_wordmark" translatable="false">N&#8201;I&#8201;N&#8201;E&#8201;&#160;&#8201;L&#8201;I&#8201;V&#8201;E&#8201;S</string>
+</resources>

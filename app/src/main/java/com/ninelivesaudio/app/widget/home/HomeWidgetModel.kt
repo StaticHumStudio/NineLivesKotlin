@@ -16,8 +16,14 @@ import kotlin.time.DurationUnit
 /** The current book's button. WAIT is a dimmed play while a book loads, like the app. */
 internal enum class CurrentButton { PLAY, PAUSE, WAIT, OPEN }
 
-/** Home's altar card, the same words Home shows. */
-internal data class RankCard(val epithet: String, val totalTimeText: String)
+/** Home's altar card, the same words Home shows. [phrase] is the altar line under the wordmark. */
+internal data class RankCard(val epithet: String, val totalTimeText: String, val phrase: String = "")
+
+/**
+ * The next Lives after the current book. With the current book as LIFE I
+ * that is nine tiles at most, Home's full grid.
+ */
+internal const val MAX_LIVES = 8
 
 internal data class CurrentCard(
     val bookId: String,
@@ -86,7 +92,7 @@ internal fun buildHomeWidgetModel(
     if (content != WidgetContent.READY) return HomeWidgetModel(content, isLocalMode, null, null, emptyList())
 
     val total = totalTimeGivenSeconds(recent.map { it.currentTime.toDouble(DurationUnit.SECONDS) })
-    val rank = RankCard(AltarCopy.epithet(total), "Total time given: " + formatListeningTime(total))
+    val rank = RankCard(AltarCopy.epithet(total), "Total time given: " + formatListeningTime(total), AltarCopy.phrase(total))
 
     val shown = current ?: recent.first()
     val chapter = if (current != null) {

@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Widget picker preview for Nine Lives: generic art only, no book or rank.
-     The rank slab with the eye, an empty sleeve where the current book goes,
-     and three empty sleeves for the next Lives. -->
+     A small Home: the altar card with the eye and the wordmark, then two rows
+     of empty square Lives, the first ringed in full gold with the play disc. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/widget_frame"
-    android:gravity="center_vertical"
+    android:background="@drawable/widget_home_frame"
+    android:gravity="center"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:padding="14dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/widget_home_slab"
-        android:gravity="center_vertical"
+        android:background="@drawable/widget_home_altar"
+        android:gravity="center"
         android:orientation="horizontal"
         android:padding="8dp">
 
@@ -24,62 +24,74 @@
             android:layout_height="40dp"
             android:importantForAccessibility="no"
             android:src="@drawable/widget_eye" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:importantForAccessibility="no"
+            android:maxLines="1"
+            android:text="@string/widget_home_wordmark"
+            android:textColor="#FFE8C468"
+            android:textSize="16sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:gravity="center_vertical"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
         android:orientation="horizontal">
-
-        <ImageView
-            android:layout_width="64dp"
-            android:layout_height="64dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_sleeve_empty" />
 
         <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:background="@drawable/widget_life_ring_current">
 
-        <ImageView
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_home_play" />
+            <ImageView
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_gravity="center"
+                android:importantForAccessibility="no"
+                android:src="@drawable/widget_home_play" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/widget_life_ring" />
+
+        <FrameLayout
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/widget_life_ring" />
     </LinearLayout>
-
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:layout_marginVertical="10dp"
-        android:background="@drawable/widget_home_rule" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
         android:orientation="horizontal">
 
-        <ImageView
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_sleeve_empty" />
+        <FrameLayout
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:background="@drawable/widget_life_ring" />
 
-        <ImageView
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="10dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_sleeve_empty" />
+        <FrameLayout
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/widget_life_ring" />
 
-        <ImageView
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_marginStart="10dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_sleeve_empty" />
+        <FrameLayout
+            android:layout_width="84dp"
+            android:layout_height="84dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/widget_life_ring" />
     </LinearLayout>
 </LinearLayout>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LIFE I, the book in the player: the same tile with its gold line at full strength. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:bottom="2dp" android:left="2dp" android:right="2dp" android:top="2dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="2dp" android:color="#663D3520" />
+            <corners android:radius="14dp" />
+        </shape>
+    </item>
+    <item android:bottom="4dp" android:left="4dp" android:right="4dp" android:top="4dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF1A1135" />
+            <stroke android:width="2dp" android:color="#FFE8C468" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+</layer-list>

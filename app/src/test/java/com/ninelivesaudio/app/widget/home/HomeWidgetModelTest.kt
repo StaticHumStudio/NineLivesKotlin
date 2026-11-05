@@ -80,6 +80,7 @@ class HomeWidgetModelTest {
         val total = books.sumOf { it.currentTime.inWholeSeconds.toDouble() }
         assertEquals(AltarCopy.epithet(total), m.rank!!.epithet)
         assertEquals("Total time given: " + formatListeningTime(total), m.rank!!.totalTimeText)
+        assertEquals(AltarCopy.phrase(total), m.rank!!.phrase)
     }
 
     @Test fun `the current book is the one in the player, else the most recent`() {
@@ -87,9 +88,21 @@ class HomeWidgetModelTest {
         assertEquals("b1", ready(current = null).current!!.bookId)
     }
 
-    @Test fun `the next lives skip the current book and stop at four`() {
+    @Test fun `the next lives skip the current book and keep Home's order`() {
         assertEquals(listOf("b1", "b2", "b4", "b5"), ready(current = books[2]).lives.map { it.bookId })
         assertEquals(listOf("b2", "b3", "b4", "b5"), ready(current = null).lives.map { it.bookId })
+    }
+
+    @Test fun `with the current book as LIFE I the grid stops at Home's nine`() {
+        val nine = (1..9).map { i -> AudioBook(id = "n$i", title = "N $i", currentTime = 60.seconds) }
+        val m = buildHomeWidgetModel(lib, true, 9, nine, null, null, PlaybackState.STOPPED, false, true)
+        assertEquals("n1", m.current!!.bookId)
+        assertEquals((2..9).map { "n$it" }, m.lives.map { it.bookId })
+        // A player book outside the nine still leads, and the grid still stops at nine.
+        val outside = buildHomeWidgetModel(lib, true, 10, nine, AudioBook(id = "x"), null, PlaybackState.PAUSED, false, true)
+        assertEquals("x", outside.current!!.bookId)
+        assertEquals(MAX_LIVES, outside.lives.size)
+        assertEquals((1..8).map { "n$it" }, outside.lives.map { it.bookId })
     }
 
     @Test fun `chapter comes from the player when live, else from the saved position`() {

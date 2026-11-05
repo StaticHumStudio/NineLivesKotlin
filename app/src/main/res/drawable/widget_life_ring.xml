@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A Lives tile, after Home's ContainmentFrame: a faint outer line (archiveOutline at 18 percent),
+     then a thin gold line (goldFilament at 55 percent) around the cover's slot. The slot is
+     archiveVoidSurface, the colour the widget covers are baked onto, so their corners disappear. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:bottom="2dp" android:left="2dp" android:right="2dp" android:top="2dp">
+        <shape android:shape="rectangle">
+            <stroke android:width="2dp" android:color="#2E242933" />
+            <corners android:radius="14dp" />
+        </shape>
+    </item>
+    <item android:bottom="5dp" android:left="5dp" android:right="5dp" android:top="5dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF1A1135" />
+            <stroke android:width="1dp" android:color="#8CE8C468" />
+            <corners android:radius="11dp" />
+        </shape>
+    </item>
+</layer-list>

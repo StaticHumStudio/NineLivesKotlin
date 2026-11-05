@@ -44,10 +44,41 @@ class BinderWidgetUpdater @Inject constructor(
         val access = currentAccess()
         for (id in appWidgetIds) {
             val model = loadBinderModel(access, configStore.get(id), source)
-            Log.d(TAG, "update $id ${model.content} spreads=${model.spreads.size}")
-            manager.updateAppWidget(id, viewsFor(id, model))
+            val layout = layoutFor(id)
+            Log.d(TAG, "update $id ${model.content} books=${model.books.size} size=${portraitSizeDp(id)} layout=$layout")
+            manager.updateAppWidget(id, viewsFor(id, model, layout))
         }
         manager.notifyAppWidgetViewDataChanged(appWidgetIds, R.id.binder_stack)
+    }
+
+    /**
+     * The page layout for the size the launcher reports. Portrait is the
+     * minimum width and the maximum height (AppWidgetManager's options).
+     */
+    internal fun layoutFor(appWidgetId: Int): BinderLayout {
+        val (w, h) = portraitSizeDp(appWidgetId)
+        return binderLayoutFor(w, h)
+    }
+
+    private fun portraitSizeDp(appWidgetId: Int): Pair<Int, Int> {
+        val options = manager.getAppWidgetOptions(appWidgetId)
+        return options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH) to
+            options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
+    }
+
+    /**
+     * An arrow tap: turn the stack to [page]. A full update, because a partial
+     * one would be merged into the saved views and lose the turn (BinderTurn.kt).
+     * The stack's data is not reloaded. A Binder that is no longer open (the
+     * trial ended, signed out) gets its proper face instead.
+     */
+    suspend fun turnTo(appWidgetId: Int, page: Int) {
+        if (currentAccess() !is WidgetAccess.Library) {
+            update(intArrayOf(appWidgetId))
+            return
+        }
+        Log.d(TAG, "turn $appWidgetId to $page")
+        manager.updateAppWidget(appWidgetId, binderStackViews(context, appWidgetId, layoutFor(appWidgetId), displayedPage = page))
     }
 
     /** The model one Binder's stack draws, read fresh each time. */
@@ -70,8 +101,8 @@ class BinderWidgetUpdater @Inject constructor(
         )
     }
 
-    private fun viewsFor(appWidgetId: Int, model: BinderModel) = when (model.content) {
-        WidgetContent.READY -> binderStackViews(context, appWidgetId)
+    private fun viewsFor(appWidgetId: Int, model: BinderModel, layout: BinderLayout) = when (model.content) {
+        WidgetContent.READY -> binderStackViews(context, appWidgetId, layout)
         WidgetContent.LOCKED ->
             binderMessageViews(context, appWidgetId, WidgetCopy.BINDER_LOCKED, locked = true, WidgetLaunch.OpenUnlock)
         else -> binderMessageViews(

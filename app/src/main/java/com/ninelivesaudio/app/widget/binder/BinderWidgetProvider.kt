@@ -3,6 +3,7 @@ package com.ninelivesaudio.app.widget.binder
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
+import android.os.Bundle
 import com.ninelivesaudio.app.entitlement.EntitlementRepository
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -13,8 +14,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * The Binder: a 2x1 home screen widget that flips through the library's
- * covers like an old CD binder. Updates come from the app's own events
+ * The Binder: a resizable home screen widget that flips through the library's
+ * books like an old CD binder, discs in sleeves either side of a stitched
+ * spine. How many pockets a page holds follows the widget's size
+ * ([binderLayoutFor]). Updates come from the app's own events
  * through `WidgetRefresher`, and the hourly system update is a backstop
  * that relocks a widget after a trial ends with the app closed.
  */
@@ -36,6 +39,24 @@ class BinderWidgetProvider : AppWidgetProvider() {
                 // Re-resolve entitlement first, so an expired trial relocks here.
                 deps.entitlementRepository().refresh()
                 deps.binderUpdater().update(appWidgetIds)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    /** A resize: redraw at the new size, and cut the pages again for it. */
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: Bundle,
+    ) {
+        val deps = EntryPointAccessors.fromApplication(context.applicationContext, Deps::class.java)
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                deps.binderUpdater().update(intArrayOf(appWidgetId))
             } finally {
                 pending.finish()
             }

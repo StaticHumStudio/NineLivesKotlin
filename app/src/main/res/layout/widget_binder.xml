@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Binder when it has books: a stack of pages under one fixed hinge. A vertical
-     fling turns the page (StackView is the only RemoteViews collection that takes a fling). -->
+<!-- The Binder when it has books: a stack of pages under one fixed spine, on the
+     padded cover. A vertical fling turns the page (StackView is the only RemoteViews
+     collection that takes a fling), and so do the arrows on every page (BinderTurn.kt). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layoutDirection="ltr"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/widget_frame"
-    android:padding="@dimen/widget_binder_padding">
+    android:background="@drawable/widget_binder_cover"
+    android:layoutDirection="ltr"
+    android:padding="@dimen/widget_binder_cover_padding">
 
     <StackView
         android:id="@+id/binder_stack"
@@ -15,7 +16,7 @@
         android:layout_height="match_parent"
         android:loopViews="true" />
 
-    <!-- Shown while the stack has no items yet. Same look and place as the front page. -->
+    <!-- Shown while the stack has no items yet: a blank page where the front page sits. -->
     <LinearLayout
         android:id="@+id/binder_stack_empty"
         android:layout_width="match_parent"
@@ -33,64 +34,11 @@
             android:layout_weight="9"
             android:orientation="horizontal">
 
-            <LinearLayout
+            <FrameLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="9"
-                android:background="@drawable/widget_page"
-                android:orientation="horizontal"
-                android:padding="@dimen/widget_page_padding">
-
-                    <FrameLayout
-                        android:layout_width="0dp"
-                        android:layout_height="match_parent"
-                        android:layout_weight="1">
-
-                        <RelativeLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_gravity="end|center_vertical"
-                            android:background="@drawable/widget_sleeve">
-
-                            <ImageView
-                                android:id="@+id/binder_stack_eye_square"
-                                style="@style/NineLivesWidgetSquare" />
-
-                            <ImageView
-                                android:layout_width="0dp"
-                                android:layout_height="0dp"
-                                android:layout_alignBottom="@id/binder_stack_eye_square"
-                                android:layout_alignStart="@id/binder_stack_eye_square"
-                                android:layout_alignEnd="@id/binder_stack_eye_square"
-                                android:layout_alignTop="@id/binder_stack_eye_square"
-                                android:importantForAccessibility="no"
-                                android:padding="@dimen/widget_eye_padding"
-                                android:scaleType="fitCenter"
-                                android:src="@drawable/widget_eye" />
-                        </RelativeLayout>
-                    </FrameLayout>
-
-                    <FrameLayout
-                        android:layout_width="@dimen/widget_hinge_slot"
-                        android:layout_height="match_parent" />
-
-                    <FrameLayout
-                        android:layout_width="0dp"
-                        android:layout_height="match_parent"
-                        android:layout_weight="1">
-
-                        <RelativeLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_gravity="start|center_vertical"
-                            android:background="@drawable/widget_sleeve_empty">
-
-                            <ImageView
-                                android:id="@+id/binder_stack_empty_square"
-                                style="@style/NineLivesWidgetSquare" />
-                        </RelativeLayout>
-                    </FrameLayout>
-            </LinearLayout>
+                android:background="@drawable/widget_binder_page_bg" />
 
             <FrameLayout
                 android:layout_width="0dp"
@@ -99,13 +47,13 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- The one fixed hinge, drawn over the stack so it never turns with a page.
+    <!-- The one fixed spine, drawn over the stack so it never turns with a page.
          StackView sizes every page at 90% of its width and height and draws the front
          page against its left and bottom edges (the pages behind fan up and right), so
-         this 1 : 9 by 9 : 1 grid puts the hinge in the middle of the front page, in the
-         gap each page leaves for it (widget_binder_spread.xml). StackView never mirrors
-         its fan, so every Binder layout is pinned left to right: in an RTL locale this
-         grid would otherwise mirror and put the hinge over the right cover. -->
+         this 1 : 9 by 9 : 1 grid puts the spine in the middle of the front page, in the
+         gap each page leaves for it (widget_binder_page.xml). It stops above the page's
+         footer when the page has one. StackView never mirrors its fan, so every Binder
+         layout is pinned left to right. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -122,18 +70,27 @@
             android:layout_weight="9"
             android:orientation="horizontal">
 
-            <FrameLayout
+            <LinearLayout
+                android:id="@+id/binder_spine_frame"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="9"
-                android:padding="@dimen/widget_page_padding">
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:padding="@dimen/widget_binder_page_inset">
 
                 <FrameLayout
-                    android:layout_width="@dimen/widget_hinge_width"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center_horizontal"
-                    android:background="@drawable/widget_hinge" />
-            </FrameLayout>
+                    android:layout_width="@dimen/widget_binder_spine_width"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/widget_binder_spine" />
+
+                <FrameLayout
+                    android:id="@+id/binder_spine_footer_gap"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/widget_binder_footer"
+                    android:visibility="gone" />
+            </LinearLayout>
 
             <FrameLayout
                 android:layout_width="0dp"

@@ -4,6 +4,7 @@ import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.ui.library.SortMode
 import com.ninelivesaudio.app.ui.library.sortBooks
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -22,25 +23,49 @@ class BinderPagesTest {
         assertEquals(listOf("b"), out.map { it.id })
     }
 
-    @Test fun `the first spread opens on the icon`() {
-        val s = binderSpreads(listOf(AudioBook(id = "b1", title = "One"), AudioBook(id = "b2", title = "Two")))
-        assertEquals(BinderSpread(BinderPage.Icon, BinderPage.Book("b1", "One")), s[0])
-        assertEquals(BinderSpread(BinderPage.Book("b2", "Two"), BinderPage.Empty), s[1])
+    @Test fun `the first pocket is the first book, never the icon`() {
+        val p = binderPages(listOf(AudioBook(id = "b1", title = "One"), AudioBook(id = "b2", title = "Two")), perPage = 2)
+        assertEquals(listOf(BinderPage(listOf(BinderPocket.Book("b1", "One"), BinderPocket.Book("b2", "Two")))), p)
     }
 
-    @Test fun `an even page count needs no empty sleeve`() {
-        val s = binderSpreads(listOf(AudioBook(id = "b1"), AudioBook(id = "b2"), AudioBook(id = "b3")))
-        assertEquals(2, s.size)
-        assertTrue(s.none { it.right == BinderPage.Empty || it.left == BinderPage.Empty })
+    @Test fun `a short last page is padded with empty pockets`() {
+        val p = binderPages((1..5).map { AudioBook(id = "b$it") }, perPage = 4)
+        assertEquals(2, p.size)
+        assertEquals(listOf("b5"), p[1].pockets.filterIsInstance<BinderPocket.Book>().map { it.id })
+        assertEquals(3, p[1].pockets.count { it == BinderPocket.Empty })
+        assertTrue(p.all { it.pockets.size == 4 })
     }
 
-    @Test fun `spread ids survive a rebuild and differ between spreads`() {
+    @Test fun `fifty books make the page counts each size expects`() {
+        val books = (1..50).map { AudioBook(id = "b$it") }
+        assertEquals(25, binderPages(books, 2).size)
+        assertEquals(13, binderPages(books, 4).size)
+        assertEquals(7, binderPages(books, 8).size)
+    }
+
+    @Test fun `page ids survive a rebuild and differ between pages and sizes`() {
         val books = (1..5).map { AudioBook(id = "b$it") }
-        assertEquals(binderSpreads(books).map { it.stableId }, binderSpreads(books.toList()).map { it.stableId })
-        assertEquals(3, binderSpreads(books).map { it.stableId }.toSet().size)
+        assertEquals(binderPages(books, 2).map { it.stableId }, binderPages(books.toList(), 2).map { it.stableId })
+        assertEquals(3, binderPages(books, 2).map { it.stableId }.toSet().size)
+        assertNotEquals(binderPages(books, 2)[0].stableId, binderPages(books, 4)[0].stableId)
     }
 
-    @Test fun `an empty shelf still shows the icon spread`() {
-        assertEquals(listOf(BinderSpread(BinderPage.Icon, BinderPage.Empty)), binderSpreads(emptyList()))
+    @Test fun `an empty shelf still has one page of empty pockets`() {
+        assertEquals(listOf(BinderPage(List(4) { BinderPocket.Empty })), binderPages(emptyList(), 4))
+    }
+
+    @Test fun `the arrows step one page and wrap at both ends`() {
+        assertEquals(1, binderTurnTarget(0, 13, forward = true))
+        assertEquals(12, binderTurnTarget(0, 13, forward = false))
+        assertEquals(0, binderTurnTarget(12, 13, forward = true))
+        assertEquals(11, binderTurnTarget(12, 13, forward = false))
+        assertEquals(0, binderTurnTarget(0, 1, forward = true))
+        assertEquals(0, binderTurnTarget(0, 1, forward = false))
+        assertEquals(0, binderTurnTarget(5, 0, forward = true))
+    }
+
+    @Test fun `the page number is one based`() {
+        assertEquals("1 / 13", binderPageNumber(0, 13))
+        assertEquals("13 / 13", binderPageNumber(12, 13))
     }
 }

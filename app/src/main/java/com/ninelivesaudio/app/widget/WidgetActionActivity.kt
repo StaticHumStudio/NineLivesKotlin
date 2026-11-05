@@ -5,6 +5,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.ninelivesaudio.app.service.PlaybackForegroundStarts
+import com.ninelivesaudio.app.widget.binder.handleBinderPageTurn
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -37,6 +38,8 @@ class WidgetActionActivity : ComponentActivity() {
         )
         // Fully transparent, so Android lets touches pass through to the home screen.
         window.attributes = window.attributes.apply { alpha = 0f }
+        // A Binder arrow turns a page and never plays or opens anything.
+        if (handleBinderPageTurn(this, intent)) return
         // Taken before the tap is decided, so only a start for this tap counts.
         val startsBefore = PlaybackForegroundStarts.count.value
         val launch = intent.widgetLaunchOrNull()

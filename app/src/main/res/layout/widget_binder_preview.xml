@@ -1,68 +1,69 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Widget picker preview: the eye, the hinge, and an empty sleeve waiting for a disc. -->
+<!-- Widget picker preview: an open Binder with four blank discs in their sleeves,
+     the stitched spine, and the page arrows underneath. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layoutDirection="ltr"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/widget_frame"
-    android:padding="@dimen/widget_binder_padding">
+    android:background="@drawable/widget_binder_cover"
+    android:layoutDirection="ltr"
+    android:padding="@dimen/widget_binder_cover_padding">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="horizontal">
+        android:background="@drawable/widget_binder_page_bg"
+        android:orientation="vertical"
+        android:padding="@dimen/widget_binder_page_inset">
 
-        <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal">
 
-            <RelativeLayout
-                android:layout_width="wrap_content"
+            <include layout="@layout/widget_binder_preview_pocket" />
+
+            <include layout="@layout/widget_binder_preview_pocket" />
+
+            <FrameLayout
+                android:layout_width="@dimen/widget_binder_spine_slot"
+                android:layout_height="match_parent"
+                android:paddingHorizontal="3dp">
+
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/widget_binder_spine" />
+            </FrameLayout>
+
+            <include layout="@layout/widget_binder_preview_pocket" />
+
+            <include layout="@layout/widget_binder_preview_pocket" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/widget_binder_footer"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="@dimen/widget_binder_footer_arrow"
                 android:layout_height="wrap_content"
-                android:layout_gravity="end|center_vertical"
-                android:background="@drawable/widget_sleeve">
+                android:importantForAccessibility="no"
+                android:src="@drawable/widget_binder_arrow_prev" />
 
-                <ImageView
-                    android:id="@+id/binder_preview_eye_square"
-                    style="@style/NineLivesWidgetSquare" />
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
 
-                <ImageView
-                    android:layout_width="0dp"
-                    android:layout_height="0dp"
-                    android:layout_alignBottom="@id/binder_preview_eye_square"
-                    android:layout_alignStart="@id/binder_preview_eye_square"
-                    android:layout_alignEnd="@id/binder_preview_eye_square"
-                    android:layout_alignTop="@id/binder_preview_eye_square"
-                    android:importantForAccessibility="no"
-                    android:padding="@dimen/widget_eye_padding"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/widget_eye" />
-            </RelativeLayout>
-        </FrameLayout>
-
-        <FrameLayout
-            android:layout_width="@dimen/widget_hinge_width"
-            android:layout_height="match_parent"
-            android:layout_marginHorizontal="@dimen/widget_hinge_gap"
-            android:background="@drawable/widget_hinge" />
-
-        <FrameLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1">
-
-            <RelativeLayout
-                android:layout_width="wrap_content"
+            <ImageView
+                android:layout_width="@dimen/widget_binder_footer_arrow"
                 android:layout_height="wrap_content"
-                android:layout_gravity="start|center_vertical"
-                android:background="@drawable/widget_sleeve_empty">
-
-                <ImageView
-                    android:id="@+id/binder_preview_empty_square"
-                    style="@style/NineLivesWidgetSquare" />
-            </RelativeLayout>
-        </FrameLayout>
+                android:importantForAccessibility="no"
+                android:src="@drawable/widget_binder_arrow_next" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>

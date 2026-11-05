@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One page of the stack: pockets either side of a gap the fixed spine sits in
+     (widget_binder.xml), and the arrows that turn the page. The pockets are added
+     at draw time (widget_binder_row.xml, widget_binder_pocket.xml), as many as the
+     widget's size holds (BinderLayout.kt). One row Binders put slim arrows either
+     side of the spine: the pages fanned out behind show at their top and right
+     edges, so an arrow on the outer edge would peek out from every page behind.
+     Taller ones put full size arrows and the page number underneath.
+     StackView measures a page with AT_MOST, so the first child (a huge image with no
+     adjustViewBounds) makes the page take all the room StackView offers. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/binder_page"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_binder_page_bg"
+    android:layoutDirection="ltr"
+    android:padding="@dimen/widget_binder_page_inset">
+
+    <ImageView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:src="@drawable/widget_square" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal">
+
+
+            <LinearLayout
+                android:id="@+id/binder_side_left"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical" />
+
+            <FrameLayout
+                android:id="@+id/binder_edge_prev"
+                android:layout_width="@dimen/widget_binder_edge_arrow"
+                android:layout_height="match_parent"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/widget_binder_edge_prev" />
+            </FrameLayout>
+            <FrameLayout
+                android:layout_width="@dimen/widget_binder_spine_slot"
+                android:layout_height="match_parent" />
+            <FrameLayout
+                android:id="@+id/binder_edge_next"
+                android:layout_width="@dimen/widget_binder_edge_arrow"
+                android:layout_height="match_parent"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/widget_binder_edge_next" />
+            </FrameLayout>
+
+            <LinearLayout
+                android:id="@+id/binder_side_right"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/binder_footer"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/widget_binder_footer"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <FrameLayout
+                android:id="@+id/binder_prev"
+                android:layout_width="@dimen/widget_binder_footer_arrow"
+                android:layout_height="match_parent"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/widget_binder_arrow_prev" />
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/binder_page_number"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:importantForAccessibility="no"
+                android:maxLines="1"
+                android:textColor="#FF8B8B95"
+                android:textSize="11sp" />
+
+            <FrameLayout
+                android:id="@+id/binder_next"
+                android:layout_width="@dimen/widget_binder_footer_arrow"
+                android:layout_height="match_parent"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:importantForAccessibility="no"
+                    android:src="@drawable/widget_binder_arrow_next" />
+            </FrameLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

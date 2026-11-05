@@ -1,15 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Resizable from 2x1 to 5x4. Each size gets its own page layout (BinderLayout.kt).
+     The default is 4x2: two discs each side of the spine with titles and full size
+     arrows. minWidth and minHeight give the same 4x2 on launchers that predate
+     targetCellWidth. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:configure="com.ninelivesaudio.app.widget.binder.BinderConfigActivity"
     android:description="@string/widget_binder_description"
     android:initialLayout="@layout/widget_binder_message"
-    android:minHeight="40dp"
-    android:minWidth="110dp"
+    android:maxResizeHeight="440dp"
+    android:maxResizeWidth="520dp"
+    android:minHeight="110dp"
+    android:minResizeHeight="40dp"
+    android:minResizeWidth="110dp"
+    android:minWidth="250dp"
     android:previewImage="@drawable/widget_eye"
     android:previewLayout="@layout/widget_binder_preview"
-    android:resizeMode="none"
-    android:targetCellHeight="1"
-    android:targetCellWidth="2"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="4"
     android:updatePeriodMillis="3600000"
     android:widgetCategory="home_screen"
     android:widgetFeatures="reconfigurable" />

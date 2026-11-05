@@ -6,7 +6,6 @@ import android.content.Intent
 import android.widget.RemoteViews
 import android.widget.RemoteViewsService
 import com.ninelivesaudio.app.domain.model.AudioBook
-import com.ninelivesaudio.app.widget.BINDER_COVER_PX
 import com.ninelivesaudio.app.widget.WidgetCoverLoader
 import com.ninelivesaudio.app.widget.WidgetLaunch
 import dagger.hilt.EntryPoint
@@ -15,7 +14,7 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.runBlocking
 
-/** Feeds each Binder's StackView its spreads. */
+/** Feeds each Binder's StackView its pages. */
 class BinderRemoteViewsService : RemoteViewsService() {
 
     @EntryPoint
@@ -39,9 +38,10 @@ private class BinderFactory(
     private val covers: WidgetCoverLoader,
 ) : RemoteViewsService.RemoteViewsFactory {
 
-    private var spreads: List<BinderSpread> = emptyList()
+    private var pages: List<BinderPage> = emptyList()
     private var books: Map<String, AudioBook> = emptyMap()
     private var tap: BinderTap = BinderTap.PLAY
+    private var layout: BinderLayout = BINDER_FALLBACK_LAYOUT
 
     override fun onCreate() = Unit
 
@@ -49,45 +49,54 @@ private class BinderFactory(
     override fun onDataSetChanged() {
         runBlocking {
             val (model, config) = updater.model(appWidgetId)
-            covers.warm(model.books, BINDER_COVER_PX)
-            spreads = model.spreads
+            val size = updater.layoutFor(appWidgetId)
+            covers.warm(model.books, size.coverPx)
+            layout = size
+            pages = if (model.books.isEmpty()) emptyList() else binderPages(model.books, size.pocketsPerPage)
             books = model.books.associateBy { it.id }
             tap = config.tap
         }
     }
 
     override fun onDestroy() {
-        spreads = emptyList()
+        pages = emptyList()
         books = emptyMap()
     }
 
-    override fun getCount(): Int = spreads.size
+    override fun getCount(): Int = pages.size
 
     override fun getViewAt(position: Int): RemoteViews {
-        val spread = spreads.getOrNull(position) ?: return placeholder()
-        return binderSpreadViews(context, fillFor(spread.left), fillFor(spread.right))
+        val page = pages.getOrNull(position) ?: return placeholder()
+        return binderPageViews(context, appWidgetId, layout, page.pockets.map(::fillFor), position, pages.size)
     }
 
-    private fun fillFor(page: BinderPage): SleeveFill = when (page) {
-        BinderPage.Icon -> SleeveFill.Icon
-        BinderPage.Empty -> SleeveFill.Empty
-        is BinderPage.Book -> {
+    private fun fillFor(pocket: BinderPocket): PocketFill = when (pocket) {
+        BinderPocket.Empty -> PocketFill.Empty
+        is BinderPocket.Book -> {
             val launch = when (tap) {
-                BinderTap.PLAY -> WidgetLaunch.PlayBook(page.id)
-                BinderTap.OPEN -> WidgetLaunch.OpenBook(page.id)
+                BinderTap.PLAY -> WidgetLaunch.PlayBook(pocket.id)
+                BinderTap.OPEN -> WidgetLaunch.OpenBook(pocket.id)
             }
-            val bitmap = books[page.id]?.let { covers.cached(it, BINDER_COVER_PX) }
-            if (bitmap != null) SleeveFill.Cover(bitmap, page.title, launch) else SleeveFill.TitleOnly(page.title, launch)
+            val disc = books[pocket.id]?.let { covers.cached(it, layout.coverPx) }?.let { cover ->
+                try {
+                    bakeBinderDisc(cover, layout.coverPx)
+                } finally {
+                    cover.recycle()
+                }
+            }
+            if (disc != null) PocketFill.Disc(disc, pocket.title, launch) else PocketFill.TitleOnly(pocket.title, launch)
         }
     }
 
-    private fun placeholder(): RemoteViews = binderSpreadViews(context, SleeveFill.Icon, SleeveFill.Empty)
+    /** A page of empty sleeves, while the real one loads. */
+    private fun placeholder(): RemoteViews =
+        binderPageViews(context, appWidgetId, layout, List(layout.pocketsPerPage) { PocketFill.Empty }, 0, 1)
 
     override fun getLoadingView(): RemoteViews = placeholder()
 
     override fun getViewTypeCount(): Int = 1
 
-    override fun getItemId(position: Int): Long = spreads.getOrNull(position)?.stableId ?: position.toLong()
+    override fun getItemId(position: Int): Long = pages.getOrNull(position)?.stableId ?: position.toLong()
 
     override fun hasStableIds(): Boolean = true
 }

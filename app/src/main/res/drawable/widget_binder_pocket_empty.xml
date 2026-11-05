@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An empty pocket: the sleeve's inside and the faint ring a missing disc leaves. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <!-- archiveVoidDeep -->
+    <path
+        android:fillColor="#FF0A0520"
+        android:pathData="M4,0 L96,0 A4,4 0,0,1 100,4 L100,96 A4,4 0,0,1 96,100 L4,100 A4,4 0,0,1 0,96 L0,4 A4,4 0,0,1 4,0 Z" />
+    <!-- goldFilamentFaint -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="0.8"
+        android:strokeColor="#FF3D3520"
+        android:pathData="M50,4 A46,46 0,1,1 49.99,4 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="0.8"
+        android:strokeColor="#FF3D3520"
+        android:pathData="M50,39 A11,11 0,1,1 49.99,39 Z" />
+</vector>

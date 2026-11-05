@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Binder's padded cover: the board with a gilt edge, and a stitch line sewn
+     round it a few dp in, like a zipped CD wallet without the zip. Colours from
+     NoirColors (widgets are always Noir). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <!-- archiveVoidSurface -->
+            <solid android:color="#FF1A1135" />
+            <!-- goldFilamentFaint -->
+            <stroke android:width="1dp" android:color="#FF3D3520" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+    <item android:bottom="3dp" android:left="3dp" android:right="3dp" android:top="3dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#00000000" />
+            <!-- goldFilamentDim at half strength: thread, not trim -->
+            <stroke
+                android:width="1dp"
+                android:color="#80B89650"
+                android:dashGap="2.5dp"
+                android:dashWidth="3.5dp" />
+            <corners android:radius="13dp" />
+        </shape>
+    </item>
+</layer-list>

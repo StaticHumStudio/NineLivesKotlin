@@ -11,35 +11,31 @@ internal const val BINDER_BOOK_CAP = 50
 internal fun binderBooks(books: List<AudioBook>, sort: SortMode): List<AudioBook> =
     sortBooks(books.filterNot { it.isArchived }, sort).take(BINDER_BOOK_CAP)
 
-/** One square sleeve in the Binder. */
-internal sealed interface BinderPage {
-    /** The Nine Lives icon, always the first sleeve. Opens the app. */
-    data object Icon : BinderPage
+/** One pocket on a Binder page. Every filled pocket is a book. */
+internal sealed interface BinderPocket {
+    data class Book(val id: String, val title: String) : BinderPocket
 
-    data class Book(val id: String, val title: String) : BinderPage
-
-    /** Padding for an odd last spread. */
-    data object Empty : BinderPage
+    /** Padding for a short last page. */
+    data object Empty : BinderPocket
 }
 
-private val BinderPage.key: String
+private val BinderPocket.key: String
     get() = when (this) {
-        BinderPage.Icon -> "icon"
-        BinderPage.Empty -> "empty"
-        is BinderPage.Book -> "book:$id"
+        BinderPocket.Empty -> "empty"
+        is BinderPocket.Book -> "book:$id"
     }
 
 /**
- * Two sleeves side by side with the hinge between, which is what a 2x1
- * widget shows at once (plan Design delta 2). [stableId] depends only on the
- * page ids, so the stack keeps its place across rebuilds.
+ * One page of the stack: both sides of a spread, left side first, row by row
+ * (see [BinderLayout.slotOf]). [stableId] depends only on the pockets, so the
+ * stack keeps its place across rebuilds at the same size.
  */
-internal data class BinderSpread(val left: BinderPage, val right: BinderPage) {
+internal data class BinderPage(val pockets: List<BinderPocket>) {
     val stableId: Long
         get() {
-            // FNV-1a 64 over both keys: stable across processes and builds.
+            // FNV-1a 64 over every key: stable across processes and builds.
             var h = -0x340d631b7bdddcdbL
-            for (c in left.key + "|" + right.key) {
+            for (c in pockets.joinToString("|") { it.key }) {
                 h = h xor c.code.toLong()
                 h *= 0x100000001b3L
             }
@@ -47,8 +43,27 @@ internal data class BinderSpread(val left: BinderPage, val right: BinderPage) {
         }
 }
 
-/** Icon first, then one page per book, two to a spread, an odd end padded with [BinderPage.Empty]. */
-internal fun binderSpreads(books: List<AudioBook>): List<BinderSpread> {
-    val pages = listOf<BinderPage>(BinderPage.Icon) + books.map { BinderPage.Book(it.id, it.title) }
-    return pages.chunked(2).map { BinderSpread(it[0], it.getOrElse(1) { BinderPage.Empty }) }
+/**
+ * The books in order, [perPage] to a page, a short last page padded with
+ * [BinderPocket.Empty]. An empty shelf still gets one page of empty pockets.
+ */
+internal fun binderPages(books: List<AudioBook>, perPage: Int): List<BinderPage> {
+    require(perPage > 0) { "perPage must be positive" }
+    if (books.isEmpty()) return listOf(BinderPage(List(perPage) { BinderPocket.Empty }))
+    return books.map { BinderPocket.Book(it.id, it.title) }
+        .chunked(perPage)
+        .map { chunk -> BinderPage(chunk + List(perPage - chunk.size) { BinderPocket.Empty }) }
 }
+
+/**
+ * The page an arrow on page [position] of [count] turns to. The stack loops,
+ * so next from the last page is the first, and back from the first is the last.
+ */
+internal fun binderTurnTarget(position: Int, count: Int, forward: Boolean): Int {
+    if (count <= 0) return 0
+    val step = if (forward) 1 else -1
+    return ((position + step) % count + count) % count
+}
+
+/** "3 / 13": the page number under the discs, one based. */
+internal fun binderPageNumber(position: Int, count: Int): String = "${position + 1} / $count"

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One pocket: the disc in its clear sleeve, the largest square its cell can hold
+     (widget_square.xml), and on bigger Binders the book's title underneath. The
+     whole cell is the tap target. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/binder_pocket_cell"
+    android:layout_width="0dp"
+    android:layout_height="match_parent"
+    android:layout_weight="1"
+    android:clickable="true"
+    android:focusable="true"
+    android:layoutDirection="ltr"
+    android:orientation="vertical"
+    android:padding="@dimen/widget_binder_pocket_gap">
+
+    <LinearLayout
+        android:id="@+id/binder_pocket_box"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <RelativeLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content">
+
+            <ImageView
+                android:id="@+id/binder_pocket_square"
+                style="@style/NineLivesWidgetSquare" />
+
+            <ImageView
+                android:id="@+id/binder_pocket_disc"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_alignBottom="@id/binder_pocket_square"
+                android:layout_alignEnd="@id/binder_pocket_square"
+                android:layout_alignStart="@id/binder_pocket_square"
+                android:layout_alignTop="@id/binder_pocket_square"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY" />
+
+            <TextView
+                android:id="@+id/binder_pocket_title"
+                style="@style/NineLivesWidgetSleeveTitle"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_alignBottom="@id/binder_pocket_square"
+                android:layout_alignEnd="@id/binder_pocket_square"
+                android:layout_alignStart="@id/binder_pocket_square"
+                android:layout_alignTop="@id/binder_pocket_square"
+                android:importantForAccessibility="no"
+                android:shadowColor="#FF0A0520"
+                android:shadowRadius="4"
+                android:visibility="gone" />
+
+            <ImageView
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_alignBottom="@id/binder_pocket_square"
+                android:layout_alignEnd="@id/binder_pocket_square"
+                android:layout_alignStart="@id/binder_pocket_square"
+                android:layout_alignTop="@id/binder_pocket_square"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY"
+                android:src="@drawable/widget_binder_sleeve" />
+        </RelativeLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/binder_pocket_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:fontFamily="serif"
+        android:gravity="center_horizontal|top"
+        android:importantForAccessibility="no"
+        android:includeFontPadding="false"
+        android:lineSpacingMultiplier="0.95"
+        android:lines="2"
+        android:textColor="#FFC4A96A"
+        android:textSize="10sp"
+        android:visibility="gone" />
+</LinearLayout>

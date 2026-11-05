@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The clear plastic sleeve over a pocket, drawn over the disc: a pale edge, the
+     sleeve's opening with its thumb notch near the top, and a faint diagonal sheen
+     below it. Viewport 100 so it scales with the pocket. Corners match the 4 of 100
+     baked into the disc (BinderDisc.kt). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:fillColor="#0FFFFFFF"
+        android:pathData="M0,56 L0,72 L65,7 L49,7 Z" />
+    <path
+        android:fillColor="#08FFFFFF"
+        android:pathData="M0,80 L0,85 L78,7 L73,7 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1.2"
+        android:strokeColor="#40FFFFFF"
+        android:strokeLineCap="round"
+        android:pathData="M3,7 L38,7 A12,12 0,0,0 62,7 L97,7" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeWidth="1"
+        android:strokeColor="#30FFFFFF"
+        android:pathData="M4.5,0.5 L95.5,0.5 A4,4 0,0,1 99.5,4.5 L99.5,95.5 A4,4 0,0,1 95.5,99.5 L4.5,99.5 A4,4 0,0,1 0.5,95.5 L0.5,4.5 A4,4 0,0,1 4.5,0.5 Z" />
+</vector>

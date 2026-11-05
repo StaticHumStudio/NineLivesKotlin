@@ -55,7 +55,26 @@ class BinderWidgetUpdater @Inject constructor(
 
     suspend fun update(appWidgetIds: IntArray) {
         if (appWidgetIds.isEmpty()) return
-        withContext(Dispatchers.IO) { drawLock.withLock { updateLocked(appWidgetIds) } }
+        withContext(Dispatchers.IO) {
+            // Covers are fetched before the lock, so a page turn never waits on the network.
+            if (versionedStacks) fetchCovers(appWidgetIds)
+            drawLock.withLock { updateLocked(appWidgetIds) }
+        }
+    }
+
+    /**
+     * From Android 15: fetch the covers each stack will draw, bounded, outside
+     * the draw lock. The factory does not fetch there (BinderRemoteViewsService),
+     * because Android runs it inside the update, under the lock. A cover that
+     * did not arrive draws as its title, and the next redraw tries again.
+     */
+    private suspend fun fetchCovers(appWidgetIds: IntArray) {
+        val access = currentAccess()
+        for (id in appWidgetIds) {
+            val model = loadBinderModel(access, configStore.get(id), source)
+            if (model.content != WidgetContent.READY) continue
+            for (orientation in binderOrientations) covers.warm(model.books, coverPxFor(id, orientation, model.books.size))
+        }
     }
 
     private suspend fun updateLocked(appWidgetIds: IntArray) {
@@ -94,22 +113,15 @@ class BinderWidgetUpdater @Inject constructor(
     }
 
     /**
-     * Each stack's contents fingerprint, from Android 15 (null before). With
-     * [fetch], missing covers are fetched first, the same as the stack's
-     * factory does, so the fingerprint knows which covers it will draw. A page
-     * turn does not fetch, so an arrow never waits on the network.
+     * Each stack's contents fingerprint, from Android 15 (null before). It
+     * reads which covers are on disk now (fetchCovers ran first), which is
+     * exactly what the stack's factory will draw.
      */
-    private suspend fun stackVersions(
-        appWidgetId: Int,
-        model: BinderModel,
-        config: BinderConfig,
-        fetch: Boolean = true,
-    ): Map<BinderOrientation, Long>? {
+    private fun stackVersions(appWidgetId: Int, model: BinderModel, config: BinderConfig): Map<BinderOrientation, Long>? {
         if (!versionedStacks) return null
         return binderOrientations.associateWith { orientation ->
             val layout = layoutFor(appWidgetId, orientation)
             val px = coverPxFor(appWidgetId, orientation, model.books.size)
-            if (fetch) covers.warm(model.books, px)
             val keys = model.books.map { "${it.id}|${it.title}|${covers.fileName(it, px)}|${covers.isCached(it, px)}" }
             binderStackVersion(keys, config.tap, layout, px)
         }
@@ -151,7 +163,7 @@ class BinderWidgetUpdater @Inject constructor(
                 return@withLock
             }
             Log.d(TAG, "turn $appWidgetId to $page")
-            val versions = stackVersions(appWidgetId, model, config, fetch = false)
+            val versions = stackVersions(appWidgetId, model, config)
             manager.updateAppWidget(
                 appWidgetId,
                 binderStackViews(

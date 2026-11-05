@@ -60,7 +60,9 @@ private class BinderFactory(
             val (model, config) = updater.model(appWidgetId)
             val size = updater.layoutFor(appWidgetId, orientation)
             val px = updater.coverPxFor(appWidgetId, orientation, model.books.size)
-            covers.warm(model.books, px)
+            // From Android 15 this runs inside the Binder's update, under its draw
+            // lock, so the updater fetched the covers first (BinderWidgetUpdater.fetchCovers).
+            if (!binderSingleStack) covers.warm(model.books, px)
             layout = size
             coverPx = px
             pages = if (model.books.isEmpty()) emptyList() else binderPages(model.books, size.pocketsPerPage)

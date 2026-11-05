@@ -2887,9 +2887,9 @@ class PlaybackManager @Inject constructor(
         if (chapters.isEmpty()) return
         // Read the player live. _position is a 500 ms poll that freezes on
         // pause, so near the 3 s line it can name the wrong chapter. An empty
-        // player (a failed load of another book) reads 0, so keep the retained
-        // position there.
-        val live = exoPlayer?.takeIf { it.mediaItemCount > 0 }
+        // player (a failed load of another book) reads 0, and so does a book
+        // parked at its end, so keep the shown position there.
+        val live = exoPlayer?.takeIf { it.mediaItemCount > 0 && !parkedAtEnd }
         val position = if (live != null) getCurrentPosition() else _position.value
         val seconds = position.toDouble(kotlin.time.DurationUnit.SECONDS)
         val index = chapters.indexOfFirst { seconds >= it.start && seconds < it.end }

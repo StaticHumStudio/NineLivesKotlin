@@ -466,7 +466,8 @@ class SyncManager @Inject constructor(
                 // particular, never compare server and phone wall clocks here
                 // to decide whether an unsent offline write survives. The
                 // queued write meets the server in the flush instead, which
-                // orders the two by age, each on its own clock.
+                // orders the two by age, each on its own clock, and keeps the
+                // server's spot only when it is clearly later.
                 try {
                     val itemId = progress.libraryItemId
                     var book = books[itemId]

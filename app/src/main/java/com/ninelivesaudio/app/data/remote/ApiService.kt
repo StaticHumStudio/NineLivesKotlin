@@ -55,6 +55,34 @@ sealed interface ServerProgressRead {
     data object Unavailable : ServerProgressRead
 }
 
+/** Turn one book's progress reply into a [ServerProgressRead]. */
+internal suspend fun readServerProgress(
+    fetch: suspend () -> retrofit2.Response<ApiUserProgress>,
+    normalizeProgress: (Double) -> Double,
+): ServerProgressRead = try {
+    val response = fetch()
+    val serverNowMs = response.headers().getDate("Date")?.time
+    val body = response.body()
+    when {
+        response.code() == 404 -> ServerProgressRead.Missing(serverNowMs)
+        !response.isSuccessful || body == null -> ServerProgressRead.Unavailable
+        else -> ServerProgressRead.Found(
+            progress = UserProgress(
+                libraryItemId = body.libraryItemId,
+                currentTime = body.currentTime.seconds,
+                progress = normalizeProgress(body.progress),
+                isFinished = body.isFinished,
+                lastUpdate = if (body.lastUpdate > 0) body.lastUpdate else null,
+            ),
+            serverNowMs = serverNowMs,
+        )
+    }
+} catch (cancellation: CancellationException) {
+    throw cancellation
+} catch (_: Exception) {
+    ServerProgressRead.Unavailable
+}
+
 /**
  * Classifies a non-2xx login HTTP status. 4xx is the server rejecting the
  * credentials (auth-shaped codes like 401/403 included); anything else (5xx,
@@ -975,29 +1003,10 @@ class ApiService @Inject constructor(
      * ask". Unlike [getUserProgress], which returns null for both.
      */
     suspend fun readUserProgress(itemId: String): ServerProgressRead = withContext(Dispatchers.IO) {
-        try {
-            val response = api.getUserProgress(itemId)
-            val serverNowMs = response.headers().getDate("Date")?.time
-            val body = response.body()
-            when {
-                response.code() == 404 -> ServerProgressRead.Missing(serverNowMs)
-                !response.isSuccessful || body == null -> ServerProgressRead.Unavailable
-                else -> ServerProgressRead.Found(
-                    progress = UserProgress(
-                        libraryItemId = body.libraryItemId,
-                        currentTime = body.currentTime.seconds,
-                        progress = normalizeProgress(body.progress),
-                        isFinished = body.isFinished,
-                        lastUpdate = if (body.lastUpdate > 0) body.lastUpdate else null,
-                    ),
-                    serverNowMs = serverNowMs,
-                )
-            }
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (_: Exception) {
-            ServerProgressRead.Unavailable
-        }
+        readServerProgress(
+            fetch = { api.getUserProgress(itemId) },
+            normalizeProgress = ::normalizeProgress,
+        )
     }
 
     suspend fun getAllUserProgress(): List<UserProgress> = withContext(Dispatchers.IO) {

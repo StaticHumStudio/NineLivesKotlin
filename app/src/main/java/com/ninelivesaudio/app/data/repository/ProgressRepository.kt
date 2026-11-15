@@ -485,7 +485,7 @@ class ProgressRepository @Inject constructor(
     }
 
     /**
-     * Drop a book's queue in favor of the server's newer spot, and keep that
+     * Drop a book's queue in favor of the server's later spot, and keep that
      * spot locally unless the book is playing or stopping, whose progress the
      * player owns. The caller holds the book's item lock.
      */
@@ -499,18 +499,21 @@ class ProgressRepository @Inject constructor(
         withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
                 database.withTransaction {
-                    pendingProgressDao.deleteByItemId(itemId)
-                    if (pendingProgressQueueOwner.itemIsInactiveLocked(itemId)) {
-                        playbackProgressDao.upsert(
-                            PlaybackProgressEntity(
-                                audioBookId = itemId,
-                                positionSeconds = positionSeconds,
-                                isFinished = if (progress.isFinished) 1 else 0,
-                                updatedAt = progress.lastUpdate?.toIso8601(),
+                    applyServerSpot(
+                        itemIsInactive = pendingProgressQueueOwner.itemIsInactiveLocked(itemId),
+                        deleteQueuedRows = { pendingProgressDao.deleteByItemId(itemId) },
+                        keepServerSpotLocally = {
+                            playbackProgressDao.upsert(
+                                PlaybackProgressEntity(
+                                    audioBookId = itemId,
+                                    positionSeconds = positionSeconds,
+                                    isFinished = if (progress.isFinished) 1 else 0,
+                                    updatedAt = progress.lastUpdate?.toIso8601(),
+                                )
                             )
-                        )
-                        onAdopted(itemId, positionSeconds, progress)
-                    }
+                            onAdopted(itemId, positionSeconds, progress)
+                        },
+                    )
                 }
                 pendingProgressQueueOwner.forgetItemRows(itemId)
             }
@@ -521,7 +524,8 @@ class ProgressRepository @Inject constructor(
     /**
      * Flush all pending progress updates to the server. Each book's newest
      * row meets the server's progress first (see [decideQueuedProgress]).
-     * When the server's spot stands, [onServerProgressAdopted] runs inside
+     * The server's spot stands only when it is later than the row by more
+     * than the margin. Then [onServerProgressAdopted] runs inside
      * the same transaction as the local write, to update the shelf.
      */
     suspend fun flushPendingProgress(
@@ -544,7 +548,14 @@ class ProgressRepository @Inject constructor(
                 var durableProgress = playbackProgressDao.getByAudioBookId(itemId)
                 val legacySnapshot = legacyProgressSnapshot(rows, durableProgress)
                 if (legacySnapshot != null) {
-                    val timestamp = System.currentTimeMillis().toIso8601()
+                    // Keep the time the listening was saved, so the server
+                    // read below can still tell whether another device moved
+                    // the book after it.
+                    val timestamp = legacyPromotionTimestampMs(
+                        rows = rows,
+                        durableProgress = durableProgress,
+                        nowMs = System.currentTimeMillis(),
+                    ).toIso8601()
                     withContext(NonCancellable) {
                         pendingProgressQueueOwner.withLock {
                             pendingProgressDao.saveProgressAndEnqueue(
@@ -708,7 +719,8 @@ internal fun progressCanBeDelivered(isFinished: Boolean, duration: Double): Bool
  * A server import never replaces a book with a queued local write, whatever
  * the clocks say. The queued write meets the server's progress in the flush
  * instead, where [decideQueuedProgress] orders the two by age, each measured
- * on its own clock.
+ * on its own clock, and the server's spot stands only on evidence that it is
+ * later than the queued write by more than the margin.
  */
 internal fun serverProgressMayReplaceLocal(hasPendingProgress: Boolean): Boolean =
     !hasPendingProgress
@@ -759,35 +771,44 @@ internal data class QueuedProgressFacts(
 )
 
 internal enum class QueuedProgressDecision {
-    /** The row is the newer act. Send it. */
+    /** Send the row. The default whenever there is no evidence against it. */
     PUSH,
 
     /** The server already holds the row's spot. Nothing to send. */
     ALREADY_ON_SERVER,
 
-    /** The server's spot is newer, or the order cannot be told. Keep it. */
+    /** The server's update is later than the row by more than the margin. Keep it. */
     SERVER_STANDS,
 }
 
-/** A queued row must be this much later than the server's last update to win. */
+/** The server's update must be later than the row by more than this to stand. */
 internal const val QUEUED_PROGRESS_ORDER_MARGIN_MS = 30_000L
 
 /** Two positions this close are the same spot. */
 internal const val SAME_SPOT_TOLERANCE_SECONDS = 0.05
 
 /**
- * The Date header counts whole seconds, so a server age a hair below zero is
+ * The Date header counts whole seconds, so an age a hair below zero is
  * rounding, not a clock that moved. Anything further below zero is.
  */
 internal const val CLOCK_ROUNDING_TOLERANCE_MS = 2_000L
 
 /**
+ * The server read runs while the book's item lock is held, and play, stop and
+ * heartbeat saves for that book wait on it. A read that takes longer counts
+ * as no answer.
+ */
+internal val QUEUED_PROGRESS_READ_TIMEOUT: Duration = 10.seconds
+
+/**
  * Decide what a queued row does against what the server holds. Never
  * overwrite newer progress another device made, and never lose progress made
- * here. The two acts are ordered by age, each measured on its own clock (the
- * server's age from the server's Date header, the row's age from the phone's
- * clock), so a wrong wall clock on either side cancels out. Anything too close
- * to call keeps the server's spot.
+ * here. The server's spot stands only on evidence that its update is later
+ * than the row by more than [QUEUED_PROGRESS_ORDER_MARGIN_MS]. Everything else
+ * pushes, because a lone phone is the common case and its queued row is its
+ * own latest act. The two acts are ordered by age, each measured on its own
+ * clock (the server's age from the server's Date header, the row's age from
+ * the phone's clock), so a wrong wall clock on either side cancels out.
  */
 internal fun decideQueuedProgress(
     row: QueuedProgressFacts,
@@ -807,28 +828,30 @@ internal fun decideQueuedProgress(
 
     val serverLastUpdate = found.progress.lastUpdate
     val rowTimestamp = row.timestampMs
-    if (serverLastUpdate == null || rowTimestamp == null) return QueuedProgressDecision.SERVER_STANDS
+    if (serverLastUpdate == null || rowTimestamp == null) return QueuedProgressDecision.PUSH
 
-    val rowIsLater = when (val serverNow = found.serverNowMs) {
-        // No server clock: the row's own time meets the server's lastUpdate.
-        null -> rowTimestamp >= serverLastUpdate + QUEUED_PROGRESS_ORDER_MARGIN_MS
+    val serverIsLater = when (val serverNow = found.serverNowMs) {
+        // No server clock: the server's lastUpdate meets the row's own time.
+        null -> serverLastUpdate - rowTimestamp > QUEUED_PROGRESS_ORDER_MARGIN_MS
         else -> {
             val serverAge = serverNow - serverLastUpdate
             val ourAge = phoneNowMs - rowTimestamp
+            // A clearly negative age means a clock moved. That is no evidence.
             if (serverAge < -CLOCK_ROUNDING_TOLERANCE_MS || ourAge < -CLOCK_ROUNDING_TOLERANCE_MS) {
-                return QueuedProgressDecision.SERVER_STANDS
+                return QueuedProgressDecision.PUSH
             }
-            ourAge.coerceAtLeast(0) + QUEUED_PROGRESS_ORDER_MARGIN_MS <= serverAge.coerceAtLeast(0)
+            ourAge.coerceAtLeast(0) - serverAge.coerceAtLeast(0) > QUEUED_PROGRESS_ORDER_MARGIN_MS
         }
     }
-    return if (rowIsLater) QueuedProgressDecision.PUSH else QueuedProgressDecision.SERVER_STANDS
+    return if (serverIsLater) QueuedProgressDecision.SERVER_STANDS else QueuedProgressDecision.PUSH
 }
 
 /**
  * One book's queued progress meets the server before it is sent. Returns
- * whether the book's queue is settled. A server that cannot be asked keeps
- * the queue for the next flush. [acknowledge] clears the queue, and
- * [adoptServerProgress] clears it and keeps the server's spot.
+ * whether the book's queue is settled. A server that cannot be asked, or does
+ * not answer within [readTimeout], keeps the queue for the next flush.
+ * [acknowledge] clears the queue, and [adoptServerProgress] clears it and
+ * keeps the server's spot.
  */
 internal suspend fun settleQueuedProgress(
     row: QueuedProgressFacts,
@@ -837,12 +860,18 @@ internal suspend fun settleQueuedProgress(
     push: suspend () -> Boolean,
     acknowledge: suspend () -> Unit,
     adoptServerProgress: suspend (UserProgress) -> Unit,
+    readTimeout: Duration = QUEUED_PROGRESS_READ_TIMEOUT,
 ): Boolean {
-    val server = when (val read = readServer()) {
+    // Taken before asking. The server stamps its Date when it answers, so a
+    // later reading would count the response time as our age and tilt the
+    // order toward the server.
+    val askedAtMs = phoneNowMs()
+    val read = withTimeoutOrNull(readTimeout) { readServer() } ?: ServerProgressRead.Unavailable
+    val server = when (read) {
         ServerProgressRead.Unavailable -> return false
         is ServerProgressRead.Answered -> read
     }
-    return when (decideQueuedProgress(row, server, phoneNowMs())) {
+    return when (decideQueuedProgress(row, server, askedAtMs)) {
         QueuedProgressDecision.PUSH -> {
             val pushed = push()
             if (pushed) acknowledge()
@@ -858,4 +887,35 @@ internal suspend fun settleQueuedProgress(
             true
         }
     }
+}
+
+/**
+ * The time a promoted legacy queue was saved: the newest legacy row's own
+ * timestamp, or the durable row's when that is later. Stamping it with now
+ * would make an old offline row look brand new and win over another device's
+ * later spot. With nothing parseable it falls back to [nowMs], which delivers
+ * the row as before.
+ */
+internal fun legacyPromotionTimestampMs(
+    rows: List<PendingProgressEntity>,
+    durableProgress: PlaybackProgressEntity?,
+    nowMs: Long,
+): Long {
+    val rowMs = rows.maxByOrNull { it.id }?.timestamp?.toEpochMillis()
+    val durableMs = durableProgress?.updatedAt?.toEpochMillis()
+    return listOfNotNull(rowMs, durableMs).maxOrNull() ?: nowMs
+}
+
+/**
+ * The server's spot stands against a book's queue. The queue goes either
+ * way. The spot lands locally only when nothing plays or stops the book,
+ * because otherwise the player owns its progress.
+ */
+internal suspend fun applyServerSpot(
+    itemIsInactive: Boolean,
+    deleteQueuedRows: suspend () -> Unit,
+    keepServerSpotLocally: suspend () -> Unit,
+) {
+    deleteQueuedRows()
+    if (itemIsInactive) keepServerSpotLocally()
 }

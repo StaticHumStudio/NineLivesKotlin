@@ -1,16 +1,21 @@
 package com.ninelivesaudio.app.data.repository
 
+import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
+import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.remote.ServerProgressRead
 import com.ninelivesaudio.app.data.repository.QueuedProgressDecision.ALREADY_ON_SERVER
 import com.ninelivesaudio.app.data.repository.QueuedProgressDecision.PUSH
 import com.ninelivesaudio.app.data.repository.QueuedProgressDecision.SERVER_STANDS
 import com.ninelivesaudio.app.domain.model.UserProgress
+import com.ninelivesaudio.app.domain.util.toEpochMillis
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -99,34 +104,48 @@ class QueuedProgressConflictTest {
         // No progress on the account yet.
         assertEquals(PUSH, decide(issueRow, ServerProgressRead.Missing(serverNowMs = null), evening + 14 * hour))
 
-        // Inside the margin is too close to call. At the margin it pushes.
-        val server = found(100.0, lastUpdate = evening, serverNow = evening + minute)
-        assertEquals(SERVER_STANDS, decide(row(120.0, evening + 20_000), server, evening + minute))
-        assertEquals(PUSH, decide(row(130.0, evening + 30_000), server, evening + minute))
+        // The server stands only when it is later than the row by more than
+        // the margin. Exactly the margin is not evidence enough.
+        assertEquals(PUSH, decide(row(120.0, evening), found(100.0, evening + 30_000, evening + minute), evening + minute))
+        assertEquals(
+            SERVER_STANDS,
+            decide(row(120.0, evening), found(100.0, evening + 30_001, evening + minute), evening + minute),
+        )
+        // A finishing save stranded just before another device's update still
+        // lands, so the book is not turned back into an unfinished one.
+        assertEquals(
+            PUSH,
+            decide(
+                row(36_000.0, evening, finished = true),
+                found(35_990.0, lastUpdate = evening + 20_000, serverNow = evening + minute),
+                evening + minute,
+            ),
+        )
 
-        // No Date header: the row's own time meets the server's lastUpdate.
+        // No Date header: the server's lastUpdate meets the row's own time.
         assertEquals(PUSH, decide(row(12_831.0, evening + 2 * hour), found(5_631.0, evening, null), evening + 3 * hour))
         assertEquals(SERVER_STANDS, decide(issueRow, found(13_384.0, evening + 3 * hour, null), evening + 14 * hour))
-        assertEquals(SERVER_STANDS, decide(row(120.0, evening + 20_000), found(100.0, evening, null), evening + minute))
+        assertEquals(PUSH, decide(row(120.0, evening), found(100.0, evening + 20_000, null), evening + minute))
+        assertEquals(PUSH, decide(row(120.0, evening), found(100.0, evening + 30_000, null), evening + minute))
+        assertEquals(SERVER_STANDS, decide(row(120.0, evening), found(100.0, evening + 30_001, null), evening + minute))
 
-        // A Date header rounded down to the second reads a hair before lastUpdate.
+        // A Date header rounded down to the second reads a hair before
+        // lastUpdate. That age is zero, and the hour old row is still older.
         assertEquals(SERVER_STANDS, decide(row(120.0, evening - hour), found(100.0, evening, evening - 1_500), evening))
-        // A row stamped ten minutes in the phone's future: the phone clock moved
-        // back, so the order cannot be told.
+        // A server lastUpdate clearly after the server's own now is no
+        // evidence, so the row goes out.
         assertEquals(
-            SERVER_STANDS,
-            decide(row(12_831.0, evening + 3 * hour + 10 * minute), offlineServer, evening + 3 * hour),
+            PUSH,
+            decide(row(12_831.0, evening + 3 * hour), found(5_631.0, evening + 4 * hour, evening + 3 * hour), evening + 3 * hour),
         )
-        // A server lastUpdate clearly after the server's own now.
-        assertEquals(
-            SERVER_STANDS,
-            decide(offlineRow, found(5_631.0, evening + 4 * hour, evening + 3 * hour), evening + 3 * hour),
-        )
+        // A row stamped ten minutes in the phone's future: the phone clock
+        // moved back, which is no evidence either.
+        assertEquals(PUSH, decide(row(5_631.0, evening + 14 * hour + 10 * minute), issueServer, evening + 14 * hour))
 
         // Nothing to order by.
-        assertEquals(SERVER_STANDS, decide(offlineRow, found(5_631.0, null, evening + 3 * hour), evening + 3 * hour))
-        assertEquals(SERVER_STANDS, decide(row(12_831.0, null), offlineServer, evening + 3 * hour))
-        assertEquals(SERVER_STANDS, decide(row(12_831.0, null), found(5_631.0, evening, null), evening + 3 * hour))
+        assertEquals(PUSH, decide(offlineRow, found(5_631.0, null, evening + 3 * hour), evening + 3 * hour))
+        assertEquals(PUSH, decide(row(12_831.0, null), offlineServer, evening + 3 * hour))
+        assertEquals(PUSH, decide(row(12_831.0, null), found(5_631.0, evening, null), evening + 3 * hour))
     }
 
     @Test
@@ -205,5 +224,108 @@ class QueuedProgressConflictTest {
         assertTrue(flush.settle(row(5_631.0, evening), evening + 14 * hour))
         assertEquals(0, flush.pushes)
         assertEquals(server.progress, flush.adopted)
+    }
+
+    @Test
+    fun `phone time is taken before the server answers`() = runBlocking {
+        // The server's Date is stamped when it answers. A slow answer must not
+        // count as age on our side.
+        var phoneClock = evening + 30_000
+        var pushes = 0
+        val settled = settleQueuedProgress(
+            row = row(120.0, evening),
+            readServer = {
+                phoneClock += 40_000
+                found(100.0, lastUpdate = evening + 60_000, serverNow = evening + 70_000)
+            },
+            phoneNowMs = { phoneClock },
+            push = {
+                pushes++
+                true
+            },
+            acknowledge = {},
+            adoptServerProgress = {},
+        )
+
+        assertTrue(settled)
+        assertEquals(1, pushes)
+    }
+
+    @Test
+    fun `a server read that never answers keeps the queue`() = runBlocking {
+        var pushes = 0
+        val settled = settleQueuedProgress(
+            row = row(120.0, evening),
+            readServer = { awaitCancellation() },
+            phoneNowMs = { evening },
+            push = {
+                pushes++
+                true
+            },
+            acknowledge = {},
+            adoptServerProgress = {},
+            readTimeout = 50.milliseconds,
+        )
+
+        assertFalse(settled)
+        assertEquals(0, pushes)
+        assertEquals(10.seconds, QUEUED_PROGRESS_READ_TIMEOUT)
+    }
+
+    @Test
+    fun `a promoted legacy row keeps the time it was saved`() {
+        val legacy = PendingProgressEntity(
+            id = 7,
+            itemId = "item-1",
+            currentTime = 5_631.0,
+            isFinished = 0,
+            timestamp = "2026-11-14T22:00:00Z",
+            duration = 36_000.0,
+            isAtomic = 0,
+        )
+        val savedAt = "2026-11-14T22:00:00Z".toEpochMillis()!!
+        val muchLater = savedAt + 14 * hour
+
+        assertEquals(savedAt, legacyPromotionTimestampMs(listOf(legacy), durableProgress = null, nowMs = muchLater))
+        // A later durable write is the newer local act.
+        val durable = PlaybackProgressEntity("item-1", 5_640.0, 0, "2026-11-14T22:05:00Z")
+        assertEquals(
+            savedAt + 5 * minute,
+            legacyPromotionTimestampMs(listOf(legacy), durable, nowMs = muchLater),
+        )
+        // Nothing parseable: now, which delivers the row as master does.
+        assertEquals(
+            muchLater,
+            legacyPromotionTimestampMs(listOf(legacy.copy(timestamp = "garbage")), durable.copy(updatedAt = null), muchLater),
+        )
+
+        // The issue's shape through a legacy row: another device moved the book
+        // after the row was saved, so the server's spot stands.
+        val promoted = QueuedProgressFacts(
+            positionSeconds = 5_631.0,
+            isFinished = false,
+            durationSeconds = 36_000.0,
+            timestampMs = legacyPromotionTimestampMs(listOf(legacy), null, muchLater),
+        )
+        assertEquals(
+            SERVER_STANDS,
+            decideQueuedProgress(promoted, found(13_384.0, savedAt + 3 * hour, savedAt + 14 * hour), muchLater),
+        )
+    }
+
+    @Test
+    fun `server spot lands locally only on a book nothing is playing`() = runBlocking {
+        for (inactive in listOf(true, false)) {
+            var rowsDeleted = false
+            var keptLocally = false
+            applyServerSpot(
+                itemIsInactive = inactive,
+                deleteQueuedRows = { rowsDeleted = true },
+                keepServerSpotLocally = { keptLocally = true },
+            )
+
+            assertTrue("inactive $inactive", rowsDeleted)
+            assertEquals("inactive $inactive", inactive, keptLocally)
+        }
     }
 }

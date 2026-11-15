@@ -14,6 +14,7 @@ import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.data.repository.itemCountResult
+import com.ninelivesaudio.app.data.repository.serverProgressPositionSeconds
 import com.ninelivesaudio.app.data.repository.wroteBooks
 import com.ninelivesaudio.app.service.download.DownloadedCoverRefresher
 import com.ninelivesaudio.app.data.repository.LibraryRefreshOutcome
@@ -22,6 +23,7 @@ import com.ninelivesaudio.app.domain.model.AppMode
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.LastSyncRecord
 import com.ninelivesaudio.app.domain.model.SyncResult
+import com.ninelivesaudio.app.domain.model.UserProgress
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -461,8 +463,10 @@ class SyncManager @Inject constructor(
 
             for (progress in serverProgressList) {
                 // Active playback and queued local writes own progress. In
-                // particular, never compare server and phone wall clocks to
-                // decide whether an unsent offline write survives.
+                // particular, never compare server and phone wall clocks here
+                // to decide whether an unsent offline write survives. The
+                // queued write meets the server in the flush instead, which
+                // orders the two by age, each on its own clock.
                 try {
                     val itemId = progress.libraryItemId
                     var book = books[itemId]
@@ -480,15 +484,7 @@ class SyncManager @Inject constructor(
                         }
                     }
 
-                    val currentTimeSecs = progress.currentTime.toDouble(kotlin.time.DurationUnit.SECONDS)
-                    val positionSeconds = if (currentTimeSecs > 0) {
-                        currentTimeSecs
-                    } else {
-                        // Estimate from progress fraction × duration
-                        if (book != null && book.durationSeconds > 0) {
-                            progress.progress * book.durationSeconds
-                        } else 0.0
-                    }
+                    val positionSeconds = serverProgressPositionSeconds(progress, book?.durationSeconds)
 
                     val updatedAtStr = progress.lastUpdate?.toIso8601()
                     if (serverProgressIsAlreadyLocal(
@@ -503,7 +499,9 @@ class SyncManager @Inject constructor(
 
                     // The repository checks the queue while holding the same
                     // per-book ownership used by enqueue and flush. A pending
-                    // local write wins regardless of server clock skew.
+                    // local write wins this import regardless of server clock
+                    // skew. Whether it reaches the server is decided when the
+                    // flush reads the server first (see decideQueuedProgress).
                     val bookKnown = book != null
                     progressRepository.importServerProgressIfNoPending(
                         PlaybackProgressEntity(
@@ -514,14 +512,7 @@ class SyncManager @Inject constructor(
                         ),
                         importToken = importToken,
                         onImported = {
-                            if (bookKnown) {
-                                audioBookDao.updateProgress(
-                                    id = itemId,
-                                    currentTimeSeconds = positionSeconds,
-                                    progress = progress.progress,
-                                    isFinished = if (progress.isFinished) 1 else 0,
-                                )
-                            }
+                            if (bookKnown) writeServerProgressToShelf(itemId, positionSeconds, progress)
                         },
                     )
                 } catch (e: CancellationException) {
@@ -719,11 +710,27 @@ class SyncManager @Inject constructor(
         try {
             val count = progressRepository.getPendingProgressCount()
             if (count > 0) {
-                progressRepository.flushPendingProgress()
+                progressRepository.flushPendingProgress(
+                    onServerProgressAdopted = ::writeServerProgressToShelf,
+                )
             }
         } catch (_: Exception) {
             // Will try again on next reconnect
         }
+    }
+
+    /** Only the shelf's progress columns, set to a spot the server holds. */
+    private suspend fun writeServerProgressToShelf(
+        itemId: String,
+        positionSeconds: Double,
+        progress: UserProgress,
+    ) {
+        audioBookDao.updateProgress(
+            id = itemId,
+            currentTimeSeconds = positionSeconds,
+            progress = progress.progress,
+            isFinished = if (progress.isFinished) 1 else 0,
+        )
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────

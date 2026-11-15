@@ -7,6 +7,7 @@ import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.ServerProgressRead
 import com.ninelivesaudio.app.domain.model.UserProgress
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.domain.util.toIso8601
@@ -54,12 +55,18 @@ internal class PendingProgressQueueOwner {
 
     suspend fun <T> withItemLockIfInactive(itemId: String, block: suspend () -> T): T? =
         itemMutex(itemId).withLock {
-            if (
-                synchronized(ownerLock) {
-                    activeItemId != itemId && (terminalImportLeases[itemId] ?: 0) == 0
-                }
-            ) block() else null
+            if (itemIsInactiveLocked(itemId)) block() else null
         }
+
+    /**
+     * Whether nothing plays or stops [itemId] right now, so server progress
+     * may land on it. Call it while holding the book's item lock, which a
+     * book needs to become active, so the answer cannot flip to active
+     * underneath the caller.
+     */
+    fun itemIsInactiveLocked(itemId: String): Boolean = synchronized(ownerLock) {
+        activeItemId != itemId && (terminalImportLeases[itemId] ?: 0) == 0
+    }
 
     suspend fun <T> withTerminalImportLease(itemId: String, block: suspend () -> T): T {
         synchronized(ownerLock) {
@@ -477,8 +484,49 @@ class ProgressRepository @Inject constructor(
         apiService.syncSessionProgress(sessionId, currentTime, duration, timeListened)
     }
 
-    /** Flush all pending progress updates to the server. */
-    suspend fun flushPendingProgress(): Boolean {
+    /**
+     * Drop a book's queue in favor of the server's newer spot, and keep that
+     * spot locally unless the book is playing or stopping, whose progress the
+     * player owns. The caller holds the book's item lock.
+     */
+    private suspend fun adoptServerProgressLocked(
+        itemId: String,
+        progress: UserProgress,
+        durationSeconds: Double,
+        onAdopted: suspend (itemId: String, positionSeconds: Double, progress: UserProgress) -> Unit,
+    ) {
+        val positionSeconds = serverProgressPositionSeconds(progress, durationSeconds)
+        withContext(NonCancellable) {
+            pendingProgressQueueOwner.withLock {
+                database.withTransaction {
+                    pendingProgressDao.deleteByItemId(itemId)
+                    if (pendingProgressQueueOwner.itemIsInactiveLocked(itemId)) {
+                        playbackProgressDao.upsert(
+                            PlaybackProgressEntity(
+                                audioBookId = itemId,
+                                positionSeconds = positionSeconds,
+                                isFinished = if (progress.isFinished) 1 else 0,
+                                updatedAt = progress.lastUpdate?.toIso8601(),
+                            )
+                        )
+                        onAdopted(itemId, positionSeconds, progress)
+                    }
+                }
+                pendingProgressQueueOwner.forgetItemRows(itemId)
+            }
+            pendingProgressQueueOwner.localWriteOccurred(itemId)
+        }
+    }
+
+    /**
+     * Flush all pending progress updates to the server. Each book's newest
+     * row meets the server's progress first (see [decideQueuedProgress]).
+     * When the server's spot stands, [onServerProgressAdopted] runs inside
+     * the same transaction as the local write, to update the shelf.
+     */
+    suspend fun flushPendingProgress(
+        onServerProgressAdopted: suspend (itemId: String, positionSeconds: Double, progress: UserProgress) -> Unit,
+    ): Boolean {
         val itemIds = pendingProgressQueueOwner.withLock {
             pendingProgressDao.getAll().map { it.itemId }.distinct()
         }
@@ -548,13 +596,7 @@ class ProgressRepository @Inject constructor(
 
                 val currentRows = rows.filterNot { it.id in staleRowIds }
                 val push = latestPushArgs(currentRows) ?: return@withItemLock
-                val success = apiService.updateProgress(
-                    itemId,
-                    push.currentTime,
-                    push.isFinished,
-                    push.duration,
-                )
-                if (success) {
+                val acknowledge: suspend () -> Unit = {
                     withContext(NonCancellable) {
                         pendingProgressQueueOwner.withLock {
                             pendingProgressDao.deleteByItemId(itemId)
@@ -562,9 +604,37 @@ class ProgressRepository @Inject constructor(
                         }
                         pendingProgressQueueOwner.localWriteOccurred(itemId)
                     }
-                } else {
-                    allSuccess = false
                 }
+                // The row may be hours old. Another device may have moved the
+                // book since, so the server is read first (issue #118).
+                val settled = settleQueuedProgress(
+                    row = QueuedProgressFacts(
+                        positionSeconds = push.currentTime,
+                        isFinished = push.isFinished,
+                        durationSeconds = push.duration,
+                        timestampMs = currentRows.maxBy { it.id }.timestamp.toEpochMillis(),
+                    ),
+                    readServer = { apiService.readUserProgress(itemId) },
+                    phoneNowMs = System::currentTimeMillis,
+                    push = {
+                        apiService.updateProgress(
+                            itemId,
+                            push.currentTime,
+                            push.isFinished,
+                            push.duration,
+                        )
+                    },
+                    acknowledge = acknowledge,
+                    adoptServerProgress = { progress ->
+                        adoptServerProgressLocked(
+                            itemId = itemId,
+                            progress = progress,
+                            durationSeconds = push.duration,
+                            onAdopted = onServerProgressAdopted,
+                        )
+                    },
+                )
+                if (!settled) allSuccess = false
             }
         }
 
@@ -634,6 +704,12 @@ internal fun latestPushArgs(rows: List<PendingProgressEntity>): PendingPushArgs?
 internal fun progressCanBeDelivered(isFinished: Boolean, duration: Double): Boolean =
     isFinished || duration > 0.0
 
+/**
+ * A server import never replaces a book with a queued local write, whatever
+ * the clocks say. The queued write meets the server's progress in the flush
+ * instead, where [decideQueuedProgress] orders the two by age, each measured
+ * on its own clock.
+ */
 internal fun serverProgressMayReplaceLocal(hasPendingProgress: Boolean): Boolean =
     !hasPendingProgress
 
@@ -657,4 +733,129 @@ internal fun queuedRowsAreSuperseded(
     return latest.isAtomic == 1 &&
         (durable.positionSeconds != latest.currentTime ||
             durable.isFinished != latest.isFinished)
+}
+
+/**
+ * Server progress as a position in seconds. A server that reports 0 for
+ * currentTime may still carry a progress fraction, so the position falls back
+ * to that fraction of the book's duration when the duration is known.
+ */
+internal fun serverProgressPositionSeconds(progress: UserProgress, durationSeconds: Double?): Double {
+    val currentTimeSeconds = progress.currentTime.toDouble(kotlin.time.DurationUnit.SECONDS)
+    return when {
+        currentTimeSeconds > 0 -> currentTimeSeconds
+        durationSeconds != null && durationSeconds > 0 -> progress.progress * durationSeconds
+        else -> 0.0
+    }
+}
+
+/** The newest queued row for one book, the one a flush would send. */
+internal data class QueuedProgressFacts(
+    val positionSeconds: Double,
+    val isFinished: Boolean,
+    val durationSeconds: Double,
+    /** When the phone saved the row, on the phone's clock. */
+    val timestampMs: Long?,
+)
+
+internal enum class QueuedProgressDecision {
+    /** The row is the newer act. Send it. */
+    PUSH,
+
+    /** The server already holds the row's spot. Nothing to send. */
+    ALREADY_ON_SERVER,
+
+    /** The server's spot is newer, or the order cannot be told. Keep it. */
+    SERVER_STANDS,
+}
+
+/** A queued row must be this much later than the server's last update to win. */
+internal const val QUEUED_PROGRESS_ORDER_MARGIN_MS = 30_000L
+
+/** Two positions this close are the same spot. */
+internal const val SAME_SPOT_TOLERANCE_SECONDS = 0.05
+
+/**
+ * The Date header counts whole seconds, so a server age a hair below zero is
+ * rounding, not a clock that moved. Anything further below zero is.
+ */
+internal const val CLOCK_ROUNDING_TOLERANCE_MS = 2_000L
+
+/**
+ * Decide what a queued row does against what the server holds. Never
+ * overwrite newer progress another device made, and never lose progress made
+ * here. The two acts are ordered by age, each measured on its own clock (the
+ * server's age from the server's Date header, the row's age from the phone's
+ * clock), so a wrong wall clock on either side cancels out. Anything too close
+ * to call keeps the server's spot.
+ */
+internal fun decideQueuedProgress(
+    row: QueuedProgressFacts,
+    server: ServerProgressRead.Answered,
+    phoneNowMs: Long,
+): QueuedProgressDecision {
+    val found = when (server) {
+        is ServerProgressRead.Missing -> return QueuedProgressDecision.PUSH
+        is ServerProgressRead.Found -> server
+    }
+    val serverPosition = serverProgressPositionSeconds(found.progress, row.durationSeconds)
+    if (found.progress.isFinished == row.isFinished &&
+        kotlin.math.abs(serverPosition - row.positionSeconds) <= SAME_SPOT_TOLERANCE_SECONDS
+    ) {
+        return QueuedProgressDecision.ALREADY_ON_SERVER
+    }
+
+    val serverLastUpdate = found.progress.lastUpdate
+    val rowTimestamp = row.timestampMs
+    if (serverLastUpdate == null || rowTimestamp == null) return QueuedProgressDecision.SERVER_STANDS
+
+    val rowIsLater = when (val serverNow = found.serverNowMs) {
+        // No server clock: the row's own time meets the server's lastUpdate.
+        null -> rowTimestamp >= serverLastUpdate + QUEUED_PROGRESS_ORDER_MARGIN_MS
+        else -> {
+            val serverAge = serverNow - serverLastUpdate
+            val ourAge = phoneNowMs - rowTimestamp
+            if (serverAge < -CLOCK_ROUNDING_TOLERANCE_MS || ourAge < -CLOCK_ROUNDING_TOLERANCE_MS) {
+                return QueuedProgressDecision.SERVER_STANDS
+            }
+            ourAge.coerceAtLeast(0) + QUEUED_PROGRESS_ORDER_MARGIN_MS <= serverAge.coerceAtLeast(0)
+        }
+    }
+    return if (rowIsLater) QueuedProgressDecision.PUSH else QueuedProgressDecision.SERVER_STANDS
+}
+
+/**
+ * One book's queued progress meets the server before it is sent. Returns
+ * whether the book's queue is settled. A server that cannot be asked keeps
+ * the queue for the next flush. [acknowledge] clears the queue, and
+ * [adoptServerProgress] clears it and keeps the server's spot.
+ */
+internal suspend fun settleQueuedProgress(
+    row: QueuedProgressFacts,
+    readServer: suspend () -> ServerProgressRead,
+    phoneNowMs: () -> Long,
+    push: suspend () -> Boolean,
+    acknowledge: suspend () -> Unit,
+    adoptServerProgress: suspend (UserProgress) -> Unit,
+): Boolean {
+    val server = when (val read = readServer()) {
+        ServerProgressRead.Unavailable -> return false
+        is ServerProgressRead.Answered -> read
+    }
+    return when (decideQueuedProgress(row, server, phoneNowMs())) {
+        QueuedProgressDecision.PUSH -> {
+            val pushed = push()
+            if (pushed) acknowledge()
+            pushed
+        }
+        QueuedProgressDecision.ALREADY_ON_SERVER -> {
+            acknowledge()
+            true
+        }
+        QueuedProgressDecision.SERVER_STANDS -> {
+            // Only a Found answer can stand against the row.
+            adoptServerProgress((server as ServerProgressRead.Found).progress)
+            true
+        }
+    }
 }

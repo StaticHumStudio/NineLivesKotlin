@@ -35,6 +35,27 @@ enum class TokenValidationResult { VALID, INVALID, UNREACHABLE }
 enum class CredentialLoginResult { SUCCESS, REJECTED, UNREACHABLE }
 
 /**
+ * One book's progress as the server holds it, read just before a queued
+ * offline row is sent. [Missing] (the account has no progress for the book)
+ * and [Unavailable] (no answer) must stay apart: only an answer may decide
+ * the fate of a queued row. [Answered] carries the server's own clock from
+ * the response's Date header, null when the header is absent.
+ */
+sealed interface ServerProgressRead {
+    sealed interface Answered : ServerProgressRead {
+        val serverNowMs: Long?
+    }
+
+    data class Found(val progress: UserProgress, override val serverNowMs: Long?) : Answered
+
+    /** HTTP 404. */
+    data class Missing(override val serverNowMs: Long?) : Answered
+
+    /** Any other failure, including an exception. */
+    data object Unavailable : ServerProgressRead
+}
+
+/**
  * Classifies a non-2xx login HTTP status. 4xx is the server rejecting the
  * credentials (auth-shaped codes like 401/403 included); anything else (5xx,
  * unexpected codes) is a transient inability to reach a verdict.
@@ -946,6 +967,36 @@ class ApiService @Inject constructor(
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * Read one book's progress, telling "no progress" apart from "could not
+     * ask". Unlike [getUserProgress], which returns null for both.
+     */
+    suspend fun readUserProgress(itemId: String): ServerProgressRead = withContext(Dispatchers.IO) {
+        try {
+            val response = api.getUserProgress(itemId)
+            val serverNowMs = response.headers().getDate("Date")?.time
+            val body = response.body()
+            when {
+                response.code() == 404 -> ServerProgressRead.Missing(serverNowMs)
+                !response.isSuccessful || body == null -> ServerProgressRead.Unavailable
+                else -> ServerProgressRead.Found(
+                    progress = UserProgress(
+                        libraryItemId = body.libraryItemId,
+                        currentTime = body.currentTime.seconds,
+                        progress = normalizeProgress(body.progress),
+                        isFinished = body.isFinished,
+                        lastUpdate = if (body.lastUpdate > 0) body.lastUpdate else null,
+                    ),
+                    serverNowMs = serverNowMs,
+                )
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            ServerProgressRead.Unavailable
         }
     }
 

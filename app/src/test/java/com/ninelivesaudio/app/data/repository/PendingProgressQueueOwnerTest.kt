@@ -326,4 +326,18 @@ class PendingProgressQueueOwnerTest {
         consumer.join()
         assertTrue(consumerEntered.isCompleted)
     }
+
+    @Test
+    fun `flush holding a book lock sees the same inactive notion as imports`() = runBlocking {
+        val owner = PendingProgressQueueOwner()
+        owner.setActiveItem("book-a")
+
+        owner.withItemLock("book-a") { assertFalse(owner.itemIsInactiveLocked("book-a")) }
+        owner.withItemLock("book-b") {
+            assertTrue(owner.itemIsInactiveLocked("book-b"))
+            owner.withTerminalImportLease("book-b") {
+                assertFalse(owner.itemIsInactiveLocked("book-b"))
+            }
+        }
+    }
 }

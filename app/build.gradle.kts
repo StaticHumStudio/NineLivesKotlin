@@ -25,6 +25,14 @@ android {
         versionName = "2.1.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // The one switch for the home screen widgets. Off for 2.2.0: the
+        // launcher's picker does not offer them, their screens and receivers
+        // are disabled, the refresher never starts and Unlock does not sell
+        // them. Flip to true to bring them back.
+        val widgetsEnabled = false
+        buildConfigField("boolean", "WIDGETS_ENABLED", widgetsEnabled.toString())
+        manifestPlaceholders["widgetsEnabled"] = widgetsEnabled.toString()
     }
 
     signingConfigs {

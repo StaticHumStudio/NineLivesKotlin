@@ -48,9 +48,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Every widget component below is switched by widgetsEnabled in app/build.gradle.kts. -->
         <!-- Widget Play taps land here and decide without showing a screen. -->
         <activity
             android:name=".widget.WidgetActionActivity"
+            android:enabled="${widgetsEnabled}"
             android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"
@@ -60,6 +62,7 @@
         <!-- The Binder home screen widget: provider, its stack's data, its setup screen. -->
         <receiver
             android:name=".widget.binder.BinderWidgetProvider"
+            android:enabled="${widgetsEnabled}"
             android:exported="false"
             android:label="@string/widget_binder_label">
             <intent-filter>
@@ -72,11 +75,13 @@
 
         <service
             android:name=".widget.binder.BinderRemoteViewsService"
+            android:enabled="${widgetsEnabled}"
             android:exported="false"
             android:permission="android.permission.BIND_REMOTEVIEWS" />
 
         <activity
             android:name=".widget.binder.BinderConfigActivity"
+            android:enabled="${widgetsEnabled}"
             android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@style/Theme.NineLivesAudio">
@@ -88,6 +93,7 @@
         <!-- The Nine Lives large home screen widget (Glance): rank, current book with play and pause, next Lives. -->
         <receiver
             android:name=".widget.home.NineLivesHomeWidgetReceiver"
+            android:enabled="${widgetsEnabled}"
             android:exported="false"
             android:label="@string/widget_home_label">
             <intent-filter>

@@ -595,6 +595,11 @@ class ProgressRepository @Inject constructor(
         apiService.syncSessionProgress(sessionId, currentTime, duration, timeListened)
     }
 
+    /**
+     * Sync an open session. When the server takes it, a queued spot equal to
+     * the one sent is confirmed and leaves the queue
+     * ([sessionSyncConfirmsQueuedSpot]).
+     */
     internal suspend fun syncSessionProgressIfCurrent(
         itemId: String,
         sessionId: String,
@@ -603,7 +608,35 @@ class ProgressRepository @Inject constructor(
         timeListened: Double = 0.0,
         isCurrent: () -> Boolean,
     ): Boolean? = pendingProgressQueueOwner.withItemLockIfCurrent(itemId, isCurrent) {
-        apiService.syncSessionProgress(sessionId, currentTime, duration, timeListened)
+        val synced = apiService.syncSessionProgress(sessionId, currentTime, duration, timeListened)
+        if (synced) {
+            val confirmed = pendingProgressQueueOwner.withLock {
+                sessionSyncConfirmsQueuedSpot(pendingProgressDao.getForItem(itemId), currentTime)
+            }
+            if (confirmed) acknowledgePendingProgressLocked(itemId)
+        }
+        synced
+    }
+
+    /**
+     * Save a server book's spot during playback and queue it in the same
+     * transaction, so listening the server has not confirmed survives a
+     * killed app. The open session's sync that follows clears the queue
+     * when the server takes it (#118).
+     */
+    suspend fun saveAndQueuePlaybackProgress(
+        itemId: String,
+        currentTime: Double,
+        duration: Double,
+        onPersisted: suspend () -> Unit = {},
+    ) = pendingProgressQueueOwner.withItemLock(itemId) {
+        persistProgressAndEnqueueLocked(
+            itemId = itemId,
+            currentTime = currentTime,
+            isFinished = false,
+            duration = duration,
+            onPersisted = onPersisted,
+        )
     }
 
     /**
@@ -664,8 +697,11 @@ class ProgressRepository @Inject constructor(
         }
 
         var durableProgress = playbackProgressDao.getByAudioBookId(itemId)
-        val legacySnapshot = legacyProgressSnapshot(rows, durableProgress)
-        if (legacySnapshot != null) {
+        // A legacy queue, or a saved spot later than the queued one (a stop
+        // or heartbeat that saved without queueing), goes out from the saved
+        // row. Unsynced listening is never dropped for being out of date.
+        val promoted = queuedSpotFromDurable(rows, durableProgress)
+        if (promoted != null) {
             // Keep the time the listening was saved. It is the time the
             // server orders this spot by against other devices.
             val timestamp = legacyPromotionTimestampMs(
@@ -678,15 +714,15 @@ class ProgressRepository @Inject constructor(
                     pendingProgressDao.saveProgressAndEnqueue(
                         progress = PlaybackProgressEntity(
                             audioBookId = itemId,
-                            positionSeconds = legacySnapshot.currentTime,
-                            isFinished = if (legacySnapshot.isFinished) 1 else 0,
+                            positionSeconds = promoted.currentTime,
+                            isFinished = if (promoted.isFinished) 1 else 0,
                             updatedAt = timestamp,
                         ),
                         pending = PendingProgressEntity(
                             itemId = itemId,
-                            currentTime = legacySnapshot.currentTime,
-                            isFinished = if (legacySnapshot.isFinished) 1 else 0,
-                            duration = legacySnapshot.duration,
+                            currentTime = promoted.currentTime,
+                            isFinished = if (promoted.isFinished) 1 else 0,
+                            duration = promoted.duration,
                             isAtomic = 1,
                             timestamp = timestamp,
                         ),
@@ -709,11 +745,6 @@ class ProgressRepository @Inject constructor(
                 }
                 pendingProgressQueueOwner.localWriteOccurred(itemId)
             }
-        }
-
-        if (queuedRowsAreSuperseded(rows, durableProgress)) {
-            acknowledgeRows()
-            rows = emptyList()
         }
 
         val staleRowIds = rows.filterNot { row ->
@@ -958,26 +989,48 @@ internal fun progressCanBeDelivered(isFinished: Boolean, duration: Double): Bool
 internal fun serverProgressMayReplaceLocal(hasPendingProgress: Boolean): Boolean =
     !hasPendingProgress
 
-/**
- * Atomic delivery writes the durable and queued state from the same values.
- * For rows marked as atomic, a content mismatch therefore proves a later
- * plain durable writer superseded the queue row. Legacy rows are first promoted
- * from their durable source of truth by [legacyProgressSnapshot], so this check
- * only decides the fate of rows with proven atomic provenance.
- */
 /** A push that has not answered within [timeout] counts as not delivered. */
 internal suspend fun pushWithin(timeout: Duration, push: suspend () -> Boolean): Boolean =
     withTimeoutOrNull(timeout) { push() } ?: false
 
-internal fun queuedRowsAreSuperseded(
+/**
+ * The spot a book's queue delivers when it is not the newest queued row.
+ * A legacy queue goes from the saved row ([legacyProgressSnapshot]). Atomic
+ * delivery writes the saved and queued state from the same values, so a
+ * saved row that differs from the newest queued one was written later by a
+ * writer that did not queue (a stop with no server session, or an older
+ * build's heartbeat). That later spot is the phone's newest and goes in the
+ * queued one's place. It is never a reason to drop the queue: a queued spot
+ * leaves only once the server has confirmed one at least as new (#118).
+ */
+internal fun queuedSpotFromDurable(
     rows: List<PendingProgressEntity>,
     durableProgress: PlaybackProgressEntity?,
+): LegacyProgressSnapshot? {
+    val latest = rows.maxByOrNull { it.id } ?: return null
+    if (latest.isAtomic != 1) return legacyProgressSnapshot(rows, durableProgress)
+    val durable = durableProgress ?: return null
+    if (durable.positionSeconds == latest.currentTime && durable.isFinished == latest.isFinished) return null
+    return LegacyProgressSnapshot(
+        currentTime = durable.positionSeconds,
+        isFinished = durable.isFinished == 1,
+        duration = latest.duration,
+    )
+}
+
+/**
+ * Whether an open session's sync of [sentPositionSeconds] confirms the
+ * book's queued spot. Audiobookshelf applies an open session's sync as it
+ * comes, so the server then holds that spot as of now. Only the very spot
+ * queued counts: a newer one queued while the sync was out, a finish (whose
+ * flag a sync never carries) or a legacy row stays for the flush.
+ */
+internal fun sessionSyncConfirmsQueuedSpot(
+    rows: List<PendingProgressEntity>,
+    sentPositionSeconds: Double,
 ): Boolean {
-    val durable = durableProgress ?: return false
     val latest = rows.maxByOrNull { it.id } ?: return false
-    return latest.isAtomic == 1 &&
-        (durable.positionSeconds != latest.currentTime ||
-            durable.isFinished != latest.isFinished)
+    return latest.isAtomic == 1 && latest.isFinished == 0 && latest.currentTime == sentPositionSeconds
 }
 
 /**
@@ -1118,7 +1171,8 @@ internal data class QueuedSpot(
 
 /**
  * What one delivery sends: [sessions] in the order the server applies them,
- * oldest first, and which of them carries the queued spot, if any.
+ * newest first (see [newestFirst]), and which of them carries the queued
+ * spot, if any.
  */
 internal data class OfflineDeliveryPlan(
     val sessions: List<OfflineListeningSessionEntity>,
@@ -1141,7 +1195,7 @@ internal fun offlineDelivery(
     stored: List<OfflineListeningSessionEntity>,
 ): OfflineDeliveryPlan {
     val unsynced = stored.filter { it.timeListening > it.syncedTimeListening }
-    if (queued == null) return OfflineDeliveryPlan(unsynced.sortedBy { it.updatedAt }, carrierIndex = null)
+    if (queued == null) return OfflineDeliveryPlan(unsynced.newestFirst(), carrierIndex = null)
 
     val position = if (queued.isFinished && queued.durationSeconds > 0.0) {
         maxOf(queued.positionSeconds, queued.durationSeconds)
@@ -1150,7 +1204,7 @@ internal fun offlineDelivery(
     }
     val newest = stored.maxByOrNull { it.updatedAt }
     if (newest != null && newest.updatedAt > queued.timestampMs) {
-        return OfflineDeliveryPlan(unsynced.sortedBy { it.updatedAt }, carrierIndex = null)
+        return OfflineDeliveryPlan(unsynced.newestFirst(), carrierIndex = null)
     }
     val carrier = if (newest != null && queued.timestampMs - newest.updatedAt <= OFFLINE_SESSION_GAP_MS) {
         newest.copy(
@@ -1169,9 +1223,20 @@ internal fun offlineDelivery(
             duration = queued.durationSeconds,
         )
     }
-    val sessions = (unsynced.filterNot { it.id == carrier.id } + carrier).sortedBy { it.updatedAt }
+    val sessions = (unsynced.filterNot { it.id == carrier.id } + carrier).newestFirst()
     return OfflineDeliveryPlan(sessions, carrierIndex = sessions.indexOfFirst { it.id == carrier.id })
 }
+
+/**
+ * The order one delivery sends a book's sessions in. Audiobookshelf stamps
+ * progress it creates or updates with the time it does so, not the
+ * session's, and then refuses any session dated earlier. Sent newest first,
+ * the newest spot is the one that can land (when nothing newer is on the
+ * server), and the older sessions are refused for progress but still saved
+ * for listening stats. Oldest first would leave the server on the oldest spot.
+ */
+private fun List<OfflineListeningSessionEntity>.newestFirst(): List<OfflineListeningSessionEntity> =
+    sortedByDescending { it.updatedAt }
 
 private val SESSION_DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
 private val SESSION_DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE", Locale.US)

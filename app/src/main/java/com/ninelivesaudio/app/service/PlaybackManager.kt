@@ -3583,25 +3583,37 @@ class PlaybackManager @Inject constructor(
             )
         }
 
-        // Save to PlaybackProgress table
+        // Save to PlaybackProgress table. A server book's spot is queued with
+        // it until the server confirms it (the session sync below does), so
+        // a killed app never loses listening the server has not got (#118).
         if (!lifetimeIsCurrent()) return
         try {
-            progressRepository.savePlaybackProgress(
-                audioBookId = book.id,
-                position = pos,
-                isFinished = false,
-                onPersisted = {
-                    if (
-                        !updateAudioBookProgress(
-                            bookId = book.id,
-                            positionSeconds = posSec,
-                            durationSeconds = durSec,
-                            isFinished = false,
-                            isCurrent = ::lifetimeIsCurrent,
-                        )
-                    ) throw StaleProgressWriteException()
-                },
-            )
+            val onPersisted: suspend () -> Unit = {
+                if (
+                    !updateAudioBookProgress(
+                        bookId = book.id,
+                        positionSeconds = posSec,
+                        durationSeconds = durSec,
+                        isFinished = false,
+                        isCurrent = ::lifetimeIsCurrent,
+                    )
+                ) throw StaleProgressWriteException()
+            }
+            if (book.isLocal || settingsManager.currentSettings.appMode != AppMode.AUDIOBOOKSHELF) {
+                progressRepository.savePlaybackProgress(
+                    audioBookId = book.id,
+                    position = pos,
+                    isFinished = false,
+                    onPersisted = onPersisted,
+                )
+            } else {
+                progressRepository.saveAndQueuePlaybackProgress(
+                    itemId = book.id,
+                    currentTime = posSec,
+                    duration = durSec,
+                    onPersisted = onPersisted,
+                )
+            }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}

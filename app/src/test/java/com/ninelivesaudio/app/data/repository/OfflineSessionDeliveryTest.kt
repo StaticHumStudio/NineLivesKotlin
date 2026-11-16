@@ -150,16 +150,36 @@ class OfflineSessionDeliveryTest {
     }
 
     @Test
-    fun `a queued spot long after the last session gets its own and both go oldest first`() {
+    fun `a queued spot long after the last session gets its own and both go newest first`() {
         val earlier = session("s1", updatedAt = evening, currentTime = 100.0, timeListening = 600.0)
 
         val plan = offlineDelivery("item-1", queued(400.0, evening + 2 * hour), listOf(earlier))
 
         assertEquals(2, plan.sessions.size)
-        assertEquals("s1", plan.sessions[0].id)
-        assertEquals(100.0, plan.sessions[0].currentTime, 0.0)
-        assertEquals(1, plan.carrierIndex)
-        assertEquals(400.0, plan.sessions[1].currentTime, 0.0)
+        assertEquals(0, plan.carrierIndex)
+        assertEquals(400.0, plan.sessions[0].currentTime, 0.0)
+        assertEquals("s1", plan.sessions[1].id)
+        assertEquals(100.0, plan.sessions[1].currentTime, 0.0)
+    }
+
+    @Test
+    fun `several sessions go newest first, so the newest spot is the one the server applies`() {
+        // Audiobookshelf stamps progress it creates or updates with the time
+        // it does so, then refuses any session dated earlier. Sent oldest
+        // first, the oldest spot would land and refuse the rest. Newest first,
+        // the newest lands and the older ones are kept for listening stats only.
+        val morning = session("s1", updatedAt = evening - 10 * hour, currentTime = 100.0, timeListening = 600.0)
+        val noon = session("s2", updatedAt = evening - 6 * hour, currentTime = 900.0, timeListening = 600.0)
+        val night = session("s3", updatedAt = evening, currentTime = 1_800.0, timeListening = 600.0)
+
+        val plan = offlineDelivery("item-1", queued = null, stored = listOf(noon, morning, night))
+        assertEquals(listOf("s3", "s2", "s1"), plan.sessions.map { it.id })
+
+        // With a queued spot riding on the latest session, it still goes first.
+        val carried = offlineDelivery("item-1", queued(1_830.0, evening + 30_000), listOf(morning, night, noon))
+        assertEquals(listOf("s3", "s2", "s1"), carried.sessions.map { it.id })
+        assertEquals(0, carried.carrierIndex)
+        assertEquals(1_830.0, carried.sessions[0].currentTime, 0.0)
     }
 
     @Test

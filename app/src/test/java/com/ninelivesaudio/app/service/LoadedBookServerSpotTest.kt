@@ -74,4 +74,26 @@ class LoadedBookServerSpotTest {
         assertFalse(resumeAsksServerFirst(true, serverMode = false, true, null, now))
         assertFalse(resumeAsksServerFirst(true, true, serverReachable = false, null, now))
     }
+
+    @Test
+    fun `the first play after a load that just checked the server does not check again`() {
+        // #118 review: a load clears the pause time, so the first Play asked
+        // the server a second time and waited up to 3 s (Android Auto feels it).
+        val now = 10_000_000L
+        assertFalse(resumeAsksServerFirst(true, true, true, pausedAtMs = null, nowMs = now, serverCheckedAtMs = now - 2_000))
+        // A check a while ago is no help.
+        assertTrue(
+            resumeAsksServerFirst(true, true, true, pausedAtMs = null, nowMs = now, serverCheckedAtMs = now - RESUME_SETTLE_AFTER_PAUSE_MS),
+        )
+        // Nor is one from before a long pause.
+        assertTrue(
+            resumeAsksServerFirst(
+                true, true, true,
+                pausedAtMs = now - 2 * RESUME_SETTLE_AFTER_PAUSE_MS,
+                nowMs = now,
+                serverCheckedAtMs = now - 3 * RESUME_SETTLE_AFTER_PAUSE_MS,
+            ),
+        )
+        assertTrue(resumeAsksServerFirst(true, true, true, pausedAtMs = null, nowMs = now, serverCheckedAtMs = null))
+    }
 }

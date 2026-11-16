@@ -476,6 +476,16 @@ internal fun loadStartPosition(server: Duration?, saved: Duration?, handed: Dura
     server ?: saved ?: handed
 
 /**
+ * An open server session's spot as the server's answer, for a load whose
+ * own check got none (#118 review). The server opened the session at its
+ * spot, which is the truth when the phone holds no listening the server
+ * lacks. With such listening the saved spot is the phone's newer one. A
+ * session at 0:00 says nothing (the server opens a finished book there).
+ */
+internal fun sessionLoadPosition(sessionTime: Duration?, hasUnsyncedListening: Boolean): Duration? =
+    sessionTime?.takeIf { it > Duration.ZERO && !hasUnsyncedListening }
+
+/**
  * A server answer as a load position: a finished book at its end (where it
  * parks), no progress at all at 0:00, and no answer as null.
  */
@@ -537,8 +547,10 @@ internal const val RESUME_SETTLE_AFTER_PAUSE_MS = 60_000L
 
 /**
  * Whether Play asks the server first. A remote book on a reachable server
- * does, unless it was paused only a moment ago in this run of the app. A
- * book restored at startup has no pause time, so it always asks.
+ * does, unless it was paused only a moment ago in this run of the app, or
+ * its spot was checked with the server a moment ago ([serverCheckedAtMs],
+ * the load's or an earlier Play's check). A book restored at startup has no
+ * pause time, so it asks unless its load just did.
  */
 internal fun resumeAsksServerFirst(
     isRemoteBook: Boolean,
@@ -546,9 +558,11 @@ internal fun resumeAsksServerFirst(
     serverReachable: Boolean,
     pausedAtMs: Long?,
     nowMs: Long,
+    serverCheckedAtMs: Long? = null,
 ): Boolean =
     isRemoteBook && serverMode && serverReachable &&
-        (pausedAtMs == null || nowMs - pausedAtMs >= RESUME_SETTLE_AFTER_PAUSE_MS)
+        (pausedAtMs == null || nowMs - pausedAtMs >= RESUME_SETTLE_AFTER_PAUSE_MS) &&
+        (serverCheckedAtMs == null || nowMs - serverCheckedAtMs >= RESUME_SETTLE_AFTER_PAUSE_MS)
 
 /**
  * Where a load puts a book. [playerStart] is where the player is prepared,
@@ -1862,15 +1876,44 @@ class PlaybackManager @Inject constructor(
             }
             if (!activeItemClaimed) return false
 
+            // The check before the load got no answer but the server opened
+            // a session, so it is reachable. Listening the server lacks goes
+            // first, once more and briefly, so the session's spot is not
+            // taken over it blind (#118 review).
+            var serverAnswer = settled
+            val sessionOpened = synchronized(sessionLock) { currentSession != null }
+            if (
+                serverLoadPosition(serverAnswer, effectiveBook.duration) == null &&
+                sessionOpened &&
+                progressRepository.hasUnsyncedListening(book.id)
+            ) {
+                serverAnswer = try {
+                    withTimeoutOrNull(RESUME_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    null
+                }
+                if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+            }
+            if (serverLoadPosition(serverAnswer, effectiveBook.duration) != null) {
+                serverSpotCheckedAt = book.id to System.currentTimeMillis()
+            }
+
             // Resolve where the book starts: the server's spot when it
-            // answered, else the saved spot, else the one the load was handed.
+            // answered (or the open session's, with nothing unsent), else the
+            // saved spot, else the one the load was handed.
             var startPosition = effectiveBook.currentTime
             var durableRow: Pair<Duration, Boolean>? = null
-            val serverStart = serverLoadPosition(settled, effectiveBook.duration)
+            // No session is no position, not a 0:00 that would hide a
+            // finished book's end.
+            val sessionTime = synchronized(sessionLock) { currentSession?.currentTime?.seconds }
+            val serverStart = serverLoadPosition(serverAnswer, effectiveBook.duration)
+                ?: sessionLoadPosition(
+                    sessionTime = sessionTime,
+                    hasUnsyncedListening = isScannedLocalBook || progressRepository.hasUnsyncedListening(book.id),
+                )
             withContext(Dispatchers.IO) {
-                // No session is no position, not a 0:00 that would hide a
-                // finished book's end.
-                val sessionTime = synchronized(sessionLock) { currentSession?.currentTime?.seconds }
                 startPosition = handedLoadPosition(startPosition, sessionTime)
 
                 // Re-read durable progress and save the resolved position under
@@ -2573,6 +2616,7 @@ class PlaybackManager @Inject constructor(
                             ConnectivityMonitor.ConnectionStatus.CONNECTED,
                         pausedAtMs = pausedAtTimestamp,
                         nowMs = System.currentTimeMillis(),
+                        serverCheckedAtMs = serverSpotCheckedAt?.takeIf { it.first == book.id }?.second,
                     )
                 ) {
                     if (resumeSettleJob?.isActive == true) return
@@ -2586,6 +2630,12 @@ class PlaybackManager @Inject constructor(
 
     // A Play waiting on the server's spot. Pause cancels it.
     private var resumeSettleJob: Job? = null
+
+    // The book whose spot was last checked with the server, and when: a
+    // load's or a Play's check that got an answer. Play skips its own check
+    // right after one.
+    @Volatile
+    private var serverSpotCheckedAt: Pair<String, Long>? = null
 
     /**
      * Play on a book paused a while (or restored at startup) first sends the
@@ -2615,6 +2665,7 @@ class PlaybackManager @Inject constructor(
             else -> null
         }
         if (progress != null) {
+            serverSpotCheckedAt = book.id to System.currentTimeMillis()
             adoptServerSpot(
                 ServerSpot(
                     itemId = book.id,

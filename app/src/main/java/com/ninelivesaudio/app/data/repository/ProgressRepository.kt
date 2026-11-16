@@ -315,6 +315,9 @@ class ProgressRepository @Inject constructor(
     }
 
     /** Whether the book has local listening the server has not received. */
+    suspend fun hasUnsyncedListening(itemId: String): Boolean =
+        pendingProgressQueueOwner.withLock { hasUnsyncedListeningLocked(itemId) }
+
     private suspend fun hasUnsyncedListeningLocked(itemId: String): Boolean =
         pendingProgressDao.getCountForItem(itemId) > 0 ||
             offlineSessionDao.getUnsyncedCountForItem(itemId) > 0

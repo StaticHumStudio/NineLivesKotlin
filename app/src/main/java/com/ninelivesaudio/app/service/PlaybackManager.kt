@@ -490,6 +490,22 @@ internal fun sessionLoadPosition(sessionTime: Duration?, unsentWhenSessionOpened
     sessionTime?.takeIf { it > Duration.ZERO && !unsentWhenSessionOpened }
 
 /**
+ * Run a load's session [open] and answer whether the phone held listening
+ * the server lacked when it opened. It is read before /play goes out: a
+ * flush running alongside can deliver that listening while the session
+ * opens, and the server opened the session at its spot from before it, so
+ * a read afterwards alone would trust a stale spot (#118 review).
+ */
+internal suspend fun unsentAcrossSessionOpen(
+    hasUnsent: suspend () -> Boolean,
+    open: suspend () -> Unit,
+): Boolean {
+    val before = hasUnsent()
+    open()
+    return before || hasUnsent()
+}
+
+/**
  * Whether a load's server check lets the first Play skip its own. Only a
  * load the user started (a book picked in the app or Android Auto) does.
  * The startup restore's check is the device switch moment: pause the
@@ -1820,6 +1836,10 @@ class PlaybackManager @Inject constructor(
             }
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
 
+            // Whether the phone held listening the server lacked when the
+            // session below opened, read before /play goes out (#118 review).
+            var unsentBeforeSessionOpen = false
+
             // A paused process restore prepares media without creating listening
             // history. Normal autoplay loads still open the server session here,
             // while restored playback opens it when Play actually begins.
@@ -1840,8 +1860,12 @@ class PlaybackManager @Inject constructor(
                     LoadSessionOpen.DEFER -> Duration.ZERO
                 }
                 if (sessionOpenTimeout != Duration.ZERO) {
-                    awaitLoadSessionOpen(scope, loadSession, sessionOpenTimeout) {
-                        openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
+                    unsentBeforeSessionOpen = unsentAcrossSessionOpen(
+                        hasUnsent = { progressRepository.hasUnsyncedListening(book.id) },
+                    ) {
+                        awaitLoadSessionOpen(scope, loadSession, sessionOpenTimeout) {
+                            openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
+                        }
                     }
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
@@ -1903,7 +1927,8 @@ class PlaybackManager @Inject constructor(
             // taken over it blind (#118 review).
             var serverAnswer = settled
             val sessionOpened = synchronized(sessionLock) { currentSession != null }
-            val unsentWhenSessionOpened = sessionOpened && progressRepository.hasUnsyncedListening(book.id)
+            val unsentWhenSessionOpened = sessionOpened &&
+                (unsentBeforeSessionOpen || progressRepository.hasUnsyncedListening(book.id))
             if (serverLoadPosition(serverAnswer, effectiveBook.duration) == null && unsentWhenSessionOpened) {
                 serverAnswer = try {
                     withTimeoutOrNull(RESUME_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }

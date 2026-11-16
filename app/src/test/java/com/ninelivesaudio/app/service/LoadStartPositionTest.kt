@@ -150,6 +150,32 @@ class LoadStartPositionTest {
     }
 
     @Test
+    fun `listening a flush delivers while the session opens still counts as unsent`() {
+        // #118 re-review: a foreground queue flush delivered the phone's
+        // 2:00:00 while /play was out, so the session opened at the server's
+        // stale 1:00:00 and a read after the open found nothing unsent.
+        var unsent = true
+        val latched = runBlocking {
+            unsentAcrossSessionOpen(hasUnsent = { unsent }) {
+                unsent = false // the flush lands during the open
+            }
+        }
+        assertTrue(latched)
+        assertEquals(
+            2.hours,
+            startOfReload(
+                bookTime = 1.hours,
+                sessionTime = 1.hours,
+                saved = 2.hours,
+                server = ServerProgressRead.Unavailable,
+                unsynced = latched,
+            ),
+        )
+        // Nothing unsent before or after: the session's spot is the server's.
+        assertFalse(runBlocking { unsentAcrossSessionOpen(hasUnsent = { false }) {} })
+    }
+
+    @Test
     fun `with nothing unsent, an open session's spot is the server's and beats the saved one`() {
         // #118 review: the check before the load timed out but /play opened.
         // The session's spot is the server's, and the saved spot has nothing

@@ -478,12 +478,26 @@ internal fun loadStartPosition(server: Duration?, saved: Duration?, handed: Dura
 /**
  * An open server session's spot as the server's answer, for a load whose
  * own check got none (#118 review). The server opened the session at its
- * spot, which is the truth when the phone holds no listening the server
- * lacks. With such listening the saved spot is the phone's newer one. A
- * session at 0:00 says nothing (the server opens a finished book there).
+ * spot, which is the truth when the phone held no listening the server
+ * lacked at that moment. If it did, the session's spot predates that
+ * listening, even once a later check delivered it, so the phone's saved
+ * spot (the newest known) stays unless a server read says otherwise:
+ * taking the session's would let its next sync, which the server applies
+ * undated, wipe the delivered listening. A session at 0:00 says nothing
+ * (the server opens a finished book there).
  */
-internal fun sessionLoadPosition(sessionTime: Duration?, hasUnsyncedListening: Boolean): Duration? =
-    sessionTime?.takeIf { it > Duration.ZERO && !hasUnsyncedListening }
+internal fun sessionLoadPosition(sessionTime: Duration?, unsentWhenSessionOpened: Boolean): Duration? =
+    sessionTime?.takeIf { it > Duration.ZERO && !unsentWhenSessionOpened }
+
+/**
+ * Whether a load's server check lets the first Play skip its own. Only a
+ * load the user started (a book picked in the app or Android Auto) does.
+ * The startup restore's check is the device switch moment: pause the
+ * tablet, open the phone, and the tablet's last save can land just after
+ * the restore read the server, so Play asks again.
+ */
+internal fun loadGrantsPlayCheckSkip(userStartedLoad: Boolean, serverAnswered: Boolean): Boolean =
+    userStartedLoad && serverAnswered
 
 /**
  * A server answer as a load position: a finished book at its end (where it
@@ -549,8 +563,8 @@ internal const val RESUME_SETTLE_AFTER_PAUSE_MS = 60_000L
  * Whether Play asks the server first. A remote book on a reachable server
  * does, unless it was paused only a moment ago in this run of the app, or
  * its spot was checked with the server a moment ago ([serverCheckedAtMs],
- * the load's or an earlier Play's check). A book restored at startup has no
- * pause time, so it asks unless its load just did.
+ * a user-started load's or an earlier Play's check). A book restored at
+ * startup has no pause time and its check grants no skip, so it asks.
  */
 internal fun resumeAsksServerFirst(
     isRemoteBook: Boolean,
@@ -1292,7 +1306,13 @@ class PlaybackManager @Inject constructor(
             }
 
             withContext(Dispatchers.Main) {
-                loadAudioBookOwned(loadRequest, plan.book, autoPlay = plan.playWhenReady, reportErrors = false)
+                loadAudioBookOwned(
+                    loadRequest,
+                    plan.book,
+                    autoPlay = plan.playWhenReady,
+                    reportErrors = false,
+                    userStartedLoad = false,
+                )
             }
         }
     }
@@ -1669,6 +1689,7 @@ class PlaybackManager @Inject constructor(
         skipServiceStart: Boolean = false,
         autoPlay: Boolean = true,
         reportErrors: Boolean = true,
+        userStartedLoad: Boolean = true,
     ): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBookOwned must be called from the Main thread"
@@ -1882,11 +1903,8 @@ class PlaybackManager @Inject constructor(
             // taken over it blind (#118 review).
             var serverAnswer = settled
             val sessionOpened = synchronized(sessionLock) { currentSession != null }
-            if (
-                serverLoadPosition(serverAnswer, effectiveBook.duration) == null &&
-                sessionOpened &&
-                progressRepository.hasUnsyncedListening(book.id)
-            ) {
+            val unsentWhenSessionOpened = sessionOpened && progressRepository.hasUnsyncedListening(book.id)
+            if (serverLoadPosition(serverAnswer, effectiveBook.duration) == null && unsentWhenSessionOpened) {
                 serverAnswer = try {
                     withTimeoutOrNull(RESUME_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
                 } catch (cancellation: CancellationException) {
@@ -1896,7 +1914,7 @@ class PlaybackManager @Inject constructor(
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
             }
-            if (serverLoadPosition(serverAnswer, effectiveBook.duration) != null) {
+            if (loadGrantsPlayCheckSkip(userStartedLoad, serverLoadPosition(serverAnswer, effectiveBook.duration) != null)) {
                 serverSpotCheckedAt = book.id to System.currentTimeMillis()
             }
 
@@ -1911,7 +1929,7 @@ class PlaybackManager @Inject constructor(
             val serverStart = serverLoadPosition(serverAnswer, effectiveBook.duration)
                 ?: sessionLoadPosition(
                     sessionTime = sessionTime,
-                    hasUnsyncedListening = isScannedLocalBook || progressRepository.hasUnsyncedListening(book.id),
+                    unsentWhenSessionOpened = isScannedLocalBook || unsentWhenSessionOpened,
                 )
             withContext(Dispatchers.IO) {
                 startPosition = handedLoadPosition(startPosition, sessionTime)

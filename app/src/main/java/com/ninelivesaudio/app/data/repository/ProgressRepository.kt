@@ -1243,12 +1243,14 @@ internal fun offlineDelivery(
 }
 
 /**
- * The order one delivery sends a book's sessions in. Audiobookshelf stamps
- * progress it creates or updates with the time it does so, not the
- * session's, and then refuses any session dated earlier. Sent newest first,
- * the newest spot is the one that can land (when nothing newer is on the
- * server), and the older sessions are refused for progress but still saved
- * for listening stats. Oldest first would leave the server on the oldest spot.
+ * The order one delivery sends a book's sessions in. Audiobookshelf refuses
+ * a session dated earlier than the progress it holds. Progress it creates
+ * (the book had none) is stamped with the time it does so, not the
+ * session's, so oldest first left a book with no server progress on the
+ * oldest spot, every later session refused. An update takes the session's
+ * own date. Sent newest first, the newest spot is the one that can land
+ * (when nothing newer is on the server) in both cases, and the older
+ * sessions are refused for progress but still saved for listening stats.
  */
 private fun List<OfflineListeningSessionEntity>.newestFirst(): List<OfflineListeningSessionEntity> =
     sortedByDescending { it.updatedAt }

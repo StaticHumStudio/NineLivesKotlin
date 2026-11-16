@@ -28,9 +28,9 @@ class LoadStartPositionTest {
      * Mirrors the load: the server's answer, the saved spot, the handed one,
      * then where the book is placed. A null [sessionTime] is a load with no
      * server session open, a null [server] a load that got no server answer.
-     * [unsynced] is whether the phone holds listening the server has not
-     * got, which the older cases here all do (it is what made their saved
-     * spot newer than the session's).
+     * [unsynced] is whether the phone held listening the server had not got
+     * when the session opened, which the older cases here all did (it is
+     * what made their saved spot newer than the session's).
      */
     private fun placementOfReload(
         bookTime: Duration,
@@ -42,7 +42,7 @@ class LoadStartPositionTest {
         var written: Duration? = null
         val resolved = PlaybackProgressOwner().resolveAndSavePlaybackPosition(
             bookId = "book",
-            server = serverLoadPosition(server, end) ?: sessionLoadPosition(sessionTime, unsynced),
+            server = serverLoadPosition(server, end) ?: sessionLoadPosition(sessionTime, unsentWhenSessionOpened = unsynced),
             candidate = handedLoadPosition(bookTime, sessionTime),
             readDurable = { saved },
             save = { written = it },
@@ -125,6 +125,31 @@ class LoadStartPositionTest {
     }
 
     @Test
+    fun `listening delivered after the session opened is never undone by the session's spot`() {
+        // #118 delta review: the session opened at 1:00:00 (stale), then the
+        // second check delivered the phone's unsent 2:00:00 and the queue
+        // cleared, but reading the server back timed out. Nothing is unsent
+        // any more, yet the session's spot predates that delivery. Taking it
+        // would let the next heartbeat's session sync wipe 2:00:00 on the
+        // server. The phone's own spot, the newest known, stays.
+        assertEquals(
+            2.hours,
+            startOfReload(
+                bookTime = 1.hours,
+                sessionTime = 1.hours,
+                saved = 2.hours,
+                server = ServerProgressRead.Unavailable,
+                unsynced = true,
+            ),
+        )
+        // A read that answered still says otherwise.
+        assertEquals(
+            90.minutes,
+            startOfReload(bookTime = 1.hours, sessionTime = 1.hours, saved = 2.hours, server = found(90.minutes), unsynced = true),
+        )
+    }
+
+    @Test
     fun `with nothing unsent, an open session's spot is the server's and beats the saved one`() {
         // #118 review: the check before the load timed out but /play opened.
         // The session's spot is the server's, and the saved spot has nothing
@@ -141,7 +166,7 @@ class LoadStartPositionTest {
         )
         // A session at 0:00 says nothing: the server opens a finished book there.
         assertParkedAtEnd(placementOfReload(bookTime = end, sessionTime = Duration.ZERO, saved = end, unsynced = false))
-        assertEquals(null, sessionLoadPosition(sessionTime = null, hasUnsyncedListening = false))
+        assertEquals(null, sessionLoadPosition(sessionTime = null, unsentWhenSessionOpened = false))
     }
 
     @Test

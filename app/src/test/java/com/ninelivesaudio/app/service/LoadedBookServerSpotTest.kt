@@ -96,4 +96,14 @@ class LoadedBookServerSpotTest {
         )
         assertTrue(resumeAsksServerFirst(true, true, true, pausedAtMs = null, nowMs = now, serverCheckedAtMs = null))
     }
+
+    @Test
+    fun `only a load the user started lets the first play skip the check`() {
+        // #118 delta review: the startup restore's check is the device switch
+        // moment. Pause the tablet, open the phone, and the tablet's last save
+        // can land just after the restore read the server. Play asks again.
+        assertTrue(loadGrantsPlayCheckSkip(userStartedLoad = true, serverAnswered = true))
+        assertFalse(loadGrantsPlayCheckSkip(userStartedLoad = false, serverAnswered = true))
+        assertFalse(loadGrantsPlayCheckSkip(userStartedLoad = true, serverAnswered = false))
+    }
 }

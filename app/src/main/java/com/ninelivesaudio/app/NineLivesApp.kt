@@ -213,8 +213,9 @@ class NineLivesApp : Application(), ImageLoaderFactory {
             connectivityMonitor.startMonitoring()
             playbackManager.restoreCurrentItem()
             syncManager.start()
-            // Widgets redraw on the app's own events from here on.
-            widgetRefresher.start(appScope)
+            // Widgets redraw on the app's own events from here on. Skipped
+            // while the widgets are switched off for a release.
+            if (BuildConfig.WIDGETS_ENABLED) widgetRefresher.start(appScope)
         }
 
         // Re-resolve the download slot whenever entitlement is or becomes free.

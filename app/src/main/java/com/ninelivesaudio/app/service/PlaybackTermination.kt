@@ -99,37 +99,37 @@ internal suspend fun runTerminalRetry(
 }
 
 /**
- * Whether the player got to the spot the loaded book shows (#118). A load or
- * a server spot places the book, and the spot counts as reached once the
- * player has its media there (READY), or the user seeked to it. Until then a
- * stop or a playback error saves nothing: a stream that never opened (a
- * book deleted on the server, a 5xx, a timeout) must not push the spot it
- * was handed, stamped as new, over newer progress on the server.
+ * Whether the loaded book's spot is new: the book played since a load or a
+ * server spot placed it, or the user seeked (#118). Only then does a stop,
+ * a playback error or a completion save it, queue it and send it. A stream
+ * that never opened (a book deleted on the server, a 5xx, a timeout), or a
+ * book that loaded and sat paused, has no listening, and saving its spot
+ * would date the load's spot as new over newer progress on the server.
  */
-internal class PlayerSpotReach {
+internal class PlayedSpot {
     @Volatile
-    var reached: Boolean = false
+    var isNew: Boolean = false
         private set
 
-    /** A load or a server spot moved the book. The player has not opened it there yet. */
+    /** A load or a server spot moved the book. Nothing was listened there yet. */
     fun bookPlaced() {
-        reached = false
+        isNew = false
     }
 
-    /** The player's state, as it is when the callback runs (stale callbacks read the current state). */
-    fun onPlayerState(state: Int, hasMedia: Boolean, bookLoading: Boolean) {
-        if (state == Player.STATE_READY && hasMedia && !bookLoading) reached = true
+    /** The book is playing: listening from here on is this phone's. */
+    fun playbackStarted() {
+        isNew = true
     }
 
     /** The user moved the book: where they put it is theirs to save. */
     fun userSeeked() {
-        reached = true
+        isNew = true
     }
 }
 
 /**
  * Whether a stop, an error or a completion writes the retained book's
- * progress: only once, and only for a spot the player reached.
+ * progress: only once, and only for a new spot.
  */
-internal fun terminalWritesProgress(hasRetainedBook: Boolean, alreadyFinalized: Boolean, reach: PlayerSpotReach): Boolean =
-    shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && reach.reached
+internal fun terminalWritesProgress(hasRetainedBook: Boolean, alreadyFinalized: Boolean, spot: PlayedSpot): Boolean =
+    shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && spot.isNew

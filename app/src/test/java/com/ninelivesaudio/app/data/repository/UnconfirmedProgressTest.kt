@@ -22,6 +22,14 @@ class UnconfirmedProgressTest {
     }
 
     @Test
+    fun `a book the server says is gone is left alone, not reset to the start`() {
+        // Deleting a book drops its progress too. That is not a reset, and
+        // the phone writes nothing for a book it can no longer play.
+        assertEquals(AbsentOnServer.LEAVE, absentOnServerAction(serverHeldIt = true, serverSaidGone = true))
+        assertEquals(AbsentOnServer.LEAVE, absentOnServerAction(serverHeldIt = false, serverSaidGone = true))
+    }
+
+    @Test
     fun `a saved spot goes as it was saved, at the time it was saved`() {
         val durable = PlaybackProgressEntity("b", 5_631.0, 0, "2026-11-14T22:00:00Z")
         val shelf = BookProgressState(id = "b", currentTimeSeconds = 5_631.0, progress = 0.15, durationSeconds = 36_000.0)

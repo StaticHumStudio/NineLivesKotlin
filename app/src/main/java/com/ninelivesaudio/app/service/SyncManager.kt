@@ -537,7 +537,13 @@ class SyncManager @Inject constructor(
             val held = progressRepository.serverHeld(absent)
             for (itemId in absent) {
                 try {
-                    when (absentOnServerAction(serverHeldIt = itemId in held)) {
+                    when (
+                        absentOnServerAction(
+                            serverHeldIt = itemId in held,
+                            serverSaidGone = progressRepository.serverSaidGone(itemId),
+                        )
+                    ) {
+                        AbsentOnServer.LEAVE -> Unit
                         AbsentOnServer.DELIVER_FIRST -> progressRepository.queueUnconfirmedProgress(itemId)
                         AbsentOnServer.RESET -> {
                             val reset = importServerSpot(

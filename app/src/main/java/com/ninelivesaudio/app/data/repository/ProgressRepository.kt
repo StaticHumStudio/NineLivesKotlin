@@ -227,6 +227,13 @@ class ProgressRepository @Inject constructor(
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
 
+    // Books the server answered "not found" for since the app started. Their
+    // progress is gone with them, which is not a reset (#118).
+    private val goneFromServer: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** The server said this book no longer exists. */
+    fun serverSaidGone(itemId: String): Boolean = itemId in goneFromServer
+
     // ─── Local Playback Progress ─────────────────────────────────────────
 
     suspend fun savePlaybackProgress(
@@ -793,6 +800,7 @@ class ProgressRepository @Inject constructor(
             LocalSessionSync.Unavailable -> ItemDelivery.UNAVAILABLE
             LocalSessionSync.ItemGone -> {
                 Log.w(TAG, "Dropping unsynced progress for $itemId: the server no longer has this book")
+                goneFromServer.add(itemId)
                 withContext(NonCancellable) {
                     pendingProgressQueueOwner.withLock {
                         pendingProgressDao.deleteByItemId(itemId)
@@ -1073,10 +1081,16 @@ internal enum class AbsentOnServer {
 
     /** The server never held it. Deliver the phone's spot, never wipe it. */
     DELIVER_FIRST,
+
+    /** The server said the book is gone. Nothing is written for it. */
+    LEAVE,
 }
 
-internal fun absentOnServerAction(serverHeldIt: Boolean): AbsentOnServer =
-    if (serverHeldIt) AbsentOnServer.RESET else AbsentOnServer.DELIVER_FIRST
+internal fun absentOnServerAction(serverHeldIt: Boolean, serverSaidGone: Boolean = false): AbsentOnServer = when {
+    serverSaidGone -> AbsentOnServer.LEAVE
+    serverHeldIt -> AbsentOnServer.RESET
+    else -> AbsentOnServer.DELIVER_FIRST
+}
 
 /**
  * The queue row that delivers a saved spot the server never held, and the

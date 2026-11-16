@@ -1511,6 +1511,10 @@ class PlaybackManager @Inject constructor(
     // or failed load leaves that previous, already finalized book current.
     private var retainedBookFinalized = true
 
+    // Whether the player got to the spot the book shows. A stop or an error
+    // before it did saves nothing (#118).
+    private val spotReach = PlayerSpotReach()
+
     private val _position = MutableStateFlow(Duration.ZERO)
     val position: StateFlow<Duration> = _position.asStateFlow()
 
@@ -2180,6 +2184,8 @@ class PlaybackManager @Inject constructor(
             _duration.value = calculateTotalDuration(book)
             _isLocalFile.value = isLocal
         }
+        // The player has the book's media but has not opened it at this spot.
+        spotReach.bookPlaced()
     }
 
     /**
@@ -2801,7 +2807,13 @@ class PlaybackManager @Inject constructor(
         // A retained book that is already finalized gets no terminal write at
         // all. An abandoned or failed load leaves the previous, already
         // finalized book current, so it lands here too. Teardown below still runs.
-        val captured = if (shouldFinalizeRetainedBook(book != null, retainedBookFinalized)) {
+        // A book the player never opened at its spot (its stream failed on
+        // load) has no listening and no spot of its own to save (#118).
+        val finalizes = shouldFinalizeRetainedBook(book != null, retainedBookFinalized)
+        if (finalizes && !spotReach.reached) {
+            Log.d(TAG, "finishPlayback: ${book?.id} never reached its spot, nothing saved")
+        }
+        val captured = if (terminalWritesProgress(book != null, retainedBookFinalized, spotReach)) {
             capturePlaybackProgressSnapshot()
         } else {
             null
@@ -3347,6 +3359,13 @@ class PlaybackManager @Inject constructor(
                 else -> "UNKNOWN($playbackState)"
             }
             Log.d(TAG, "onPlaybackStateChanged: $stateName playWhenReady=${exoPlayer?.playWhenReady} items=${exoPlayer?.mediaItemCount}")
+            exoPlayer?.let { player ->
+                spotReach.onPlayerState(
+                    state = player.playbackState,
+                    hasMedia = player.mediaItemCount > 0,
+                    bookLoading = stagedLoad.book.value != null,
+                )
+            }
             when (playbackState) {
                 Player.STATE_BUFFERING -> {
                     playbackIntentOwner.update(
@@ -3516,6 +3535,13 @@ class PlaybackManager @Inject constructor(
         // The player moved to the server's spot, which the server already
         // holds. Saving it would queue it as this phone's listening.
         if (movingToServerSpot) return
+        // A seek the user made (a load's own seek lands while LOADING).
+        if (
+            stagedLoad.book.value == null &&
+            _playbackState.value.let { it == PlaybackState.PLAYING || it == PlaybackState.PAUSED }
+        ) {
+            spotReach.userSeeked()
+        }
         // A controller seek that reached the player directly still moves a
         // parked book off its end, to where the player now is.
         if (parkedAtEnd) {
@@ -4091,6 +4117,8 @@ class PlaybackManager @Inject constructor(
         } finally {
             movingToServerSpot = false
         }
+        // The server holds this spot, and the stream may still fail there.
+        spotReach.bookPlaced()
         setParkedAtEnd(placement.parkedAtEnd)
         parkedEndLength = end
         _position.value = placement.shownPosition

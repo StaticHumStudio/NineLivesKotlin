@@ -97,3 +97,39 @@ internal suspend fun runTerminalRetry(
     }
     return prepared
 }
+
+/**
+ * Whether the player got to the spot the loaded book shows (#118). A load or
+ * a server spot places the book, and the spot counts as reached once the
+ * player has its media there (READY), or the user seeked to it. Until then a
+ * stop or a playback error saves nothing: a stream that never opened (a
+ * book deleted on the server, a 5xx, a timeout) must not push the spot it
+ * was handed, stamped as new, over newer progress on the server.
+ */
+internal class PlayerSpotReach {
+    @Volatile
+    var reached: Boolean = false
+        private set
+
+    /** A load or a server spot moved the book. The player has not opened it there yet. */
+    fun bookPlaced() {
+        reached = false
+    }
+
+    /** The player's state, as it is when the callback runs (stale callbacks read the current state). */
+    fun onPlayerState(state: Int, hasMedia: Boolean, bookLoading: Boolean) {
+        if (state == Player.STATE_READY && hasMedia && !bookLoading) reached = true
+    }
+
+    /** The user moved the book: where they put it is theirs to save. */
+    fun userSeeked() {
+        reached = true
+    }
+}
+
+/**
+ * Whether a stop, an error or a completion writes the retained book's
+ * progress: only once, and only for a spot the player reached.
+ */
+internal fun terminalWritesProgress(hasRetainedBook: Boolean, alreadyFinalized: Boolean, reach: PlayerSpotReach): Boolean =
+    shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && reach.reached

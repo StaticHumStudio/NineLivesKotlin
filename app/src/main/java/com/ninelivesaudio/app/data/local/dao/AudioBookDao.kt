@@ -48,6 +48,10 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     suspend fun getById(id: String): AudioBookEntity?
 
+    /** When the server added the book (ISO 8601), or null when unknown. */
+    @Query("SELECT AddedAt FROM AudioBooks WHERE Id = :id")
+    suspend fun getAddedAt(id: String): String?
+
     /** Batch lookup by IDs — used by syncLibraryItems to preserve download state. */
     @Query("SELECT * FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getByIds(ids: List<String>): List<AudioBookEntity>

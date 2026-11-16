@@ -763,6 +763,7 @@ class ProgressRepository @Inject constructor(
         val latest = currentRows.maxByOrNull { it.id }?.takeIf { it.isAtomic == 1 }
 
         val stored = offlineSessionDao.getForItem(itemId)
+        val bookAddedAtMs = if (latest != null) audioBookDao.getAddedAt(itemId)?.toEpochMillis() else null
         val plan = offlineDelivery(
             itemId = itemId,
             queued = latest?.let {
@@ -772,9 +773,7 @@ class ProgressRepository @Inject constructor(
                     positionSeconds = it.currentTime,
                     isFinished = it.isFinished == 1,
                     durationSeconds = it.duration,
-                    // An unreadable time claims nothing newer than any spot
-                    // the server holds.
-                    timestampMs = it.timestamp.toEpochMillis() ?: 0L,
+                    timestampMs = queuedSpotTimestampMs(it.timestamp, bookAddedAtMs),
                 )
             },
             stored = stored,
@@ -1113,6 +1112,19 @@ internal fun unconfirmedProgressRow(
         timestamp = timestampMs.toIso8601(),
     )
 }
+
+/**
+ * The time a queued spot is sent as: when the phone saved it. A spot of
+ * unknown age (saved before spots carried a time, or unreadable) must claim
+ * nothing newer than any progress the server holds, so it goes as old as
+ * the book's place on the server: when the server added it, which any
+ * progress for it postdates. That keeps it out of 1970 in the server's
+ * listening history. With that unknown too, it goes as 0.
+ */
+internal fun queuedSpotTimestampMs(rowTimestamp: String, bookAddedAtMs: Long?): Long =
+    rowTimestamp.toEpochMillis()?.takeIf { it > 0L }
+        ?: bookAddedAtMs?.takeIf { it > 0L }
+        ?: 0L
 
 /** A server call made while a book's item lock is held waits no longer than this. */
 internal val PROGRESS_SERVER_CALL_TIMEOUT: Duration = 10.seconds

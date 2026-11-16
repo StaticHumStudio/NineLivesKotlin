@@ -5,6 +5,7 @@ import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.domain.model.UserProgress
 import com.ninelivesaudio.app.domain.util.toEpochMillis
+import com.ninelivesaudio.app.domain.util.toIso8601
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -227,6 +228,27 @@ class OfflineSessionDeliveryTest {
         // 22:00 UTC is 17:00 in New York, the same Saturday.
         assertEquals("2026-11-14", api.date)
         assertEquals("Saturday", api.dayOfWeek)
+    }
+
+    @Test
+    fun `a spot of unknown age is dated when the book reached the server, not 1970`() {
+        // Audiobookshelf files the session in listening history under its
+        // dates. 0 put it on 1970-01-01. The book's added date is just as
+        // safe: any progress on the server for the book was saved after it
+        // was added, so that progress still wins over this spot.
+        val added = evening - 30L * 24 * hour
+        assertEquals(added, queuedSpotTimestampMs(0L.toIso8601(), bookAddedAtMs = added))
+        assertEquals(added, queuedSpotTimestampMs("garbage", bookAddedAtMs = added))
+        // Nothing known about the book either: as old as can be.
+        assertEquals(0L, queuedSpotTimestampMs(0L.toIso8601(), bookAddedAtMs = null))
+        // A dated spot keeps its own time.
+        assertEquals(evening, queuedSpotTimestampMs(evening.toIso8601(), bookAddedAtMs = added))
+
+        val api = offlineDelivery("item-1", queued(56.8, added), emptyList()).sessions.single()
+            .toApiLocalSession(ZoneId.of("UTC"))
+        assertEquals(added, api.updatedAt)
+        assertEquals(added, api.startedAt)
+        assertEquals("2026-10-15", api.date)
     }
 
     // ─── Kept from the first #118 pass ───────────────────────────────────

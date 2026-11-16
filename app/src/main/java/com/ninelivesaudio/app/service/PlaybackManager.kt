@@ -1120,6 +1120,10 @@ class PlaybackManager @Inject constructor(
                 seekTo(bookPositionOfTrack(trackDurations, index, positionMs))
             }
             wrapper.previousChapterHandler = { skipToPreviousChapter() }
+            // Play and pause from the headset, notification and Android Auto
+            // take the same path as the app's buttons (#118).
+            wrapper.playHandler = { play() }
+            wrapper.pauseHandler = { pause() }
             // Every media-session controller goes through the wrapper, so the
             // entitlement clamp has to live there too, not only in setSpeed().
             wrapper.speedClamp = { requested ->

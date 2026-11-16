@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.data.repository
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.room.withTransaction
 import com.ninelivesaudio.app.data.local.AppDatabase
@@ -15,6 +16,8 @@ import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.LocalSessionSync
+import com.ninelivesaudio.app.data.remote.ServerClock
+import com.ninelivesaudio.app.data.remote.serverTimeShiftMs
 import com.ninelivesaudio.app.data.remote.ServerProgressRead
 import com.ninelivesaudio.app.data.remote.dto.ApiLocalSession
 import com.ninelivesaudio.app.domain.model.UserProgress
@@ -224,6 +227,7 @@ class ProgressRepository @Inject constructor(
     private val serverRecordDao: ServerProgressRecordDao,
     private val audioBookDao: AudioBookDao,
     private val apiService: ApiService,
+    private val serverClock: ServerClock,
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
 
@@ -771,6 +775,9 @@ class ProgressRepository @Inject constructor(
 
         val stored = offlineSessionDao.getForItem(itemId)
         val bookAddedAtMs = if (latest != null) audioBookDao.getAddedAt(itemId)?.toEpochMillis() else null
+        // The phone's times go in the server's time, by the offset measured
+        // now. A clock changed between the save and now is not corrected.
+        val shiftMs = if (latest != null || stored.isNotEmpty()) serverTimeShiftMs(serverClockOffsetNow()) else 0L
         val plan = offlineDelivery(
             itemId = itemId,
             queued = latest?.let {
@@ -780,7 +787,7 @@ class ProgressRepository @Inject constructor(
                     positionSeconds = it.currentTime,
                     isFinished = it.isFinished == 1,
                     durationSeconds = it.duration,
-                    timestampMs = queuedSpotTimestampMs(it.timestamp, bookAddedAtMs),
+                    timestampMs = queuedSpotTimestampMs(it.timestamp, bookAddedAtMs, shiftMs),
                 )
             },
             stored = stored,
@@ -793,7 +800,7 @@ class ProgressRepository @Inject constructor(
         }
 
         val outcome = withTimeoutOrNull(PROGRESS_SERVER_CALL_TIMEOUT) {
-            apiService.syncLocalSessions(plan.sessions.map { it.toApiLocalSession() })
+            apiService.syncLocalSessions(plan.sessions.map { it.toApiLocalSession(shiftMs = shiftMs) })
         } ?: LocalSessionSync.Unavailable
 
         return when (outcome) {
@@ -836,6 +843,16 @@ class ProgressRepository @Inject constructor(
                 ItemDelivery.DELIVERED
             }
         }
+    }
+
+    /**
+     * Server time minus phone time, from a recent server response, or a
+     * /ping when there is none. Null when the server sends no Date header.
+     */
+    private suspend fun serverClockOffsetNow(): Long? {
+        serverClock.offsetMs(SystemClock.elapsedRealtime())?.let { return it }
+        withTimeoutOrNull(SERVER_CLOCK_PING_TIMEOUT) { apiService.pingServer() }
+        return serverClock.offsetMs(SystemClock.elapsedRealtime())
     }
 
     private suspend fun readServerProgressWithin(itemId: String): ServerProgressRead =
@@ -1135,10 +1152,15 @@ internal fun unconfirmedProgressRow(
  * progress for it postdates. That keeps it out of 1970 in the server's
  * listening history. With that unknown too, it goes as 0.
  */
-internal fun queuedSpotTimestampMs(rowTimestamp: String, bookAddedAtMs: Long?): Long =
+internal fun queuedSpotTimestampMs(rowTimestamp: String, bookAddedAtMs: Long?, shiftMs: Long = 0L): Long =
     rowTimestamp.toEpochMillis()?.takeIf { it > 0L }
-        ?: bookAddedAtMs?.takeIf { it > 0L }
+        // The added date is the server's time already. Sent dates shift by
+        // [shiftMs], so it is held in the phone's time until then.
+        ?: bookAddedAtMs?.takeIf { it > 0L }?.let { it - shiftMs }
         ?: 0L
+
+/** How long a delivery waits on a /ping for the server's clock. */
+internal val SERVER_CLOCK_PING_TIMEOUT: Duration = 3.seconds
 
 /** A server call made while a book's item lock is held waits no longer than this. */
 internal val PROGRESS_SERVER_CALL_TIMEOUT: Duration = 10.seconds
@@ -1272,9 +1294,16 @@ private fun List<OfflineListeningSessionEntity>.newestFirst(): List<OfflineListe
 private val SESSION_DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
 private val SESSION_DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE", Locale.US)
 
-/** The offline session sync's shape of one session, dated on the phone's calendar. */
-internal fun OfflineListeningSessionEntity.toApiLocalSession(zone: ZoneId = ZoneId.systemDefault()): ApiLocalSession {
-    val day = Instant.ofEpochMilli(updatedAt).atZone(zone)
+/** The offline session sync's shape of one session, dated in the server's time ([shiftMs]) on the phone's calendar. */
+internal fun OfflineListeningSessionEntity.toApiLocalSession(
+    zone: ZoneId = ZoneId.systemDefault(),
+    shiftMs: Long = 0L,
+): ApiLocalSession {
+    // In the server's time. 0 is "as old as can be" and stays 0.
+    fun server(ms: Long): Long = if (ms > 0L) ms + shiftMs else ms
+    val sentStartedAt = server(startedAt)
+    val sentUpdatedAt = server(updatedAt)
+    val day = Instant.ofEpochMilli(sentUpdatedAt).atZone(zone)
     return ApiLocalSession(
         id = id,
         libraryItemId = itemId,
@@ -1283,8 +1312,8 @@ internal fun OfflineListeningSessionEntity.toApiLocalSession(zone: ZoneId = Zone
         startTime = startTime,
         currentTime = currentTime,
         timeListening = timeListening,
-        startedAt = startedAt,
-        updatedAt = updatedAt,
+        startedAt = sentStartedAt,
+        updatedAt = sentUpdatedAt,
         date = SESSION_DATE_FORMAT.format(day),
         dayOfWeek = SESSION_DAY_FORMAT.format(day),
     )

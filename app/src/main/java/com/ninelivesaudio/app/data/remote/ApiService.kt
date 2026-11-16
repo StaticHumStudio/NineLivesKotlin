@@ -1035,6 +1035,17 @@ class ApiService @Inject constructor(
      * session sync, which keeps the time for stats and moves the book's
      * progress only when the server holds nothing newer.
      */
+    /** A /ping, so the server's Date header updates [ServerClock]. Whether it answered. */
+    suspend fun pingServer(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            api.ping().isSuccessful
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun syncLocalSessions(sessions: List<ApiLocalSession>): LocalSessionSync = withContext(Dispatchers.IO) {
         try {
             val response = api.syncLocalSessions(

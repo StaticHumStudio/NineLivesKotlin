@@ -251,6 +251,48 @@ class OfflineSessionDeliveryTest {
         assertEquals("2026-10-15", api.date)
     }
 
+    @Test
+    fun `a phone clock four hours fast sends its listening dated in the server's time`() {
+        // The listening happened at `evening` by the server's clock, which
+        // the phone read as four hours later.
+        val shift = -4 * hour
+        val api = session("s1", updatedAt = evening + 4 * hour, currentTime = 100.0, timeListening = 600.0)
+            .toApiLocalSession(ZoneId.of("UTC"), shiftMs = shift)
+
+        assertEquals(evening, api.updatedAt)
+        assertEquals(evening + 4 * hour - 600_000L + shift, api.startedAt)
+        // The day is the server time's day too.
+        assertEquals("2026-11-14", api.date)
+    }
+
+    @Test
+    fun `a phone clock four hours slow sends its listening dated in the server's time`() {
+        val shift = 4 * hour
+        val api = session("s1", updatedAt = evening - 4 * hour, currentTime = 100.0, timeListening = 600.0)
+            .toApiLocalSession(ZoneId.of("UTC"), shiftMs = shift)
+        assertEquals(evening, api.updatedAt)
+    }
+
+    @Test
+    fun `a spot dated by the server's own clock is not shifted twice`() {
+        // A spot of unknown age goes dated when the server added the book,
+        // which is already the server's time.
+        val added = evening - 30L * 24 * hour
+        val shift = -4 * hour
+        val timestamp = queuedSpotTimestampMs(0L.toIso8601(), bookAddedAtMs = added, shiftMs = shift)
+        val api = offlineDelivery("item-1", queued(56.8, timestamp), emptyList()).sessions.single()
+            .toApiLocalSession(ZoneId.of("UTC"), shiftMs = shift)
+        assertEquals(added, api.updatedAt)
+        assertEquals(added, api.startedAt)
+        // Nothing known at all stays as old as can be.
+        assertEquals(0L, queuedSpotTimestampMs(0L.toIso8601(), bookAddedAtMs = null, shiftMs = shift))
+        assertEquals(
+            0L,
+            offlineDelivery("item-1", queued(56.8, 0L), emptyList()).sessions.single()
+                .toApiLocalSession(ZoneId.of("UTC"), shiftMs = shift).updatedAt,
+        )
+    }
+
     // ─── Kept from the first #118 pass ───────────────────────────────────
 
     @Test

@@ -42,7 +42,7 @@ object NetworkModule {
         authInterceptor: AuthInterceptor,
         dynamicBaseUrlInterceptor: DynamicBaseUrlInterceptor,
         settingsManager: SettingsManager,
-        serverClockInterceptor: ServerClockInterceptor = ServerClockInterceptor(ServerClock()),
+        serverClockInterceptor: ServerClockInterceptor = ServerClockInterceptor(ServerClock(settingsManager)),
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .addInterceptor(dynamicBaseUrlInterceptor)

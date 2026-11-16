@@ -28,9 +28,11 @@ class ServerClockTest {
             .apply { timeZone = TimeZone.getTimeZone("GMT") }
             .format(java.util.Date(ms))
 
-    private fun response(date: String?, sentAt: Long, receivedAt: Long): Response =
+    private val server = "http://abs.example"
+
+    private fun response(date: String?, sentAt: Long, receivedAt: Long, url: String = "$server/ping"): Response =
         Response.Builder()
-            .request(Request.Builder().url("http://abs.example/ping").build())
+            .request(Request.Builder().url(url).build())
             .protocol(Protocol.HTTP_1_1)
             .code(200)
             .message("OK")
@@ -41,7 +43,7 @@ class ServerClockTest {
 
     @Test
     fun `a phone clock four hours fast is measured as four hours ahead of the server`() {
-        val clock = ServerClock()
+        val clock = ServerClock { server }
         val phoneNow = serverNow + 4 * hour
         clock.observe(response(httpDate(serverNow), phoneNow - 40, phoneNow + 40), elapsedNowMs = 1_000)
 
@@ -52,7 +54,7 @@ class ServerClockTest {
 
     @Test
     fun `a phone clock four hours slow is measured as four hours behind`() {
-        val clock = ServerClock()
+        val clock = ServerClock { server }
         val phoneNow = serverNow - 4 * hour
         clock.observe(response(httpDate(serverNow), phoneNow, phoneNow + 20), elapsedNowMs = 1_000)
 
@@ -61,7 +63,7 @@ class ServerClockTest {
 
     @Test
     fun `no Date header measures nothing`() {
-        val clock = ServerClock()
+        val clock = ServerClock { server }
         clock.observe(response(null, serverNow, serverNow + 10), elapsedNowMs = 1_000)
         clock.observe(response("not a date", serverNow, serverNow + 10), elapsedNowMs = 1_000)
         assertNull(clock.offsetMs(elapsedNowMs = 1_000))
@@ -69,7 +71,7 @@ class ServerClockTest {
 
     @Test
     fun `an old reading is not used for a delivery now`() {
-        val clock = ServerClock()
+        val clock = ServerClock { server }
         clock.observe(response(httpDate(serverNow), serverNow + hour, serverNow + hour), elapsedNowMs = 1_000)
 
         assertEquals(-hour.toDouble(), clock.offsetMs(elapsedNowMs = 1_000 + SERVER_CLOCK_FRESH_MS)!!.toDouble(), 1_000.0)
@@ -81,10 +83,36 @@ class ServerClockTest {
 
     @Test
     fun `the latest reading wins`() {
-        val clock = ServerClock()
+        val clock = ServerClock { server }
         clock.observe(response(httpDate(serverNow), serverNow + hour, serverNow + hour), elapsedNowMs = 1_000)
         clock.observe(response(httpDate(serverNow), serverNow, serverNow), elapsedNowMs = 2_000)
         assertEquals(0.0, clock.offsetMs(elapsedNowMs = 2_000)!!.toDouble(), 1_000.0)
+    }
+
+    @Test
+    fun `an offset measured on another server is never used`() {
+        var current = server
+        val clock = ServerClock { current }
+        clock.observe(response(httpDate(serverNow), serverNow + hour, serverNow + hour), elapsedNowMs = 1_000)
+
+        // Switched servers: the first server's offset says nothing of this one.
+        current = "https://other.example:8443/abs"
+        assertNull(clock.offsetMs(elapsedNowMs = 1_000))
+        clock.observe(
+            response(httpDate(serverNow), serverNow - hour, serverNow - hour, url = "https://other.example:8443/abs/api/me"),
+            elapsedNowMs = 1_100,
+        )
+        assertEquals(hour.toDouble(), clock.offsetMs(elapsedNowMs = 1_100)!!.toDouble(), 1_000.0)
+
+        // Back on the first server, its own reading still stands.
+        current = "$server/"
+        assertEquals(-hour.toDouble(), clock.offsetMs(elapsedNowMs = 1_200)!!.toDouble(), 1_000.0)
+        // Same host, another port is another server.
+        current = "http://abs.example:8080"
+        assertNull(clock.offsetMs(elapsedNowMs = 1_200))
+        // No server set up.
+        current = ""
+        assertNull(clock.offsetMs(elapsedNowMs = 1_200))
     }
 
     @Test

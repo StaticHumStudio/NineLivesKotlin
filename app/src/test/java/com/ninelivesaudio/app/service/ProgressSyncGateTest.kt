@@ -39,6 +39,7 @@ class PlaybackProgressOwnerTest {
         val load = async {
             owner.resolveAndSavePlaybackPosition(
                 bookId = "book-a",
+                server = null,
                 candidate = 100.seconds,
                 readDurable = { durablePosition },
                 save = { durablePosition = it },

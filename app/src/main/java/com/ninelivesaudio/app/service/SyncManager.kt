@@ -14,7 +14,9 @@ import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.data.repository.itemCountResult
+import com.ninelivesaudio.app.data.repository.AbsentOnServer
 import com.ninelivesaudio.app.data.repository.ServerSpot
+import com.ninelivesaudio.app.data.repository.absentOnServerAction
 import com.ninelivesaudio.app.data.repository.serverProgressPositionSeconds
 import com.ninelivesaudio.app.data.remote.ServerProgressRead
 import com.ninelivesaudio.app.data.repository.wroteBooks
@@ -463,6 +465,9 @@ class SyncManager @Inject constructor(
             val serverProgressList = progressRepository.fetchAllProgressFromServer() ?: return
 
             val ids = serverProgressList.map { it.libraryItemId }.distinct()
+            // The server holds progress for every one of these. Only a book
+            // it has held can later take a reset from it (see below).
+            progressRepository.markServerHolds(ids)
             val books = HashMap<String, BookProgressState>()
             val rows = HashMap<String, PlaybackProgressEntity>()
             for (chunk in ids.chunked(PROGRESS_LOOKUP_CHUNK)) {
@@ -522,25 +527,35 @@ class SyncManager @Inject constructor(
             }
 
             // Progress reset or removed on the server leaves no record. A
-            // server book here that still shows progress takes the reset,
-            // unless it has listening the server has not received yet.
+            // server book here that still shows progress takes the reset only
+            // when the server once held its progress, and it has no listening
+            // the server has not received. Progress the server never held
+            // (from before this record was kept, for one) is delivered
+            // instead, and never wiped.
             val onServer = ids.toSet()
-            for (itemId in audioBookDao.getServerBookIdsWithProgress()) {
-                if (itemId in onServer) continue
+            val absent = audioBookDao.getServerBookIdsWithProgress().filterNot { it in onServer }
+            val held = progressRepository.serverHeld(absent)
+            for (itemId in absent) {
                 try {
-                    importServerSpot(
-                        itemId = itemId,
-                        positionSeconds = 0.0,
-                        progress = UserProgress(
-                            libraryItemId = itemId,
-                            currentTime = kotlin.time.Duration.ZERO,
-                            progress = 0.0,
-                            isFinished = false,
-                            lastUpdate = null,
-                        ),
-                        importToken = importToken,
-                        bookKnown = true,
-                    )
+                    when (absentOnServerAction(serverHeldIt = itemId in held)) {
+                        AbsentOnServer.DELIVER_FIRST -> progressRepository.queueUnconfirmedProgress(itemId)
+                        AbsentOnServer.RESET -> {
+                            val reset = importServerSpot(
+                                itemId = itemId,
+                                positionSeconds = 0.0,
+                                progress = UserProgress(
+                                    libraryItemId = itemId,
+                                    currentTime = kotlin.time.Duration.ZERO,
+                                    progress = 0.0,
+                                    isFinished = false,
+                                    lastUpdate = null,
+                                ),
+                                importToken = importToken,
+                                bookKnown = true,
+                            )
+                            if (reset) progressRepository.forgetServerHold(itemId)
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -566,7 +581,7 @@ class SyncManager @Inject constructor(
         progress: UserProgress,
         importToken: com.ninelivesaudio.app.data.repository.PendingProgressQueueOwner.ImportToken,
         bookKnown: Boolean,
-    ) {
+    ): Boolean =
         progressRepository.importServerProgressIfNoPending(
             PlaybackProgressEntity(
                 audioBookId = itemId,
@@ -590,7 +605,6 @@ class SyncManager @Inject constructor(
                 )
             },
         )
-    }
 
     /**
      * Deliver one book's unsynced listening, then read the book's progress

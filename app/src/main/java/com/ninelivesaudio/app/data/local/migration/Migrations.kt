@@ -143,6 +143,12 @@ val MIGRATION_11_12 = object : Migration(11, 12) {
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS `idx_offline_session_item` ON `OfflineListeningSessions` (`ItemId`)"
         )
+        // Books the server has held progress for. Empty after the upgrade on
+        // purpose: 2.1.x kept no such record, so every saved spot the server
+        // lacks is delivered before "absent on the server" can reset it.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `ServerProgressRecords` (`AudioBookId` TEXT NOT NULL, PRIMARY KEY(`AudioBookId`))"
+        )
     }
 }
 

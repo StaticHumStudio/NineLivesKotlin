@@ -106,22 +106,35 @@ class MigrationsTest {
     }
 
     @Test
-    fun `11 to 12 only creates the offline sessions table and index Room expects`() {
+    fun `11 to 12 only creates the two tables and the index Room expects`() {
         val executed = mutableListOf<String>()
         MIGRATION_11_12.migrate(recordingDatabase(executed))
 
-        val entity = Json.parseToJsonElement(File(schemaDir, "12.json").readText())
+        val entities = Json.parseToJsonElement(File(schemaDir, "12.json").readText())
             .jsonObject.getValue("database").jsonObject.getValue("entities").jsonArray
             .map { it.jsonObject }
-            .single { it["tableName"]?.jsonPrimitive?.content == "OfflineListeningSessions" }
-        val table = entity.getValue("createSql").jsonPrimitive.content
-            .replace("\${TABLE_NAME}", "OfflineListeningSessions")
-        val indices = entity.getValue("indices").jsonArray.map {
-            it.jsonObject.getValue("createSql").jsonPrimitive.content
-                .replace("\${TABLE_NAME}", "OfflineListeningSessions")
+        fun createSql(table: String): List<String> {
+            val entity = entities.single { it["tableName"]?.jsonPrimitive?.content == table }
+            val indices = entity["indices"]?.jsonArray.orEmpty().map {
+                it.jsonObject.getValue("createSql").jsonPrimitive.content
+            }
+            return (listOf(entity.getValue("createSql").jsonPrimitive.content) + indices)
+                .map { it.replace("\${TABLE_NAME}", table) }
         }
 
-        assertEquals(listOf(table) + indices, executed)
+        assertEquals(createSql("OfflineListeningSessions") + createSql("ServerProgressRecords"), executed)
+    }
+
+    @Test
+    fun `11 to 12 starts with no book known to the server, so no saved spot can be reset`() {
+        // An upgrade keeps every saved spot. With no record of the server
+        // holding any book's progress, a book missing on the server is
+        // delivered first, never reset (see UnconfirmedProgressTest).
+        val executed = mutableListOf<String>()
+        MIGRATION_11_12.migrate(recordingDatabase(executed))
+
+        assertTrue(executed.none { it.startsWith("INSERT") || it.startsWith("UPDATE") || it.startsWith("DELETE") })
+        assertTrue(executed.any { it.contains("CREATE TABLE IF NOT EXISTS `ServerProgressRecords`") })
     }
 
     private data class BookRow(

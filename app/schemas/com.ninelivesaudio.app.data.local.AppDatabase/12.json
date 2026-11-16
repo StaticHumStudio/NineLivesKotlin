@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 12,
-    "identityHash": "08cbb110984a6e031bdf204ef347fe1b",
+    "identityHash": "a9096d2c6a01e972c707975e9852bc1b",
     "entities": [
       {
         "tableName": "Libraries",
@@ -694,11 +694,29 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `idx_offline_session_item` ON `${TABLE_NAME}` (`ItemId`)"
           }
         ]
+      },
+      {
+        "tableName": "ServerProgressRecords",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`AudioBookId` TEXT NOT NULL, PRIMARY KEY(`AudioBookId`))",
+        "fields": [
+          {
+            "fieldPath": "audioBookId",
+            "columnName": "AudioBookId",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "AudioBookId"
+          ]
+        }
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '08cbb110984a6e031bdf204ef347fe1b')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a9096d2c6a01e972c707975e9852bc1b')"
     ]
   }
 }

@@ -56,6 +56,10 @@ object AppModule {
         db.offlineListeningSessionDao()
 
     @Provides
+    fun provideServerProgressRecordDao(db: AppDatabase): ServerProgressRecordDao =
+        db.serverProgressRecordDao()
+
+    @Provides
     fun provideLocalBookmarkDao(db: AppDatabase): LocalBookmarkDao =
         db.localBookmarkDao()
 }

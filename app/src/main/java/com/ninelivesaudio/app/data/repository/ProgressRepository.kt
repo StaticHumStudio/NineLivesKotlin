@@ -3,7 +3,11 @@ package com.ninelivesaudio.app.data.repository
 import android.util.Log
 import androidx.room.withTransaction
 import com.ninelivesaudio.app.data.local.AppDatabase
+import com.ninelivesaudio.app.data.local.dao.AudioBookDao
 import com.ninelivesaudio.app.data.local.dao.OfflineListeningSessionDao
+import com.ninelivesaudio.app.data.local.dao.ServerProgressRecordDao
+import com.ninelivesaudio.app.data.local.entity.BookProgressState
+import com.ninelivesaudio.app.data.local.entity.ServerProgressRecordEntity
 import com.ninelivesaudio.app.data.local.dao.PendingProgressDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
 import com.ninelivesaudio.app.data.local.entity.OfflineListeningSessionEntity
@@ -217,6 +221,8 @@ class ProgressRepository @Inject constructor(
     private val playbackProgressDao: PlaybackProgressDao,
     private val pendingProgressDao: PendingProgressDao,
     private val offlineSessionDao: OfflineListeningSessionDao,
+    private val serverRecordDao: ServerProgressRecordDao,
+    private val audioBookDao: AudioBookDao,
     private val apiService: ApiService,
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
@@ -515,7 +521,59 @@ class ProgressRepository @Inject constructor(
                 pendingProgressQueueOwner.forgetItemRows(itemId)
             }
             pendingProgressQueueOwner.localWriteOccurred(itemId)
+            // The server took this spot, so it holds progress for the book.
+            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
         }
+    }
+
+    // ─── What the server has held ────────────────────────────────────────
+
+    /** The server holds progress for [itemIds] (they came in its progress list). */
+    internal suspend fun markServerHolds(itemIds: Collection<String>) {
+        withContext(NonCancellable) {
+            itemIds.chunked(500).forEach { chunk ->
+                serverRecordDao.insertAll(chunk.map(::ServerProgressRecordEntity))
+            }
+        }
+    }
+
+    /** Which of [itemIds] the server has held progress for. */
+    internal suspend fun serverHeld(itemIds: Collection<String>): Set<String> =
+        itemIds.chunked(500).flatMap { serverRecordDao.heldAmong(it) }.toSet()
+
+    /** The server's progress for [itemId] is gone, and the phone took the reset. */
+    internal suspend fun forgetServerHold(itemId: String) {
+        withContext(NonCancellable) { serverRecordDao.delete(itemId) }
+    }
+
+    /**
+     * Queue a book's saved spot for delivery when the server has never held
+     * progress for it, so a missing server record can never wipe progress the
+     * server simply never received (an upgrade from 2.1.x, or a spot whose
+     * delivery the old app dropped). Returns whether it queued anything.
+     */
+    suspend fun queueUnconfirmedProgress(itemId: String): Boolean =
+        pendingProgressQueueOwner.withItemLock(itemId) { queueUnconfirmedProgressLocked(itemId) }
+
+    private suspend fun queueUnconfirmedProgressLocked(itemId: String): Boolean {
+        if (serverRecordDao.heldAmong(listOf(itemId)).isNotEmpty()) return false
+        val hasUnsynced = pendingProgressQueueOwner.withLock { hasUnsyncedListeningLocked(itemId) }
+        if (hasUnsynced) return false
+        val planned = unconfirmedProgressRow(
+            itemId = itemId,
+            durable = playbackProgressDao.getByAudioBookId(itemId),
+            shelf = audioBookDao.getProgressStates(listOf(itemId)).firstOrNull(),
+        ) ?: return false
+        withContext(NonCancellable) {
+            pendingProgressQueueOwner.withLock {
+                database.withTransaction {
+                    pendingProgressDao.saveProgressAndEnqueue(progress = planned.first, pending = planned.second)
+                }
+            }
+            pendingProgressQueueOwner.localWriteOccurred(itemId)
+        }
+        Log.i(TAG, "Queued saved progress for $itemId, which the server has never held")
+        return true
     }
 
     // ─── Remote Progress ─────────────────────────────────────────────────
@@ -564,6 +622,7 @@ class ProgressRepository @Inject constructor(
     ) {
         val positionSeconds = serverProgressPositionSeconds(progress, durationSeconds)
         withContext(NonCancellable) {
+            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
             pendingProgressQueueOwner.withLock {
                 val inactive = pendingProgressQueueOwner.itemIsInactiveLocked(itemId)
                 val spot = ServerSpot(
@@ -730,6 +789,7 @@ class ProgressRepository @Inject constructor(
                 }
                 if (currentRows.isNotEmpty()) acknowledgeRows()
                 withContext(NonCancellable) {
+                    serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
                     offlineSessionDao.deleteSyncedBefore(itemId, System.currentTimeMillis() - OFFLINE_SESSION_GAP_MS)
                 }
                 ItemDelivery.DELIVERED
@@ -749,9 +809,24 @@ class ProgressRepository @Inject constructor(
      */
     suspend fun deliverAndReadServerProgress(itemId: String): ServerProgressRead =
         pendingProgressQueueOwner.withItemLock(itemId) {
+            // A saved spot the server never held goes first, so "no progress
+            // on the server" below can only mean it was removed there.
+            queueUnconfirmedProgressLocked(itemId)
             when (deliverItemLocked(itemId)) {
                 ItemDelivery.UNAVAILABLE, ItemDelivery.ITEM_GONE -> ServerProgressRead.Unavailable
-                ItemDelivery.NOTHING, ItemDelivery.DELIVERED -> readServerProgressWithin(itemId)
+                ItemDelivery.NOTHING, ItemDelivery.DELIVERED -> when (val read = readServerProgressWithin(itemId)) {
+                    is ServerProgressRead.Found -> {
+                        withContext(NonCancellable) {
+                            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
+                        }
+                        read
+                    }
+                    ServerProgressRead.Missing -> {
+                        forgetServerHold(itemId)
+                        read
+                    }
+                    ServerProgressRead.Unavailable -> read
+                }
             }
         }
 
@@ -934,6 +1009,53 @@ internal fun legacyPromotionTimestampMs(
     val rowMs = rows.maxByOrNull { it.id }?.timestamp?.toEpochMillis()
     val durableMs = durableProgress?.updatedAt?.toEpochMillis()
     return listOfNotNull(rowMs, durableMs).maxOrNull() ?: nowMs
+}
+
+/** What a book with progress here but none on the server gets. */
+internal enum class AbsentOnServer {
+    /** The server held progress for it, so it was removed there. */
+    RESET,
+
+    /** The server never held it. Deliver the phone's spot, never wipe it. */
+    DELIVER_FIRST,
+}
+
+internal fun absentOnServerAction(serverHeldIt: Boolean): AbsentOnServer =
+    if (serverHeldIt) AbsentOnServer.RESET else AbsentOnServer.DELIVER_FIRST
+
+/**
+ * The queue row that delivers a saved spot the server never held, and the
+ * saved row written with it (unchanged when there is one). It is dated when
+ * it was saved, or as old as can be when that is unknown, so the server
+ * keeps any spot it holds by then. Shelf progress with no saved row goes
+ * too. No progress anywhere is nothing to send.
+ */
+internal fun unconfirmedProgressRow(
+    itemId: String,
+    durable: PlaybackProgressEntity?,
+    shelf: BookProgressState?,
+): Pair<PlaybackProgressEntity, PendingProgressEntity>? {
+    val duration = shelf?.durationSeconds ?: 0.0
+    val progress = when {
+        durable != null && (durable.positionSeconds > 0.0 || durable.isFinished == 1) -> durable
+        durable == null && shelf != null && (shelf.currentTimeSeconds > 0.0 || shelf.progress > 0.0 || shelf.isFinished == 1) ->
+            PlaybackProgressEntity(
+                audioBookId = itemId,
+                positionSeconds = if (shelf.currentTimeSeconds > 0.0) shelf.currentTimeSeconds else shelf.progress * duration,
+                isFinished = shelf.isFinished,
+                updatedAt = null,
+            )
+        else -> return null
+    }
+    val timestampMs = progress.updatedAt?.toEpochMillis() ?: 0L
+    return progress to PendingProgressEntity(
+        itemId = itemId,
+        currentTime = progress.positionSeconds,
+        isFinished = progress.isFinished,
+        duration = duration,
+        isAtomic = 1,
+        timestamp = timestampMs.toIso8601(),
+    )
 }
 
 /** A server call made while a book's item lock is held waits no longer than this. */

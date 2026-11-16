@@ -63,6 +63,20 @@ interface AudioBookDao {
     @Query("SELECT Id, CurrentTimeSeconds, Progress, IsFinished, DurationSeconds FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getProgressStates(ids: List<String>): List<BookProgressState>
 
+    /**
+     * Server books of the current server's libraries that show any progress,
+     * on the shelf or in their saved spot. Local folder books never appear.
+     */
+    @Query(
+        """SELECT ab.Id FROM AudioBooks ab
+           LEFT JOIN PlaybackProgress pp ON pp.AudioBookId = ab.Id
+           WHERE ab.IsLocal = 0
+             AND ab.LibraryId IN (SELECT Id FROM Libraries WHERE IsLocal = 0)
+             AND (ab.CurrentTimeSeconds > 0 OR ab.Progress > 0 OR ab.IsFinished = 1
+                  OR pp.PositionSeconds > 0 OR pp.IsFinished = 1)"""
+    )
+    suspend fun getServerBookIdsWithProgress(): List<String>
+
     /** How many SERVER books one library has cached, downloads included. */
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0")
     suspend fun countServerBooksByLibrary(libraryId: String): Int

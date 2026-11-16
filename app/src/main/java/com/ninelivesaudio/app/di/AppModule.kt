@@ -52,6 +52,10 @@ object AppModule {
         db.localListeningSessionDao()
 
     @Provides
+    fun provideOfflineListeningSessionDao(db: AppDatabase): OfflineListeningSessionDao =
+        db.offlineListeningSessionDao()
+
+    @Provides
     fun provideLocalBookmarkDao(db: AppDatabase): LocalBookmarkDao =
         db.localBookmarkDao()
 }

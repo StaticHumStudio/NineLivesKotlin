@@ -116,6 +116,13 @@ interface AudiobookshelfApi {
         @Body request: SyncSessionRequest,
     ): Response<Unit>
 
+    /**
+     * Deliver listening made without a server session. The server refuses to
+     * move progress that was updated more recently than a session's updatedAt.
+     */
+    @POST("api/session/local-all")
+    suspend fun syncLocalSessions(@Body request: LocalSessionsRequest): Response<LocalSessionsResponse>
+
     /** Close a playback session. */
     @POST("api/session/{sessionId}/close")
     suspend fun closeSession(

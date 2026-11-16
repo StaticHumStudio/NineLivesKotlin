@@ -1,13 +1,18 @@
 package com.ninelivesaudio.app.data.repository
 
+import android.util.Log
 import androidx.room.withTransaction
 import com.ninelivesaudio.app.data.local.AppDatabase
+import com.ninelivesaudio.app.data.local.dao.OfflineListeningSessionDao
 import com.ninelivesaudio.app.data.local.dao.PendingProgressDao
 import com.ninelivesaudio.app.data.local.dao.PlaybackProgressDao
+import com.ninelivesaudio.app.data.local.entity.OfflineListeningSessionEntity
 import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.remote.ApiService
+import com.ninelivesaudio.app.data.remote.LocalSessionSync
 import com.ninelivesaudio.app.data.remote.ServerProgressRead
+import com.ninelivesaudio.app.data.remote.dto.ApiLocalSession
 import com.ninelivesaudio.app.domain.model.UserProgress
 import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.domain.util.toIso8601
@@ -16,6 +21,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration
@@ -206,6 +216,7 @@ class ProgressRepository @Inject constructor(
     private val database: AppDatabase,
     private val playbackProgressDao: PlaybackProgressDao,
     private val pendingProgressDao: PendingProgressDao,
+    private val offlineSessionDao: OfflineListeningSessionDao,
     private val apiService: ApiService,
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
@@ -282,29 +293,81 @@ class ProgressRepository @Inject constructor(
             }
         }
 
+    /** Queued progress rows plus sessions whose listening the server lacks. */
     suspend fun getPendingProgressCount(): Int =
-        pendingProgressQueueOwner.withLock { pendingProgressDao.getCount() }
+        pendingProgressQueueOwner.withLock {
+            pendingProgressDao.getCount() + offlineSessionDao.getUnsyncedCount()
+        }
 
     suspend fun clearPendingProgress() {
         pendingProgressQueueOwner.withLock {
             val rowIds = pendingProgressDao.getAll().map { it.id }
             pendingProgressDao.deleteAll()
+            offlineSessionDao.deleteAll()
             pendingProgressQueueOwner.forgetRows(rowIds)
         }
     }
 
+    /** Whether the book has local listening the server has not received. */
+    private suspend fun hasUnsyncedListeningLocked(itemId: String): Boolean =
+        pendingProgressDao.getCountForItem(itemId) > 0 ||
+            offlineSessionDao.getUnsyncedCountForItem(itemId) > 0
+
+    /**
+     * Add [listenedSeconds] of listening, made with no server session open, to
+     * the book's offline session, ending at [currentTime] now. Listening after
+     * a long gap starts a new session (see [offlineSessionAfterListening]).
+     */
+    suspend fun recordOfflineListening(
+        itemId: String,
+        displayTitle: String?,
+        listenedSeconds: Double,
+        currentTime: Double,
+        duration: Double,
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        if (listenedSeconds <= 0.0) return
+        pendingProgressQueueOwner.withItemLock(itemId) {
+            withContext(NonCancellable) {
+                val latest = offlineSessionDao.getForItem(itemId).maxByOrNull { it.updatedAt }
+                offlineSessionDao.upsert(
+                    offlineSessionAfterListening(
+                        latest = latest,
+                        itemId = itemId,
+                        displayTitle = displayTitle,
+                        listenedSeconds = listenedSeconds,
+                        currentTime = currentTime,
+                        duration = duration,
+                        nowMs = nowMs,
+                        newId = { UUID.randomUUID().toString() },
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Land one server progress record on a book the phone has no unsynced
+     * listening for. A book loaded in the player is not written here: the
+     * player owns its spot, so [onLoadedBook] hears about it instead, with
+     * the spot the phone had saved, and takes it only while paused.
+     */
     internal suspend fun importServerProgressIfNoPending(
         progress: PlaybackProgressEntity,
         importToken: PendingProgressQueueOwner.ImportToken,
         onImported: suspend () -> Unit,
+        onLoadedBook: suspend (savedPositionSeconds: Double?) -> Unit = {},
     ): Boolean =
-        pendingProgressQueueOwner.withItemLockIfInactive(progress.audioBookId) {
+        pendingProgressQueueOwner.withItemLock(progress.audioBookId) {
             pendingProgressQueueOwner.withLock {
                 if (!pendingProgressQueueOwner.importTokenIsCurrent(progress.audioBookId, importToken) ||
                     !serverProgressMayReplaceLocal(
-                        hasPendingProgress = pendingProgressDao.getCountForItem(progress.audioBookId) > 0,
+                        hasPendingProgress = hasUnsyncedListeningLocked(progress.audioBookId),
                     )
                 ) {
+                    false
+                } else if (!pendingProgressQueueOwner.itemIsInactiveLocked(progress.audioBookId)) {
+                    onLoadedBook(playbackProgressDao.getByAudioBookId(progress.audioBookId)?.positionSeconds)
                     false
                 } else {
                     database.withTransaction {
@@ -314,7 +377,7 @@ class ProgressRepository @Inject constructor(
                     true
                 }
             }
-        } ?: false
+        }
 
     internal fun progressImportToken(): PendingProgressQueueOwner.ImportToken =
         pendingProgressQueueOwner.importToken()
@@ -457,8 +520,9 @@ class ProgressRepository @Inject constructor(
 
     // ─── Remote Progress ─────────────────────────────────────────────────
 
-    suspend fun fetchAllProgressFromServer(): List<UserProgress> =
-        apiService.getAllUserProgress()
+    /** Every progress record of the account, or null when the server did not answer. */
+    suspend fun fetchAllProgressFromServer(): List<UserProgress>? =
+        apiService.fetchAllUserProgressOrNull()
 
     suspend fun fetchProgressFromServer(itemId: String): UserProgress? =
         apiService.getUserProgress(itemId)
@@ -485,167 +549,248 @@ class ProgressRepository @Inject constructor(
     }
 
     /**
-     * Drop a book's queue in favor of the server's later spot, and keep that
-     * spot locally unless the book is playing or stopping, whose progress the
-     * player owns. The caller holds the book's item lock.
+     * The server's spot for a book, after the phone's unsynced listening for
+     * it was delivered. A book nothing plays or stops takes it at once, inside
+     * the same transaction as [onServerSpot]. A book loaded in the player is
+     * left to the player, which takes it only while paused. The caller holds
+     * the book's item lock.
      */
     private suspend fun adoptServerProgressLocked(
         itemId: String,
         progress: UserProgress,
-        durationSeconds: Double,
-        onAdopted: suspend (itemId: String, positionSeconds: Double, progress: UserProgress) -> Unit,
+        durationSeconds: Double?,
+        savedPositionSeconds: Double?,
+        onServerSpot: suspend (ServerSpot) -> Unit,
     ) {
         val positionSeconds = serverProgressPositionSeconds(progress, durationSeconds)
         withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
-                database.withTransaction {
-                    applyServerSpot(
-                        itemIsInactive = pendingProgressQueueOwner.itemIsInactiveLocked(itemId),
-                        deleteQueuedRows = { pendingProgressDao.deleteByItemId(itemId) },
-                        keepServerSpotLocally = {
-                            playbackProgressDao.upsert(
-                                PlaybackProgressEntity(
-                                    audioBookId = itemId,
-                                    positionSeconds = positionSeconds,
-                                    isFinished = if (progress.isFinished) 1 else 0,
-                                    updatedAt = progress.lastUpdate?.toIso8601(),
-                                )
+                val inactive = pendingProgressQueueOwner.itemIsInactiveLocked(itemId)
+                val spot = ServerSpot(
+                    itemId = itemId,
+                    positionSeconds = positionSeconds,
+                    progress = progress,
+                    bookIsLoaded = !inactive,
+                    savedPositionSeconds = savedPositionSeconds,
+                )
+                if (inactive) {
+                    database.withTransaction {
+                        playbackProgressDao.upsert(
+                            PlaybackProgressEntity(
+                                audioBookId = itemId,
+                                positionSeconds = positionSeconds,
+                                isFinished = if (progress.isFinished) 1 else 0,
+                                updatedAt = progress.lastUpdate?.toIso8601(),
                             )
-                            onAdopted(itemId, positionSeconds, progress)
-                        },
-                    )
+                        )
+                        onServerSpot(spot)
+                    }
+                } else {
+                    onServerSpot(spot)
                 }
-                pendingProgressQueueOwner.forgetItemRows(itemId)
             }
             pendingProgressQueueOwner.localWriteOccurred(itemId)
         }
     }
 
     /**
-     * Flush all pending progress updates to the server. Each book's newest
-     * row meets the server's progress first (see [decideQueuedProgress]).
-     * The server's spot stands only when it is later than the row by more
-     * than the margin. Then [onServerProgressAdopted] runs inside
-     * the same transaction as the local write, to update the shelf.
+     * Send one book's unsynced listening (queued progress rows and offline
+     * sessions) through the offline session sync, where the server keeps any
+     * progress it updated more recently. The caller holds the book's item
+     * lock. Nothing is cleared unless the server answered.
+     */
+    private suspend fun deliverItemLocked(itemId: String): ItemDelivery {
+        var rows = pendingProgressQueueOwner.withLock {
+            pendingProgressDao.getForItem(itemId)
+        }
+
+        var durableProgress = playbackProgressDao.getByAudioBookId(itemId)
+        val legacySnapshot = legacyProgressSnapshot(rows, durableProgress)
+        if (legacySnapshot != null) {
+            // Keep the time the listening was saved. It is the time the
+            // server orders this spot by against other devices.
+            val timestamp = legacyPromotionTimestampMs(
+                rows = rows,
+                durableProgress = durableProgress,
+                nowMs = System.currentTimeMillis(),
+            ).toIso8601()
+            withContext(NonCancellable) {
+                pendingProgressQueueOwner.withLock {
+                    pendingProgressDao.saveProgressAndEnqueue(
+                        progress = PlaybackProgressEntity(
+                            audioBookId = itemId,
+                            positionSeconds = legacySnapshot.currentTime,
+                            isFinished = if (legacySnapshot.isFinished) 1 else 0,
+                            updatedAt = timestamp,
+                        ),
+                        pending = PendingProgressEntity(
+                            itemId = itemId,
+                            currentTime = legacySnapshot.currentTime,
+                            isFinished = if (legacySnapshot.isFinished) 1 else 0,
+                            duration = legacySnapshot.duration,
+                            isAtomic = 1,
+                            timestamp = timestamp,
+                        ),
+                    )
+                    pendingProgressQueueOwner.forgetItemRows(itemId)
+                }
+                pendingProgressQueueOwner.localWriteOccurred(itemId)
+            }
+            rows = pendingProgressQueueOwner.withLock {
+                pendingProgressDao.getForItem(itemId)
+            }
+            durableProgress = playbackProgressDao.getByAudioBookId(itemId)
+        }
+
+        val acknowledgeRows: suspend () -> Unit = {
+            withContext(NonCancellable) {
+                pendingProgressQueueOwner.withLock {
+                    pendingProgressDao.deleteByItemId(itemId)
+                    pendingProgressQueueOwner.forgetItemRows(itemId)
+                }
+                pendingProgressQueueOwner.localWriteOccurred(itemId)
+            }
+        }
+
+        if (queuedRowsAreSuperseded(rows, durableProgress)) {
+            acknowledgeRows()
+            rows = emptyList()
+        }
+
+        val staleRowIds = rows.filterNot { row ->
+            pendingProgressQueueOwner.rowIsCurrent(row.id)
+        }.map { it.id }
+        if (staleRowIds.isNotEmpty()) {
+            pendingProgressQueueOwner.withLock {
+                pendingProgressDao.deleteByIds(staleRowIds)
+                pendingProgressQueueOwner.forgetRows(staleRowIds)
+            }
+        }
+        val currentRows = rows.filterNot { it.id in staleRowIds }
+        val latest = currentRows.maxByOrNull { it.id }?.takeIf { it.isAtomic == 1 }
+
+        val stored = offlineSessionDao.getForItem(itemId)
+        val plan = offlineDelivery(
+            itemId = itemId,
+            queued = latest?.let {
+                QueuedSpot(
+                    rowId = it.id,
+                    rowTimestamp = it.timestamp,
+                    positionSeconds = it.currentTime,
+                    isFinished = it.isFinished == 1,
+                    durationSeconds = it.duration,
+                    // An unreadable time claims nothing newer than any spot
+                    // the server holds.
+                    timestampMs = it.timestamp.toEpochMillis() ?: 0L,
+                )
+            },
+            stored = stored,
+        )
+        if (plan.sessions.isEmpty()) {
+            // A delivered session already holds a later spot than the queue.
+            if (currentRows.isEmpty()) return ItemDelivery.NOTHING
+            acknowledgeRows()
+            return ItemDelivery.DELIVERED
+        }
+
+        val outcome = withTimeoutOrNull(PROGRESS_SERVER_CALL_TIMEOUT) {
+            apiService.syncLocalSessions(plan.sessions.map { it.toApiLocalSession() })
+        } ?: LocalSessionSync.Unavailable
+
+        return when (outcome) {
+            LocalSessionSync.Unavailable -> ItemDelivery.UNAVAILABLE
+            LocalSessionSync.ItemGone -> {
+                Log.w(TAG, "Dropping unsynced progress for $itemId: the server no longer has this book")
+                withContext(NonCancellable) {
+                    pendingProgressQueueOwner.withLock {
+                        pendingProgressDao.deleteByItemId(itemId)
+                        offlineSessionDao.deleteForItem(itemId)
+                        pendingProgressQueueOwner.forgetItemRows(itemId)
+                    }
+                    pendingProgressQueueOwner.localWriteOccurred(itemId)
+                }
+                ItemDelivery.ITEM_GONE
+            }
+            is LocalSessionSync.Delivered -> {
+                val storedIds = stored.map { it.id }.toSet()
+                withContext(NonCancellable) {
+                    plan.sessions.filter { it.id in storedIds }.forEach { sent ->
+                        offlineSessionDao.upsert(sent.copy(syncedTimeListening = sent.timeListening))
+                    }
+                }
+                // The session sync carries no finished flag. A finished spot
+                // the server took is marked finished outright, as live
+                // playback does.
+                val carrierTook = plan.carrierIndex?.let { outcome.progressSynced.getOrNull(it) } == true
+                if (latest != null && latest.isFinished == 1 && carrierTook) {
+                    val marked = withTimeoutOrNull(PROGRESS_SERVER_CALL_TIMEOUT) {
+                        apiService.updateProgress(itemId, latest.currentTime, true, latest.duration)
+                    } ?: false
+                    if (!marked) return ItemDelivery.UNAVAILABLE
+                }
+                if (currentRows.isNotEmpty()) acknowledgeRows()
+                withContext(NonCancellable) {
+                    offlineSessionDao.deleteSyncedBefore(itemId, System.currentTimeMillis() - OFFLINE_SESSION_GAP_MS)
+                }
+                ItemDelivery.DELIVERED
+            }
+        }
+    }
+
+    private suspend fun readServerProgressWithin(itemId: String): ServerProgressRead =
+        withTimeoutOrNull(PROGRESS_SERVER_CALL_TIMEOUT) { apiService.readUserProgress(itemId) }
+            ?: ServerProgressRead.Unavailable
+
+    /**
+     * Deliver one book's unsynced listening, then read the book's progress
+     * from the server, which is then the truth for the book. Anything left
+     * undelivered makes the answer [ServerProgressRead.Unavailable], since
+     * the server has not judged the phone's listening yet.
+     */
+    suspend fun deliverAndReadServerProgress(itemId: String): ServerProgressRead =
+        pendingProgressQueueOwner.withItemLock(itemId) {
+            when (deliverItemLocked(itemId)) {
+                ItemDelivery.UNAVAILABLE, ItemDelivery.ITEM_GONE -> ServerProgressRead.Unavailable
+                ItemDelivery.NOTHING, ItemDelivery.DELIVERED -> readServerProgressWithin(itemId)
+            }
+        }
+
+    /**
+     * Deliver all unsynced listening, book by book, through the offline
+     * session sync. Once a book's listening is delivered the server's spot
+     * is the truth, so it is read back and adopted ([adoptServerProgressLocked]).
+     * Returns whether everything was delivered.
      */
     suspend fun flushPendingProgress(
-        onServerProgressAdopted: suspend (itemId: String, positionSeconds: Double, progress: UserProgress) -> Unit,
+        onServerSpot: suspend (ServerSpot) -> Unit,
     ): Boolean {
         val itemIds = pendingProgressQueueOwner.withLock {
-            pendingProgressDao.getAll().map { it.itemId }.distinct()
+            (pendingProgressDao.getAll().map { it.itemId } + offlineSessionDao.getItemIdsWithUnsynced()).distinct()
         }
         if (itemIds.isEmpty()) return true
 
-        // Group by item, push only the latest entry per item. On success, delete
-        // ALL fetched rows for that item so superseded older rows don't linger.
         var allSuccess = true
         for (itemId in itemIds) {
             pendingProgressQueueOwner.withItemLock(itemId) {
-                var rows = pendingProgressQueueOwner.withLock {
-                    pendingProgressDao.getForItem(itemId)
-                }
-
-                var durableProgress = playbackProgressDao.getByAudioBookId(itemId)
-                val legacySnapshot = legacyProgressSnapshot(rows, durableProgress)
-                if (legacySnapshot != null) {
-                    // Keep the time the listening was saved, so the server
-                    // read below can still tell whether another device moved
-                    // the book after it.
-                    val timestamp = legacyPromotionTimestampMs(
-                        rows = rows,
-                        durableProgress = durableProgress,
-                        nowMs = System.currentTimeMillis(),
-                    ).toIso8601()
-                    withContext(NonCancellable) {
-                        pendingProgressQueueOwner.withLock {
-                            pendingProgressDao.saveProgressAndEnqueue(
-                                progress = PlaybackProgressEntity(
-                                    audioBookId = itemId,
-                                    positionSeconds = legacySnapshot.currentTime,
-                                    isFinished = if (legacySnapshot.isFinished) 1 else 0,
-                                    updatedAt = timestamp,
-                                ),
-                                pending = PendingProgressEntity(
-                                    itemId = itemId,
-                                    currentTime = legacySnapshot.currentTime,
-                                    isFinished = if (legacySnapshot.isFinished) 1 else 0,
-                                    duration = legacySnapshot.duration,
-                                    isAtomic = 1,
-                                    timestamp = timestamp,
-                                ),
+                val saved = playbackProgressDao.getByAudioBookId(itemId)
+                val durationHint = pendingProgressDao.getForItem(itemId).maxByOrNull { it.id }?.duration
+                    ?: offlineSessionDao.getForItem(itemId).lastOrNull()?.duration
+                when (deliverItemLocked(itemId)) {
+                    ItemDelivery.UNAVAILABLE -> allSuccess = false
+                    ItemDelivery.NOTHING, ItemDelivery.ITEM_GONE -> Unit
+                    ItemDelivery.DELIVERED -> {
+                        val read = readServerProgressWithin(itemId)
+                        if (read is ServerProgressRead.Found) {
+                            adoptServerProgressLocked(
+                                itemId = itemId,
+                                progress = read.progress,
+                                durationSeconds = durationHint,
+                                savedPositionSeconds = saved?.positionSeconds,
+                                onServerSpot = onServerSpot,
                             )
-                            pendingProgressQueueOwner.forgetItemRows(itemId)
                         }
-                        pendingProgressQueueOwner.localWriteOccurred(itemId)
-                    }
-                    rows = pendingProgressQueueOwner.withLock {
-                        pendingProgressDao.getForItem(itemId)
-                    }
-                    durableProgress = playbackProgressDao.getByAudioBookId(itemId)
-                }
-
-                if (queuedRowsAreSuperseded(rows, durableProgress)) {
-                    withContext(NonCancellable) {
-                        pendingProgressQueueOwner.withLock {
-                            pendingProgressDao.deleteByItemId(itemId)
-                            pendingProgressQueueOwner.forgetItemRows(itemId)
-                        }
-                        pendingProgressQueueOwner.localWriteOccurred(itemId)
-                    }
-                    return@withItemLock
-                }
-
-                val staleRowIds = rows.filterNot { row ->
-                    pendingProgressQueueOwner.rowIsCurrent(row.id)
-                }.map { it.id }
-                if (staleRowIds.isNotEmpty()) {
-                    pendingProgressQueueOwner.withLock {
-                        pendingProgressDao.deleteByIds(staleRowIds)
-                        pendingProgressQueueOwner.forgetRows(staleRowIds)
                     }
                 }
-
-                val currentRows = rows.filterNot { it.id in staleRowIds }
-                val push = latestPushArgs(currentRows) ?: return@withItemLock
-                val acknowledge: suspend () -> Unit = {
-                    withContext(NonCancellable) {
-                        pendingProgressQueueOwner.withLock {
-                            pendingProgressDao.deleteByItemId(itemId)
-                            pendingProgressQueueOwner.forgetItemRows(itemId)
-                        }
-                        pendingProgressQueueOwner.localWriteOccurred(itemId)
-                    }
-                }
-                // The row may be hours old. Another device may have moved the
-                // book since, so the server is read first (issue #118).
-                val settled = settleQueuedProgress(
-                    row = QueuedProgressFacts(
-                        positionSeconds = push.currentTime,
-                        isFinished = push.isFinished,
-                        durationSeconds = push.duration,
-                        timestampMs = currentRows.maxBy { it.id }.timestamp.toEpochMillis(),
-                    ),
-                    readServer = { apiService.readUserProgress(itemId) },
-                    phoneNowMs = System::currentTimeMillis,
-                    push = {
-                        apiService.updateProgress(
-                            itemId,
-                            push.currentTime,
-                            push.isFinished,
-                            push.duration,
-                        )
-                    },
-                    acknowledge = acknowledge,
-                    adoptServerProgress = { progress ->
-                        adoptServerProgressLocked(
-                            itemId = itemId,
-                            progress = progress,
-                            durationSeconds = push.duration,
-                            onAdopted = onServerProgressAdopted,
-                        )
-                    },
-                )
-                if (!settled) allSuccess = false
             }
         }
 
@@ -658,6 +803,35 @@ class ProgressRepository @Inject constructor(
         playbackProgressDao.deleteAll()
         clearPendingProgress()
     }
+
+    private companion object {
+        const val TAG = "ProgressRepository"
+    }
+}
+
+/** A server spot for one book, read after the phone's listening was delivered. */
+data class ServerSpot(
+    val itemId: String,
+    val positionSeconds: Double,
+    val progress: UserProgress,
+    /** The book is loaded in the player, so only the player may move it. */
+    val bookIsLoaded: Boolean,
+    /** Where the phone had the book saved when the server was asked. */
+    val savedPositionSeconds: Double?,
+)
+
+internal enum class ItemDelivery {
+    /** The book had nothing to send. */
+    NOTHING,
+
+    /** The server has all of it (whether it took the spot or kept a newer one). */
+    DELIVERED,
+
+    /** No answer. Everything stays for the next try. */
+    UNAVAILABLE,
+
+    /** The server no longer has the book. Its unsynced listening was dropped. */
+    ITEM_GONE,
 }
 
 data class PendingProgressEntry(
@@ -666,13 +840,6 @@ data class PendingProgressEntry(
     val isFinished: Boolean,
     val duration: Double,
     val timestamp: Long,
-)
-
-/** The fields pushed for one item's queued progress: the latest row wins. */
-data class PendingPushArgs(
-    val currentTime: Double,
-    val isFinished: Boolean,
-    val duration: Double,
 )
 
 internal data class LegacyProgressSnapshot(
@@ -701,26 +868,17 @@ internal fun legacyProgressSnapshot(
 }
 
 /**
- * Pick the latest queued row by its auto-generated Room ID. IDs preserve local
- * insertion order even if the device wall clock moves backward. Pure, so the
- * duration-carrying behavior is unit-testable without the DB.
+ * Whether a live push may send this spot with PATCH, which needs the length
+ * to compute the fraction. Queued spots go through the offline session sync
+ * instead, where the server supplies the length, so any of them can go.
  */
-internal fun latestPushArgs(rows: List<PendingProgressEntity>): PendingPushArgs? {
-    val latest = rows.maxByOrNull { it.id } ?: return null
-    if (latest.isAtomic != 1) return null
-    if (!progressCanBeDelivered(latest.isFinished == 1, latest.duration)) return null
-    return PendingPushArgs(latest.currentTime, latest.isFinished == 1, latest.duration)
-}
-
 internal fun progressCanBeDelivered(isFinished: Boolean, duration: Double): Boolean =
     isFinished || duration > 0.0
 
 /**
- * A server import never replaces a book with a queued local write, whatever
- * the clocks say. The queued write meets the server's progress in the flush
- * instead, where [decideQueuedProgress] orders the two by age, each measured
- * on its own clock, and the server's spot stands only on evidence that it is
- * later than the queued write by more than the margin.
+ * A server import never replaces a book with unsynced local listening,
+ * whatever the clocks say. That listening goes to the server first, which
+ * keeps its own progress when it is newer (see [offlineDelivery]).
  */
 internal fun serverProgressMayReplaceLocal(hasPendingProgress: Boolean): Boolean =
     !hasPendingProgress
@@ -761,134 +919,6 @@ internal fun serverProgressPositionSeconds(progress: UserProgress, durationSecon
     }
 }
 
-/** The newest queued row for one book, the one a flush would send. */
-internal data class QueuedProgressFacts(
-    val positionSeconds: Double,
-    val isFinished: Boolean,
-    val durationSeconds: Double,
-    /** When the phone saved the row, on the phone's clock. */
-    val timestampMs: Long?,
-)
-
-internal enum class QueuedProgressDecision {
-    /** Send the row. The default whenever there is no evidence against it. */
-    PUSH,
-
-    /** The server already holds the row's spot. Nothing to send. */
-    ALREADY_ON_SERVER,
-
-    /** The server's update is later than the row by more than the margin. Keep it. */
-    SERVER_STANDS,
-}
-
-/** The server's update must be later than the row by more than this to stand. */
-internal const val QUEUED_PROGRESS_ORDER_MARGIN_MS = 30_000L
-
-/** Two positions this close are the same spot. */
-internal const val SAME_SPOT_TOLERANCE_SECONDS = 0.05
-
-/**
- * The Date header counts whole seconds, so an age a hair below zero is
- * rounding, not a clock that moved. Anything further below zero is.
- */
-internal const val CLOCK_ROUNDING_TOLERANCE_MS = 2_000L
-
-/**
- * The server read runs while the book's item lock is held, and play, stop and
- * heartbeat saves for that book wait on it. A read that takes longer counts
- * as no answer.
- */
-internal val QUEUED_PROGRESS_READ_TIMEOUT: Duration = 10.seconds
-
-/**
- * Decide what a queued row does against what the server holds. Never
- * overwrite newer progress another device made, and never lose progress made
- * here. The server's spot stands only on evidence that its update is later
- * than the row by more than [QUEUED_PROGRESS_ORDER_MARGIN_MS]. Everything else
- * pushes, because a lone phone is the common case and its queued row is its
- * own latest act. The two acts are ordered by age, each measured on its own
- * clock (the server's age from the server's Date header, the row's age from
- * the phone's clock), so a wrong wall clock on either side cancels out.
- */
-internal fun decideQueuedProgress(
-    row: QueuedProgressFacts,
-    server: ServerProgressRead.Answered,
-    phoneNowMs: Long,
-): QueuedProgressDecision {
-    val found = when (server) {
-        is ServerProgressRead.Missing -> return QueuedProgressDecision.PUSH
-        is ServerProgressRead.Found -> server
-    }
-    val serverPosition = serverProgressPositionSeconds(found.progress, row.durationSeconds)
-    if (found.progress.isFinished == row.isFinished &&
-        kotlin.math.abs(serverPosition - row.positionSeconds) <= SAME_SPOT_TOLERANCE_SECONDS
-    ) {
-        return QueuedProgressDecision.ALREADY_ON_SERVER
-    }
-
-    val serverLastUpdate = found.progress.lastUpdate
-    val rowTimestamp = row.timestampMs
-    if (serverLastUpdate == null || rowTimestamp == null) return QueuedProgressDecision.PUSH
-
-    val serverIsLater = when (val serverNow = found.serverNowMs) {
-        // No server clock: the server's lastUpdate meets the row's own time.
-        null -> serverLastUpdate - rowTimestamp > QUEUED_PROGRESS_ORDER_MARGIN_MS
-        else -> {
-            val serverAge = serverNow - serverLastUpdate
-            val ourAge = phoneNowMs - rowTimestamp
-            // A clearly negative age means a clock moved. That is no evidence.
-            if (serverAge < -CLOCK_ROUNDING_TOLERANCE_MS || ourAge < -CLOCK_ROUNDING_TOLERANCE_MS) {
-                return QueuedProgressDecision.PUSH
-            }
-            ourAge.coerceAtLeast(0) - serverAge.coerceAtLeast(0) > QUEUED_PROGRESS_ORDER_MARGIN_MS
-        }
-    }
-    return if (serverIsLater) QueuedProgressDecision.SERVER_STANDS else QueuedProgressDecision.PUSH
-}
-
-/**
- * One book's queued progress meets the server before it is sent. Returns
- * whether the book's queue is settled. A server that cannot be asked, or does
- * not answer within [readTimeout], keeps the queue for the next flush.
- * [acknowledge] clears the queue, and [adoptServerProgress] clears it and
- * keeps the server's spot.
- */
-internal suspend fun settleQueuedProgress(
-    row: QueuedProgressFacts,
-    readServer: suspend () -> ServerProgressRead,
-    phoneNowMs: () -> Long,
-    push: suspend () -> Boolean,
-    acknowledge: suspend () -> Unit,
-    adoptServerProgress: suspend (UserProgress) -> Unit,
-    readTimeout: Duration = QUEUED_PROGRESS_READ_TIMEOUT,
-): Boolean {
-    // Taken before asking. The server stamps its Date when it answers, so a
-    // later reading would count the response time as our age and tilt the
-    // order toward the server.
-    val askedAtMs = phoneNowMs()
-    val read = withTimeoutOrNull(readTimeout) { readServer() } ?: ServerProgressRead.Unavailable
-    val server = when (read) {
-        ServerProgressRead.Unavailable -> return false
-        is ServerProgressRead.Answered -> read
-    }
-    return when (decideQueuedProgress(row, server, askedAtMs)) {
-        QueuedProgressDecision.PUSH -> {
-            val pushed = push()
-            if (pushed) acknowledge()
-            pushed
-        }
-        QueuedProgressDecision.ALREADY_ON_SERVER -> {
-            acknowledge()
-            true
-        }
-        QueuedProgressDecision.SERVER_STANDS -> {
-            // Only a Found answer can stand against the row.
-            adoptServerProgress((server as ServerProgressRead.Found).progress)
-            true
-        }
-    }
-}
-
 /**
  * The time a promoted legacy queue was saved: the newest legacy row's own
  * timestamp, or the durable row's when that is later. Stamping it with now
@@ -906,16 +936,138 @@ internal fun legacyPromotionTimestampMs(
     return listOfNotNull(rowMs, durableMs).maxOrNull() ?: nowMs
 }
 
+/** A server call made while a book's item lock is held waits no longer than this. */
+internal val PROGRESS_SERVER_CALL_TIMEOUT: Duration = 10.seconds
+
 /**
- * The server's spot stands against a book's queue. The queue goes either
- * way. The spot lands locally only when nothing plays or stops the book,
- * because otherwise the player owns its progress.
+ * Listening on the same book within this long of a session's last update
+ * joins that session. Later listening starts a new one.
  */
-internal suspend fun applyServerSpot(
-    itemIsInactive: Boolean,
-    deleteQueuedRows: suspend () -> Unit,
-    keepServerSpotLocally: suspend () -> Unit,
-) {
-    deleteQueuedRows()
-    if (itemIsInactive) keepServerSpotLocally()
+internal const val OFFLINE_SESSION_GAP_MS = 10 * 60_000L
+
+/**
+ * The book's offline session once [listenedSeconds] more listening ended at
+ * [currentTime], [nowMs]. Listening soon after the latest session continues
+ * it, with its whole time, so a second delivery of it replaces the first on
+ * the server. A gap, or a clock that moved back, starts a new one.
+ */
+internal fun offlineSessionAfterListening(
+    latest: OfflineListeningSessionEntity?,
+    itemId: String,
+    displayTitle: String?,
+    listenedSeconds: Double,
+    currentTime: Double,
+    duration: Double,
+    nowMs: Long,
+    newId: () -> String,
+): OfflineListeningSessionEntity =
+    if (latest != null && nowMs >= latest.updatedAt && nowMs - latest.updatedAt <= OFFLINE_SESSION_GAP_MS) {
+        latest.copy(
+            displayTitle = displayTitle ?: latest.displayTitle,
+            updatedAt = nowMs,
+            currentTime = currentTime,
+            duration = if (duration > 0.0) duration else latest.duration,
+            timeListening = latest.timeListening + listenedSeconds,
+        )
+    } else {
+        OfflineListeningSessionEntity(
+            id = newId(),
+            itemId = itemId,
+            displayTitle = displayTitle,
+            startedAt = nowMs - (listenedSeconds * 1000).toLong(),
+            updatedAt = nowMs,
+            startTime = (currentTime - listenedSeconds).coerceAtLeast(0.0),
+            currentTime = currentTime,
+            duration = duration,
+            timeListening = listenedSeconds,
+        )
+    }
+
+/** The newest queued progress row of one book. */
+internal data class QueuedSpot(
+    val rowId: Long,
+    val rowTimestamp: String,
+    val positionSeconds: Double,
+    val isFinished: Boolean,
+    val durationSeconds: Double,
+    /** When the phone saved the spot, which is when the listening happened. */
+    val timestampMs: Long,
+)
+
+/**
+ * What one delivery sends: [sessions] in the order the server applies them,
+ * oldest first, and which of them carries the queued spot, if any.
+ */
+internal data class OfflineDeliveryPlan(
+    val sessions: List<OfflineListeningSessionEntity>,
+    val carrierIndex: Int?,
+)
+
+/**
+ * Plan one book's delivery. Every session with listening the server lacks
+ * goes. The queued spot rides on the latest session when it came after it
+ * (and soon enough to belong to it), or on a session of its own with no
+ * listening time when there is none. A queued spot older than a session's
+ * spot claims nothing, because the session's spot is the phone's later one.
+ * A finished spot is sent at the end of the book, where the server marks a
+ * book finished. A spot-only session's id comes from the row, so sending the
+ * same row twice is one session on the server.
+ */
+internal fun offlineDelivery(
+    itemId: String,
+    queued: QueuedSpot?,
+    stored: List<OfflineListeningSessionEntity>,
+): OfflineDeliveryPlan {
+    val unsynced = stored.filter { it.timeListening > it.syncedTimeListening }
+    if (queued == null) return OfflineDeliveryPlan(unsynced.sortedBy { it.updatedAt }, carrierIndex = null)
+
+    val position = if (queued.isFinished && queued.durationSeconds > 0.0) {
+        maxOf(queued.positionSeconds, queued.durationSeconds)
+    } else {
+        queued.positionSeconds
+    }
+    val newest = stored.maxByOrNull { it.updatedAt }
+    if (newest != null && newest.updatedAt > queued.timestampMs) {
+        return OfflineDeliveryPlan(unsynced.sortedBy { it.updatedAt }, carrierIndex = null)
+    }
+    val carrier = if (newest != null && queued.timestampMs - newest.updatedAt <= OFFLINE_SESSION_GAP_MS) {
+        newest.copy(
+            updatedAt = queued.timestampMs,
+            currentTime = position,
+            duration = if (queued.durationSeconds > 0.0) queued.durationSeconds else newest.duration,
+        )
+    } else {
+        OfflineListeningSessionEntity(
+            id = UUID.nameUUIDFromBytes("$itemId:${queued.rowId}:${queued.rowTimestamp}".toByteArray()).toString(),
+            itemId = itemId,
+            startedAt = queued.timestampMs,
+            updatedAt = queued.timestampMs,
+            startTime = position,
+            currentTime = position,
+            duration = queued.durationSeconds,
+        )
+    }
+    val sessions = (unsynced.filterNot { it.id == carrier.id } + carrier).sortedBy { it.updatedAt }
+    return OfflineDeliveryPlan(sessions, carrierIndex = sessions.indexOfFirst { it.id == carrier.id })
+}
+
+private val SESSION_DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
+private val SESSION_DAY_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE", Locale.US)
+
+/** The offline session sync's shape of one session, dated on the phone's calendar. */
+internal fun OfflineListeningSessionEntity.toApiLocalSession(zone: ZoneId = ZoneId.systemDefault()): ApiLocalSession {
+    val day = Instant.ofEpochMilli(updatedAt).atZone(zone)
+    return ApiLocalSession(
+        id = id,
+        libraryItemId = itemId,
+        displayTitle = displayTitle,
+        duration = duration,
+        startTime = startTime,
+        currentTime = currentTime,
+        timeListening = timeListening,
+        startedAt = startedAt,
+        updatedAt = updatedAt,
+        date = SESSION_DATE_FORMAT.format(day),
+        dayOfWeek = SESSION_DAY_FORMAT.format(day),
+    )
 }

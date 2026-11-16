@@ -32,7 +32,7 @@ class MigrationsTest {
             .mapNotNull { it.name.removeSuffix(".json").toIntOrNull() }
             .maxOrNull()
 
-        assertEquals((1 until 11).map { it to it + 1 }, steps)
+        assertEquals((1 until 12).map { it to it + 1 }, steps)
         assertEquals(newestSchema, steps.last().second)
     }
 
@@ -103,6 +103,25 @@ class MigrationsTest {
 
         assertTrue("LibraryAuthors missing from the exported v11 schema", expected != null)
         assertEquals(listOf(expected), executed)
+    }
+
+    @Test
+    fun `11 to 12 only creates the offline sessions table and index Room expects`() {
+        val executed = mutableListOf<String>()
+        MIGRATION_11_12.migrate(recordingDatabase(executed))
+
+        val entity = Json.parseToJsonElement(File(schemaDir, "12.json").readText())
+            .jsonObject.getValue("database").jsonObject.getValue("entities").jsonArray
+            .map { it.jsonObject }
+            .single { it["tableName"]?.jsonPrimitive?.content == "OfflineListeningSessions" }
+        val table = entity.getValue("createSql").jsonPrimitive.content
+            .replace("\${TABLE_NAME}", "OfflineListeningSessions")
+        val indices = entity.getValue("indices").jsonArray.map {
+            it.jsonObject.getValue("createSql").jsonPrimitive.content
+                .replace("\${TABLE_NAME}", "OfflineListeningSessions")
+        }
+
+        assertEquals(listOf(table) + indices, executed)
     }
 
     private data class BookRow(

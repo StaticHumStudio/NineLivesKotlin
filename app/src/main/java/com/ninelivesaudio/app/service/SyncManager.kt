@@ -14,7 +14,9 @@ import com.ninelivesaudio.app.data.repository.AudioBookRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.ProgressRepository
 import com.ninelivesaudio.app.data.repository.itemCountResult
+import com.ninelivesaudio.app.data.repository.ServerSpot
 import com.ninelivesaudio.app.data.repository.serverProgressPositionSeconds
+import com.ninelivesaudio.app.data.remote.ServerProgressRead
 import com.ninelivesaudio.app.data.repository.wroteBooks
 import com.ninelivesaudio.app.service.download.DownloadedCoverRefresher
 import com.ninelivesaudio.app.data.repository.LibraryRefreshOutcome
@@ -125,6 +127,14 @@ class SyncManager @Inject constructor(
      */
     private val _progressPulled = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
     val progressPulled: SharedFlow<Unit> = _progressPulled.asSharedFlow()
+
+    /**
+     * The server's spot for the book loaded in the player, found by a
+     * progress import or after a flush delivered the phone's listening. The
+     * player takes it while the book is paused (#118).
+     */
+    private val _serverSpotForLoadedBook = MutableSharedFlow<ServerSpot>(replay = 0, extraBufferCapacity = 8)
+    val serverSpotForLoadedBook: SharedFlow<ServerSpot> = _serverSpotForLoadedBook.asSharedFlow()
 
     // ─── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -449,8 +459,8 @@ class SyncManager @Inject constructor(
     private suspend fun syncProgress() {
         try {
             val importToken = progressRepository.progressImportToken()
-            val serverProgressList = progressRepository.fetchAllProgressFromServer()
-            if (serverProgressList.isEmpty()) return
+            // Null is no answer. An empty list is an answer: no progress.
+            val serverProgressList = progressRepository.fetchAllProgressFromServer() ?: return
 
             val ids = serverProgressList.map { it.libraryItemId }.distinct()
             val books = HashMap<String, BookProgressState>()
@@ -462,12 +472,10 @@ class SyncManager @Inject constructor(
             val fetchIndividually = unknownBooksToFetch(serverProgressList, books.keys)
 
             for (progress in serverProgressList) {
-                // Active playback and queued local writes own progress. In
-                // particular, never compare server and phone wall clocks here
-                // to decide whether an unsent offline write survives. The
-                // queued write meets the server in the flush instead, which
-                // orders the two by age, each on its own clock, and keeps the
-                // server's spot only when it is clearly later.
+                // Unsynced local listening owns progress until it is
+                // delivered. The flush sends it, the server keeps whichever
+                // spot is newer, and the phone then takes the server's spot.
+                // Never compare server and phone wall clocks here.
                 try {
                     val itemId = progress.libraryItemId
                     var book = books[itemId]
@@ -498,23 +506,40 @@ class SyncManager @Inject constructor(
                         )
                     ) continue
 
-                    // The repository checks the queue while holding the same
-                    // per-book ownership used by enqueue and flush. A pending
-                    // local write wins this import regardless of server clock
-                    // skew. Whether it reaches the server is decided when the
-                    // flush reads the server first (see decideQueuedProgress).
                     val bookKnown = book != null
-                    progressRepository.importServerProgressIfNoPending(
-                        PlaybackProgressEntity(
-                            audioBookId = itemId,
-                            positionSeconds = positionSeconds,
-                            isFinished = if (progress.isFinished) 1 else 0,
-                            updatedAt = updatedAtStr,
+                    importServerSpot(
+                        itemId = itemId,
+                        positionSeconds = positionSeconds,
+                        progress = progress,
+                        importToken = importToken,
+                        bookKnown = bookKnown,
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Continue with next item
+                }
+            }
+
+            // Progress reset or removed on the server leaves no record. A
+            // server book here that still shows progress takes the reset,
+            // unless it has listening the server has not received yet.
+            val onServer = ids.toSet()
+            for (itemId in audioBookDao.getServerBookIdsWithProgress()) {
+                if (itemId in onServer) continue
+                try {
+                    importServerSpot(
+                        itemId = itemId,
+                        positionSeconds = 0.0,
+                        progress = UserProgress(
+                            libraryItemId = itemId,
+                            currentTime = kotlin.time.Duration.ZERO,
+                            progress = 0.0,
+                            isFinished = false,
+                            lastUpdate = null,
                         ),
                         importToken = importToken,
-                        onImported = {
-                            if (bookKnown) writeServerProgressToShelf(itemId, positionSeconds, progress)
-                        },
+                        bookKnown = true,
                     )
                 } catch (e: CancellationException) {
                     throw e
@@ -527,6 +552,57 @@ class SyncManager @Inject constructor(
         } catch (_: Exception) {
             // Non-fatal
         }
+    }
+
+    /**
+     * Land a server spot on a book with no unsynced local listening. The
+     * repository checks the queue while holding the same per-book ownership
+     * used by enqueue and flush. A book loaded in the player hears about it
+     * through [serverSpotForLoadedBook] instead.
+     */
+    private suspend fun importServerSpot(
+        itemId: String,
+        positionSeconds: Double,
+        progress: UserProgress,
+        importToken: com.ninelivesaudio.app.data.repository.PendingProgressQueueOwner.ImportToken,
+        bookKnown: Boolean,
+    ) {
+        progressRepository.importServerProgressIfNoPending(
+            PlaybackProgressEntity(
+                audioBookId = itemId,
+                positionSeconds = positionSeconds,
+                isFinished = if (progress.isFinished) 1 else 0,
+                updatedAt = progress.lastUpdate?.toIso8601(),
+            ),
+            importToken = importToken,
+            onImported = {
+                if (bookKnown) writeServerProgressToShelf(itemId, positionSeconds, progress)
+            },
+            onLoadedBook = { savedPositionSeconds ->
+                _serverSpotForLoadedBook.tryEmit(
+                    ServerSpot(
+                        itemId = itemId,
+                        positionSeconds = positionSeconds,
+                        progress = progress,
+                        bookIsLoaded = true,
+                        savedPositionSeconds = savedPositionSeconds,
+                    )
+                )
+            },
+        )
+    }
+
+    /**
+     * Deliver one book's unsynced listening, then read the book's progress
+     * from the server. A load and a resume call this, so a book never starts
+     * from a spot another device has since moved past. Answers
+     * [ServerProgressRead.Unavailable] in LOCAL mode, signed out, or with
+     * listening still undelivered.
+     */
+    suspend fun settleBookProgress(itemId: String): ServerProgressRead {
+        if (settingsManager.currentSettings.appMode == AppMode.LOCAL) return ServerProgressRead.Unavailable
+        if (!hasAuthToken()) return ServerProgressRead.Unavailable
+        return progressRepository.deliverAndReadServerProgress(itemId)
     }
 
     // ─── Position Reporting (from PlaybackManager) ───────────────────────────
@@ -712,7 +788,13 @@ class SyncManager @Inject constructor(
             val count = progressRepository.getPendingProgressCount()
             if (count > 0) {
                 progressRepository.flushPendingProgress(
-                    onServerProgressAdopted = ::writeServerProgressToShelf,
+                    onServerSpot = { spot ->
+                        if (spot.bookIsLoaded) {
+                            _serverSpotForLoadedBook.tryEmit(spot)
+                        } else {
+                            writeServerProgressToShelf(spot.itemId, spot.positionSeconds, spot.progress)
+                        }
+                    },
                 )
             }
         } catch (_: Exception) {

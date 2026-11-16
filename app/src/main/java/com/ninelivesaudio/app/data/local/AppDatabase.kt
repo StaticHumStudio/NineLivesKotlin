@@ -15,8 +15,9 @@ import com.ninelivesaudio.app.data.local.entity.*
         LocalListeningSessionEntity::class,
         LocalBookmarkEntity::class,
         LibraryAuthorEntity::class,
+        OfflineListeningSessionEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -28,6 +29,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun localListeningSessionDao(): LocalListeningSessionDao
     abstract fun localBookmarkDao(): LocalBookmarkDao
     abstract fun libraryAuthorDao(): LibraryAuthorDao
+    abstract fun offlineListeningSessionDao(): OfflineListeningSessionDao
 
     companion object {
         const val DATABASE_NAME = "audiobookshelf.db"

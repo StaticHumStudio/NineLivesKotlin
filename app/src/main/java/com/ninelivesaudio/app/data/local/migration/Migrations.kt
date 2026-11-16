@@ -129,6 +129,23 @@ val MIGRATION_10_11 = object : Migration(10, 11) {
     }
 }
 
+val MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Listening on server books with no server session open (issue #118),
+        // kept until the offline session sync delivers it. A new table only.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `OfflineListeningSessions` (`Id` TEXT NOT NULL, `ItemId` TEXT NOT NULL, " +
+                "`DisplayTitle` TEXT, `StartedAt` INTEGER NOT NULL, `UpdatedAt` INTEGER NOT NULL, " +
+                "`StartTime` REAL NOT NULL DEFAULT 0, `CurrentTime` REAL NOT NULL DEFAULT 0, " +
+                "`Duration` REAL NOT NULL DEFAULT 0, `TimeListening` REAL NOT NULL DEFAULT 0, " +
+                "`SyncedTimeListening` REAL NOT NULL DEFAULT 0, PRIMARY KEY(`Id`))"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `idx_offline_session_item` ON `OfflineListeningSessions` (`ItemId`)"
+        )
+    }
+}
+
 /** Rows read per backfill page, so a huge library never sits in memory whole. */
 internal const val SEARCH_BACKFILL_PAGE_SIZE = 500
 
@@ -184,4 +201,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_8_9,
     MIGRATION_9_10,
     MIGRATION_10_11,
+    MIGRATION_11_12,
 )

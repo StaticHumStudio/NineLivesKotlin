@@ -1,6 +1,11 @@
 package com.ninelivesaudio.app.service
 
 import androidx.media3.common.Player
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -63,7 +68,10 @@ internal fun playAction(bookLoading: Boolean, hasRetainedBook: Boolean, mediaIte
 /**
  * Whether a retry that waited on its book's terminal write may still prepare
  * the player. A load that started meanwhile owns the player even though the
- * previous book is still current, so the retry stands down.
+ * previous book is still current, so the retry stands down. So does one that
+ * a stop, an error or a load overtook, which moves the playback generation: a
+ * soft stop keeps the book and the player, and preparing its emptied
+ * playlist would end at once and mark the book finished (#121 review).
  */
 internal fun retainedRetryStillApplies(
     currentBookId: String?,
@@ -71,7 +79,8 @@ internal fun retainedRetryStillApplies(
     samePlayer: Boolean,
     playerNeedsPreparation: Boolean,
     bookLoading: Boolean,
-): Boolean = currentBookId == retryBookId && samePlayer && playerNeedsPreparation && !bookLoading
+    generationUnchanged: Boolean,
+): Boolean = currentBookId == retryBookId && samePlayer && playerNeedsPreparation && !bookLoading && generationUnchanged
 
 /**
  * The error retry from play() (#43). It waits for the book's terminal write,
@@ -179,4 +188,52 @@ internal fun seekIsUsers(appPositioning: Boolean, bookLoading: Boolean, playback
  */
 internal suspend fun closeLeftoverSession(listening: ServerSessionListening?, closeRemote: suspend () -> Unit) {
     if (listening != null) listening.close(closeRemote) else closeRemote()
+}
+
+/**
+ * The work a stop, an error, a completion or a book switch leaves for the
+ * book that was playing: its terminal write, if its spot is new, and then,
+ * always, handing the book back to the progress import (#121 review). A stop
+ * after a pause that already saved writes nothing, but the book stayed
+ * claimed, so another device's spot never reached it. Registered with
+ * [pending], so a reload of the same book claims it only after the release.
+ */
+internal fun launchTerminalWork(
+    scope: CoroutineScope,
+    pending: PendingTerminalOwner,
+    bookId: String,
+    write: (suspend () -> Unit)?,
+    releaseOwnership: suspend (String) -> Unit,
+): Job = pending.launch(scope, bookId) {
+    withContext(NonCancellable) {
+        try {
+            write?.invoke()
+        } finally {
+            releaseOwnership(bookId)
+        }
+    }
+}
+
+/**
+ * A Play waiting on the server's spot before it plays (#118). Stop, an error,
+ * a completion and a load cancel it, and each moves the playback
+ * [generation], so an answer that outlives one of them never starts the
+ * player (#121 review). Used from the main thread.
+ */
+internal class PendingResume(private val generation: () -> Long) {
+    private var job: Job? = null
+
+    val isPending: Boolean get() = job?.isActive == true
+
+    fun start(scope: CoroutineScope, settle: suspend () -> Boolean, resume: () -> Unit) {
+        val token = generation()
+        job = scope.launch {
+            if (settle() && generation() == token) resume()
+        }
+    }
+
+    fun cancel() {
+        job?.cancel()
+        job = null
+    }
 }

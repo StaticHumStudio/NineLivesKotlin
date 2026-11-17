@@ -649,6 +649,15 @@ class SyncManager @Inject constructor(
         claimed
     }
 
+    /**
+     * Hand a stopped, failed or finished book back to the progress import,
+     * unless another load has claimed playback since. Every terminal path runs
+     * this, even one with nothing to write (#121 review).
+     */
+    internal suspend fun releaseActivePlaybackItem(itemId: String) {
+        clearActivePlaybackItemIf(itemId)
+    }
+
     private suspend fun clearActivePlaybackItemIf(itemId: String): Boolean =
         activeItemMutationMutex.withLock {
             val cleared = progressRepository.clearActiveProgressItemIf(itemId)

@@ -89,11 +89,20 @@ class PlaybackTerminationTest {
 
     @Test
     fun `an error retry does not run while another book is loading`() {
-        assertFalse(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = true))
-        assertTrue(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = false))
-        assertFalse(retainedRetryStillApplies("b", "a", true, true, false))
-        assertFalse(retainedRetryStillApplies("a", "a", false, true, false))
-        assertFalse(retainedRetryStillApplies("a", "a", true, false, false))
+        assertFalse(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = true, generationUnchanged = true))
+        assertTrue(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = false, generationUnchanged = true))
+        assertFalse(retainedRetryStillApplies("b", "a", true, true, false, true))
+        assertFalse(retainedRetryStillApplies("a", "a", false, true, false, true))
+        assertFalse(retainedRetryStillApplies("a", "a", true, false, false, true))
+    }
+
+    @Test
+    fun `a stop while the error retry asks the server never prepares the emptied player`() {
+        // The soft stop keeps the book current and the same player, and an
+        // emptied player still needs preparing. Only the stop's new playback
+        // generation tells the retry it is too late. Preparing the empty
+        // playlist would end at once and mark the book finished.
+        assertFalse(retainedRetryStillApplies("a", "a", samePlayer = true, playerNeedsPreparation = true, bookLoading = false, generationUnchanged = false))
     }
 
     @Test(timeout = 5_000)

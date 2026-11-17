@@ -195,4 +195,17 @@ class PlayedSpotTest {
         spot.saveLanded(pauseSave)
         assertTrue(writes(spot))
     }
+
+    @Test
+    fun `pause, seek, then swipe the notification away later, nothing is sent once the seek's save landed`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        spot.saveLanded(spot.saveStarting())
+        spot.userSeeked()
+        val seekSave = spot.saveStarting()
+        // Before the seek's save lands, the seek is new.
+        assertTrue(spot.isNew)
+        spot.saveLanded(seekSave)
+        assertFalse(writes(spot))
+    }
 }

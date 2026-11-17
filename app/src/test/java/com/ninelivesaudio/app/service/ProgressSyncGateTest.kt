@@ -271,6 +271,79 @@ class PlaybackProgressOwnerTest {
 
         assertEquals(listOf(100.seconds, 50.seconds), writes)
     }
+
+    // ─── #118: a pause save or a paused seek save that lands ─────────────
+
+    @Test
+    fun `a paused seek save reports when it lands, and not when it fails`() = runBlocking {
+        val owner = PlaybackProgressOwner()
+        var landed = 0
+        owner.launchPausedSeekSave(this, "book-a", onLanded = { landed++ }) { }.join()
+        assertEquals(1, landed)
+        owner.launchPausedSeekSave(this, "book-a", onLanded = { landed++ }) { error("disk full") }.join()
+        assertEquals(1, landed)
+    }
+
+    @Test
+    fun `a pause save that runs reports whether it landed`() = runBlocking {
+        val owner = PlaybackProgressOwner()
+        val unsaved = mutableListOf<String>()
+        val token = owner.snapshotToken("book-a")
+        assertTrue(
+            owner.savePauseSnapshot(token, seekPosition = { null }, save = { true }, recordUnsavedListening = { unsaved += "x" })
+        )
+        val failed = owner.snapshotToken("book-a")
+        assertFalse(
+            owner.savePauseSnapshot(failed, seekPosition = { null }, save = { false }, recordUnsavedListening = { unsaved += "x" })
+        )
+        assertEquals(emptyList<String>(), unsaved)
+    }
+
+    @Test
+    fun `a pause save a stop cancelled still records its listening`() = runBlocking {
+        // Paused with offline listening (no server session), then stopped
+        // before the pause save ran. The stop saves the spot. The pause's
+        // listening seconds would otherwise be lost.
+        val owner = PlaybackProgressOwner()
+        val effects = mutableListOf<String>()
+        val token = owner.snapshotToken("book-a")
+        owner.invalidateSnapshots("book-a")
+        val landed = owner.savePauseSnapshot(
+            token,
+            seekPosition = { null },
+            save = { effects += "pause-save"; true },
+            recordUnsavedListening = { effects += "listening" },
+        )
+        assertFalse(landed)
+        assertEquals(listOf("listening"), effects)
+    }
+
+    @Test
+    fun `a pause save a paused seek overtook saves at the seek's spot, or records only its listening`() = runBlocking {
+        val owner = PlaybackProgressOwner()
+        val effects = mutableListOf<String>()
+        val token = owner.snapshotToken("book-a")
+        owner.invalidateSnapshotPositions("book-a")
+        assertTrue(
+            owner.savePauseSnapshot(
+                token,
+                seekPosition = { 50.seconds },
+                save = { at -> effects += "save at $at"; true },
+                recordUnsavedListening = { effects += "listening" },
+            )
+        )
+        val noSeek = owner.snapshotToken("book-a")
+        owner.invalidateSnapshotPositions("book-a")
+        assertFalse(
+            owner.savePauseSnapshot(
+                noSeek,
+                seekPosition = { null },
+                save = { at -> effects += "save at $at"; true },
+                recordUnsavedListening = { effects += "listening" },
+            )
+        )
+        assertEquals(listOf("save at 50s", "listening"), effects)
+    }
 }
 
 class PendingTerminalOwnerTest {

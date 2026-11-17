@@ -438,15 +438,49 @@ internal class PlaybackProgressOwner {
  * Otherwise a delayed pause save could land after this one and put the old
  * position back. Its listening time still gets saved.
  */
+/**
+ * A pause's save, and whether it landed (#118). It saves at the pause's spot,
+ * or at a paused seek's spot that overtook it ([seekPosition], null for
+ * none). [save] gets that seek's spot, or null for the pause's own. When
+ * nothing is saved (a stop or a resume retired it, or the seek's spot is
+ * gone), the pause's listening is still recorded through
+ * [recordUnsavedListening], since nothing else carries it.
+ */
+internal suspend fun PlaybackProgressOwner.savePauseSnapshot(
+    token: PlaybackProgressOwner.SnapshotToken,
+    seekPosition: () -> Duration?,
+    save: suspend (Duration?) -> Boolean,
+    recordUnsavedListening: suspend () -> Unit,
+): Boolean {
+    var saved = false
+    var landed = false
+    syncSnapshot(
+        token,
+        onPositionSuperseded = {
+            seekPosition()?.let {
+                saved = true
+                landed = save(it)
+            }
+        },
+    ) {
+        saved = true
+        landed = save(null)
+    }
+    if (!saved) recordUnsavedListening()
+    return landed
+}
+
 internal fun PlaybackProgressOwner.launchPausedSeekSave(
     scope: CoroutineScope,
     bookId: String,
+    onLanded: () -> Unit = {},
     save: suspend () -> Unit,
 ): Job {
     invalidateSnapshotPositions(bookId)
     return scope.launch {
         try {
             report(bookId) { save() }
+            onLanded()
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}
@@ -772,6 +806,8 @@ internal data class PlaybackProgressSnapshot(
     val serverListening: ServerSessionListening? = null,
     /** Listening on a server book with no server session open (#118). */
     val offlineTimeListened: Double = 0.0,
+    /** When the snapshot was taken, on the phone's clock. */
+    val capturedAtMs: Long = 0L,
 )
 
 internal fun playbackProgressSnapshot(
@@ -785,6 +821,7 @@ internal fun playbackProgressSnapshot(
     localTimeListened: Double,
     serverListening: ServerSessionListening? = null,
     offlineTimeListened: Double = 0.0,
+    capturedAtMs: Long = 0L,
 ): PlaybackProgressSnapshot = PlaybackProgressSnapshot(
     bookId = bookId,
     isLocal = isLocal,
@@ -796,6 +833,7 @@ internal fun playbackProgressSnapshot(
     localTimeListened = localTimeListened,
     serverListening = serverListening,
     offlineTimeListened = offlineTimeListened,
+    capturedAtMs = capturedAtMs,
 )
 
 internal fun foldListeningTime(
@@ -1469,20 +1507,20 @@ class PlaybackManager @Inject constructor(
                     // write (#118). A stop that cancels it saves instead.
                     val spotSave = playedSpot.saveStarting()
                     scope.launch(Dispatchers.IO) {
-                        var landed = false
-                        playbackProgressOwner.syncSnapshot(
+                        val landed = playbackProgressOwner.savePauseSnapshot(
                             token = snapshotToken,
                             // A paused seek landed first. Save the listening
                             // time against the seek's position, never this
                             // snapshot's older one.
-                            onPositionSuperseded = {
-                                latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.let { (_, position) ->
-                                    landed = syncPlaybackProgress(snapshot.copy(position = position))
-                                }
+                            seekPosition = { latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.second },
+                            save = { seekPosition ->
+                                syncPlaybackProgress(if (seekPosition != null) snapshot.copy(position = seekPosition) else snapshot)
                             },
-                        ) {
-                            landed = syncPlaybackProgress(snapshot)
-                        }
+                            // A stop or a resume retired this save. The stop
+                            // saves the spot, but only this snapshot holds the
+                            // offline listening up to the pause.
+                            recordUnsavedListening = { recordPauseOfflineListening(snapshot) },
+                        )
                         if (landed) playedSpot.saveLanded(spotSave)
                     }
                 }
@@ -1679,6 +1717,7 @@ class PlaybackManager @Inject constructor(
             localTimeListened = timing.localTimeListened,
             serverListening = timing.serverListening,
             offlineTimeListened = timing.offlineTimeListened,
+            capturedAtMs = now,
         )
     }
 
@@ -3607,7 +3646,9 @@ class PlaybackManager @Inject constructor(
         val position = getCurrentPosition()
         val duration = _duration.value
         latestPausedSeek = book.id to position
-        playbackProgressOwner.launchPausedSeekSave(scope, book.id) {
+        // Once this save lands, a later stop has nothing new to write (#118).
+        val spotSave = playedSpot.saveStarting()
+        playbackProgressOwner.launchPausedSeekSave(scope, book.id, onLanded = { playedSpot.saveLanded(spotSave) }) {
             syncManager.reportPlaybackPosition(
                 itemId = book.id,
                 currentTime = position.toDouble(kotlin.time.DurationUnit.SECONDS),
@@ -4015,6 +4056,28 @@ class PlaybackManager @Inject constructor(
                 )
             },
         )
+
+    /**
+     * The offline listening of a pause whose save did not run, dated when
+     * the pause happened. Listening recorded since then is not moved back.
+     */
+    private suspend fun recordPauseOfflineListening(snapshot: PlaybackProgressSnapshot) {
+        if (snapshot.offlineTimeListened <= 0.0) return
+        try {
+            progressRepository.recordOfflineListening(
+                itemId = snapshot.bookId,
+                displayTitle = null,
+                listenedSeconds = snapshot.offlineTimeListened,
+                currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                nowMs = snapshot.capturedAtMs,
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            Log.w(TAG, "recordPauseOfflineListening: ${e.message}")
+        }
+    }
 
     /**
      * A pause's save. Whether its spot landed: saved on the phone, and sent

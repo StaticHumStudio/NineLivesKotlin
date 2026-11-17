@@ -15,6 +15,13 @@ interface ServerProgressRecordDao {
     @Query("SELECT AudioBookId FROM ServerProgressRecords WHERE UserId = :userId AND AudioBookId IN (:ids)")
     suspend fun heldAmong(userId: String, ids: List<String>): List<String>
 
+    /** Which of [ids] another known user's server has held progress for. */
+    @Query(
+        "SELECT DISTINCT AudioBookId FROM ServerProgressRecords " +
+            "WHERE UserId != :userId AND UserId != '' AND AudioBookId IN (:ids)"
+    )
+    suspend fun heldByOthersAmong(userId: String, ids: List<String>): List<String>
+
     @Query("DELETE FROM ServerProgressRecords WHERE UserId = :userId AND AudioBookId = :id")
     suspend fun delete(userId: String, id: String)
 

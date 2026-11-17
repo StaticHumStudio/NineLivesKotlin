@@ -541,12 +541,15 @@ class SyncManager @Inject constructor(
             val onServer = ids.toSet()
             val absent = audioBookDao.getServerBookIdsWithProgress().filterNot { it in onServer }
             val held = progressRepository.serverHeld(absent)
+            // A book another account's server held: that account's spot (#118).
+            val heldByOthers = progressRepository.heldByAnotherUser(absent)
             for (itemId in absent) {
                 try {
                     when (
                         absentOnServerAction(
                             serverHeldIt = itemId in held,
                             serverSaidGone = progressRepository.serverSaidGone(itemId),
+                            heldByAnotherUser = itemId in heldByOthers,
                         )
                     ) {
                         AbsentOnServer.LEAVE -> Unit

@@ -233,41 +233,53 @@ class ProgressRepository @Inject constructor(
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
 
-    // Whether a row may exist with no user: one queued by 2.1.x, or saved
-    // while the signed-in user was not known yet. Such rows are the current
-    // user's, and the next known user claims them.
-    @Volatile private var unownedRowsMayExist = true
+    // Rows with no user: queued by 2.1.x, or saved while the signed-in
+    // user was not known yet. They are the current user's, and the next
+    // known user claims them.
+    private val unownedRows = UnownedRows()
 
     /**
      * The signed-in user for a write (see [ProgressAccountScope]), with no
      * network. "" while not known yet, and then the row is claimed by the
-     * user known next. Takes no queue lock, so any caller may use it.
+     * user known next. A write that inserts with it calls [wroteAs] after.
+     * Takes no queue lock, so any caller may use it.
      */
-    private suspend fun ownerForWrite(): String = claimUnowned(accountScope.known())
+    private suspend fun ownerForWrite(): String {
+        val user = accountScope.known()
+        claimUnowned(user)
+        return unownedRows.ownerForWrite(user)
+    }
+
+    /** A write with [owner] landed. One with no user leaves a row to claim. */
+    private fun wroteAs(owner: String) = unownedRows.wrote(owner)
 
     /**
      * The signed-in user for a delivery, a drop or a reset, asked of the
      * server when not known yet. "" when unknown, and then the caller sends,
      * drops and resets nothing: only the owner's rows may go to the server.
      */
-    private suspend fun ownerForDelivery(): String =
-        claimUnowned(withTimeoutOrNull(PROGRESS_SERVER_CALL_TIMEOUT) { accountScope.resolve() }.orEmpty())
+    private suspend fun ownerForDelivery(): String {
+        val user = withTimeoutOrNull(PROGRESS_SERVER_CALL_TIMEOUT) { accountScope.resolve() }.orEmpty()
+        claimUnowned(user)
+        return user
+    }
 
-    private suspend fun claimUnowned(user: String): String {
-        if (user.isEmpty()) {
-            unownedRowsMayExist = true
-        } else if (unownedRowsMayExist) {
-            // Cleared first: a row written unowned during the claim sets it again.
-            unownedRowsMayExist = false
+    private suspend fun claimUnowned(user: String) {
+        unownedRows.claimFor(user) { owner ->
             withContext(NonCancellable) {
                 database.withTransaction {
-                    pendingProgressDao.claimUnscoped(user)
-                    offlineSessionDao.claimUnscoped(user)
-                    serverRecordDao.claimUnscoped(user)
+                    pendingProgressDao.claimUnscoped(owner)
+                    offlineSessionDao.claimUnscoped(owner)
+                    serverRecordDao.claimUnscoped(owner)
                 }
             }
         }
-        return user
+    }
+
+    /** Which of [itemIds] the server held progress for under another user (#118). */
+    internal suspend fun heldByAnotherUser(itemIds: Collection<String>): Set<String> {
+        val owner = ownerForDelivery()
+        return itemIds.chunked(500).flatMap { serverRecordDao.heldByOthersAmong(owner, it) }.toSet()
     }
 
     // Books the server answered "not found" for since the app started. Their
@@ -402,6 +414,7 @@ class ProgressRepository @Inject constructor(
                         newId = { UUID.randomUUID().toString() },
                     ).copy(userId = owner)
                 )
+                wroteAs(owner)
             }
         }
     }
@@ -566,6 +579,7 @@ class ProgressRepository @Inject constructor(
                     onPersisted()
                 }
             }
+            wroteAs(owner)
             pendingProgressQueueOwner.localWriteOccurred(itemId)
         }
     }
@@ -580,6 +594,7 @@ class ProgressRepository @Inject constructor(
             pendingProgressQueueOwner.localWriteOccurred(itemId)
             // The server took this spot, so it holds progress for the book.
             serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(owner, itemId)))
+            wroteAs(owner)
         }
     }
 
@@ -592,6 +607,7 @@ class ProgressRepository @Inject constructor(
             itemIds.chunked(500).forEach { chunk ->
                 serverRecordDao.insertAll(chunk.map { ServerProgressRecordEntity(owner, it) })
             }
+            wroteAs(owner)
         }
     }
 
@@ -618,10 +634,18 @@ class ProgressRepository @Inject constructor(
         pendingProgressQueueOwner.withItemLock(itemId) { queueUnconfirmedProgressLocked(itemId) }
 
     private suspend fun queueUnconfirmedProgressLocked(itemId: String): Boolean {
-        val owner = ownerForWrite()
-        if (serverRecordDao.heldAmong(owner, listOf(itemId)).isNotEmpty()) return false
-        val hasUnsynced = pendingProgressQueueOwner.withLock { hasUnsyncedListeningLocked(itemId) }
-        if (hasUnsynced) return false
+        // A spot queued here goes to the signed-in user's account, so the
+        // user must be known, and a book another user's server held is that
+        // user's spot, never this one's (#118 final review).
+        val owner = ownerForDelivery()
+        if (
+            !unconfirmedSpotMayQueue(
+                owner = owner,
+                heldByOwner = owner.isNotEmpty() && serverRecordDao.heldAmong(owner, listOf(itemId)).isNotEmpty(),
+                heldByAnotherUser = owner.isNotEmpty() && serverRecordDao.heldByOthersAmong(owner, listOf(itemId)).isNotEmpty(),
+                hasUnsynced = pendingProgressQueueOwner.withLock { hasUnsyncedListeningLocked(itemId) },
+            )
+        ) return false
         val planned = unconfirmedProgressRow(
             itemId = itemId,
             durable = playbackProgressDao.getByAudioBookId(itemId),
@@ -636,6 +660,7 @@ class ProgressRepository @Inject constructor(
                     )
                 }
             }
+            wroteAs(owner)
             pendingProgressQueueOwner.localWriteOccurred(itemId)
         }
         Log.i(TAG, "Queued saved progress for $itemId, which the server has never held")
@@ -723,6 +748,7 @@ class ProgressRepository @Inject constructor(
         val owner = ownerForWrite()
         withContext(NonCancellable) {
             serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(owner, itemId)))
+            wroteAs(owner)
             pendingProgressQueueOwner.withLock {
                 val inactive = pendingProgressQueueOwner.itemIsInactiveLocked(itemId)
                 val spot = ServerSpot(
@@ -929,11 +955,17 @@ class ProgressRepository @Inject constructor(
             queueUnconfirmedProgressLocked(itemId)
             when (deliverItemLocked(itemId)) {
                 ItemDelivery.UNAVAILABLE, ItemDelivery.ITEM_GONE -> ServerProgressRead.Unavailable
-                ItemDelivery.NOTHING, ItemDelivery.DELIVERED -> when (val read = readServerProgressWithin(itemId)) {
+                ItemDelivery.NOTHING, ItemDelivery.DELIVERED -> when (
+                    val read = serverReadForLoad(
+                        read = readServerProgressWithin(itemId),
+                        heldByAnotherUser = { heldByAnotherUser(listOf(itemId)).isNotEmpty() },
+                    )
+                ) {
                     is ServerProgressRead.Found -> {
                         val owner = ownerForWrite()
                         withContext(NonCancellable) {
                             serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(owner, itemId)))
+                            wroteAs(owner)
                         }
                         read
                     }
@@ -1184,10 +1216,75 @@ internal enum class AbsentOnServer {
     LEAVE,
 }
 
-internal fun absentOnServerAction(serverHeldIt: Boolean, serverSaidGone: Boolean = false): AbsentOnServer = when {
+/**
+ * [heldByAnotherUser]: the server held the book's progress under another
+ * Audiobookshelf user (another account signed in on this phone before).
+ * The phone's saved spot is that user's, so it is never delivered into the
+ * signed-in user's account, and the signed-in user having none is no reset.
+ */
+internal fun absentOnServerAction(
+    serverHeldIt: Boolean,
+    serverSaidGone: Boolean = false,
+    heldByAnotherUser: Boolean = false,
+): AbsentOnServer = when {
     serverSaidGone -> AbsentOnServer.LEAVE
     serverHeldIt -> AbsentOnServer.RESET
+    heldByAnotherUser -> AbsentOnServer.LEAVE
     else -> AbsentOnServer.DELIVER_FIRST
+}
+
+/**
+ * Whether a saved spot the server never held for [owner] is queued for
+ * delivery to [owner]'s account: only with a known user, nothing unsynced
+ * already queued, and no other user's server having held the book (#118).
+ */
+internal fun unconfirmedSpotMayQueue(
+    owner: String,
+    heldByOwner: Boolean,
+    heldByAnotherUser: Boolean,
+    hasUnsynced: Boolean,
+): Boolean = owner.isNotEmpty() && !heldByOwner && !heldByAnotherUser && !hasUnsynced
+
+/**
+ * The server's answer as a load or Play takes it. No progress for the
+ * signed-in user on a book another user's server held is not a reset of
+ * the phone's spot, which is that user's: the load keeps the saved spot.
+ */
+internal fun serverReadForLoad(read: ServerProgressRead, heldByAnotherUser: Boolean): ServerProgressRead =
+    if (read == ServerProgressRead.Missing && heldByAnotherUser) ServerProgressRead.Unavailable else read
+
+internal suspend fun serverReadForLoad(
+    read: ServerProgressRead,
+    heldByAnotherUser: suspend () -> Boolean,
+): ServerProgressRead =
+    if (read == ServerProgressRead.Missing) serverReadForLoad(read, heldByAnotherUser()) else read
+
+/**
+ * Claims of rows written with no user (#118). A write that read no user
+ * reports its insert with [wrote] once it lands, so an insert that lands
+ * after a claim's UPDATE is claimed by the next one instead of staying
+ * unowned until a restart.
+ */
+internal class UnownedRows {
+    @Volatile private var mayExist = true
+
+    fun ownerForWrite(user: String): String = user
+
+    fun wrote(owner: String) {
+        if (owner.isEmpty()) mayExist = true
+    }
+
+    suspend fun claimFor(user: String, claim: suspend (String) -> Unit) {
+        if (user.isEmpty() || !mayExist) return
+        // Cleared before the claim: an insert landing after it sets it again.
+        mayExist = false
+        try {
+            claim(user)
+        } catch (e: Throwable) {
+            mayExist = true
+            throw e
+        }
+    }
 }
 
 /**

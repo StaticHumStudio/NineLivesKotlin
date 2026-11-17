@@ -1517,6 +1517,19 @@ class PlaybackManager @Inject constructor(
     // or an error with nothing new saves nothing (#118).
     private val playedSpot = PlayedSpot()
 
+    // Above 0 while the app itself moves the player, so the seek is not
+    // taken as the user's. Seeks reach the listener in the same call.
+    private var appPositioningDepth = 0
+
+    private inline fun <T> appPositioning(block: () -> T): T {
+        appPositioningDepth++
+        try {
+            return block()
+        } finally {
+            appPositioningDepth--
+        }
+    }
+
     private val _position = MutableStateFlow(Duration.ZERO)
     val position: StateFlow<Duration> = _position.asStateFlow()
 
@@ -1777,11 +1790,11 @@ class PlaybackManager @Inject constructor(
             // session it owns and nulls it first, so this only ever finds the
             // orphan. Closing it here is what every load did before the
             // finalization consolidation.
-            val orphanServerSession = synchronized(sessionLock) {
-                currentSession.also { currentSession = null }
+            val (orphanServerSession, orphanListening) = synchronized(sessionLock) {
+                (currentSession to serverListening).also { currentSession = null }
             }
             if (orphanServerSession != null) {
-                scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id) }
+                scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id, orphanListening) }
             }
             pendingTerminalOwner.await(book.id)
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
@@ -2073,7 +2086,7 @@ class PlaybackManager @Inject constructor(
 
             // Seek to saved position before prepare
             if (placement.playerStart > Duration.ZERO) {
-                seekToPosition(placement.playerStart)
+                appPositioning { seekToPosition(placement.playerStart) }
             }
 
             // Eagerly set the initial chapter so ChapterAwareForwardingPlayer
@@ -2619,6 +2632,9 @@ class PlaybackManager @Inject constructor(
             PlayAction.RETRY_AFTER_TERMINAL -> {
                 val player = exoPlayer ?: return
                 val bookId = retained!!.id
+                // The error saved this spot. Only playing from here makes it
+                // new again, so a retry that fails again sends nothing (#118).
+                playedSpot.bookPlaced()
                 // The terminal write re-arms only once the retry owns the book
                 // again (#43). Re-arming here, before the wait, let a stop or a
                 // new load that landed during it write the book's end twice.
@@ -2645,11 +2661,28 @@ class PlaybackManager @Inject constructor(
                                 _currentBook.value?.id == bookId && stagedLoad.book.value == null
                             }
                         },
+                        // Another device may have moved the book since the
+                        // error, so the retry asks the server like a resume.
+                        settle = {
+                            if (
+                                resumeAsksServerFirst(
+                                    isRemoteBook = !retained.isLocal,
+                                    serverMode = settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF,
+                                    serverReachable = connectivityMonitor.connectionStatus.value ==
+                                        ConnectivityMonitor.ConnectionStatus.CONNECTED,
+                                    pausedAtMs = pausedAtTimestamp,
+                                    nowMs = System.currentTimeMillis(),
+                                    serverCheckedAtMs = serverSpotCheckedAt?.takeIf { it.first == bookId }?.second,
+                                )
+                            ) {
+                                takeServerSpotBeforePlay(retained, player)
+                            }
+                        },
                         rearm = { if (player.mediaItemCount > 0) retainedBookFinalized = false },
                         prepare = {
                             startPlaybackService()
                             val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-                            player.seekTo(resume.mediaItemIndex, resume.positionMs)
+                            appPositioning { player.seekTo(resume.mediaItemIndex, resume.positionMs) }
                             player.prepare()
                             player.playWhenReady = true
                         },
@@ -2695,6 +2728,14 @@ class PlaybackManager @Inject constructor(
      * Bounded, and the book plays from where it is if the server is slow.
      */
     private suspend fun resumeAfterServerSpot(book: AudioBook, player: ExoPlayer) {
+        if (takeServerSpotBeforePlay(book, player)) resumePlayer(player)
+    }
+
+    /**
+     * Send the book's unsynced listening and move it to the server's spot,
+     * bounded. Whether the book is still the player's to play.
+     */
+    private suspend fun takeServerSpotBeforePlay(book: AudioBook, player: ExoPlayer): Boolean {
         val shown = _position.value
         val read = try {
             withTimeoutOrNull(RESUME_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
@@ -2703,7 +2744,7 @@ class PlaybackManager @Inject constructor(
         } catch (_: Exception) {
             null
         }
-        if (_currentBook.value?.id != book.id || exoPlayer !== player || stagedLoad.book.value != null) return
+        if (_currentBook.value?.id != book.id || exoPlayer !== player || stagedLoad.book.value != null) return false
         val progress = when (read) {
             is ServerProgressRead.Found -> read.progress
             ServerProgressRead.Missing -> UserProgress(
@@ -2730,7 +2771,7 @@ class PlaybackManager @Inject constructor(
                 )
             )
         }
-        resumePlayer(player)
+        return true
     }
 
     private fun resumePlayer(player: ExoPlayer) {
@@ -2740,7 +2781,7 @@ class PlaybackManager @Inject constructor(
         if (player.mediaItemCount > 0) retainedBookFinalized = false
         if (needsPlaybackPreparation(player.playbackState)) {
             val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-            player.seekTo(resume.mediaItemIndex, resume.positionMs)
+            appPositioning { player.seekTo(resume.mediaItemIndex, resume.positionMs) }
             player.prepare()
         }
         player.playWhenReady = true
@@ -2763,7 +2804,7 @@ class PlaybackManager @Inject constructor(
                 if (rewindSeconds > 0) {
                     val current = _position.value
                     val target = (current - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
-                    seekToPosition(target)
+                    appPositioning { seekToPosition(target) }
                     _position.value = target
                     updateCurrentChapter(target)
                 }
@@ -2813,25 +2854,26 @@ class PlaybackManager @Inject constructor(
         // sat paused) has no listening and no new spot to save (#118).
         val finalizes = shouldFinalizeRetainedBook(book != null, retainedBookFinalized)
         if (finalizes && !playedSpot.isNew) {
-            Log.d(TAG, "finishPlayback: ${book?.id} did not play since its load, nothing saved")
+            Log.d(TAG, "finishPlayback: ${book?.id} did not play since its spot was placed or saved, nothing saved")
         }
-        val captured = if (terminalWritesProgress(book != null, retainedBookFinalized, playedSpot)) {
+        val captured = if (playedSpot.takeForTerminalWrite(book != null, retainedBookFinalized)) {
             capturePlaybackProgressSnapshot()
         } else {
             null
         }
         val localSession = detachLocalSession()
-        val orphanServerSession = synchronized(sessionLock) {
-            currentSession.also {
+        val (orphanServerSession, orphanListening) = synchronized(sessionLock) {
+            (currentSession to serverListening).also {
                 currentSession = null
                 lastSyncTimestamp = 0L
             }
         }
         // No snapshot means no terminal job, and the terminal job is what
         // closes the session. Close the orphan here so a stop after an
-        // abandoned load does not leave an accepted server session open.
+        // abandoned load does not leave an accepted server session open,
+        // after its listening on the way to the server lands.
         if (captured == null && orphanServerSession != null) {
-            scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id) }
+            scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id, orphanListening) }
         }
         val terminal = captured?.let {
             terminalPlaybackSnapshot(
@@ -3530,10 +3572,14 @@ class PlaybackManager @Inject constructor(
         // The player moved to the server's spot, which the server already
         // holds. Saving it would queue it as this phone's listening.
         if (movingToServerSpot) return
-        // A seek the user made (a load's own seek lands while LOADING).
+        // A seek the user made, in any state, even while the first play
+        // buffers. The app's own moves of the player do not count.
         if (
-            stagedLoad.book.value == null &&
-            _playbackState.value.let { it == PlaybackState.PLAYING || it == PlaybackState.PAUSED }
+            seekIsUsers(
+                appPositioning = appPositioningDepth > 0,
+                bookLoading = stagedLoad.book.value != null,
+                playbackState = _playbackState.value,
+            )
         ) {
             playedSpot.userSeeked()
         }
@@ -3635,7 +3681,7 @@ class PlaybackManager @Inject constructor(
             // to push updated chapter duration and position to Android Auto.
             if (chapter != null) {
                 val player = exoPlayer ?: return
-                player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                appPositioning { player.seekTo(player.currentMediaItemIndex, player.currentPosition) }
             }
         }
     }
@@ -4053,7 +4099,7 @@ class PlaybackManager @Inject constructor(
             when {
                 listening == null -> closeRemote()
                 terminalBudget != null -> terminalBudget.call(serverLive = true) { listening.close(closeRemote) }
-                else -> listening.close(closeRemote)
+                else -> closeLeftoverSession(listening, closeRemote)
             }
         } catch (cancellation: CancellationException) {
             throw cancellation

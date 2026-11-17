@@ -167,4 +167,70 @@ class PlaybackTerminationTest {
         assertFalse(finalized)
         assertEquals(listOf("claim", "rearm", "prepare"), calls)
     }
+
+    @Test(timeout = 5_000)
+    fun `an error retry asks the server first, after the terminal write and before it prepares`() = runBlocking {
+        val pending = PendingTerminalOwner()
+        val calls = mutableListOf<String>()
+        val prepared = runTerminalRetry(
+            pending = pending,
+            bookId = "a",
+            isCurrent = { true },
+            claimOwnership = { calls += "claim"; true },
+            settle = { calls += "settle" },
+            rearm = { calls += "rearm" },
+            prepare = { calls += "prepare" },
+        )
+        assertTrue(prepared)
+        assertEquals(listOf("claim", "settle", "rearm", "prepare"), calls)
+    }
+
+    @Test(timeout = 5_000)
+    fun `a retry that lost the book while asking the server does not prepare`() = runBlocking {
+        val pending = PendingTerminalOwner()
+        var current = true
+        val calls = mutableListOf<String>()
+        val prepared = runTerminalRetry(
+            pending = pending,
+            bookId = "a",
+            isCurrent = { current },
+            claimOwnership = { calls += "claim"; true },
+            settle = { calls += "settle"; current = false },
+            rearm = { calls += "rearm" },
+            prepare = { calls += "prepare" },
+        )
+        assertFalse(prepared)
+        assertEquals(listOf("claim", "settle"), calls)
+    }
+
+    @Test(timeout = 5_000)
+    fun `a leftover session closes after its in flight listening lands`() = runBlocking {
+        // A stop with nothing new to save still closes the open session. Its
+        // listening the server has not confirmed (a pause send in flight)
+        // lands first, or the close cuts it off.
+        val listening = ServerSessionListening()
+        val sending = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val calls = mutableListOf<String>()
+        val delivery = async {
+            listening.deliver(30.0) { delta ->
+                sending.complete(Unit)
+                release.await()
+                calls += "sync $delta"
+                true
+            }
+        }
+        sending.await()
+        val close = async { closeLeftoverSession(listening) { calls += "close" } }
+        yield()
+        assertEquals(emptyList<String>(), calls)
+        release.complete(Unit)
+        delivery.await()
+        close.await()
+        assertEquals(listOf("sync 30.0", "close"), calls)
+        // No listening known: the close still goes.
+        val bare = mutableListOf<String>()
+        closeLeftoverSession(null) { bare += "close" }
+        assertEquals(listOf("close"), bare)
+    }
 }

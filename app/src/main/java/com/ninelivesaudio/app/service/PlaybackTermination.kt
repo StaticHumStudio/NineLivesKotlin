@@ -84,12 +84,17 @@ internal suspend fun runTerminalRetry(
     bookId: String,
     isCurrent: () -> Boolean,
     claimOwnership: suspend () -> Boolean,
+    settle: suspend () -> Unit = {},
     rearm: () -> Unit,
     prepare: () -> Unit,
 ): Boolean {
     var prepared = false
     pending.runAfterPending(bookId, isCurrent) {
         if (claimOwnership()) {
+            // Ask the server for the book's spot first, as a resume does
+            // (#118). Another load or a stop may take the book meanwhile.
+            settle()
+            if (!isCurrent()) return@runAfterPending
             rearm()
             prepare()
             prepared = true
@@ -125,11 +130,33 @@ internal class PlayedSpot {
     fun userSeeked() {
         isNew = true
     }
+
+    /**
+     * Whether a stop, an error or a completion writes the retained book's
+     * progress: only once, and only for a new spot. A write makes the spot
+     * saved, not new, so a retry that fails again sends nothing.
+     */
+    fun takeForTerminalWrite(hasRetainedBook: Boolean, alreadyFinalized: Boolean): Boolean {
+        val writes = shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && isNew
+        if (writes) isNew = false
+        return writes
+    }
 }
 
 /**
- * Whether a stop, an error or a completion writes the retained book's
- * progress: only once, and only for a new spot.
+ * Whether a seek that reached the player was the user's: from the app, the
+ * notification, a headset or Android Auto, in any state, even while the
+ * first play buffers. The app moving the player itself ([appPositioning]: a
+ * load, a retry, a resume, the resume rewind, a chapter refresh) is not, and
+ * nothing a loading book's player does is.
  */
-internal fun terminalWritesProgress(hasRetainedBook: Boolean, alreadyFinalized: Boolean, spot: PlayedSpot): Boolean =
-    shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && spot.isNew
+internal fun seekIsUsers(appPositioning: Boolean, bookLoading: Boolean, playbackState: PlaybackState): Boolean =
+    !appPositioning && !bookLoading && playbackState != PlaybackState.LOADING
+
+/**
+ * Close a server session, after any of its listening already on the way to
+ * the server lands. Closing first cut that listening off.
+ */
+internal suspend fun closeLeftoverSession(listening: ServerSessionListening?, closeRemote: suspend () -> Unit) {
+    if (listening != null) listening.close(closeRemote) else closeRemote()
+}

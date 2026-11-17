@@ -14,7 +14,7 @@ import org.junit.Test
 class PlayedSpotTest {
 
     private fun writes(spot: PlayedSpot, alreadyFinalized: Boolean = false) =
-        terminalWritesProgress(hasRetainedBook = true, alreadyFinalized = alreadyFinalized, spot = spot)
+        spot.takeForTerminalWrite(hasRetainedBook = true, alreadyFinalized = alreadyFinalized)
 
     @Test
     fun `a load whose stream fails before it plays saves nothing`() {
@@ -86,6 +86,45 @@ class PlayedSpotTest {
         val spot = PlayedSpot()
         spot.playbackStarted()
         assertFalse(writes(spot, alreadyFinalized = true))
-        assertFalse(terminalWritesProgress(hasRetainedBook = false, alreadyFinalized = false, spot = spot))
+        assertFalse(spot.takeForTerminalWrite(hasRetainedBook = false, alreadyFinalized = false))
+    }
+
+    @Test
+    fun `a spot a stop or an error saved is not new any more`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        assertTrue(writes(spot))
+        // The next stop or error, with no playback since, sends nothing.
+        assertFalse(writes(spot))
+    }
+
+    @Test
+    fun `a retry after a stream error that fails again sends nothing`() {
+        // Played to 2:00:00, the stream failed, and the error saved 2:00:00.
+        // Another device then moved the book to 2:30:00. Play retries, the
+        // stream fails again before it plays: 2:00:00 must not go out again
+        // dated now, over the other device's spot.
+        val spot = PlayedSpot()
+        spot.bookPlaced()
+        spot.playbackStarted()
+        assertTrue(writes(spot))
+        // The retry starts: the spot is the one just saved.
+        spot.bookPlaced()
+        assertFalse(writes(spot))
+        // A retry that does play is new listening again.
+        spot.playbackStarted()
+        assertTrue(writes(spot))
+    }
+
+    @Test
+    fun `only a seek the user made counts, in any state but a load`() {
+        for (state in listOf(PlaybackState.BUFFERING, PlaybackState.PLAYING, PlaybackState.PAUSED, PlaybackState.STOPPED)) {
+            assertTrue(state.name, seekIsUsers(appPositioning = false, bookLoading = false, playbackState = state))
+            // The app moving the player (a load, a retry, a resume, the
+            // resume rewind, a chapter refresh) is not the user.
+            assertFalse(state.name, seekIsUsers(appPositioning = true, bookLoading = false, playbackState = state))
+            assertFalse(state.name, seekIsUsers(appPositioning = false, bookLoading = true, playbackState = state))
+        }
+        assertFalse(seekIsUsers(appPositioning = false, bookLoading = false, playbackState = PlaybackState.LOADING))
     }
 }

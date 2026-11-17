@@ -997,9 +997,37 @@ internal fun loadSessionOpen(
     connectionStatus: ConnectivityMonitor.ConnectionStatus,
 ): LoadSessionOpen = when {
     !usesLocalTracks -> LoadSessionOpen.AWAIT
-    connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
-        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING -> LoadSessionOpen.BOUNDED
+    serverAnswersSpotChecks(connectionStatus) -> LoadSessionOpen.BOUNDED
     else -> LoadSessionOpen.DEFER
+}
+
+/**
+ * Whether the server is reachable enough to ask for a book's spot. SYNCING
+ * is the server answering a sync, so it counts. The load, Play and the error
+ * retry all use this, so Play during the startup sync asks the server the
+ * way the load did (#118).
+ */
+internal fun serverAnswersSpotChecks(connectionStatus: ConnectivityMonitor.ConnectionStatus): Boolean =
+    connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING
+
+/**
+ * The player moving to a server's spot (#118). Every seek made while it
+ * runs, the chapter update's own no-op seek included, is the server's spot
+ * and not this phone's listening, so it is never saved or queued.
+ */
+internal class ServerSpotMove {
+    var active: Boolean = false
+        private set
+
+    fun <T> run(block: () -> T): T {
+        active = true
+        try {
+            return block()
+        } finally {
+            active = false
+        }
+    }
 }
 
 internal enum class PlaybackItemPersistence { KEEP, SAVE, CLEAR }
@@ -1882,10 +1910,7 @@ class PlaybackManager @Inject constructor(
             val settled: ServerProgressRead? = if (
                 !isScannedLocalBook &&
                 settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF &&
-                connectivityMonitor.connectionStatus.value.let {
-                    it == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
-                        it == ConnectivityMonitor.ConnectionStatus.SYNCING
-                }
+                serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value)
             ) {
                 try {
                     withTimeoutOrNull(LOAD_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
@@ -1941,10 +1966,7 @@ class PlaybackManager @Inject constructor(
             if (
                 remoteAccess.usesLocalTracks() &&
                 needsManifestBackfill(effectiveBook) &&
-                connectivityMonitor.connectionStatus.value.let {
-                    it == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
-                        it == ConnectivityMonitor.ConnectionStatus.SYNCING
-                }
+                serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value)
             ) {
                 val filled = withTimeoutOrNull(MANIFEST_BACKFILL_TIMEOUT) {
                     manifestBackfillLazy.get().backfill(effectiveBook)
@@ -2712,8 +2734,7 @@ class PlaybackManager @Inject constructor(
                                 resumeAsksServerFirst(
                                     isRemoteBook = !retained.isLocal,
                                     serverMode = settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF,
-                                    serverReachable = connectivityMonitor.connectionStatus.value ==
-                                        ConnectivityMonitor.ConnectionStatus.CONNECTED,
+                                    serverReachable = serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value),
                                     pausedAtMs = pausedAtTimestamp,
                                     nowMs = System.currentTimeMillis(),
                                     serverCheckedAtMs = serverSpotCheckedAt?.takeIf { it.first == bookId }?.second,
@@ -2740,8 +2761,7 @@ class PlaybackManager @Inject constructor(
                     resumeAsksServerFirst(
                         isRemoteBook = !book.isLocal,
                         serverMode = settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF,
-                        serverReachable = connectivityMonitor.connectionStatus.value ==
-                            ConnectivityMonitor.ConnectionStatus.CONNECTED,
+                        serverReachable = serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value),
                         pausedAtMs = pausedAtTimestamp,
                         nowMs = System.currentTimeMillis(),
                         serverCheckedAtMs = serverSpotCheckedAt?.takeIf { it.first == book.id }?.second,
@@ -3615,7 +3635,7 @@ class PlaybackManager @Inject constructor(
     private fun onSeekApplied() {
         // The player moved to the server's spot, which the server already
         // holds. Saving it would queue it as this phone's listening.
-        if (movingToServerSpot) return
+        if (serverSpotMove.active) return
         // A seek the user made, in any state, even while the first play
         // buffers. The app's own moves of the player do not count.
         if (
@@ -4196,9 +4216,9 @@ class PlaybackManager @Inject constructor(
 
     // ─── Server Spot (#118) ───────────────────────────────────────────────
 
-    // Set while the player moves to a server spot, so the seek it makes is
-    // not saved and queued as this phone's own listening.
-    private var movingToServerSpot = false
+    // Runs while the player moves to a server spot, so the seeks it makes
+    // are not saved and queued as this phone's own listening.
+    private val serverSpotMove = ServerSpotMove()
 
     /**
      * Move the loaded book to the server's spot, if it is sitting still (see
@@ -4234,19 +4254,18 @@ class PlaybackManager @Inject constructor(
         latestPausedSeek = null
         // The spot came from listening elsewhere, so no resume rewind from it.
         pausedAtTimestamp = null
-        movingToServerSpot = true
-        try {
+        // The chapter update moves too: a new chapter makes a no-op seek for
+        // Android Auto, which must not save the server's spot as new.
+        serverSpotMove.run {
             seekToPosition(placement.playerStart)
-        } finally {
-            movingToServerSpot = false
+            setParkedAtEnd(placement.parkedAtEnd)
+            parkedEndLength = end
+            _position.value = placement.shownPosition
+            chapterPlayer?.absolutePositionMs = placement.shownPosition.inWholeMilliseconds
+            updateCurrentChapter(placement.shownPosition)
         }
         // The server holds this spot. Nothing new until the book plays.
         playedSpot.bookPlaced()
-        setParkedAtEnd(placement.parkedAtEnd)
-        parkedEndLength = end
-        _position.value = placement.shownPosition
-        chapterPlayer?.absolutePositionMs = placement.shownPosition.inWholeMilliseconds
-        updateCurrentChapter(placement.shownPosition)
         val finished = placement.parkedAtEnd
         try {
             playbackProgressOwner.report(book.id) {

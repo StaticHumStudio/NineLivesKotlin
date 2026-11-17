@@ -1,5 +1,6 @@
 package com.ninelivesaudio.app.service
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -105,5 +106,64 @@ class LoadedBookServerSpotTest {
         assertTrue(loadGrantsPlayCheckSkip(userStartedLoad = true, serverAnswered = true))
         assertFalse(loadGrantsPlayCheckSkip(userStartedLoad = false, serverAnswered = true))
         assertFalse(loadGrantsPlayCheckSkip(userStartedLoad = true, serverAnswered = false))
+    }
+
+    @Test
+    fun `play during the startup sync asks the server first, as the load does`() {
+        // #118 final review: tablet paused later, phone restored earlier,
+        // Play pressed while the startup sync runs (SYNCING). The load
+        // already counts SYNCING as reachable, so Play and the error retry
+        // must too, or the phone plays and saves its older spot.
+        val now = 10_000_000L
+        val syncing = ConnectivityMonitor.ConnectionStatus.SYNCING
+        assertTrue(serverAnswersSpotChecks(syncing))
+        assertTrue(serverAnswersSpotChecks(ConnectivityMonitor.ConnectionStatus.CONNECTED))
+        assertFalse(serverAnswersSpotChecks(ConnectivityMonitor.ConnectionStatus.SERVER_UNREACHABLE))
+        assertFalse(serverAnswersSpotChecks(ConnectivityMonitor.ConnectionStatus.OFFLINE))
+        assertTrue(
+            resumeAsksServerFirst(
+                isRemoteBook = true,
+                serverMode = true,
+                serverReachable = serverAnswersSpotChecks(syncing),
+                pausedAtMs = null,
+                nowMs = now,
+            ),
+        )
+        // The load and Play agree on every status.
+        for (status in ConnectivityMonitor.ConnectionStatus.entries) {
+            assertEquals(
+                loadSessionOpen(usesLocalTracks = true, connectionStatus = status) == LoadSessionOpen.BOUNDED,
+                serverAnswersSpotChecks(status),
+            )
+        }
+    }
+
+    @Test
+    fun `the chapter update's seek while moving to a server spot is not saved as new`() {
+        // #118 final review: a server spot in another chapter changes the
+        // chapter, whose no-op seek (for Android Auto) fired the paused seek
+        // save after the move ended, queueing the server's own spot as new.
+        val move = ServerSpotMove()
+        val savedSeeks = mutableListOf<String>()
+        fun onSeekApplied(what: String) {
+            if (move.active) return
+            savedSeeks += what
+        }
+        move.run {
+            onSeekApplied("seek to the server's spot")
+            onSeekApplied("chapter update's no-op seek")
+        }
+        assertEquals(emptyList<String>(), savedSeeks)
+        assertFalse(move.active)
+        // The user's own seek afterwards still saves.
+        onSeekApplied("user seek")
+        assertEquals(listOf("user seek"), savedSeeks)
+    }
+
+    @Test
+    fun `a move that throws still ends`() {
+        val move = ServerSpotMove()
+        runCatching { move.run { error("seek failed") } }
+        assertFalse(move.active)
     }
 }

@@ -895,15 +895,22 @@ class ProgressRepository @Inject constructor(
      * Returns whether everything was delivered.
      */
     suspend fun flushPendingProgress(
+        liveSessionItemId: () -> String? = { null },
         onServerSpot: suspend (ServerSpot) -> Unit,
     ): Boolean {
         val itemIds = pendingProgressQueueOwner.withLock {
-            (pendingProgressDao.getAll().map { it.itemId } + offlineSessionDao.getItemIdsWithUnsynced()).distinct()
+            itemsToFlush(
+                queuedItemIds = pendingProgressDao.getAll().map { it.itemId },
+                offlineItemIds = offlineSessionDao.getItemIdsWithUnsynced(),
+                liveSessionItemId = liveSessionItemId(),
+            )
         }
         if (itemIds.isEmpty()) return true
 
         var allSuccess = true
         for (itemId in itemIds) {
+            // It may have started playing since the list was read.
+            if (itemId == liveSessionItemId()) continue
             pendingProgressQueueOwner.withItemLock(itemId) {
                 val saved = playbackProgressDao.getByAudioBookId(itemId)
                 val durationHint = pendingProgressDao.getForItem(itemId).maxByOrNull { it.id }?.duration
@@ -941,6 +948,19 @@ class ProgressRepository @Inject constructor(
         const val TAG = "ProgressRepository"
     }
 }
+
+/**
+ * The books one flush delivers: every book with queued spots or offline
+ * listening, except the one playing with a server session open. That book's
+ * session syncs confirm its queued spots as it plays, and a flush in between
+ * sent each queued spot as a new empty session, filling the server's
+ * listening history with 0 s sessions (#118). It goes once it stops.
+ */
+internal fun itemsToFlush(
+    queuedItemIds: List<String>,
+    offlineItemIds: List<String>,
+    liveSessionItemId: String?,
+): List<String> = (queuedItemIds + offlineItemIds).distinct().filterNot { it == liveSessionItemId }
 
 /** A server spot for one book, read after the phone's listening was delivered. */
 data class ServerSpot(

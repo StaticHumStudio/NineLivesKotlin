@@ -84,6 +84,12 @@ class SyncManager @Inject constructor(
     // Sync state
     @Volatile private var activeItemId: String? = null
 
+    /**
+     * The book playing with a server session open, which the player reports.
+     * The flush leaves it to its session (see itemsToFlush).
+     */
+    @Volatile var liveSessionItemId: () -> String? = { null }
+
     // When a sync last ran (any mode, monotonic clock), for the foreground
     // debounce. In memory on purpose: a cold start should always check.
     @Volatile private var lastCheckAtMs: Long? = null
@@ -808,6 +814,7 @@ class SyncManager @Inject constructor(
             val count = progressRepository.getPendingProgressCount()
             if (count > 0) {
                 progressRepository.flushPendingProgress(
+                    liveSessionItemId = liveSessionItemId,
                     onServerSpot = { spot ->
                         if (spot.bookIsLoaded) {
                             _serverSpotForLoadedBook.tryEmit(spot)

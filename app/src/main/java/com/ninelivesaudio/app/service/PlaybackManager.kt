@@ -4400,6 +4400,16 @@ class PlaybackManager @Inject constructor(
                 recoverIfSessionStale()
             }
         }
+        // The flush leaves the book playing on a server session to that
+        // session (#118).
+        syncManager.liveSessionItemId = {
+            synchronized(sessionLock) {
+                _currentBook.value?.id?.takeIf {
+                    currentSession != null &&
+                        _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                }
+            }
+        }
         // The server's spot for the loaded book, found by an import or a
         // flush. A paused book takes it (#118).
         scope.launch {

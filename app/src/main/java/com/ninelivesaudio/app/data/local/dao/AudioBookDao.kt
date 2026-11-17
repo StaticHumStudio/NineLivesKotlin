@@ -48,6 +48,10 @@ interface AudioBookDao {
     @Query("SELECT * FROM AudioBooks WHERE Id = :id")
     suspend fun getById(id: String): AudioBookEntity?
 
+    /** When the server added the book (ISO 8601), or null when unknown. */
+    @Query("SELECT AddedAt FROM AudioBooks WHERE Id = :id")
+    suspend fun getAddedAt(id: String): String?
+
     /** Batch lookup by IDs — used by syncLibraryItems to preserve download state. */
     @Query("SELECT * FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getByIds(ids: List<String>): List<AudioBookEntity>
@@ -62,6 +66,20 @@ interface AudioBookDao {
     /** Shelf progress for up to 500 IDs, for the progress pull's "anything changed?" check. */
     @Query("SELECT Id, CurrentTimeSeconds, Progress, IsFinished, DurationSeconds FROM AudioBooks WHERE Id IN (:ids)")
     suspend fun getProgressStates(ids: List<String>): List<BookProgressState>
+
+    /**
+     * Server books of the current server's libraries that show any progress,
+     * on the shelf or in their saved spot. Local folder books never appear.
+     */
+    @Query(
+        """SELECT ab.Id FROM AudioBooks ab
+           LEFT JOIN PlaybackProgress pp ON pp.AudioBookId = ab.Id
+           WHERE ab.IsLocal = 0
+             AND ab.LibraryId IN (SELECT Id FROM Libraries WHERE IsLocal = 0)
+             AND (ab.CurrentTimeSeconds > 0 OR ab.Progress > 0 OR ab.IsFinished = 1
+                  OR pp.PositionSeconds > 0 OR pp.IsFinished = 1)"""
+    )
+    suspend fun getServerBookIdsWithProgress(): List<String>
 
     /** How many SERVER books one library has cached, downloads included. */
     @Query("SELECT COUNT(*) FROM AudioBooks WHERE LibraryId = :libraryId AND IsLocal = 0")

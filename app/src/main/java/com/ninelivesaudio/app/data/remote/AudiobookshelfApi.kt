@@ -17,6 +17,10 @@ interface AudiobookshelfApi {
     @POST("login")
     suspend fun login(@Body request: LoginRequest): Response<LoginResponse>
 
+    /** The server's health check. Read here only for its Date header (#118). */
+    @GET("ping")
+    suspend fun ping(): Response<Unit>
+
     /** Lightweight authenticated check for token validity (no profile payload). */
     @GET("api/authorize")
     suspend fun authorize(): Response<Unit>
@@ -115,6 +119,13 @@ interface AudiobookshelfApi {
         @Path("sessionId") sessionId: String,
         @Body request: SyncSessionRequest,
     ): Response<Unit>
+
+    /**
+     * Deliver listening made without a server session. The server refuses to
+     * move progress that was updated more recently than a session's updatedAt.
+     */
+    @POST("api/session/local-all")
+    suspend fun syncLocalSessions(@Body request: LocalSessionsRequest): Response<LocalSessionsResponse>
 
     /** Close a playback session. */
     @POST("api/session/{sessionId}/close")

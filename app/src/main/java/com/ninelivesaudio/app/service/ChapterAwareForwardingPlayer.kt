@@ -73,6 +73,29 @@ class ChapterAwareForwardingPlayer(
      */
     var speedClamp: ((Float) -> Float) = { it }
 
+    /**
+     * Play and pause from any controller (headset, notification, Android
+     * Auto), routed to PlaybackManager so they run the same code as the in
+     * app button, including the check of the server's spot before a resume
+     * (#118). PlaybackManager drives the wrapped player directly, so this
+     * never loops.
+     */
+    var playHandler: (() -> Unit)? = null
+    var pauseHandler: (() -> Unit)? = null
+
+    override fun play() {
+        playHandler?.invoke() ?: super.play()
+    }
+
+    override fun pause() {
+        pauseHandler?.invoke() ?: super.pause()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        val handler = if (playWhenReady) playHandler else pauseHandler
+        if (handler != null) handler() else super.setPlayWhenReady(playWhenReady)
+    }
+
     override fun setPlaybackSpeed(speed: Float) {
         super.setPlaybackSpeed(speedClamp(speed))
     }

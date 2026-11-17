@@ -129,6 +129,38 @@ val MIGRATION_10_11 = object : Migration(10, 11) {
     }
 }
 
+val MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Listening on server books with no server session open (issue #118),
+        // kept until the offline session sync delivers it. A new table only.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `OfflineListeningSessions` (`Id` TEXT NOT NULL, `ItemId` TEXT NOT NULL, " +
+                "`DisplayTitle` TEXT, `StartedAt` INTEGER NOT NULL, `UpdatedAt` INTEGER NOT NULL, " +
+                "`StartTime` REAL NOT NULL DEFAULT 0, `CurrentTime` REAL NOT NULL DEFAULT 0, " +
+                "`Duration` REAL NOT NULL DEFAULT 0, `TimeListening` REAL NOT NULL DEFAULT 0, " +
+                "`SyncedTimeListening` REAL NOT NULL DEFAULT 0, `UserId` TEXT NOT NULL DEFAULT '', " +
+                "PRIMARY KEY(`Id`))"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `idx_offline_session_item` ON `OfflineListeningSessions` (`ItemId`)"
+        )
+        // Books each user's server has held progress for. Empty after the upgrade on
+        // purpose: 2.1.x kept no such record, so every saved spot the server
+        // lacks is delivered before "absent on the server" can reset it.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `ServerProgressRecords` (`UserId` TEXT NOT NULL, " +
+                "`AudioBookId` TEXT NOT NULL, PRIMARY KEY(`UserId`, `AudioBookId`))"
+        )
+        // Queued spots carry their Audiobookshelf user. The user id is not
+        // known here, so a 2.1.x row gets none (''), and the signed-in user
+        // claims it once known, before any flush, drop or reset
+        // (ProgressRepository.ownerForDelivery).
+        db.execSQL(
+            "ALTER TABLE `PendingProgressUpdates` ADD COLUMN `UserId` TEXT NOT NULL DEFAULT ''"
+        )
+    }
+}
+
 /** Rows read per backfill page, so a huge library never sits in memory whole. */
 internal const val SEARCH_BACKFILL_PAGE_SIZE = 500
 
@@ -184,4 +216,5 @@ val ALL_MIGRATIONS: Array<Migration> = arrayOf(
     MIGRATION_8_9,
     MIGRATION_9_10,
     MIGRATION_10_11,
+    MIGRATION_11_12,
 )

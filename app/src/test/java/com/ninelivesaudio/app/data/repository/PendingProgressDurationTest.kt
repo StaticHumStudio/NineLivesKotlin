@@ -7,10 +7,8 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * The offline progress queue must carry `duration` to the server. Before this
- * fix the flush pushed the 3-arg updateProgress (duration defaulting to 0), so a
- * book finished/advanced offline synced back as 0% / not-finished. latestPushArgs
- * picks the newest queued row per item and preserves its duration.
+ * How queued progress rows relate to the durable row: legacy promotion,
+ * a later saved spot that replaces the queued one, and the import gate.
  */
 class PendingProgressDurationTest {
 
@@ -26,37 +24,12 @@ class PendingProgressDurationTest {
         )
 
     @Test
-    fun `latest inserted row supplies currentTime and duration across clock rollback`() {
-        val rows = listOf(
-            row(1, "2026-07-01T10:05:00Z", currentTime = 100.0, duration = 3600.0),
-            row(2, "2026-07-01T10:00:00Z", currentTime = 250.0, duration = 3600.0),
-        )
-        val push = latestPushArgs(rows)!!
-        assertEquals(250.0, push.currentTime, 0.0)
-        assertEquals(3600.0, push.duration, 0.0) // duration carried, not dropped to 0
-        assertEquals(false, push.isFinished)
-    }
-
-    @Test
-    fun `empty rows produce no push`() {
-        assertNull(latestPushArgs(emptyList()))
-    }
-
-    @Test
-    fun `unknown duration remains queued instead of resetting server progress`() {
-        assertNull(
-            latestPushArgs(
-                listOf(row(1, "2026-07-01T10:05:00Z", currentTime = 250.0, duration = 0.0)),
-            ),
-        )
-    }
-
-    @Test
-    fun `finished progress can push without duration`() {
-        val finished = row(1, "2026-07-01T10:05:00Z", currentTime = 250.0, duration = 0.0)
-            .copy(isFinished = 1)
-
-        assertEquals(true, latestPushArgs(listOf(finished))?.isFinished)
+    fun `a live push needs a length or a finish, a queued spot does not`() {
+        // PATCH computes the fraction from the length. The offline session
+        // sync takes the length from the server, so the queue never waits on it.
+        assertEquals(false, progressCanBeDelivered(isFinished = false, duration = 0.0))
+        assertEquals(true, progressCanBeDelivered(isFinished = true, duration = 0.0))
+        assertEquals(true, progressCanBeDelivered(isFinished = false, duration = 3600.0))
     }
 
     @Test
@@ -66,7 +39,7 @@ class PendingProgressDurationTest {
     }
 
     @Test
-    fun `legacy non atomic queue survives a different durable state after upgrade`() {
+    fun `legacy non atomic queue is delivered from the durable state after upgrade`() {
         val queued = listOf(
             row(1, "2026-07-01T10:05:00Z", currentTime = 100.0, duration = 3600.0)
                 .copy(isAtomic = 0),
@@ -78,8 +51,10 @@ class PendingProgressDurationTest {
             updatedAt = "2026-07-01T10:00:00Z",
         )
 
-        assertEquals(false, queuedRowsAreSuperseded(queued, durable))
-        assertNull(latestPushArgs(queued))
+        assertEquals(
+            LegacyProgressSnapshot(currentTime = 110.0, isFinished = false, duration = 3600.0),
+            queuedSpotFromDurable(queued, durable),
+        )
     }
 
     @Test
@@ -111,19 +86,30 @@ class PendingProgressDurationTest {
     }
 
     @Test
-    fun `different durable state supersedes a queue created by atomic delivery`() {
+    fun `a later saved spot replaces the queued one instead of dropping it`() {
+        // #118: a heartbeat or stop that saved the spot without queueing it
+        // used to make the queued row look stale, and the row was deleted
+        // undelivered. With the server spot winning on load, that lost the
+        // listening. The later saved spot is what goes now.
         val queued = listOf(
-            row(1, "2026-07-01T10:05:00Z", currentTime = 100.0, duration = 3600.0)
-                .copy(isAtomic = 1),
+            row(1, "2026-07-01T10:05:00Z", currentTime = 100.0, duration = 3600.0),
         )
         val durable = PlaybackProgressEntity(
             audioBookId = "item-1",
             positionSeconds = 110.0,
             isFinished = 0,
-            updatedAt = "2026-07-01T10:00:00Z",
+            updatedAt = "2026-07-01T10:05:12Z",
         )
 
-        assertEquals(true, queuedRowsAreSuperseded(queued, durable))
+        assertEquals(
+            LegacyProgressSnapshot(currentTime = 110.0, isFinished = false, duration = 3600.0),
+            queuedSpotFromDurable(queued, durable),
+        )
+        // A finish saved later goes as a finish.
+        assertEquals(
+            LegacyProgressSnapshot(currentTime = 3600.0, isFinished = true, duration = 3600.0),
+            queuedSpotFromDurable(queued, durable.copy(positionSeconds = 3600.0, isFinished = 1)),
+        )
     }
 
     @Test
@@ -138,11 +124,13 @@ class PendingProgressDurationTest {
             updatedAt = "2026-07-01T10:00:00Z",
         )
 
-        assertEquals(false, queuedRowsAreSuperseded(queued, durable))
+        assertNull(queuedSpotFromDurable(queued, durable))
+        assertNull(queuedSpotFromDurable(queued, durableProgress = null))
+        assertNull(queuedSpotFromDurable(emptyList(), durable))
     }
 
     @Test
-    fun `durable reconciliation uses insertion order for legacy rows across clock rollback`() {
+    fun `durable reconciliation uses insertion order across clock rollback`() {
         val queued = listOf(
             row(1, "2026-07-01T10:05:00Z", currentTime = 100.0, duration = 3600.0),
             row(2, "2026-07-01T10:00:00Z", currentTime = 110.0, duration = 3600.0),
@@ -154,6 +142,20 @@ class PendingProgressDurationTest {
             updatedAt = "2026-07-01T10:00:00Z",
         )
 
-        assertEquals(false, queuedRowsAreSuperseded(queued, durable))
+        assertNull(queuedSpotFromDurable(queued, durable))
+    }
+
+    @Test
+    fun `a heartbeat clears the queue only when the server took the queued spot`() {
+        val queued = listOf(row(4, "2026-07-01T10:05:00Z", currentTime = 120.0, duration = 3600.0))
+
+        assertEquals(true, sessionSyncConfirmsQueuedSpot(queued, sentPositionSeconds = 120.0))
+        // A later save queued a newer spot while the heartbeat was out.
+        assertEquals(false, sessionSyncConfirmsQueuedSpot(queued, sentPositionSeconds = 108.0))
+        // A queued finish needs its own flag pushed, which a heartbeat never sends.
+        assertEquals(false, sessionSyncConfirmsQueuedSpot(listOf(queued[0].copy(isFinished = 1)), 120.0))
+        // A legacy row is delivered from the durable state, not acknowledged here.
+        assertEquals(false, sessionSyncConfirmsQueuedSpot(listOf(queued[0].copy(isAtomic = 0)), 120.0))
+        assertEquals(false, sessionSyncConfirmsQueuedSpot(emptyList(), 120.0))
     }
 }

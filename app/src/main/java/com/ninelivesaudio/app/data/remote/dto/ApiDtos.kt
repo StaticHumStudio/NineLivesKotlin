@@ -195,6 +195,53 @@ data class SyncSessionRequest(
     val timeListened: Double = 0.0,
 )
 
+/**
+ * One listening session made on this phone without a server session, sent
+ * through Audiobookshelf's offline session sync (POST /api/session/local-all),
+ * the way the official apps send downloaded playback. The server keeps the
+ * session for listening stats and applies [currentTime] to the book's
+ * progress only when its own progress is not newer than [updatedAt].
+ * Times are epoch milliseconds, positions and lengths seconds.
+ */
+@Serializable
+data class ApiLocalSession(
+    val id: String,
+    val libraryItemId: String,
+    val mediaType: String = "book",
+    val displayTitle: String? = null,
+    val duration: Double = 0.0,
+    /** Audiobookshelf's PlayMethod.LOCAL. */
+    val playMethod: Int = 3,
+    val mediaPlayer: String = "NineLivesAudio",
+    val startTime: Double = 0.0,
+    val currentTime: Double = 0.0,
+    val timeListening: Double = 0.0,
+    val startedAt: Long,
+    val updatedAt: Long,
+    /** The phone's own calendar day, YYYY-MM-DD, for the server's stats. */
+    val date: String? = null,
+    val dayOfWeek: String? = null,
+)
+
+@Serializable
+data class LocalSessionsRequest(
+    val sessions: List<ApiLocalSession>,
+    val deviceInfo: DeviceInfo,
+)
+
+@Serializable
+data class LocalSessionsResponse(
+    val results: List<LocalSessionResult>? = null,
+)
+
+@Serializable
+data class LocalSessionResult(
+    val id: String = "",
+    val success: Boolean = false,
+    val progressSynced: Boolean = false,
+    val error: String? = null,
+)
+
 @Serializable
 data class ApiUserProgress(
     val libraryItemId: String = "",
@@ -208,6 +255,8 @@ data class ApiUserProgress(
 
 @Serializable
 data class ApiMeResponse(
+    /** The signed-in user's id, unique per user on the server. */
+    val id: String? = null,
     val mediaProgress: List<ApiMeMediaProgress>? = null,
     val bookmarks: List<ApiBookmark>? = null,
 )

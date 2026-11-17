@@ -5,6 +5,8 @@ import com.ninelivesaudio.app.BuildConfig
 import com.ninelivesaudio.app.data.remote.AudiobookshelfApi
 import com.ninelivesaudio.app.data.remote.AuthInterceptor
 import com.ninelivesaudio.app.data.remote.DynamicBaseUrlInterceptor
+import com.ninelivesaudio.app.data.remote.ServerClock
+import com.ninelivesaudio.app.data.remote.ServerClockInterceptor
 import com.ninelivesaudio.app.data.remote.ServerCoverUrlInterceptor
 import com.ninelivesaudio.app.data.remote.SelfSignedCertTrustManager.configureSelfSignedCerts
 import com.ninelivesaudio.app.service.SettingsManager
@@ -40,6 +42,7 @@ object NetworkModule {
         authInterceptor: AuthInterceptor,
         dynamicBaseUrlInterceptor: DynamicBaseUrlInterceptor,
         settingsManager: SettingsManager,
+        serverClockInterceptor: ServerClockInterceptor = ServerClockInterceptor(ServerClock(settingsManager)),
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .addInterceptor(dynamicBaseUrlInterceptor)
@@ -47,6 +50,9 @@ object NetworkModule {
             // server address goes to the current one and gets its token.
             .addInterceptor(ServerCoverUrlInterceptor { settingsManager.currentSettings.serverUrl })
             .addNetworkInterceptor(authInterceptor)
+            // Every response from the server tells how far the phone's clock
+            // is from its own (#118).
+            .addNetworkInterceptor(serverClockInterceptor)
 
         // Only log HTTP requests in debug builds to prevent token/URL leakage in production
         if (BuildConfig.DEBUG) {

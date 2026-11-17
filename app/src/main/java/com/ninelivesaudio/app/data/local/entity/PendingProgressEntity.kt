@@ -31,4 +31,12 @@ data class PendingProgressEntity(
 
     @ColumnInfo(name = "Timestamp")
     val timestamp: String, // ISO 8601
+
+    /**
+     * The Audiobookshelf user this spot is for (see ProgressAccountScope).
+     * Empty on a row queued by 2.1.x or before the user was known, which
+     * the signed-in user claims (#118).
+     */
+    @ColumnInfo(name = "UserId", defaultValue = "''")
+    val userId: String = "",
 )

@@ -31,7 +31,11 @@ import com.ninelivesaudio.app.data.repository.ListeningSessionRepository
 import com.ninelivesaudio.app.data.repository.LibraryRepository
 import com.ninelivesaudio.app.data.repository.PendingProgressQueueOwner
 import com.ninelivesaudio.app.data.repository.ProgressRepository
+import com.ninelivesaudio.app.data.repository.ServerSpot
+import com.ninelivesaudio.app.data.repository.serverProgressPositionSeconds
+import com.ninelivesaudio.app.data.remote.ServerProgressRead
 import com.ninelivesaudio.app.domain.model.AppMode
+import com.ninelivesaudio.app.domain.model.UserProgress
 import com.ninelivesaudio.app.domain.model.AppSettings
 import com.ninelivesaudio.app.domain.model.AudioBook
 import com.ninelivesaudio.app.domain.model.Chapter
@@ -434,15 +438,49 @@ internal class PlaybackProgressOwner {
  * Otherwise a delayed pause save could land after this one and put the old
  * position back. Its listening time still gets saved.
  */
+/**
+ * A pause's save, and whether it landed (#118). It saves at the pause's spot,
+ * or at a paused seek's spot that overtook it ([seekPosition], null for
+ * none). [save] gets that seek's spot, or null for the pause's own. When
+ * nothing is saved (a stop or a resume retired it, or the seek's spot is
+ * gone), the pause's listening is still recorded through
+ * [recordUnsavedListening], since nothing else carries it.
+ */
+internal suspend fun PlaybackProgressOwner.savePauseSnapshot(
+    token: PlaybackProgressOwner.SnapshotToken,
+    seekPosition: () -> Duration?,
+    save: suspend (Duration?) -> Boolean,
+    recordUnsavedListening: suspend () -> Unit,
+): Boolean {
+    var saved = false
+    var landed = false
+    syncSnapshot(
+        token,
+        onPositionSuperseded = {
+            seekPosition()?.let {
+                saved = true
+                landed = save(it)
+            }
+        },
+    ) {
+        saved = true
+        landed = save(null)
+    }
+    if (!saved) recordUnsavedListening()
+    return landed
+}
+
 internal fun PlaybackProgressOwner.launchPausedSeekSave(
     scope: CoroutineScope,
     bookId: String,
+    onLanded: () -> Unit = {},
     save: suspend () -> Unit,
 ): Job {
     invalidateSnapshotPositions(bookId)
     return scope.launch {
         try {
             report(bookId) { save() }
+            onLanded()
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}
@@ -451,34 +489,144 @@ internal fun PlaybackProgressOwner.launchPausedSeekSave(
 
 internal suspend fun PlaybackProgressOwner.resolveAndSavePlaybackPosition(
     bookId: String,
+    server: Duration?,
     candidate: Duration,
     readDurable: suspend () -> Duration?,
     save: suspend (Duration) -> Unit,
-    bookDuration: Duration = Duration.ZERO,
 ): Duration = sync(bookId) {
-    val durable = readDurable()
-    val resolved = when {
-        // An end position held in memory records a finish, not a newer spot.
-        // After a finished book restarts, the saved position is the newer
-        // one, and letting the end win sent the book back to 0:00 (#106).
-        durable != null && positionAtBookEnd(candidate, bookDuration) -> durable
-        durable != null && durable > candidate -> durable
-        else -> candidate
-    }
+    val resolved = loadStartPosition(server = server, saved = readDurable(), handed = candidate)
     save(resolved)
     resolved
 }
 
 /**
- * The latest of the positions a load holds in memory (the book it was handed
- * and the server session's), skipping any at the end of the book while one
- * short of it exists. An end position there can be stale from before the
- * book was finished and restarted (#106).
+ * Where a load starts a book (#118). The most recent listening wins, never
+ * the furthest spot. The server's spot, read after the phone's unsynced
+ * listening reached it, is the truth: the server kept whichever was newer.
+ * With no server answer, the phone's saved spot is the latest it knows, so
+ * it beats the spot the load was handed.
  */
-internal fun latestInMemoryPosition(positions: List<Duration>, bookDuration: Duration): Duration =
-    positions.filterNot { positionAtBookEnd(it, bookDuration) }.maxOrNull()
-        ?: positions.maxOrNull()
-        ?: Duration.ZERO
+internal fun loadStartPosition(server: Duration?, saved: Duration?, handed: Duration): Duration =
+    server ?: saved ?: handed
+
+/**
+ * An open server session's spot as the server's answer, for a load whose
+ * own check got none (#118 review). The server opened the session at its
+ * spot, which is the truth when the phone held no listening the server
+ * lacked at that moment. If it did, the session's spot predates that
+ * listening, even once a later check delivered it, so the phone's saved
+ * spot (the newest known) stays unless a server read says otherwise:
+ * taking the session's would let its next sync, which the server applies
+ * undated, wipe the delivered listening. A session at 0:00 says nothing
+ * (the server opens a finished book there).
+ */
+internal fun sessionLoadPosition(sessionTime: Duration?, unsentWhenSessionOpened: Boolean): Duration? =
+    sessionTime?.takeIf { it > Duration.ZERO && !unsentWhenSessionOpened }
+
+/**
+ * Run a load's session [open] and answer whether the phone held listening
+ * the server lacked when it opened. It is read before /play goes out: a
+ * flush running alongside can deliver that listening while the session
+ * opens, and the server opened the session at its spot from before it, so
+ * a read afterwards alone would trust a stale spot (#118 review).
+ */
+internal suspend fun unsentAcrossSessionOpen(
+    hasUnsent: suspend () -> Boolean,
+    open: suspend () -> Unit,
+): Boolean {
+    val before = hasUnsent()
+    open()
+    return before || hasUnsent()
+}
+
+/**
+ * Whether a load's server check lets the first Play skip its own. Only a
+ * load the user started (a book picked in the app or Android Auto) does.
+ * The startup restore's check is the device switch moment: pause the
+ * tablet, open the phone, and the tablet's last save can land just after
+ * the restore read the server, so Play asks again.
+ */
+internal fun loadGrantsPlayCheckSkip(userStartedLoad: Boolean, serverAnswered: Boolean): Boolean =
+    userStartedLoad && serverAnswered
+
+/**
+ * A server answer as a load position: a finished book at its end (where it
+ * parks), no progress at all at 0:00, and no answer as null.
+ */
+internal fun serverLoadPosition(read: ServerProgressRead?, bookDuration: Duration): Duration? = when (read) {
+    is ServerProgressRead.Found ->
+        if (read.progress.isFinished && bookDuration > Duration.ZERO) {
+            bookDuration
+        } else {
+            serverProgressPositionSeconds(read.progress, bookDuration.toDouble(kotlin.time.DurationUnit.SECONDS)).seconds
+        }
+    ServerProgressRead.Missing -> Duration.ZERO
+    ServerProgressRead.Unavailable, null -> null
+}
+
+/**
+ * The spot a load was handed when nothing better is known: an open server
+ * session's (the server's spot when it opened), else the book's own. A
+ * session at 0:00 says nothing, since the server opens a finished book there.
+ */
+internal fun handedLoadPosition(bookTime: Duration, sessionTime: Duration?): Duration =
+    sessionTime?.takeIf { it > Duration.ZERO } ?: bookTime
+
+/** Positions this close are the same spot. */
+internal val SAME_SPOT_TOLERANCE = 1.seconds
+
+/**
+ * Whether the loaded book moves to a server spot (#118). Only a book sitting
+ * still, paused or stopped with its media, takes it. A playing book owns its
+ * progress, and a load in progress decides its own start. A spot the player
+ * already shows changes nothing. When the phone's saved spot is known, the
+ * player must still be there, so a seek made since the server was asked is
+ * never undone.
+ */
+internal fun loadedBookTakesServerSpot(
+    spotBookId: String,
+    currentBookId: String?,
+    bookLoading: Boolean,
+    playbackState: PlaybackState,
+    hasMedia: Boolean,
+    shownPosition: Duration,
+    savedPosition: Duration?,
+    target: Duration,
+): Boolean =
+    spotBookId == currentBookId &&
+        !bookLoading &&
+        hasMedia &&
+        playbackState in setOf(PlaybackState.PAUSED, PlaybackState.STOPPED) &&
+        (target - shownPosition).absoluteValue > SAME_SPOT_TOLERANCE &&
+        (savedPosition == null || (shownPosition - savedPosition).absoluteValue <= SAME_SPOT_TOLERANCE * 2)
+
+/** Longest a load waits to deliver the book's listening and read its server spot. */
+internal val LOAD_SETTLE_TIMEOUT = 5.seconds
+
+/** Longest Play waits to do the same for a book paused a while. */
+internal val RESUME_SETTLE_TIMEOUT = 3.seconds
+
+/** A book paused at least this long checks the server's spot before it resumes. */
+internal const val RESUME_SETTLE_AFTER_PAUSE_MS = 60_000L
+
+/**
+ * Whether Play asks the server first. A remote book on a reachable server
+ * does, unless it was paused only a moment ago in this run of the app, or
+ * its spot was checked with the server a moment ago ([serverCheckedAtMs],
+ * a user-started load's or an earlier Play's check). A book restored at
+ * startup has no pause time and its check grants no skip, so it asks.
+ */
+internal fun resumeAsksServerFirst(
+    isRemoteBook: Boolean,
+    serverMode: Boolean,
+    serverReachable: Boolean,
+    pausedAtMs: Long?,
+    nowMs: Long,
+    serverCheckedAtMs: Long? = null,
+): Boolean =
+    isRemoteBook && serverMode && serverReachable &&
+        (pausedAtMs == null || nowMs - pausedAtMs >= RESUME_SETTLE_AFTER_PAUSE_MS) &&
+        (serverCheckedAtMs == null || nowMs - serverCheckedAtMs >= RESUME_SETTLE_AFTER_PAUSE_MS)
 
 /**
  * Where a load puts a book. [playerStart] is where the player is prepared,
@@ -626,6 +774,8 @@ internal data class TerminalPlaybackSnapshot(
     val serverSessionId: String?,
     val timeListened: Double,
     val serverListening: ServerSessionListening? = null,
+    /** When the listening ended, on the phone's clock. 0 when unknown. */
+    val listenedUntilMs: Long = 0L,
 )
 
 internal fun terminalPlaybackSnapshot(
@@ -636,6 +786,7 @@ internal fun terminalPlaybackSnapshot(
     serverSessionId: String?,
     timeListened: Double,
     serverListening: ServerSessionListening? = null,
+    listenedUntilMs: Long = 0L,
 ): TerminalPlaybackSnapshot = TerminalPlaybackSnapshot(
     bookId = bookId,
     position = position,
@@ -644,6 +795,7 @@ internal fun terminalPlaybackSnapshot(
     serverSessionId = serverSessionId,
     timeListened = timeListened,
     serverListening = serverListening,
+    listenedUntilMs = listenedUntilMs,
 )
 
 internal data class PlaybackProgressSnapshot(
@@ -656,6 +808,10 @@ internal data class PlaybackProgressSnapshot(
     val localSessionId: Long?,
     val localTimeListened: Double,
     val serverListening: ServerSessionListening? = null,
+    /** Listening on a server book with no server session open (#118). */
+    val offlineTimeListened: Double = 0.0,
+    /** When the snapshot was taken, on the phone's clock. */
+    val capturedAtMs: Long = 0L,
 )
 
 internal fun playbackProgressSnapshot(
@@ -668,6 +824,8 @@ internal fun playbackProgressSnapshot(
     localSessionId: Long?,
     localTimeListened: Double,
     serverListening: ServerSessionListening? = null,
+    offlineTimeListened: Double = 0.0,
+    capturedAtMs: Long = 0L,
 ): PlaybackProgressSnapshot = PlaybackProgressSnapshot(
     bookId = bookId,
     isLocal = isLocal,
@@ -678,6 +836,8 @@ internal fun playbackProgressSnapshot(
     localSessionId = localSessionId,
     localTimeListened = localTimeListened,
     serverListening = serverListening,
+    offlineTimeListened = offlineTimeListened,
+    capturedAtMs = capturedAtMs,
 )
 
 internal fun foldListeningTime(
@@ -823,6 +983,9 @@ internal fun listeningSessionToOpen(
 
 internal enum class LoadSessionOpen { AWAIT, BOUNDED, DEFER }
 
+/** How long saving a server session's undelivered listening to disk may wait on its lock. */
+internal val SERVER_LISTENING_BANK_TIMEOUT = 5.seconds
+
 /** How long a downloaded book's load waits on its server listening session. */
 internal val DOWNLOADED_SESSION_OPEN_TIMEOUT = 5.seconds
 
@@ -841,9 +1004,37 @@ internal fun loadSessionOpen(
     connectionStatus: ConnectivityMonitor.ConnectionStatus,
 ): LoadSessionOpen = when {
     !usesLocalTracks -> LoadSessionOpen.AWAIT
-    connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
-        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING -> LoadSessionOpen.BOUNDED
+    serverAnswersSpotChecks(connectionStatus) -> LoadSessionOpen.BOUNDED
     else -> LoadSessionOpen.DEFER
+}
+
+/**
+ * Whether the server is reachable enough to ask for a book's spot. SYNCING
+ * is the server answering a sync, so it counts. The load, Play and the error
+ * retry all use this, so Play during the startup sync asks the server the
+ * way the load did (#118).
+ */
+internal fun serverAnswersSpotChecks(connectionStatus: ConnectivityMonitor.ConnectionStatus): Boolean =
+    connectionStatus == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
+        connectionStatus == ConnectivityMonitor.ConnectionStatus.SYNCING
+
+/**
+ * The player moving to a server's spot (#118). Every seek made while it
+ * runs, the chapter update's own no-op seek included, is the server's spot
+ * and not this phone's listening, so it is never saved or queued.
+ */
+internal class ServerSpotMove {
+    var active: Boolean = false
+        private set
+
+    fun <T> run(block: () -> T): T {
+        active = true
+        try {
+            return block()
+        } finally {
+            active = false
+        }
+    }
 }
 
 internal enum class PlaybackItemPersistence { KEEP, SAVE, CLEAR }
@@ -1046,6 +1237,10 @@ class PlaybackManager @Inject constructor(
                 seekTo(bookPositionOfTrack(trackDurations, index, positionMs))
             }
             wrapper.previousChapterHandler = { skipToPreviousChapter() }
+            // Play and pause from the headset, notification and Android Auto
+            // take the same path as the app's buttons (#118).
+            wrapper.playHandler = { play() }
+            wrapper.pauseHandler = { pause() }
             // Every media-session controller goes through the wrapper, so the
             // entitlement clamp has to live there too, not only in setSpeed().
             wrapper.speedClamp = { requested ->
@@ -1200,7 +1395,13 @@ class PlaybackManager @Inject constructor(
             }
 
             withContext(Dispatchers.Main) {
-                loadAudioBookOwned(loadRequest, plan.book, autoPlay = plan.playWhenReady, reportErrors = false)
+                loadAudioBookOwned(
+                    loadRequest,
+                    plan.book,
+                    autoPlay = plan.playWhenReady,
+                    reportErrors = false,
+                    userStartedLoad = false,
+                )
             }
         }
     }
@@ -1308,6 +1509,8 @@ class PlaybackManager @Inject constructor(
                 // Android Auto) re-arms the terminal flush the same way play() does.
                 exoPlayer?.let { if (it.mediaItemCount > 0) retainedBookFinalized = false }
                 startOverFromParkedEnd()
+                // Every start of playback, from any source, comes through here.
+                playedSpot.playbackStarted()
                 _currentBook.value?.id?.let(playbackProgressOwner::invalidateSnapshots)
                 val requestedGeneration = nextPlaybackGeneration()
                 applyResumeBookkeeping()
@@ -1335,20 +1538,25 @@ class PlaybackManager @Inject constructor(
                 val snapshot = pendingPauseSnapshot.also { pendingPauseSnapshot = null }
                 if (snapshot != null) {
                     val snapshotToken = playbackProgressOwner.snapshotToken(snapshot.bookId)
+                    // Once this save lands, a later stop has nothing new to
+                    // write (#118). A stop that cancels it saves instead.
+                    val spotSave = playedSpot.saveStarting()
                     scope.launch(Dispatchers.IO) {
-                        playbackProgressOwner.syncSnapshot(
+                        val landed = playbackProgressOwner.savePauseSnapshot(
                             token = snapshotToken,
                             // A paused seek landed first. Save the listening
                             // time against the seek's position, never this
                             // snapshot's older one.
-                            onPositionSuperseded = {
-                                latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.let { (_, position) ->
-                                    syncPlaybackProgress(snapshot.copy(position = position))
-                                }
+                            seekPosition = { latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.second },
+                            save = { seekPosition ->
+                                syncPlaybackProgress(if (seekPosition != null) snapshot.copy(position = seekPosition) else snapshot)
                             },
-                        ) {
-                            syncPlaybackProgress(snapshot)
-                        }
+                            // A stop or a resume retired this save. The stop
+                            // saves the spot, but only this snapshot holds the
+                            // offline listening up to the pause.
+                            recordUnsavedListening = { recordPauseOfflineListening(snapshot) },
+                        )
+                        if (landed) playedSpot.saveLanded(spotSave)
                     }
                 }
             },
@@ -1382,6 +1590,23 @@ class PlaybackManager @Inject constructor(
     // finalizes the previous book before it fetches anything, and an abandoned
     // or failed load leaves that previous, already finalized book current.
     private var retainedBookFinalized = true
+
+    // Whether the book's spot is new (it played, or the user seeked). A stop
+    // or an error with nothing new saves nothing (#118).
+    private val playedSpot = PlayedSpot()
+
+    // Above 0 while the app itself moves the player, so the seek is not
+    // taken as the user's. Seeks reach the listener in the same call.
+    private var appPositioningDepth = 0
+
+    private inline fun <T> appPositioning(block: () -> T): T {
+        appPositioningDepth++
+        try {
+            return block()
+        } finally {
+            appPositioningDepth--
+        }
+    }
 
     private val _position = MutableStateFlow(Duration.ZERO)
     val position: StateFlow<Duration> = _position.asStateFlow()
@@ -1477,8 +1702,10 @@ class PlaybackManager @Inject constructor(
             val localSessionId: Long?,
             val localTimeListened: Double,
             val serverListening: ServerSessionListening,
+            val offlineTimeListened: Double,
         )
         val timing = synchronized(sessionLock) {
+            var offlineTimeListened = 0.0
             if (book.isLocal && currentLocalSessionId != null) {
                 localSessionAccumSec = foldListeningTime(
                     accumulatedSeconds = localSessionAccumSec,
@@ -1494,6 +1721,16 @@ class PlaybackManager @Inject constructor(
                     nowTimestampMs = now,
                 )
                 lastSyncTimestamp = 0L
+            } else if (!book.isLocal) {
+                // No server session: the listening since the last heartbeat
+                // goes to the book's offline session (#118).
+                offlineTimeListened = foldListeningTime(
+                    accumulatedSeconds = 0.0,
+                    lastTimestampMs = lastSyncTimestamp,
+                    nowTimestampMs = now,
+                    maxElapsedSeconds = localSessionMaxTickSec,
+                )
+                lastSyncTimestamp = 0L
             }
             PauseTiming(
                 serverSessionId = currentSession?.id,
@@ -1501,6 +1738,7 @@ class PlaybackManager @Inject constructor(
                 localSessionId = currentLocalSessionId,
                 localTimeListened = localSessionAccumSec,
                 serverListening = serverListening,
+                offlineTimeListened = offlineTimeListened,
             )
         }
         return playbackProgressSnapshot(
@@ -1513,6 +1751,8 @@ class PlaybackManager @Inject constructor(
             localSessionId = timing.localSessionId,
             localTimeListened = timing.localTimeListened,
             serverListening = timing.serverListening,
+            offlineTimeListened = timing.offlineTimeListened,
+            capturedAtMs = now,
         )
     }
 
@@ -1563,6 +1803,7 @@ class PlaybackManager @Inject constructor(
         skipServiceStart: Boolean = false,
         autoPlay: Boolean = true,
         reportErrors: Boolean = true,
+        userStartedLoad: Boolean = true,
     ): Boolean {
         check(Looper.myLooper() == Looper.getMainLooper()) {
             "loadAudioBookOwned must be called from the Main thread"
@@ -1615,6 +1856,8 @@ class PlaybackManager @Inject constructor(
         }
         pendingTerminalOwner.await(book.id)
         if (!playbackLoadOwner.claim(loadRequest)) return false
+        // A Play still asking the server about the previous book stands down.
+        pendingResume.cancel()
         var effectiveBook = book
         val loadSession = LoadServerSession()
         try {
@@ -1628,11 +1871,11 @@ class PlaybackManager @Inject constructor(
             // session it owns and nulls it first, so this only ever finds the
             // orphan. Closing it here is what every load did before the
             // finalization consolidation.
-            val orphanServerSession = synchronized(sessionLock) {
-                currentSession.also { currentSession = null }
+            val (orphanServerSession, orphanListening) = synchronized(sessionLock) {
+                (currentSession to serverListening).also { currentSession = null }
             }
             if (orphanServerSession != null) {
-                scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id) }
+                scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id, orphanListening) }
             }
             pendingTerminalOwner.await(book.id)
             if (!playbackLoadOwner.isCurrent(loadRequest)) return false
@@ -1668,6 +1911,32 @@ class PlaybackManager @Inject constructor(
 
             val isScannedLocalBook = book.isLocal
 
+            // Most recent listening wins (#118). Before the book's start is
+            // decided, the phone's unsynced listening for it goes to the
+            // server, which keeps whichever spot is newer, and the server's
+            // spot is read back. Bounded, and skipped when the server is not
+            // reachable, so an offline load starts from the saved spot.
+            val settled: ServerProgressRead? = if (
+                !isScannedLocalBook &&
+                settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF &&
+                serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value)
+            ) {
+                try {
+                    withTimeoutOrNull(LOAD_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    null
+                }
+            } else {
+                null
+            }
+            if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+
+            // Whether the phone held listening the server lacked when the
+            // session below opened, read before /play goes out (#118 review).
+            var unsentBeforeSessionOpen = false
+
             // A paused process restore prepares media without creating listening
             // history. Normal autoplay loads still open the server session here,
             // while restored playback opens it when Play actually begins.
@@ -1688,8 +1957,12 @@ class PlaybackManager @Inject constructor(
                     LoadSessionOpen.DEFER -> Duration.ZERO
                 }
                 if (sessionOpenTimeout != Duration.ZERO) {
-                    awaitLoadSessionOpen(scope, loadSession, sessionOpenTimeout) {
-                        openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
+                    unsentBeforeSessionOpen = unsentAcrossSessionOpen(
+                        hasUnsent = { progressRepository.hasUnsyncedListening(book.id) },
+                    ) {
+                        awaitLoadSessionOpen(scope, loadSession, sessionOpenTimeout) {
+                            openServerListeningSession(book, requestedGeneration, loadRequest, loadSession)
+                        }
                     }
                 }
                 if (!playbackLoadOwner.isCurrent(loadRequest)) return false
@@ -1702,10 +1975,7 @@ class PlaybackManager @Inject constructor(
             if (
                 remoteAccess.usesLocalTracks() &&
                 needsManifestBackfill(effectiveBook) &&
-                connectivityMonitor.connectionStatus.value.let {
-                    it == ConnectivityMonitor.ConnectionStatus.CONNECTED ||
-                        it == ConnectivityMonitor.ConnectionStatus.SYNCING
-                }
+                serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value)
             ) {
                 val filled = withTimeoutOrNull(MANIFEST_BACKFILL_TIMEOUT) {
                     manifestBackfillLazy.get().backfill(effectiveBook)
@@ -1745,14 +2015,43 @@ class PlaybackManager @Inject constructor(
             }
             if (!activeItemClaimed) return false
 
-            // Resolve the best known position from all sources
+            // The check before the load got no answer but the server opened
+            // a session, so it is reachable. Listening the server lacks goes
+            // first, once more and briefly, so the session's spot is not
+            // taken over it blind (#118 review).
+            var serverAnswer = settled
+            val sessionOpened = synchronized(sessionLock) { currentSession != null }
+            val unsentWhenSessionOpened = sessionOpened &&
+                (unsentBeforeSessionOpen || progressRepository.hasUnsyncedListening(book.id))
+            if (serverLoadPosition(serverAnswer, effectiveBook.duration) == null && unsentWhenSessionOpened) {
+                serverAnswer = try {
+                    withTimeoutOrNull(RESUME_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    null
+                }
+                if (!playbackLoadOwner.isCurrent(loadRequest)) return false
+            }
+            if (loadGrantsPlayCheckSkip(userStartedLoad, serverLoadPosition(serverAnswer, effectiveBook.duration) != null)) {
+                serverSpotCheckedAt = book.id to System.currentTimeMillis()
+            }
+
+            // Resolve where the book starts: the server's spot when it
+            // answered (or the open session's, with nothing unsent), else the
+            // saved spot, else the one the load was handed.
             var startPosition = effectiveBook.currentTime
             var durableRow: Pair<Duration, Boolean>? = null
+            // No session is no position, not a 0:00 that would hide a
+            // finished book's end.
+            val sessionTime = synchronized(sessionLock) { currentSession?.currentTime?.seconds }
+            val serverStart = serverLoadPosition(serverAnswer, effectiveBook.duration)
+                ?: sessionLoadPosition(
+                    sessionTime = sessionTime,
+                    unsentWhenSessionOpened = isScannedLocalBook || unsentWhenSessionOpened,
+                )
             withContext(Dispatchers.IO) {
-                // Check server session for a more recent position. No session
-                // is no position, not a 0:00 that would hide a finished book's end.
-                val sessionTime = synchronized(sessionLock) { currentSession?.currentTime?.seconds }
-                startPosition = latestInMemoryPosition(listOfNotNull(startPosition, sessionTime), effectiveBook.duration)
+                startPosition = handedLoadPosition(startPosition, sessionTime)
 
                 // Re-read durable progress and save the resolved position under
                 // one per-book gate. Polling cannot advance between the read and
@@ -1760,6 +2059,7 @@ class PlaybackManager @Inject constructor(
                 try {
                     startPosition = playbackProgressOwner.resolveAndSavePlaybackPosition(
                         bookId = effectiveBook.id,
+                        server = serverStart,
                         candidate = startPosition,
                         readDurable = {
                             progressRepository.getPlaybackProgress(effectiveBook.id)
@@ -1772,7 +2072,8 @@ class PlaybackManager @Inject constructor(
                                 resolved = resolvedPosition,
                                 bookDuration = effectiveBook.duration,
                                 savedPosition = durableRow?.first,
-                                savedFinished = durableRow?.second == true,
+                                // The server's answer carries its own finished flag.
+                                savedFinished = serverStart == null && durableRow?.second == true,
                             )
                             progressRepository.savePlaybackProgress(
                                 audioBookId = effectiveBook.id,
@@ -1788,7 +2089,6 @@ class PlaybackManager @Inject constructor(
                                 },
                             )
                         },
-                        bookDuration = effectiveBook.duration,
                     )
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -1861,7 +2161,7 @@ class PlaybackManager @Inject constructor(
 
             // Seek to saved position before prepare
             if (placement.playerStart > Duration.ZERO) {
-                seekToPosition(placement.playerStart)
+                appPositioning { seekToPosition(placement.playerStart) }
             }
 
             // Eagerly set the initial chapter so ChapterAwareForwardingPlayer
@@ -1974,6 +2274,8 @@ class PlaybackManager @Inject constructor(
             _duration.value = calculateTotalDuration(book)
             _isLocalFile.value = isLocal
         }
+        // Nothing has been listened at this spot yet.
+        playedSpot.bookPlaced()
     }
 
     /**
@@ -2405,6 +2707,12 @@ class PlaybackManager @Inject constructor(
             PlayAction.RETRY_AFTER_TERMINAL -> {
                 val player = exoPlayer ?: return
                 val bookId = retained!!.id
+                // A stop, another load or another error meanwhile moves the
+                // generation, and the retry stands down (#121 review).
+                val retryGeneration = playbackGeneration
+                // The error saved this spot. Only playing from here makes it
+                // new again, so a retry that fails again sends nothing (#118).
+                playedSpot.bookPlaced()
                 // The terminal write re-arms only once the retry owns the book
                 // again (#43). Re-arming here, before the wait, let a stop or a
                 // new load that landed during it write the book's end twice.
@@ -2419,6 +2727,7 @@ class PlaybackManager @Inject constructor(
                                 samePlayer = exoPlayer === player,
                                 playerNeedsPreparation = needsPlaybackPreparation(player.playbackState),
                                 bookLoading = stagedLoad.book.value != null,
+                                generationUnchanged = playbackGeneration == retryGeneration,
                             )
                         },
                         // An error terminal flushed progress and released sync
@@ -2431,11 +2740,27 @@ class PlaybackManager @Inject constructor(
                                 _currentBook.value?.id == bookId && stagedLoad.book.value == null
                             }
                         },
+                        // Another device may have moved the book since the
+                        // error, so the retry asks the server like a resume.
+                        settle = {
+                            if (
+                                resumeAsksServerFirst(
+                                    isRemoteBook = !retained.isLocal,
+                                    serverMode = settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF,
+                                    serverReachable = serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value),
+                                    pausedAtMs = pausedAtTimestamp,
+                                    nowMs = System.currentTimeMillis(),
+                                    serverCheckedAtMs = serverSpotCheckedAt?.takeIf { it.first == bookId }?.second,
+                                )
+                            ) {
+                                takeServerSpotBeforePlay(retained, player)
+                            }
+                        },
                         rearm = { if (player.mediaItemCount > 0) retainedBookFinalized = false },
                         prepare = {
                             startPlaybackService()
                             val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-                            player.seekTo(resume.mediaItemIndex, resume.positionMs)
+                            appPositioning { player.seekTo(resume.mediaItemIndex, resume.positionMs) }
                             player.prepare()
                             player.playWhenReady = true
                         },
@@ -2443,19 +2768,100 @@ class PlaybackManager @Inject constructor(
                 }
             }
             PlayAction.RESUME -> exoPlayer?.let { player ->
-                // Resuming a book that still has media re-arms its terminal
-                // flush. A stopped book lost its media items, so its finalized
-                // flag stands and the next load does not flush it a second time.
-                if (player.mediaItemCount > 0) retainedBookFinalized = false
-                if (needsPlaybackPreparation(player.playbackState)) {
-                    val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
-                    player.seekTo(resume.mediaItemIndex, resume.positionMs)
-                    player.prepare()
+                val book = retained
+                if (
+                    book != null &&
+                    resumeAsksServerFirst(
+                        isRemoteBook = !book.isLocal,
+                        serverMode = settingsManager.currentSettings.appMode == AppMode.AUDIOBOOKSHELF,
+                        serverReachable = serverAnswersSpotChecks(connectivityMonitor.connectionStatus.value),
+                        pausedAtMs = pausedAtTimestamp,
+                        nowMs = System.currentTimeMillis(),
+                        serverCheckedAtMs = serverSpotCheckedAt?.takeIf { it.first == book.id }?.second,
+                    )
+                ) {
+                    if (pendingResume.isPending) return
+                    pendingResume.start(
+                        scope,
+                        settle = { takeServerSpotBeforePlay(book, player) },
+                        resume = { resumePlayer(player) },
+                    )
+                } else {
+                    resumePlayer(player)
                 }
-                player.playWhenReady = true
-                // Player callbacks own app state and transition side effects.
             }
         }
+    }
+
+    // A Play waiting on the server's spot. Pause, a stop, an error, a
+    // completion and a load cancel it, and its generation guard covers an
+    // answer already on its way back (#121 review).
+    private val pendingResume = PendingResume { playbackGeneration }
+
+    // The book whose spot was last checked with the server, and when: a
+    // load's or a Play's check that got an answer. Play skips its own check
+    // right after one.
+    @Volatile
+    private var serverSpotCheckedAt: Pair<String, Long>? = null
+
+    /**
+     * Send the book's unsynced listening and move it to the server's spot,
+     * bounded. Whether the book is still the player's to play. Play on a book
+     * paused a while (or restored at startup) runs this first, so it never
+     * resumes, and then saves, a spot another device has moved past (#118).
+     * The book plays from where it is if the server is slow.
+     */
+    private suspend fun takeServerSpotBeforePlay(book: AudioBook, player: ExoPlayer): Boolean {
+        val shown = _position.value
+        val read = try {
+            withTimeoutOrNull(RESUME_SETTLE_TIMEOUT) { syncManager.settleBookProgress(book.id) }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            null
+        }
+        if (_currentBook.value?.id != book.id || exoPlayer !== player || stagedLoad.book.value != null) return false
+        val progress = when (read) {
+            is ServerProgressRead.Found -> read.progress
+            ServerProgressRead.Missing -> UserProgress(
+                libraryItemId = book.id,
+                currentTime = Duration.ZERO,
+                progress = 0.0,
+                isFinished = false,
+                lastUpdate = null,
+            )
+            else -> null
+        }
+        if (progress != null) {
+            serverSpotCheckedAt = book.id to System.currentTimeMillis()
+            adoptServerSpot(
+                ServerSpot(
+                    itemId = book.id,
+                    positionSeconds = serverProgressPositionSeconds(
+                        progress,
+                        book.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                    ),
+                    progress = progress,
+                    bookIsLoaded = true,
+                    savedPositionSeconds = shown.toDouble(kotlin.time.DurationUnit.SECONDS),
+                )
+            )
+        }
+        return true
+    }
+
+    private fun resumePlayer(player: ExoPlayer) {
+        // Resuming a book that still has media re-arms its terminal
+        // flush. A stopped book lost its media items, so its finalized
+        // flag stands and the next load does not flush it a second time.
+        if (player.mediaItemCount > 0) retainedBookFinalized = false
+        if (needsPlaybackPreparation(player.playbackState)) {
+            val resume = playbackResumePoint(player.playbackState, player.currentMediaItemIndex, player.currentPosition)
+            appPositioning { player.seekTo(resume.mediaItemIndex, resume.positionMs) }
+            player.prepare()
+        }
+        player.playWhenReady = true
+        // Player callbacks own app state and transition side effects.
     }
 
     private fun applyResumeBookkeeping() {
@@ -2474,7 +2880,7 @@ class PlaybackManager @Inject constructor(
                 if (rewindSeconds > 0) {
                     val current = _position.value
                     val target = (current - rewindSeconds.seconds).coerceAtLeast(Duration.ZERO)
-                    seekToPosition(target)
+                    appPositioning { seekToPosition(target) }
                     _position.value = target
                     updateCurrentChapter(target)
                 }
@@ -2494,6 +2900,7 @@ class PlaybackManager @Inject constructor(
     }
 
     fun pause() {
+        pendingResume.cancel()
         exoPlayer?.pause()
     }
 
@@ -2502,6 +2909,8 @@ class PlaybackManager @Inject constructor(
     }
 
     private fun finishPlayback(reason: PlaybackTermination, keepServiceConnection: Boolean = false) {
+        // A Play still asking the server would start the player this empties.
+        pendingResume.cancel()
         pausedAtTimestamp = null
         setParkedAtEnd(false)
         pendingPauseSnapshot = null
@@ -2519,23 +2928,30 @@ class PlaybackManager @Inject constructor(
         // A retained book that is already finalized gets no terminal write at
         // all. An abandoned or failed load leaves the previous, already
         // finalized book current, so it lands here too. Teardown below still runs.
-        val captured = if (shouldFinalizeRetainedBook(book != null, retainedBookFinalized)) {
+        // A book that never played since its load (its stream failed, or it
+        // sat paused) has no listening and no new spot to save (#118).
+        val finalizes = shouldFinalizeRetainedBook(book != null, retainedBookFinalized)
+        if (finalizes && !playedSpot.isNew) {
+            Log.d(TAG, "finishPlayback: ${book?.id} did not play since its spot was placed or saved, nothing saved")
+        }
+        val captured = if (playedSpot.takeForTerminalWrite(book != null, retainedBookFinalized)) {
             capturePlaybackProgressSnapshot()
         } else {
             null
         }
         val localSession = detachLocalSession()
-        val orphanServerSession = synchronized(sessionLock) {
-            currentSession.also {
+        val (orphanServerSession, orphanListening) = synchronized(sessionLock) {
+            (currentSession to serverListening).also {
                 currentSession = null
                 lastSyncTimestamp = 0L
             }
         }
         // No snapshot means no terminal job, and the terminal job is what
         // closes the session. Close the orphan here so a stop after an
-        // abandoned load does not leave an accepted server session open.
+        // abandoned load does not leave an accepted server session open,
+        // after its listening on the way to the server lands.
         if (captured == null && orphanServerSession != null) {
-            scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id) }
+            scope.launch(Dispatchers.IO) { closeSession(orphanServerSession.id, orphanListening) }
         }
         val terminal = captured?.let {
             terminalPlaybackSnapshot(
@@ -2546,6 +2962,7 @@ class PlaybackManager @Inject constructor(
                 serverSessionId = it.serverSessionId,
                 timeListened = it.serverTimeListened,
                 serverListening = it.serverListening,
+                listenedUntilMs = it.capturedAtMs,
             )
         }
         if (reason != PlaybackTermination.ERROR) settingsManager.clearCurrentPlaybackBookId()
@@ -2559,59 +2976,74 @@ class PlaybackManager @Inject constructor(
         // First, before the terminal work waits on any lock: a heartbeat in
         // flight for this session stops waiting on the server (#54).
         terminal?.serverListening?.markStopping()
-        if (terminal != null && terminalToken != null) {
-            pendingTerminalOwner.launch(scope, terminal.bookId) {
-                // Finish captured terminal work even if the service tears down.
-                // Same-book replay waits on this job before opening a new session.
-                withContext(NonCancellable) {
-                    // One deadline for the push, the session sync and the close.
-                    // The next load of this book waits on all three (#54).
-                    val budget = TerminalServerBudget(onExpired = connectivityMonitor::requestReachabilityCheck)
+        // Finish captured terminal work even if the service tears down.
+        // Same-book replay waits on this job before opening a new session.
+        // With nothing to write, the job only hands the book back to the
+        // progress import, which it must do either way (#121 review).
+        val write: (suspend () -> Unit)? = if (terminal != null && terminalToken != null) {
+            suspend {
+                // One deadline for the push, the session sync and the close.
+                // The next load of this book waits on all three (#54).
+                val budget = TerminalServerBudget(onExpired = connectivityMonitor::requestReachabilityCheck)
+                try {
+                    progressRepository.withTerminalProgressOwnership(terminal.bookId) {
+                        playbackProgressOwner.finalFlushSnapshot(
+                            token = terminalToken,
+                            syncTerminal = {},
+                            flushProgress = {
+                                syncManager.flushPlaybackProgress(
+                                    itemId = terminal.bookId,
+                                    currentTime = terminal.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                    isFinished = terminal.isFinished,
+                                    duration = terminal.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                    onPersisted = { updateAudioBookProgress(terminal) },
+                                    pushBudget = budget,
+                                )
+                            },
+                        )
+                    }
+                    val offlineListened = captured?.offlineTimeListened ?: 0.0
+                    if (offlineListened > 0.0) {
+                        progressRepository.recordOfflineListening(
+                            itemId = terminal.bookId,
+                            displayTitle = null,
+                            listenedSeconds = offlineListened,
+                            currentTime = terminal.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            duration = terminal.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Terminal progress persistence failed", e)
+                } finally {
+                    // Session identity is immutable even when a later load has
+                    // superseded this book's local progress snapshot token.
                     try {
-                        progressRepository.withTerminalProgressOwnership(terminal.bookId) {
-                            playbackProgressOwner.finalFlushSnapshot(
-                                token = terminalToken,
-                                syncTerminal = {},
-                                flushProgress = {
-                                    syncManager.flushPlaybackProgress(
-                                        itemId = terminal.bookId,
-                                        currentTime = terminal.position.toDouble(kotlin.time.DurationUnit.SECONDS),
-                                        isFinished = terminal.isFinished,
-                                        duration = terminal.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
-                                        onPersisted = { updateAudioBookProgress(terminal) },
-                                        pushBudget = budget,
-                                    )
-                                },
-                            )
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Terminal progress persistence failed", e)
+                        syncTerminalSession(terminal, budget)
                     } finally {
-                        // Session identity is immutable even when a later load has
-                        // superseded this book's local progress snapshot token.
-                        try {
-                            syncTerminalSession(terminal, budget)
-                        } finally {
-                            closeSession(terminal.serverSessionId, terminal.serverListening, terminalBudget = budget)
-                            if (localSession.sessionId != null) {
-                                try {
-                                    sessionRepository.updateLocalSession(
-                                        id = localSession.sessionId,
-                                        timeListeningSec = localSession.timeListened,
-                                        currentTimeSec = terminal.position.toDouble(kotlin.time.DurationUnit.SECONDS),
-                                        updatedAt = localSession.updatedAt,
-                                    )
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Terminal local session persistence failed", e)
-                                }
+                        closeSession(terminal.serverSessionId, terminal.serverListening, terminalBudget = budget)
+                        if (localSession.sessionId != null) {
+                            try {
+                                sessionRepository.updateLocalSession(
+                                    id = localSession.sessionId,
+                                    timeListeningSec = localSession.timeListened,
+                                    currentTimeSec = terminal.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                    updatedAt = localSession.updatedAt,
+                                )
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Terminal local session persistence failed", e)
                             }
                         }
                     }
-                    if (reason == PlaybackTermination.COMPLETED) {
-                        _bookCompleted.tryEmit(terminal.bookId)
-                    }
+                }
+                if (reason == PlaybackTermination.COMPLETED) {
+                    _bookCompleted.tryEmit(terminal.bookId)
                 }
             }
+        } else {
+            null
+        }
+        if (book != null) {
+            launchTerminalWork(scope, pendingTerminalOwner, book.id, write, syncManager::releaseActivePlaybackItem)
         }
         if (reason == PlaybackTermination.COMPLETED) _events.tryEmit(PlaybackEvent.BookFinished)
         retainedBookFinalized = true
@@ -3221,6 +3653,20 @@ class PlaybackManager @Inject constructor(
      * uses. The server push keeps its usual throttle.
      */
     private fun onSeekApplied() {
+        // The player moved to the server's spot, which the server already
+        // holds. Saving it would queue it as this phone's listening.
+        if (serverSpotMove.active) return
+        // A seek the user made, in any state, even while the first play
+        // buffers. The app's own moves of the player do not count.
+        if (
+            seekIsUsers(
+                appPositioning = appPositioningDepth > 0,
+                bookLoading = stagedLoad.book.value != null,
+                playbackState = _playbackState.value,
+            )
+        ) {
+            playedSpot.userSeeked()
+        }
         // A controller seek that reached the player directly still moves a
         // parked book off its end, to where the player now is.
         if (parkedAtEnd) {
@@ -3240,7 +3686,9 @@ class PlaybackManager @Inject constructor(
         val position = getCurrentPosition()
         val duration = _duration.value
         latestPausedSeek = book.id to position
-        playbackProgressOwner.launchPausedSeekSave(scope, book.id) {
+        // Once this save lands, a later stop has nothing new to write (#118).
+        val spotSave = playedSpot.saveStarting()
+        playbackProgressOwner.launchPausedSeekSave(scope, book.id, onLanded = { playedSpot.saveLanded(spotSave) }) {
             syncManager.reportPlaybackPosition(
                 itemId = book.id,
                 currentTime = position.toDouble(kotlin.time.DurationUnit.SECONDS),
@@ -3252,17 +3700,24 @@ class PlaybackManager @Inject constructor(
     }
 
     /**
-     * The service is going away with a book still playing. Save where it is
-     * before the player is released. Detached from the scope's cancellation
-     * so the write finishes during teardown.
+     * The service is going away: save the playing book's spot, then hand the
+     * book back to the progress import, since no player is left to take a
+     * server spot for it (#121 review). A Play still asking the server
+     * stands down.
      */
     private fun saveProgressBeforeTeardown() {
-        if (positionPollingJob?.isActive != true) return
+        pendingResume.cancel()
         val book = _currentBook.value ?: return
-        if (exoPlayer == null) return
+        val save = teardownProgressSave(book)
+        launchTerminalWork(scope, pendingTerminalOwner, book.id, save, syncManager::releaseActivePlaybackItem)
+    }
+
+    private fun teardownProgressSave(book: AudioBook): (suspend () -> Unit)? {
+        if (positionPollingJob?.isActive != true) return null
+        if (exoPlayer == null) return null
         val position = getCurrentPosition()
         val duration = _duration.value
-        scope.launch(NonCancellable) {
+        return {
             try {
                 playbackProgressOwner.report(book.id) {
                     syncManager.reportPlaybackPosition(
@@ -3319,7 +3774,7 @@ class PlaybackManager @Inject constructor(
             // to push updated chapter duration and position to Android Auto.
             if (chapter != null) {
                 val player = exoPlayer ?: return
-                player.seekTo(player.currentMediaItemIndex, player.currentPosition)
+                appPositioning { player.seekTo(player.currentMediaItemIndex, player.currentPosition) }
             }
         }
     }
@@ -3382,25 +3837,37 @@ class PlaybackManager @Inject constructor(
             )
         }
 
-        // Save to PlaybackProgress table
+        // Save to PlaybackProgress table. A server book's spot is queued with
+        // it until the server confirms it (the session sync below does), so
+        // a killed app never loses listening the server has not got (#118).
         if (!lifetimeIsCurrent()) return
         try {
-            progressRepository.savePlaybackProgress(
-                audioBookId = book.id,
-                position = pos,
-                isFinished = false,
-                onPersisted = {
-                    if (
-                        !updateAudioBookProgress(
-                            bookId = book.id,
-                            positionSeconds = posSec,
-                            durationSeconds = durSec,
-                            isFinished = false,
-                            isCurrent = ::lifetimeIsCurrent,
-                        )
-                    ) throw StaleProgressWriteException()
-                },
-            )
+            val onPersisted: suspend () -> Unit = {
+                if (
+                    !updateAudioBookProgress(
+                        bookId = book.id,
+                        positionSeconds = posSec,
+                        durationSeconds = durSec,
+                        isFinished = false,
+                        isCurrent = ::lifetimeIsCurrent,
+                    )
+                ) throw StaleProgressWriteException()
+            }
+            if (book.isLocal || settingsManager.currentSettings.appMode != AppMode.AUDIOBOOKSHELF) {
+                progressRepository.savePlaybackProgress(
+                    audioBookId = book.id,
+                    position = pos,
+                    isFinished = false,
+                    onPersisted = onPersisted,
+                )
+            } else {
+                progressRepository.saveAndQueuePlaybackProgress(
+                    itemId = book.id,
+                    currentTime = posSec,
+                    duration = durSec,
+                    onPersisted = onPersisted,
+                )
+            }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}
@@ -3453,6 +3920,41 @@ class PlaybackManager @Inject constructor(
 
         if (book.isLocal) return
 
+        // A server book playing with no server session open (a download
+        // played offline): its listening time goes to the book's offline
+        // session, which the offline session sync delivers later (#118).
+        val offlineListened = synchronized(sessionLock) {
+            if (
+                currentSession != null ||
+                playbackGeneration != lifetime.generation ||
+                _currentBook.value?.id != lifetime.bookId ||
+                _playbackState.value !in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+            ) {
+                0.0
+            } else {
+                val now = System.currentTimeMillis()
+                foldListeningTime(
+                    accumulatedSeconds = 0.0,
+                    lastTimestampMs = lastSyncTimestamp,
+                    nowTimestampMs = now,
+                    maxElapsedSeconds = localSessionMaxTickSec,
+                ).also { lastSyncTimestamp = now }
+            }
+        }
+        if (offlineListened > 0.0) {
+            try {
+                progressRepository.recordOfflineListening(
+                    itemId = book.id,
+                    displayTitle = book.title,
+                    listenedSeconds = offlineListened,
+                    currentTime = posSec,
+                    duration = durSec,
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {}
+        }
+
         // Sync to server session. Read currentSession AND advance the
         // listen-time accumulator under the same lock, because recoverStaleSession
         // resets serverListening.observedSeconds/lastSyncTimestamp under this lock. Doing
@@ -3484,32 +3986,91 @@ class PlaybackManager @Inject constructor(
             }
         }
         if (tick != null) {
+            // Set only when the server call itself failed, not when the book
+            // stopped or moved on, whose own save carries the time.
+            var syncFailed = false
             try {
                 tick.listening.deliver(tick.timeListened) { delta ->
                     // This holds the locks a stopped book's final write needs,
                     // and deliver's NonCancellable outlasts any cancellation.
                     // It waits for the server unless the book is stopping (#54).
                     tick.listening.heartbeatSend {
-                        progressRepository.syncSessionProgressIfCurrent(
-                            itemId = book.id,
-                            sessionId = tick.sessionId,
-                            currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
-                            duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                            timeListened = delta,
-                            isCurrent = {
-                                lifetimeIsCurrent() &&
-                                    _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
-                            },
-                        )
+                        try {
+                            progressRepository.syncSessionProgressIfCurrent(
+                                itemId = book.id,
+                                sessionId = tick.sessionId,
+                                currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                timeListened = delta,
+                                isCurrent = {
+                                    lifetimeIsCurrent() &&
+                                        _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                                },
+                            )
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: Exception) {
+                            false
+                        }.also { if (it == false) syncFailed = true }
                     }
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {}
+            // The network is gone with the session open. Its listening goes
+            // to disk as offline listening now, so a stop or a killed app
+            // that never reaches the server loses none of it (#118).
+            if (syncFailed) {
+                bankServerListening(
+                    listening = tick.listening,
+                    cumulativeSeconds = tick.timeListened,
+                    bookId = book.id,
+                    displayTitle = book.title,
+                    currentTime = posSec,
+                    duration = durSec,
+                    atMs = System.currentTimeMillis(),
+                )
+            }
         }
     }
 
-    private suspend fun syncTerminalProgress(snapshot: TerminalPlaybackSnapshot) {
+    /**
+     * Save a server session's listening its syncs could not deliver as
+     * offline listening, dated [atMs] (see [ServerSessionListening.bank]).
+     */
+    private suspend fun bankServerListening(
+        listening: ServerSessionListening?,
+        cumulativeSeconds: Double,
+        bookId: String,
+        displayTitle: String?,
+        currentTime: Double,
+        duration: Double,
+        atMs: Long,
+    ) {
+        if (listening == null) return
+        try {
+            withTimeoutOrNull(SERVER_LISTENING_BANK_TIMEOUT) {
+                listening.bank(cumulativeSeconds) { delta ->
+                    progressRepository.recordOfflineListening(
+                        itemId = bookId,
+                        displayTitle = displayTitle,
+                        listenedSeconds = delta,
+                        currentTime = currentTime,
+                        duration = duration,
+                        nowMs = atMs,
+                    )
+                }
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            Log.w(TAG, "bankServerListening: ${e.message}")
+        }
+    }
+
+    /** Whether the spot was saved on the phone (and sent, or queued for the server). */
+    private suspend fun syncTerminalProgress(snapshot: TerminalPlaybackSnapshot): Boolean {
+        var saved = false
         try {
             val sessionId = snapshot.serverSessionId
             if (sessionId == null) {
@@ -3519,29 +4080,50 @@ class PlaybackManager @Inject constructor(
                     isFinished = snapshot.isFinished,
                     onPersisted = { updateAudioBookProgress(snapshot) },
                 )
+                saved = true
             } else {
-                snapshot.serverListening?.deliver(snapshot.timeListened) { delta ->
-                    progressRepository.saveSessionProgressOrEnqueue(
-                        itemId = snapshot.bookId,
-                        sessionId = sessionId,
+                val synced = try {
+                    snapshot.serverListening?.deliver(snapshot.timeListened) { delta ->
+                        progressRepository.saveSessionProgressOrEnqueue(
+                            itemId = snapshot.bookId,
+                            sessionId = sessionId,
+                            currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            isFinished = snapshot.isFinished,
+                            duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            timeListened = delta,
+                            onPersisted = { updateAudioBookProgress(snapshot) },
+                        ).also { saved = true }
+                    } ?: true
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    false
+                }
+                // The pause's sync did not reach the server: its listening
+                // goes to disk as offline listening (#118).
+                if (!synced) {
+                    bankServerListening(
+                        listening = snapshot.serverListening,
+                        cumulativeSeconds = snapshot.timeListened,
+                        bookId = snapshot.bookId,
+                        displayTitle = null,
                         currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        isFinished = snapshot.isFinished,
                         duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        timeListened = delta,
-                        onPersisted = { updateAudioBookProgress(snapshot) },
+                        atMs = snapshot.listenedUntilMs.takeIf { it > 0L } ?: System.currentTimeMillis(),
                     )
                 }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}
+        return saved
     }
 
     private suspend fun syncTerminalSession(snapshot: TerminalPlaybackSnapshot, budget: TerminalServerBudget) {
         val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
         val durSec = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
         if (snapshot.serverSessionId != null) {
-            try {
+            val synced = try {
                 // The outer call bounds the wait for the delivery lock, which a
                 // heartbeat stuck mid request can hold. The inner one bounds the
                 // request inside deliver, whose own NonCancellable would
@@ -3557,11 +4139,27 @@ class PlaybackManager @Inject constructor(
                                 timeListened = delta,
                             )
                         } ?: false
-                    }
-                }
+                    } ?: true
+                } ?: false
             } catch (cancellation: CancellationException) {
                 throw cancellation
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                false
+            }
+            // The stop's sync did not reach the server (offline, or out of
+            // time): the session's listening goes to disk as offline
+            // listening, which the offline session sync delivers (#118).
+            if (!synced) {
+                bankServerListening(
+                    listening = snapshot.serverListening,
+                    cumulativeSeconds = snapshot.timeListened,
+                    bookId = snapshot.bookId,
+                    displayTitle = null,
+                    currentTime = posSec,
+                    duration = durSec,
+                    atMs = snapshot.listenedUntilMs.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                )
+            }
         }
     }
 
@@ -3598,7 +4196,34 @@ class PlaybackManager @Inject constructor(
             },
         )
 
-    private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot) {
+    /**
+     * The offline listening of a pause whose save did not run, dated when
+     * the pause happened. Listening recorded since then is not moved back.
+     */
+    private suspend fun recordPauseOfflineListening(snapshot: PlaybackProgressSnapshot) {
+        if (snapshot.offlineTimeListened <= 0.0) return
+        try {
+            progressRepository.recordOfflineListening(
+                itemId = snapshot.bookId,
+                displayTitle = null,
+                listenedSeconds = snapshot.offlineTimeListened,
+                currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                nowMs = snapshot.capturedAtMs,
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            Log.w(TAG, "recordPauseOfflineListening: ${e.message}")
+        }
+    }
+
+    /**
+     * A pause's save. Whether its spot landed: saved on the phone, and sent
+     * or queued for the server.
+     */
+    private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot): Boolean {
+        var landed = false
         // Same rule as a seek's save, so a pause save carrying a position at
         // the very end keeps the book finished instead of undoing it.
         val finished = positionCountsAsFinished(
@@ -3613,6 +4238,7 @@ class PlaybackManager @Inject constructor(
             serverSessionId = snapshot.serverSessionId,
             timeListened = snapshot.serverTimeListened,
             serverListening = snapshot.serverListening,
+            listenedUntilMs = snapshot.capturedAtMs,
         )
         val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
         val writePlan = playbackProgressWritePlan(
@@ -3631,12 +4257,30 @@ class PlaybackManager @Inject constructor(
                         if (writePlan.updateAudioBook) updateAudioBookProgress(terminal)
                     },
                 )
+                landed = true
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {}
         } else if (writePlan.useTerminalPath) {
-            progressRepository.withTerminalProgressOwnership(terminal.bookId) {
+            landed = progressRepository.withTerminalProgressOwnership(terminal.bookId) {
                 syncTerminalProgress(terminal)
+            }
+        }
+
+        if (snapshot.offlineTimeListened > 0.0) {
+            try {
+                progressRepository.recordOfflineListening(
+                    itemId = snapshot.bookId,
+                    displayTitle = null,
+                    listenedSeconds = snapshot.offlineTimeListened,
+                    currentTime = posSec,
+                    duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                // The listening is not saved, so the pause has not landed.
+                landed = false
             }
         }
 
@@ -3651,6 +4295,7 @@ class PlaybackManager @Inject constructor(
                 throw cancellation
             } catch (_: Exception) {}
         }
+        return landed
     }
 
     private fun terminalServerLive(): Boolean = terminalProgressPushAllowed(
@@ -3676,7 +4321,7 @@ class PlaybackManager @Inject constructor(
             when {
                 listening == null -> closeRemote()
                 terminalBudget != null -> terminalBudget.call(serverLive = true) { listening.close(closeRemote) }
-                else -> listening.close(closeRemote)
+                else -> closeLeftoverSession(listening, closeRemote)
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -3689,6 +4334,82 @@ class PlaybackManager @Inject constructor(
         }
     }
 
+    // ─── Server Spot (#118) ───────────────────────────────────────────────
+
+    // Runs while the player moves to a server spot, so the seeks it makes
+    // are not saved and queued as this phone's own listening.
+    private val serverSpotMove = ServerSpotMove()
+
+    /**
+     * Move the loaded book to the server's spot, if it is sitting still (see
+     * [loadedBookTakesServerSpot]). Main thread. The server already holds the
+     * spot, so it is saved here and not sent anywhere.
+     */
+    private suspend fun adoptServerSpot(spot: ServerSpot) {
+        val book = _currentBook.value ?: return
+        val player = exoPlayer ?: return
+        val end = bookEndLength(book.duration, calculateTotalDuration(book))
+        val target = if (spot.progress.isFinished && end > Duration.ZERO) end else spot.positionSeconds.seconds
+        if (
+            !loadedBookTakesServerSpot(
+                spotBookId = spot.itemId,
+                currentBookId = book.id,
+                bookLoading = stagedLoad.book.value != null,
+                playbackState = _playbackState.value,
+                hasMedia = player.mediaItemCount > 0,
+                shownPosition = _position.value,
+                savedPosition = spot.savedPositionSeconds?.seconds,
+                target = target,
+            )
+        ) return
+        Log.d(TAG, "adoptServerSpot: ${book.id} ${_position.value} -> $target")
+        val placement = loadPlacement(
+            resolved = target,
+            bookDuration = end,
+            autoPlay = false,
+            shownEnd = calculateTotalDuration(book),
+        )
+        // A pause or seek save still waiting would put the old spot back.
+        playbackProgressOwner.invalidateSnapshotPositions(book.id)
+        latestPausedSeek = null
+        // The spot came from listening elsewhere, so no resume rewind from it.
+        pausedAtTimestamp = null
+        // The chapter update moves too: a new chapter makes a no-op seek for
+        // Android Auto, which must not save the server's spot as new.
+        serverSpotMove.run {
+            seekToPosition(placement.playerStart)
+            setParkedAtEnd(placement.parkedAtEnd)
+            parkedEndLength = end
+            _position.value = placement.shownPosition
+            chapterPlayer?.absolutePositionMs = placement.shownPosition.inWholeMilliseconds
+            updateCurrentChapter(placement.shownPosition)
+        }
+        // The server holds this spot. Nothing new until the book plays.
+        playedSpot.bookPlaced()
+        val finished = placement.parkedAtEnd
+        try {
+            playbackProgressOwner.report(book.id) {
+                progressRepository.savePlaybackProgress(
+                    audioBookId = book.id,
+                    position = target,
+                    isFinished = finished,
+                    onPersisted = {
+                        updateAudioBookProgress(
+                            bookId = book.id,
+                            positionSeconds = target.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            durationSeconds = book.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            isFinished = finished,
+                        )
+                    },
+                )
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            Log.w(TAG, "adoptServerSpot: save failed: ${e.message}")
+        }
+    }
+
     // ─── Foreground Recovery (stale session after sleep) ──────────────────
 
     init {
@@ -3696,6 +4417,23 @@ class PlaybackManager @Inject constructor(
         scope.launch {
             connectivityMonitor.appResumedFromBackground.collect {
                 recoverIfSessionStale()
+            }
+        }
+        // The flush leaves the book playing on a server session to that
+        // session (#118).
+        syncManager.liveSessionItemId = {
+            synchronized(sessionLock) {
+                _currentBook.value?.id?.takeIf {
+                    currentSession != null &&
+                        _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                }
+            }
+        }
+        // The server's spot for the loaded book, found by an import or a
+        // flush. A paused book takes it (#118).
+        scope.launch {
+            syncManager.serverSpotForLoadedBook.collect { spot ->
+                adoptServerSpot(spot)
             }
         }
         // A deleted download must not leave the player holding its files (#89).
@@ -3913,11 +4651,6 @@ class PlaybackManager @Inject constructor(
         sessionInitialized = false
         stopPlaybackService()
         Log.d(TAG, "releaseAll: complete")
-    }
-
-    fun release() {
-        releaseAll()
-        scope.cancel()
     }
 
     // ─── Media Metadata ───────────────────────────────────────────────────────

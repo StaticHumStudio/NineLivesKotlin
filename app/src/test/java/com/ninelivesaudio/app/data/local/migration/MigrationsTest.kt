@@ -32,7 +32,7 @@ class MigrationsTest {
             .mapNotNull { it.name.removeSuffix(".json").toIntOrNull() }
             .maxOrNull()
 
-        assertEquals((1 until 11).map { it to it + 1 }, steps)
+        assertEquals((1 until 12).map { it to it + 1 }, steps)
         assertEquals(newestSchema, steps.last().second)
     }
 
@@ -103,6 +103,65 @@ class MigrationsTest {
 
         assertTrue("LibraryAuthors missing from the exported v11 schema", expected != null)
         assertEquals(listOf(expected), executed)
+    }
+
+    @Test
+    fun `11 to 12 only creates the two tables and the index Room expects`() {
+        val executed = mutableListOf<String>()
+        MIGRATION_11_12.migrate(recordingDatabase(executed))
+
+        val entities = Json.parseToJsonElement(File(schemaDir, "12.json").readText())
+            .jsonObject.getValue("database").jsonObject.getValue("entities").jsonArray
+            .map { it.jsonObject }
+        fun createSql(table: String): List<String> {
+            val entity = entities.single { it["tableName"]?.jsonPrimitive?.content == table }
+            val indices = entity["indices"]?.jsonArray.orEmpty().map {
+                it.jsonObject.getValue("createSql").jsonPrimitive.content
+            }
+            return (listOf(entity.getValue("createSql").jsonPrimitive.content) + indices)
+                .map { it.replace("\${TABLE_NAME}", table) }
+        }
+
+        assertEquals(
+            createSql("OfflineListeningSessions") + createSql("ServerProgressRecords"),
+            executed.filterNot { it.startsWith("ALTER TABLE") },
+        )
+    }
+
+    @Test
+    fun `11 to 12 gives queued spots the user column the v12 schema describes`() {
+        // #118 final review: queued spots carry their Audiobookshelf user, so
+        // a server or account switch never sends one user's listening to
+        // another, and one server reached by two addresses keeps one owner.
+        val executed = mutableListOf<String>()
+        MIGRATION_11_12.migrate(recordingDatabase(executed))
+
+        val pending = Json.parseToJsonElement(File(schemaDir, "12.json").readText())
+            .jsonObject.getValue("database").jsonObject.getValue("entities").jsonArray
+            .map { it.jsonObject }
+            .single { it["tableName"]?.jsonPrimitive?.content == "PendingProgressUpdates" }
+        val column = pending.getValue("fields").jsonArray.map { it.jsonObject }
+            .single { it["columnName"]?.jsonPrimitive?.content == "UserId" }
+        assertEquals("TEXT", column.getValue("affinity").jsonPrimitive.content)
+        assertEquals("true", column.getValue("notNull").jsonPrimitive.content)
+        assertEquals("''", column.getValue("defaultValue").jsonPrimitive.content)
+
+        assertEquals(
+            listOf("ALTER TABLE `PendingProgressUpdates` ADD COLUMN `UserId` TEXT NOT NULL DEFAULT ''"),
+            executed.filter { it.startsWith("ALTER TABLE") },
+        )
+    }
+
+    @Test
+    fun `11 to 12 starts with no book known to the server, so no saved spot can be reset`() {
+        // An upgrade keeps every saved spot. With no record of the server
+        // holding any book's progress, a book missing on the server is
+        // delivered first, never reset (see UnconfirmedProgressTest).
+        val executed = mutableListOf<String>()
+        MIGRATION_11_12.migrate(recordingDatabase(executed))
+
+        assertTrue(executed.none { it.startsWith("INSERT") || it.startsWith("UPDATE") || it.startsWith("DELETE") })
+        assertTrue(executed.any { it.contains("CREATE TABLE IF NOT EXISTS `ServerProgressRecords`") })
     }
 
     private data class BookRow(

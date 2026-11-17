@@ -1,5 +1,7 @@
 package com.ninelivesaudio.app.service
 
+import com.ninelivesaudio.app.data.remote.ServerProgressRead
+import com.ninelivesaudio.app.domain.model.UserProgress
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,33 +14,52 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Where a reloaded book starts (#106). A finished book parks at its end
- * (Jeff decided 2026-11-02: finished books reopen from the end), and a
- * position held in memory from the end of a book never beats a saved spot
- * from after the restart.
+ * Where a reloaded book starts (#106, #118). A finished book parks at its end
+ * (Jeff decided 2026-11-02: finished books reopen from the end). The most
+ * recent spot wins, never the furthest (#118): the server's spot, read after
+ * the phone's listening reached it, then the saved spot, then the one the
+ * load was handed.
  */
 class LoadStartPositionTest {
 
     private val end = 10.hours
 
-    /** Mirrors the load: in memory positions, then the saved one, then where the book is placed. */
-    /** A null [sessionTime] is a load with no server session open. */
-    private fun placementOfReload(bookTime: Duration, sessionTime: Duration?, saved: Duration?): LoadPlacement = runBlocking {
+    /**
+     * Mirrors the load: the server's answer, the saved spot, the handed one,
+     * then where the book is placed. A null [sessionTime] is a load with no
+     * server session open, a null [server] a load that got no server answer.
+     * [unsynced] is whether the phone held listening the server had not got
+     * when the session opened, which the older cases here all did (it is
+     * what made their saved spot newer than the session's).
+     */
+    private fun placementOfReload(
+        bookTime: Duration,
+        sessionTime: Duration?,
+        saved: Duration?,
+        server: ServerProgressRead? = null,
+        unsynced: Boolean = true,
+    ): LoadPlacement = runBlocking {
         var written: Duration? = null
         val resolved = PlaybackProgressOwner().resolveAndSavePlaybackPosition(
             bookId = "book",
-            candidate = latestInMemoryPosition(listOfNotNull(bookTime, sessionTime), end),
+            server = serverLoadPosition(server, end) ?: sessionLoadPosition(sessionTime, unsentWhenSessionOpened = unsynced),
+            candidate = handedLoadPosition(bookTime, sessionTime),
             readDurable = { saved },
             save = { written = it },
-            bookDuration = end,
         )
         assertEquals(resolved, written)
         loadPlacement(resolved, end, autoPlay = true)
     }
 
     /** Where the reload shows the book, for a book that is not parked at its end. */
-    private fun startOfReload(bookTime: Duration, sessionTime: Duration?, saved: Duration?): Duration {
-        val placement = placementOfReload(bookTime, sessionTime, saved)
+    private fun startOfReload(
+        bookTime: Duration,
+        sessionTime: Duration?,
+        saved: Duration?,
+        server: ServerProgressRead? = null,
+        unsynced: Boolean = true,
+    ): Duration {
+        val placement = placementOfReload(bookTime, sessionTime, saved, server, unsynced)
         assertFalse(placement.parkedAtEnd)
         assertEquals(placement.shownPosition, placement.playerStart)
         assertTrue(placement.playWhenReady)
@@ -80,25 +101,125 @@ class LoadStartPositionTest {
         assertParkedAtEnd(placementOfReload(bookTime = end, sessionTime = null, saved = null))
     }
 
+    private fun found(position: Duration, finished: Boolean = false) =
+        ServerProgressRead.Found(UserProgress(libraryItemId = "book", currentTime = position, isFinished = finished))
+
     @Test
-    fun `a newer position from the server still beats an older saved one`() {
-        assertEquals(2.hours, startOfReload(bookTime = 1.hours, sessionTime = 2.hours, saved = 1.hours))
+    fun `the server's spot beats the saved one, older or newer`() {
+        // Another device listened further.
+        assertEquals(2.hours, startOfReload(bookTime = 1.hours, sessionTime = null, saved = 1.hours, server = found(2.hours)))
+        // Another device rewound. The furthest spot used to win and undo it.
+        assertEquals(
+            30.minutes,
+            startOfReload(bookTime = 2.hours, sessionTime = 2.hours, saved = 2.hours, server = found(30.minutes)),
+        )
     }
 
     @Test
-    fun `a newer saved position still beats an older one in memory`() {
+    fun `a server session's spot does not beat a saved spot the server has not got`() {
+        // The phone holds listening the server has not judged yet (its
+        // delivery before the session failed), so its saved spot is the
+        // latest it knows.
+        assertEquals(1.hours, startOfReload(bookTime = 1.hours, sessionTime = 2.hours, saved = 1.hours))
+        assertEquals(1.hours, startOfReload(bookTime = 1.hours, sessionTime = 2.hours, saved = 1.hours, server = ServerProgressRead.Unavailable))
+    }
+
+    @Test
+    fun `listening delivered after the session opened is never undone by the session's spot`() {
+        // #118 delta review: the session opened at 1:00:00 (stale), then the
+        // second check delivered the phone's unsent 2:00:00 and the queue
+        // cleared, but reading the server back timed out. Nothing is unsent
+        // any more, yet the session's spot predates that delivery. Taking it
+        // would let the next heartbeat's session sync wipe 2:00:00 on the
+        // server. The phone's own spot, the newest known, stays.
+        assertEquals(
+            2.hours,
+            startOfReload(
+                bookTime = 1.hours,
+                sessionTime = 1.hours,
+                saved = 2.hours,
+                server = ServerProgressRead.Unavailable,
+                unsynced = true,
+            ),
+        )
+        // A read that answered still says otherwise.
+        assertEquals(
+            90.minutes,
+            startOfReload(bookTime = 1.hours, sessionTime = 1.hours, saved = 2.hours, server = found(90.minutes), unsynced = true),
+        )
+    }
+
+    @Test
+    fun `listening a flush delivers while the session opens still counts as unsent`() {
+        // #118 re-review: a foreground queue flush delivered the phone's
+        // 2:00:00 while /play was out, so the session opened at the server's
+        // stale 1:00:00 and a read after the open found nothing unsent.
+        var unsent = true
+        val latched = runBlocking {
+            unsentAcrossSessionOpen(hasUnsent = { unsent }) {
+                unsent = false // the flush lands during the open
+            }
+        }
+        assertTrue(latched)
+        assertEquals(
+            2.hours,
+            startOfReload(
+                bookTime = 1.hours,
+                sessionTime = 1.hours,
+                saved = 2.hours,
+                server = ServerProgressRead.Unavailable,
+                unsynced = latched,
+            ),
+        )
+        // Nothing unsent before or after: the session's spot is the server's.
+        assertFalse(runBlocking { unsentAcrossSessionOpen(hasUnsent = { false }) {} })
+    }
+
+    @Test
+    fun `with nothing unsent, an open session's spot is the server's and beats the saved one`() {
+        // #118 review: the check before the load timed out but /play opened.
+        // The session's spot is the server's, and the saved spot has nothing
+        // behind it the server lacks, so another device's spot wins.
+        assertEquals(2.hours, startOfReload(bookTime = 1.hours, sessionTime = 2.hours, saved = 1.hours, unsynced = false))
+        assertEquals(
+            30.minutes,
+            startOfReload(bookTime = 2.hours, sessionTime = 30.minutes, saved = 2.hours, server = ServerProgressRead.Unavailable, unsynced = false),
+        )
+        // A server answer still comes first.
+        assertEquals(
+            40.minutes,
+            startOfReload(bookTime = 2.hours, sessionTime = 30.minutes, saved = 2.hours, server = found(40.minutes), unsynced = false),
+        )
+        // A session at 0:00 says nothing: the server opens a finished book there.
+        assertParkedAtEnd(placementOfReload(bookTime = end, sessionTime = Duration.ZERO, saved = end, unsynced = false))
+        assertEquals(null, sessionLoadPosition(sessionTime = null, unsentWhenSessionOpened = false))
+    }
+
+    @Test
+    fun `the saved spot beats the one in memory, further or not`() {
         assertEquals(2.hours, startOfReload(bookTime = 1.hours, sessionTime = Duration.ZERO, saved = 2.hours))
+        assertEquals(1.hours, startOfReload(bookTime = 2.hours, sessionTime = null, saved = 1.hours))
     }
 
     @Test
-    fun `an in memory end position does not hide a mid book one`() {
-        assertEquals(3.minutes, latestInMemoryPosition(listOf(end, 3.minutes), end))
+    fun `progress removed on the server starts the book over`() {
+        assertEquals(Duration.ZERO, startOfReload(bookTime = 2.hours, sessionTime = null, saved = 2.hours, server = ServerProgressRead.Missing))
     }
 
     @Test
-    fun `a book with no known length keeps the larger position`() {
-        assertEquals(end, latestInMemoryPosition(listOf(end, 3.minutes), Duration.ZERO))
+    fun `a book the server holds as finished parks at its end`() {
+        assertParkedAtEnd(placementOfReload(bookTime = 1.hours, sessionTime = Duration.ZERO, saved = 1.hours, server = found(3.minutes, finished = true)))
     }
+
+    @Test
+    fun `with no saved spot a session's spot beats the book's, unless it is the start`() {
+        assertEquals(2.hours, handedLoadPosition(bookTime = 1.hours, sessionTime = 2.hours))
+        assertEquals(30.minutes, handedLoadPosition(bookTime = 1.hours, sessionTime = 30.minutes))
+        // The server opens a finished book at 0:00. That is not a spot.
+        assertEquals(end, handedLoadPosition(bookTime = end, sessionTime = Duration.ZERO))
+        assertEquals(end, handedLoadPosition(bookTime = end, sessionTime = null))
+    }
+
     // A stop in the last second saves the book as finished, so the load
     // treats the same window as the end (one shared rule).
 

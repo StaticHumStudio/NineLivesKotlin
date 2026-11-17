@@ -64,6 +64,28 @@ internal class ServerSessionListening {
             }
         }
 
+    /**
+     * The session's listening the server has not acknowledged, because its
+     * syncs failed (the network went away with the session open), saved
+     * durably by [record] as offline listening, which the offline session
+     * sync delivers later (#118 final review). Once [record] returns, that
+     * time counts as delivered here, so a later sync of this session that
+     * lands sends only listening after it and nothing is counted twice. A
+     * [record] that throws keeps the time for the next sync or bank.
+     * Returns the seconds banked.
+     */
+    suspend fun bank(cumulativeSeconds: Double, record: suspend (Double) -> Unit): Double =
+        deliveryMutex.withLock {
+            withContext(NonCancellable) {
+                val delta = (cumulativeSeconds - acknowledgedSeconds).coerceAtLeast(0.0)
+                if (delta > 0.0) {
+                    record(delta)
+                    acknowledgedSeconds = maxOf(acknowledgedSeconds, cumulativeSeconds)
+                }
+                delta
+            }
+        }
+
     suspend fun close(closeRemote: suspend () -> Unit) = deliveryMutex.withLock {
         if (!closed) {
             closed = true

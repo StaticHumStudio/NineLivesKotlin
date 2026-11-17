@@ -35,6 +35,76 @@ enum class TokenValidationResult { VALID, INVALID, UNREACHABLE }
 enum class CredentialLoginResult { SUCCESS, REJECTED, UNREACHABLE }
 
 /**
+ * One book's progress as the server holds it. [Missing] (the account has no
+ * progress for the book) and [Unavailable] (no answer) must stay apart: only
+ * an answer may move the phone's spot.
+ */
+sealed interface ServerProgressRead {
+    data class Found(val progress: UserProgress) : ServerProgressRead
+
+    /** HTTP 404. */
+    data object Missing : ServerProgressRead
+
+    /** Any other failure, including an exception. */
+    data object Unavailable : ServerProgressRead
+}
+
+/** Turn one book's progress reply into a [ServerProgressRead]. */
+internal suspend fun readServerProgress(
+    fetch: suspend () -> retrofit2.Response<ApiUserProgress>,
+    normalizeProgress: (Double) -> Double,
+): ServerProgressRead = try {
+    val response = fetch()
+    val body = response.body()
+    when {
+        response.code() == 404 -> ServerProgressRead.Missing
+        !response.isSuccessful || body == null -> ServerProgressRead.Unavailable
+        else -> ServerProgressRead.Found(
+            UserProgress(
+                libraryItemId = body.libraryItemId,
+                currentTime = body.currentTime.seconds,
+                progress = normalizeProgress(body.progress),
+                isFinished = body.isFinished,
+                lastUpdate = if (body.lastUpdate > 0) body.lastUpdate else null,
+            ),
+        )
+    }
+} catch (cancellation: CancellationException) {
+    throw cancellation
+} catch (_: Exception) {
+    ServerProgressRead.Unavailable
+}
+
+/** What the server did with one delivery of offline sessions. */
+sealed interface LocalSessionSync {
+    /**
+     * Every session landed. [progressSynced] holds, per session in the order
+     * sent, whether the server also moved the book's progress to it (false
+     * when its own progress was newer).
+     */
+    data class Delivered(val progressSynced: List<Boolean>) : LocalSessionSync
+
+    /** The server no longer has the book. */
+    data object ItemGone : LocalSessionSync
+
+    /** No answer, or one that cannot be read. Try again later. */
+    data object Unavailable : LocalSessionSync
+}
+
+/**
+ * Read the server's per session results. An answer that does not account for
+ * every session sent is no answer. Audiobookshelf fails a session only when
+ * the book or its library is gone, and a delivery carries one book, so all
+ * sessions failing means the book is gone.
+ */
+internal fun localSessionSyncOutcome(sent: Int, results: List<LocalSessionResult>?): LocalSessionSync = when {
+    results == null || results.size != sent || sent == 0 -> LocalSessionSync.Unavailable
+    results.all { it.success } -> LocalSessionSync.Delivered(results.map { it.progressSynced })
+    results.none { it.success } -> LocalSessionSync.ItemGone
+    else -> LocalSessionSync.Unavailable
+}
+
+/**
  * Classifies a non-2xx login HTTP status. 4xx is the server rejecting the
  * credentials (auth-shaped codes like 401/403 included); anything else (5xx,
  * unexpected codes) is a transient inability to reach a verdict.
@@ -256,6 +326,8 @@ class ApiService @Inject constructor(
                         recordMutation = { recordAuthMutation() },
                         persistSecureStorage = { settingsManager.saveAuthToken(token, normalizedUrl) },
                     )
+                    // Unsent progress is kept per signed-in user (#118).
+                    loginResponse.user?.id?.let { settingsManager.saveAuthUserIdIfCurrent(token, it) }
 
                     lastError = null
                     CredentialLoginResult.SUCCESS
@@ -949,14 +1021,70 @@ class ApiService @Inject constructor(
         }
     }
 
-    suspend fun getAllUserProgress(): List<UserProgress> = withContext(Dispatchers.IO) {
-        try {
-            val response = api.getMe()
-            if (!response.isSuccessful) return@withContext emptyList()
+    /**
+     * Read one book's progress, telling "no progress" apart from "could not
+     * ask". Unlike [getUserProgress], which returns null for both.
+     */
+    suspend fun readUserProgress(itemId: String): ServerProgressRead = withContext(Dispatchers.IO) {
+        readServerProgress(
+            fetch = { api.getUserProgress(itemId) },
+            normalizeProgress = ::normalizeProgress,
+        )
+    }
 
-            response.body()?.mediaProgress
-                ?.filter { it.libraryItemId.isNotEmpty() }
-                ?.map { p ->
+    /**
+     * Deliver listening made without a server session through the offline
+     * session sync, which keeps the time for stats and moves the book's
+     * progress only when the server holds nothing newer.
+     */
+    /** A /ping, so the server's Date header updates [ServerClock]. Whether it answered. */
+    suspend fun pingServer(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            api.ping().isSuccessful
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    suspend fun syncLocalSessions(sessions: List<ApiLocalSession>): LocalSessionSync = withContext(Dispatchers.IO) {
+        try {
+            val response = api.syncLocalSessions(
+                LocalSessionsRequest(
+                    sessions = sessions,
+                    deviceInfo = DeviceInfo(
+                        clientName = "NineLivesAudio",
+                        deviceId = settingsManager.getDeviceId(),
+                    ),
+                )
+            )
+            if (!response.isSuccessful) {
+                LocalSessionSync.Unavailable
+            } else {
+                localSessionSyncOutcome(sessions.size, response.body()?.results)
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            LocalSessionSync.Unavailable
+        }
+    }
+
+    /**
+     * Every progress record of the account, or null when the server could not
+     * be asked. An empty list is an answer: the account has no progress.
+     */
+    suspend fun fetchAllUserProgressOrNull(): List<UserProgress>? = withContext(Dispatchers.IO) {
+        try {
+            val token = settingsManager.getAuthToken()
+            val response = api.getMe()
+            if (!response.isSuccessful) return@withContext null
+            val body = response.body() ?: return@withContext null
+            rememberSignedInUser(token, body.id)
+            body.mediaProgress.orEmpty()
+                .filter { it.libraryItemId.isNotEmpty() }
+                .map { p ->
                     UserProgress(
                         libraryItemId = p.libraryItemId,
                         currentTime = p.currentTime.seconds,
@@ -964,10 +1092,42 @@ class ApiService @Inject constructor(
                         isFinished = p.isFinished,
                         lastUpdate = if (p.lastUpdate > 0) p.lastUpdate else null,
                     )
-                } ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
+                }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            null
         }
+    }
+
+    /**
+     * The signed-in user's id, asked of the server when the phone does not
+     * know it yet (a token login, or an upgrade from 2.1.x). Null when the
+     * server cannot answer.
+     */
+    suspend fun fetchSignedInUserId(): String? = withContext(Dispatchers.IO) {
+        settingsManager.getAuthUserId()?.let { return@withContext it }
+        try {
+            val token = settingsManager.getAuthToken()?.takeIf { it.isNotBlank() } ?: return@withContext null
+            val response = api.getMe()
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                return@withContext null
+            }
+            val id = response.body()?.id?.trim()?.takeIf { it.isNotEmpty() } ?: return@withContext null
+            rememberSignedInUser(token, id)
+            // Only an id recorded for the token still in use counts.
+            settingsManager.getAuthUserId()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun rememberSignedInUser(token: String?, userId: String?) {
+        if (token.isNullOrBlank() || userId.isNullOrBlank()) return
+        settingsManager.saveAuthUserIdIfCurrent(token, userId)
     }
 
     // ─── Listening Sessions ──────────────────────────────────────────────

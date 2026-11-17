@@ -16,6 +16,7 @@ import com.ninelivesaudio.app.data.local.entity.PendingProgressEntity
 import com.ninelivesaudio.app.data.local.entity.PlaybackProgressEntity
 import com.ninelivesaudio.app.data.remote.ApiService
 import com.ninelivesaudio.app.data.remote.LocalSessionSync
+import com.ninelivesaudio.app.data.remote.ProgressServerScope
 import com.ninelivesaudio.app.data.remote.ServerClock
 import com.ninelivesaudio.app.data.remote.serverTimeShiftMs
 import com.ninelivesaudio.app.data.remote.ServerProgressRead
@@ -228,8 +229,33 @@ class ProgressRepository @Inject constructor(
     private val audioBookDao: AudioBookDao,
     private val apiService: ApiService,
     private val serverClock: ServerClock,
+    private val serverScope: ProgressServerScope,
 ) {
     private val pendingProgressQueueOwner = PendingProgressQueueOwner()
+
+    // The server whose unscoped rows (queued by 2.1.x) were last claimed.
+    @Volatile private var claimedForServer: String? = null
+
+    /**
+     * The server in use (see [ProgressServerScope]). The first call for a
+     * server hands it any row saved before rows carried a server, which
+     * only a 2.1.x upgrade leaves, so those go to the server they were
+     * queued on. Takes no queue lock, so any caller may use it.
+     */
+    private suspend fun currentServer(): String {
+        val server = serverScope.current()
+        if (server.isNotEmpty() && claimedForServer != server) {
+            withContext(NonCancellable) {
+                database.withTransaction {
+                    pendingProgressDao.claimUnscoped(server)
+                    offlineSessionDao.claimUnscoped(server)
+                    serverRecordDao.claimUnscoped(server)
+                }
+            }
+            claimedForServer = server
+        }
+        return server
+    }
 
     // Books the server answered "not found" for since the app started. Their
     // progress is gone with them, which is not a reset (#118).
@@ -347,9 +373,10 @@ class ProgressRepository @Inject constructor(
         nowMs: Long = System.currentTimeMillis(),
     ) {
         if (listenedSeconds <= 0.0) return
+        val server = currentServer()
         pendingProgressQueueOwner.withItemLock(itemId) {
             withContext(NonCancellable) {
-                val latest = offlineSessionDao.getForItem(itemId).maxByOrNull { it.updatedAt }
+                val latest = offlineSessionDao.getForItemOnServer(itemId, server).maxByOrNull { it.updatedAt }
                 offlineSessionDao.upsert(
                     offlineSessionAfterListening(
                         latest = latest,
@@ -360,7 +387,7 @@ class ProgressRepository @Inject constructor(
                         duration = duration,
                         nowMs = nowMs,
                         newId = { UUID.randomUUID().toString() },
-                    )
+                    ).copy(serverKey = server)
                 )
             }
         }
@@ -502,6 +529,7 @@ class ProgressRepository @Inject constructor(
         onPersisted: suspend () -> Unit,
     ) {
         val timestamp = System.currentTimeMillis().toIso8601()
+        val server = currentServer()
         withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
                 database.withTransaction {
@@ -519,6 +547,7 @@ class ProgressRepository @Inject constructor(
                             duration = duration,
                             isAtomic = 1,
                             timestamp = timestamp,
+                            serverKey = server,
                         ),
                     )
                     onPersisted()
@@ -529,14 +558,15 @@ class ProgressRepository @Inject constructor(
     }
 
     private suspend fun acknowledgePendingProgressLocked(itemId: String) {
+        val server = currentServer()
         withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
-                pendingProgressDao.deleteByItemId(itemId)
+                pendingProgressDao.deleteByItemIdOnServer(itemId, server)
                 pendingProgressQueueOwner.forgetItemRows(itemId)
             }
             pendingProgressQueueOwner.localWriteOccurred(itemId)
             // The server took this spot, so it holds progress for the book.
-            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
+            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(server, itemId)))
         }
     }
 
@@ -544,20 +574,24 @@ class ProgressRepository @Inject constructor(
 
     /** The server holds progress for [itemIds] (they came in its progress list). */
     internal suspend fun markServerHolds(itemIds: Collection<String>) {
+        val server = currentServer()
         withContext(NonCancellable) {
             itemIds.chunked(500).forEach { chunk ->
-                serverRecordDao.insertAll(chunk.map(::ServerProgressRecordEntity))
+                serverRecordDao.insertAll(chunk.map { ServerProgressRecordEntity(server, it) })
             }
         }
     }
 
-    /** Which of [itemIds] the server has held progress for. */
-    internal suspend fun serverHeld(itemIds: Collection<String>): Set<String> =
-        itemIds.chunked(500).flatMap { serverRecordDao.heldAmong(it) }.toSet()
+    /** Which of [itemIds] the server in use has held progress for. Another server's records never count. */
+    internal suspend fun serverHeld(itemIds: Collection<String>): Set<String> {
+        val server = currentServer()
+        return itemIds.chunked(500).flatMap { serverRecordDao.heldAmong(server, it) }.toSet()
+    }
 
     /** The server's progress for [itemId] is gone, and the phone took the reset. */
     internal suspend fun forgetServerHold(itemId: String) {
-        withContext(NonCancellable) { serverRecordDao.delete(itemId) }
+        val server = currentServer()
+        withContext(NonCancellable) { serverRecordDao.delete(server, itemId) }
     }
 
     /**
@@ -570,7 +604,8 @@ class ProgressRepository @Inject constructor(
         pendingProgressQueueOwner.withItemLock(itemId) { queueUnconfirmedProgressLocked(itemId) }
 
     private suspend fun queueUnconfirmedProgressLocked(itemId: String): Boolean {
-        if (serverRecordDao.heldAmong(listOf(itemId)).isNotEmpty()) return false
+        val server = currentServer()
+        if (serverRecordDao.heldAmong(server, listOf(itemId)).isNotEmpty()) return false
         val hasUnsynced = pendingProgressQueueOwner.withLock { hasUnsyncedListeningLocked(itemId) }
         if (hasUnsynced) return false
         val planned = unconfirmedProgressRow(
@@ -581,7 +616,10 @@ class ProgressRepository @Inject constructor(
         withContext(NonCancellable) {
             pendingProgressQueueOwner.withLock {
                 database.withTransaction {
-                    pendingProgressDao.saveProgressAndEnqueue(progress = planned.first, pending = planned.second)
+                    pendingProgressDao.saveProgressAndEnqueue(
+                        progress = planned.first,
+                        pending = planned.second.copy(serverKey = server),
+                    )
                 }
             }
             pendingProgressQueueOwner.localWriteOccurred(itemId)
@@ -668,8 +706,9 @@ class ProgressRepository @Inject constructor(
         onServerSpot: suspend (ServerSpot) -> Unit,
     ) {
         val positionSeconds = serverProgressPositionSeconds(progress, durationSeconds)
+        val server = currentServer()
         withContext(NonCancellable) {
-            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
+            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(server, itemId)))
             pendingProgressQueueOwner.withLock {
                 val inactive = pendingProgressQueueOwner.itemIsInactiveLocked(itemId)
                 val spot = ServerSpot(
@@ -706,8 +745,11 @@ class ProgressRepository @Inject constructor(
      * lock. Nothing is cleared unless the server answered.
      */
     private suspend fun deliverItemLocked(itemId: String): ItemDelivery {
+        // Only this server's rows go to it, and only they can be dropped
+        // when it says the book is gone (#118 final review).
+        val server = currentServer()
         var rows = pendingProgressQueueOwner.withLock {
-            pendingProgressDao.getForItem(itemId)
+            pendingProgressDao.getForItemOnServer(itemId, server)
         }
 
         var durableProgress = playbackProgressDao.getByAudioBookId(itemId)
@@ -739,6 +781,7 @@ class ProgressRepository @Inject constructor(
                             duration = promoted.duration,
                             isAtomic = 1,
                             timestamp = timestamp,
+                            serverKey = server,
                         ),
                     )
                     pendingProgressQueueOwner.forgetItemRows(itemId)
@@ -746,7 +789,7 @@ class ProgressRepository @Inject constructor(
                 pendingProgressQueueOwner.localWriteOccurred(itemId)
             }
             rows = pendingProgressQueueOwner.withLock {
-                pendingProgressDao.getForItem(itemId)
+                pendingProgressDao.getForItemOnServer(itemId, server)
             }
             durableProgress = playbackProgressDao.getByAudioBookId(itemId)
         }
@@ -754,7 +797,7 @@ class ProgressRepository @Inject constructor(
         val acknowledgeRows: suspend () -> Unit = {
             withContext(NonCancellable) {
                 pendingProgressQueueOwner.withLock {
-                    pendingProgressDao.deleteByItemId(itemId)
+                    pendingProgressDao.deleteByItemIdOnServer(itemId, server)
                     pendingProgressQueueOwner.forgetItemRows(itemId)
                 }
                 pendingProgressQueueOwner.localWriteOccurred(itemId)
@@ -773,7 +816,7 @@ class ProgressRepository @Inject constructor(
         val currentRows = rows.filterNot { it.id in staleRowIds }
         val latest = currentRows.maxByOrNull { it.id }?.takeIf { it.isAtomic == 1 }
 
-        val stored = offlineSessionDao.getForItem(itemId)
+        val stored = offlineSessionDao.getForItemOnServer(itemId, server)
         val bookAddedAtMs = if (latest != null) audioBookDao.getAddedAt(itemId)?.toEpochMillis() else null
         // The phone's times go in the server's time, by the offset measured
         // now. A clock changed between the save and now is not corrected.
@@ -810,8 +853,8 @@ class ProgressRepository @Inject constructor(
                 goneFromServer.add(itemId)
                 withContext(NonCancellable) {
                     pendingProgressQueueOwner.withLock {
-                        pendingProgressDao.deleteByItemId(itemId)
-                        offlineSessionDao.deleteForItem(itemId)
+                        pendingProgressDao.deleteByItemIdOnServer(itemId, server)
+                        offlineSessionDao.deleteForItemOnServer(itemId, server)
                         pendingProgressQueueOwner.forgetItemRows(itemId)
                     }
                     pendingProgressQueueOwner.localWriteOccurred(itemId)
@@ -837,8 +880,8 @@ class ProgressRepository @Inject constructor(
                 }
                 if (currentRows.isNotEmpty()) acknowledgeRows()
                 withContext(NonCancellable) {
-                    serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
-                    offlineSessionDao.deleteSyncedBefore(itemId, System.currentTimeMillis() - OFFLINE_SESSION_GAP_MS)
+                    serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(server, itemId)))
+                    offlineSessionDao.deleteSyncedBefore(itemId, server, System.currentTimeMillis() - OFFLINE_SESSION_GAP_MS)
                 }
                 ItemDelivery.DELIVERED
             }
@@ -874,8 +917,9 @@ class ProgressRepository @Inject constructor(
                 ItemDelivery.UNAVAILABLE, ItemDelivery.ITEM_GONE -> ServerProgressRead.Unavailable
                 ItemDelivery.NOTHING, ItemDelivery.DELIVERED -> when (val read = readServerProgressWithin(itemId)) {
                     is ServerProgressRead.Found -> {
+                        val server = currentServer()
                         withContext(NonCancellable) {
-                            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(itemId)))
+                            serverRecordDao.insertAll(listOf(ServerProgressRecordEntity(server, itemId)))
                         }
                         read
                     }
@@ -898,10 +942,13 @@ class ProgressRepository @Inject constructor(
         liveSessionItemId: () -> String? = { null },
         onServerSpot: suspend (ServerSpot) -> Unit,
     ): Boolean {
+        // Only the server in use gets its own listening. Another server's
+        // waits, untouched, for that server (#118 final review).
+        val server = currentServer()
         val itemIds = pendingProgressQueueOwner.withLock {
             itemsToFlush(
-                queuedItemIds = pendingProgressDao.getAll().map { it.itemId },
-                offlineItemIds = offlineSessionDao.getItemIdsWithUnsynced(),
+                queuedItemIds = pendingProgressDao.getItemIdsOnServer(server),
+                offlineItemIds = offlineSessionDao.getItemIdsWithUnsynced(server),
                 liveSessionItemId = liveSessionItemId(),
             )
         }
@@ -913,8 +960,8 @@ class ProgressRepository @Inject constructor(
             if (itemId == liveSessionItemId()) continue
             pendingProgressQueueOwner.withItemLock(itemId) {
                 val saved = playbackProgressDao.getByAudioBookId(itemId)
-                val durationHint = pendingProgressDao.getForItem(itemId).maxByOrNull { it.id }?.duration
-                    ?: offlineSessionDao.getForItem(itemId).lastOrNull()?.duration
+                val durationHint = pendingProgressDao.getForItemOnServer(itemId, server).maxByOrNull { it.id }?.duration
+                    ?: offlineSessionDao.getForItemOnServer(itemId, server).lastOrNull()?.duration
                 when (deliverItemLocked(itemId)) {
                     ItemDelivery.UNAVAILABLE -> allSuccess = false
                     ItemDelivery.NOTHING, ItemDelivery.ITEM_GONE -> Unit

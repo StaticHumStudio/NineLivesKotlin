@@ -39,6 +39,23 @@ interface PendingProgressDao {
     @Query("SELECT * FROM PendingProgressUpdates WHERE ItemId = :itemId ORDER BY Timestamp ASC")
     suspend fun getForItem(itemId: String): List<PendingProgressEntity>
 
+    @Query(
+        "SELECT * FROM PendingProgressUpdates WHERE ItemId = :itemId AND ServerKey = :serverKey " +
+            "ORDER BY Timestamp ASC"
+    )
+    suspend fun getForItemOnServer(itemId: String, serverKey: String): List<PendingProgressEntity>
+
+    /** Books with spots queued for [serverKey]. */
+    @Query("SELECT DISTINCT ItemId FROM PendingProgressUpdates WHERE ServerKey = :serverKey")
+    suspend fun getItemIdsOnServer(serverKey: String): List<String>
+
+    @Query("DELETE FROM PendingProgressUpdates WHERE ItemId = :itemId AND ServerKey = :serverKey")
+    suspend fun deleteByItemIdOnServer(itemId: String, serverKey: String)
+
+    /** Rows queued before rows carried a server (2.1.x) go to [serverKey]. */
+    @Query("UPDATE PendingProgressUpdates SET ServerKey = :serverKey WHERE ServerKey = ''")
+    suspend fun claimUnscoped(serverKey: String)
+
     @Query("DELETE FROM PendingProgressUpdates")
     suspend fun deleteAll()
 

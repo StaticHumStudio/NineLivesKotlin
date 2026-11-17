@@ -122,7 +122,33 @@ class MigrationsTest {
                 .map { it.replace("\${TABLE_NAME}", table) }
         }
 
-        assertEquals(createSql("OfflineListeningSessions") + createSql("ServerProgressRecords"), executed)
+        assertEquals(
+            createSql("OfflineListeningSessions") + createSql("ServerProgressRecords"),
+            executed.filterNot { it.startsWith("ALTER TABLE") },
+        )
+    }
+
+    @Test
+    fun `11 to 12 gives queued spots the server column the v12 schema describes`() {
+        // #118 final review: queued spots carry their server, so a server
+        // switch never sends one server's listening to another.
+        val executed = mutableListOf<String>()
+        MIGRATION_11_12.migrate(recordingDatabase(executed))
+
+        val pending = Json.parseToJsonElement(File(schemaDir, "12.json").readText())
+            .jsonObject.getValue("database").jsonObject.getValue("entities").jsonArray
+            .map { it.jsonObject }
+            .single { it["tableName"]?.jsonPrimitive?.content == "PendingProgressUpdates" }
+        val column = pending.getValue("fields").jsonArray.map { it.jsonObject }
+            .single { it["columnName"]?.jsonPrimitive?.content == "ServerKey" }
+        assertEquals("TEXT", column.getValue("affinity").jsonPrimitive.content)
+        assertEquals("true", column.getValue("notNull").jsonPrimitive.content)
+        assertEquals("''", column.getValue("defaultValue").jsonPrimitive.content)
+
+        assertEquals(
+            listOf("ALTER TABLE `PendingProgressUpdates` ADD COLUMN `ServerKey` TEXT NOT NULL DEFAULT ''"),
+            executed.filter { it.startsWith("ALTER TABLE") },
+        )
     }
 
     @Test

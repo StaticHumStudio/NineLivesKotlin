@@ -15,9 +15,18 @@ interface OfflineListeningSessionDao {
     @Query("SELECT * FROM OfflineListeningSessions WHERE ItemId = :itemId ORDER BY UpdatedAt ASC")
     suspend fun getForItem(itemId: String): List<OfflineListeningSessionEntity>
 
-    /** Books with listening time the server does not hold yet. */
-    @Query("SELECT DISTINCT ItemId FROM OfflineListeningSessions WHERE TimeListening > SyncedTimeListening")
-    suspend fun getItemIdsWithUnsynced(): List<String>
+    @Query(
+        "SELECT * FROM OfflineListeningSessions WHERE ItemId = :itemId AND ServerKey = :serverKey " +
+            "ORDER BY UpdatedAt ASC"
+    )
+    suspend fun getForItemOnServer(itemId: String, serverKey: String): List<OfflineListeningSessionEntity>
+
+    /** Books of [serverKey] with listening time that server does not hold yet. */
+    @Query(
+        "SELECT DISTINCT ItemId FROM OfflineListeningSessions " +
+            "WHERE ServerKey = :serverKey AND TimeListening > SyncedTimeListening"
+    )
+    suspend fun getItemIdsWithUnsynced(serverKey: String): List<String>
 
     @Query("SELECT COUNT(*) FROM OfflineListeningSessions WHERE ItemId = :itemId AND TimeListening > SyncedTimeListening")
     suspend fun getUnsyncedCountForItem(itemId: String): Int
@@ -28,12 +37,17 @@ interface OfflineListeningSessionDao {
     /** Delivered sessions too old for more listening to join them. */
     @Query(
         "DELETE FROM OfflineListeningSessions " +
-            "WHERE ItemId = :itemId AND TimeListening <= SyncedTimeListening AND UpdatedAt < :before"
+            "WHERE ItemId = :itemId AND ServerKey = :serverKey " +
+            "AND TimeListening <= SyncedTimeListening AND UpdatedAt < :before"
     )
-    suspend fun deleteSyncedBefore(itemId: String, before: Long)
+    suspend fun deleteSyncedBefore(itemId: String, serverKey: String, before: Long)
 
-    @Query("DELETE FROM OfflineListeningSessions WHERE ItemId = :itemId")
-    suspend fun deleteForItem(itemId: String)
+    @Query("DELETE FROM OfflineListeningSessions WHERE ItemId = :itemId AND ServerKey = :serverKey")
+    suspend fun deleteForItemOnServer(itemId: String, serverKey: String)
+
+    /** Sessions saved before they carried a server go to [serverKey]. */
+    @Query("UPDATE OfflineListeningSessions SET ServerKey = :serverKey WHERE ServerKey = ''")
+    suspend fun claimUnscoped(serverKey: String)
 
     @Query("DELETE FROM OfflineListeningSessions")
     suspend fun deleteAll()

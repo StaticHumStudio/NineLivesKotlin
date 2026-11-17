@@ -51,4 +51,8 @@ data class OfflineListeningSessionEntity(
 
     @ColumnInfo(name = "SyncedTimeListening", defaultValue = "0")
     val syncedTimeListening: Double = 0.0,
+
+    /** The server the listening was on (see progressServerKey). */
+    @ColumnInfo(name = "ServerKey", defaultValue = "''")
+    val serverKey: String = "",
 )

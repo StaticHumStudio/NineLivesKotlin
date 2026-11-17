@@ -31,4 +31,11 @@ data class PendingProgressEntity(
 
     @ColumnInfo(name = "Timestamp")
     val timestamp: String, // ISO 8601
+
+    /**
+     * The server this spot is for (see progressServerKey). Empty only on a
+     * row queued before 2.2, which the server in use claims (#118).
+     */
+    @ColumnInfo(name = "ServerKey", defaultValue = "''")
+    val serverKey: String = "",
 )

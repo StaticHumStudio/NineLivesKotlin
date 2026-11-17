@@ -3700,11 +3700,6 @@ class PlaybackManager @Inject constructor(
     }
 
     /**
-     * The service is going away with a book still playing. Save where it is
-     * before the player is released. Detached from the scope's cancellation
-     * so the write finishes during teardown.
-     */
-    /**
      * The service is going away: save the playing book's spot, then hand the
      * book back to the progress import, since no player is left to take a
      * server spot for it (#121 review). A Play still asking the server
@@ -4656,11 +4651,6 @@ class PlaybackManager @Inject constructor(
         sessionInitialized = false
         stopPlaybackService()
         Log.d(TAG, "releaseAll: complete")
-    }
-
-    fun release() {
-        releaseAll()
-        scope.cancel()
     }
 
     // ─── Media Metadata ───────────────────────────────────────────────────────

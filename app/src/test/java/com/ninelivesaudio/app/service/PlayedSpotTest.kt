@@ -127,4 +127,72 @@ class PlayedSpotTest {
         }
         assertFalse(seekIsUsers(appPositioning = false, bookLoading = false, playbackState = PlaybackState.LOADING))
     }
+
+    // ─── Pause saves ──────────────────────────────────────────────────────
+
+    @Test
+    fun `pause the phone, keep listening on the PC, swipe the notification away later, nothing is sent`() {
+        // Played on the phone and paused at 2:00:00. The pause saved and
+        // queued (or sent) 2:00:00. The PC then listened on to 2:30:00. The
+        // stop from the swipe hours later has nothing new, so it must not
+        // send 2:00:00 again dated now, over the PC's spot.
+        val spot = PlayedSpot()
+        spot.bookPlaced()
+        spot.playbackStarted()
+        val pauseSave = spot.saveStarting()
+        spot.saveLanded(pauseSave)
+        assertFalse(writes(spot))
+    }
+
+    @Test
+    fun `a stop right after a pause, before the pause save lands, still saves that listening`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        val pauseSave = spot.saveStarting()
+        // The stop cancels the pause save that has not landed yet, so the
+        // stop is what saves the listening.
+        assertTrue(writes(spot))
+        // A pause save landing late changes nothing, and nothing is new.
+        spot.saveLanded(pauseSave)
+        assertFalse(writes(spot))
+    }
+
+    @Test
+    fun `a pause save that never lands leaves the stop to save`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        spot.saveStarting()
+        assertTrue(writes(spot))
+    }
+
+    @Test
+    fun `playing again before the pause save lands keeps the new listening new`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        val pauseSave = spot.saveStarting()
+        spot.playbackStarted()
+        spot.saveLanded(pauseSave)
+        assertTrue(writes(spot))
+    }
+
+    @Test
+    fun `a seek while the pause save is on its way stays the user's`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        val pauseSave = spot.saveStarting()
+        spot.userSeeked()
+        spot.saveLanded(pauseSave)
+        assertTrue(writes(spot))
+    }
+
+    @Test
+    fun `a pause save landing after a new load does not touch the new book's spot`() {
+        val spot = PlayedSpot()
+        spot.playbackStarted()
+        val pauseSave = spot.saveStarting()
+        spot.bookPlaced()
+        spot.userSeeked()
+        spot.saveLanded(pauseSave)
+        assertTrue(writes(spot))
+    }
 }

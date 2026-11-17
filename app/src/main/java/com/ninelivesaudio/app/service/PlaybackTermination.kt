@@ -112,23 +112,40 @@ internal suspend fun runTerminalRetry(
  * would date the load's spot as new over newer progress on the server.
  */
 internal class PlayedSpot {
-    @Volatile
-    var isNew: Boolean = false
-        private set
+    private val lock = Any()
+    private var new = false
+
+    // Moves on every change, so a save that started before one cannot
+    // clear the mark after it.
+    private var generation = 0L
+
+    val isNew: Boolean get() = synchronized(lock) { new }
+
+    private fun set(value: Boolean) = synchronized(lock) {
+        new = value
+        generation++
+    }
 
     /** A load or a server spot moved the book. Nothing was listened there yet. */
-    fun bookPlaced() {
-        isNew = false
-    }
+    fun bookPlaced() = set(false)
 
     /** The book is playing: listening from here on is this phone's. */
-    fun playbackStarted() {
-        isNew = true
-    }
+    fun playbackStarted() = set(true)
 
     /** The user moved the book: where they put it is theirs to save. */
-    fun userSeeked() {
-        isNew = true
+    fun userSeeked() = set(true)
+
+    /** A pause save of the spot as it is now is starting. Pass the answer to [saveLanded]. */
+    fun saveStarting(): Long = synchronized(lock) { generation }
+
+    /**
+     * The pause save landed: saved on the phone, and sent or queued for the
+     * server. Unless the book played, was seeked or moved since it started,
+     * a stop after it has nothing new to write. A save that never lands
+     * (a stop cancelled it) leaves the stop to save.
+     */
+    fun saveLanded(token: Long) = synchronized(lock) {
+        if (token == generation) new = false
     }
 
     /**
@@ -136,10 +153,13 @@ internal class PlayedSpot {
      * progress: only once, and only for a new spot. A write makes the spot
      * saved, not new, so a retry that fails again sends nothing.
      */
-    fun takeForTerminalWrite(hasRetainedBook: Boolean, alreadyFinalized: Boolean): Boolean {
-        val writes = shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && isNew
-        if (writes) isNew = false
-        return writes
+    fun takeForTerminalWrite(hasRetainedBook: Boolean, alreadyFinalized: Boolean): Boolean = synchronized(lock) {
+        val writes = shouldFinalizeRetainedBook(hasRetainedBook, alreadyFinalized) && new
+        if (writes) {
+            new = false
+            generation++
+        }
+        writes
     }
 }
 

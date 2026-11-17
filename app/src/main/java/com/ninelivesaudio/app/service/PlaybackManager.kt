@@ -1465,7 +1465,11 @@ class PlaybackManager @Inject constructor(
                 val snapshot = pendingPauseSnapshot.also { pendingPauseSnapshot = null }
                 if (snapshot != null) {
                     val snapshotToken = playbackProgressOwner.snapshotToken(snapshot.bookId)
+                    // Once this save lands, a later stop has nothing new to
+                    // write (#118). A stop that cancels it saves instead.
+                    val spotSave = playedSpot.saveStarting()
                     scope.launch(Dispatchers.IO) {
+                        var landed = false
                         playbackProgressOwner.syncSnapshot(
                             token = snapshotToken,
                             // A paused seek landed first. Save the listening
@@ -1473,12 +1477,13 @@ class PlaybackManager @Inject constructor(
                             // snapshot's older one.
                             onPositionSuperseded = {
                                 latestPausedSeek?.takeIf { it.first == snapshot.bookId }?.let { (_, position) ->
-                                    syncPlaybackProgress(snapshot.copy(position = position))
+                                    landed = syncPlaybackProgress(snapshot.copy(position = position))
                                 }
                             },
                         ) {
-                            syncPlaybackProgress(snapshot)
+                            landed = syncPlaybackProgress(snapshot)
                         }
+                        if (landed) playedSpot.saveLanded(spotSave)
                     }
                 }
             },
@@ -3918,7 +3923,9 @@ class PlaybackManager @Inject constructor(
         }
     }
 
-    private suspend fun syncTerminalProgress(snapshot: TerminalPlaybackSnapshot) {
+    /** Whether the spot was saved on the phone (and sent, or queued for the server). */
+    private suspend fun syncTerminalProgress(snapshot: TerminalPlaybackSnapshot): Boolean {
+        var saved = false
         try {
             val sessionId = snapshot.serverSessionId
             if (sessionId == null) {
@@ -3928,6 +3935,7 @@ class PlaybackManager @Inject constructor(
                     isFinished = snapshot.isFinished,
                     onPersisted = { updateAudioBookProgress(snapshot) },
                 )
+                saved = true
             } else {
                 snapshot.serverListening?.deliver(snapshot.timeListened) { delta ->
                     progressRepository.saveSessionProgressOrEnqueue(
@@ -3938,12 +3946,13 @@ class PlaybackManager @Inject constructor(
                         duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
                         timeListened = delta,
                         onPersisted = { updateAudioBookProgress(snapshot) },
-                    )
+                    ).also { saved = true }
                 }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {}
+        return saved
     }
 
     private suspend fun syncTerminalSession(snapshot: TerminalPlaybackSnapshot, budget: TerminalServerBudget) {
@@ -4007,7 +4016,12 @@ class PlaybackManager @Inject constructor(
             },
         )
 
-    private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot) {
+    /**
+     * A pause's save. Whether its spot landed: saved on the phone, and sent
+     * or queued for the server.
+     */
+    private suspend fun syncPlaybackProgress(snapshot: PlaybackProgressSnapshot): Boolean {
+        var landed = false
         // Same rule as a seek's save, so a pause save carrying a position at
         // the very end keeps the book finished instead of undoing it.
         val finished = positionCountsAsFinished(
@@ -4040,11 +4054,12 @@ class PlaybackManager @Inject constructor(
                         if (writePlan.updateAudioBook) updateAudioBookProgress(terminal)
                     },
                 )
+                landed = true
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {}
         } else if (writePlan.useTerminalPath) {
-            progressRepository.withTerminalProgressOwnership(terminal.bookId) {
+            landed = progressRepository.withTerminalProgressOwnership(terminal.bookId) {
                 syncTerminalProgress(terminal)
             }
         }
@@ -4060,7 +4075,10 @@ class PlaybackManager @Inject constructor(
                 )
             } catch (cancellation: CancellationException) {
                 throw cancellation
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                // The listening is not saved, so the pause has not landed.
+                landed = false
+            }
         }
 
         if (snapshot.localSessionId != null) {
@@ -4074,6 +4092,7 @@ class PlaybackManager @Inject constructor(
                 throw cancellation
             } catch (_: Exception) {}
         }
+        return landed
     }
 
     private fun terminalServerLive(): Boolean = terminalProgressPushAllowed(

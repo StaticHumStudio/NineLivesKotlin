@@ -205,6 +205,39 @@ class OfflineSessionDeliveryTest {
     }
 
     @Test
+    fun `a book finished offline sends its finish on the stop's own listening`() {
+        // #118 final review: offline, the stop queues the finished spot and
+        // then records its listening a few ms later, at the same spot. That
+        // newer session used to claim the spot, so nothing carried the queued
+        // finish and the server never marked the book finished.
+        val stopAt = evening
+        val listened = session("s1", updatedAt = stopAt + 3, currentTime = 35_995.0, timeListening = 1_800.0)
+
+        val plan = offlineDelivery("item-1", queued(35_995.0, stopAt, finished = true), listOf(listened))
+
+        val carrier = plan.sessions.single()
+        assertEquals(0, plan.carrierIndex)
+        assertEquals("s1", carrier.id)
+        // At the end of the book, where the server marks it finished, and the
+        // flush then marks it finished outright once the server took it.
+        assertEquals(36_000.0, carrier.currentTime, 0.0)
+        assertEquals(1_800.0, carrier.timeListening, 0.0)
+        // Dated when the listening ended, never moved back.
+        assertEquals(stopAt + 3, carrier.updatedAt)
+    }
+
+    @Test
+    fun `listening after a finish at another spot does not carry the finish`() {
+        // Finished, then started over offline: the later listening is the spot.
+        val replay = session("s2", updatedAt = evening + minute, currentTime = 120.0, timeListening = 60.0)
+
+        val plan = offlineDelivery("item-1", queued(35_995.0, evening, finished = true), listOf(replay))
+
+        assertNull(plan.carrierIndex)
+        assertEquals(120.0, plan.sessions.single().currentTime, 0.0)
+    }
+
+    @Test
     fun `a queued spot with no known length still goes`() {
         // It used to sit in the queue forever, blocking imports for the book.
         val plan = offlineDelivery("item-1", queued(250.0, evening, duration = 0.0), emptyList())

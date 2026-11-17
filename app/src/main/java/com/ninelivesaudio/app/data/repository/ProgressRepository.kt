@@ -1254,12 +1254,13 @@ internal fun offlineDelivery(
         queued.positionSeconds
     }
     val newest = stored.maxByOrNull { it.updatedAt }
-    if (newest != null && newest.updatedAt > queued.timestampMs) {
+    val sameStop = newest != null && sessionRecordedWithQueuedSpot(newest, queued)
+    if (newest != null && newest.updatedAt > queued.timestampMs && !sameStop) {
         return OfflineDeliveryPlan(unsynced.newestFirst(), carrierIndex = null)
     }
-    val carrier = if (newest != null && queued.timestampMs - newest.updatedAt <= OFFLINE_SESSION_GAP_MS) {
+    val carrier = if (newest != null && (sameStop || queued.timestampMs - newest.updatedAt <= OFFLINE_SESSION_GAP_MS)) {
         newest.copy(
-            updatedAt = queued.timestampMs,
+            updatedAt = maxOf(newest.updatedAt, queued.timestampMs),
             currentTime = position,
             duration = if (queued.durationSeconds > 0.0) queued.durationSeconds else newest.duration,
         )
@@ -1277,6 +1278,22 @@ internal fun offlineDelivery(
     val sessions = (unsynced.filterNot { it.id == carrier.id } + carrier).newestFirst()
     return OfflineDeliveryPlan(sessions, carrierIndex = sessions.indexOfFirst { it.id == carrier.id })
 }
+
+/**
+ * Whether [session] is the listening recorded with [queued] by the same
+ * pause or stop. Offline, a stop queues its spot and then records its
+ * listening, milliseconds later, at the same spot. That session is the
+ * spot's carrier even though it is newer, or a finished spot queued that
+ * way never rode on anything and its finished flag never reached the
+ * server (#118 final review).
+ */
+internal fun sessionRecordedWithQueuedSpot(session: OfflineListeningSessionEntity, queued: QueuedSpot): Boolean =
+    session.updatedAt >= queued.timestampMs &&
+        session.updatedAt - queued.timestampMs <= OFFLINE_SESSION_GAP_MS &&
+        kotlin.math.abs(session.currentTime - queued.positionSeconds) <= SAME_SPOT_TOLERANCE_SECONDS
+
+/** Spots this close are the same spot. */
+internal const val SAME_SPOT_TOLERANCE_SECONDS = 1.0
 
 /**
  * The order one delivery sends a book's sessions in. Audiobookshelf refuses

@@ -774,6 +774,8 @@ internal data class TerminalPlaybackSnapshot(
     val serverSessionId: String?,
     val timeListened: Double,
     val serverListening: ServerSessionListening? = null,
+    /** When the listening ended, on the phone's clock. 0 when unknown. */
+    val listenedUntilMs: Long = 0L,
 )
 
 internal fun terminalPlaybackSnapshot(
@@ -784,6 +786,7 @@ internal fun terminalPlaybackSnapshot(
     serverSessionId: String?,
     timeListened: Double,
     serverListening: ServerSessionListening? = null,
+    listenedUntilMs: Long = 0L,
 ): TerminalPlaybackSnapshot = TerminalPlaybackSnapshot(
     bookId = bookId,
     position = position,
@@ -792,6 +795,7 @@ internal fun terminalPlaybackSnapshot(
     serverSessionId = serverSessionId,
     timeListened = timeListened,
     serverListening = serverListening,
+    listenedUntilMs = listenedUntilMs,
 )
 
 internal data class PlaybackProgressSnapshot(
@@ -978,6 +982,9 @@ internal fun listeningSessionToOpen(
 }
 
 internal enum class LoadSessionOpen { AWAIT, BOUNDED, DEFER }
+
+/** How long saving a server session's undelivered listening to disk may wait on its lock. */
+internal val SERVER_LISTENING_BANK_TIMEOUT = 5.seconds
 
 /** How long a downloaded book's load waits on its server listening session. */
 internal val DOWNLOADED_SESSION_OPEN_TIMEOUT = 5.seconds
@@ -2948,6 +2955,7 @@ class PlaybackManager @Inject constructor(
                 serverSessionId = it.serverSessionId,
                 timeListened = it.serverTimeListened,
                 serverListening = it.serverListening,
+                listenedUntilMs = it.capturedAtMs,
             )
         }
         if (reason != PlaybackTermination.ERROR) settingsManager.clearCurrentPlaybackBookId()
@@ -3959,28 +3967,85 @@ class PlaybackManager @Inject constructor(
             }
         }
         if (tick != null) {
+            // Set only when the server call itself failed, not when the book
+            // stopped or moved on, whose own save carries the time.
+            var syncFailed = false
             try {
                 tick.listening.deliver(tick.timeListened) { delta ->
                     // This holds the locks a stopped book's final write needs,
                     // and deliver's NonCancellable outlasts any cancellation.
                     // It waits for the server unless the book is stopping (#54).
                     tick.listening.heartbeatSend {
-                        progressRepository.syncSessionProgressIfCurrent(
-                            itemId = book.id,
-                            sessionId = tick.sessionId,
-                            currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
-                            duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
-                            timeListened = delta,
-                            isCurrent = {
-                                lifetimeIsCurrent() &&
-                                    _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
-                            },
-                        )
+                        try {
+                            progressRepository.syncSessionProgressIfCurrent(
+                                itemId = book.id,
+                                sessionId = tick.sessionId,
+                                currentTime = pos.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                duration = dur.toDouble(kotlin.time.DurationUnit.SECONDS),
+                                timeListened = delta,
+                                isCurrent = {
+                                    lifetimeIsCurrent() &&
+                                        _playbackState.value in setOf(PlaybackState.PLAYING, PlaybackState.BUFFERING)
+                                },
+                            )
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: Exception) {
+                            false
+                        }.also { if (it == false) syncFailed = true }
                     }
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {}
+            // The network is gone with the session open. Its listening goes
+            // to disk as offline listening now, so a stop or a killed app
+            // that never reaches the server loses none of it (#118).
+            if (syncFailed) {
+                bankServerListening(
+                    listening = tick.listening,
+                    cumulativeSeconds = tick.timeListened,
+                    bookId = book.id,
+                    displayTitle = book.title,
+                    currentTime = posSec,
+                    duration = durSec,
+                    atMs = System.currentTimeMillis(),
+                )
+            }
+        }
+    }
+
+    /**
+     * Save a server session's listening its syncs could not deliver as
+     * offline listening, dated [atMs] (see [ServerSessionListening.bank]).
+     */
+    private suspend fun bankServerListening(
+        listening: ServerSessionListening?,
+        cumulativeSeconds: Double,
+        bookId: String,
+        displayTitle: String?,
+        currentTime: Double,
+        duration: Double,
+        atMs: Long,
+    ) {
+        if (listening == null) return
+        try {
+            withTimeoutOrNull(SERVER_LISTENING_BANK_TIMEOUT) {
+                listening.bank(cumulativeSeconds) { delta ->
+                    progressRepository.recordOfflineListening(
+                        itemId = bookId,
+                        displayTitle = displayTitle,
+                        listenedSeconds = delta,
+                        currentTime = currentTime,
+                        duration = duration,
+                        nowMs = atMs,
+                    )
+                }
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (e: Exception) {
+            Log.w(TAG, "bankServerListening: ${e.message}")
         }
     }
 
@@ -3998,16 +4063,35 @@ class PlaybackManager @Inject constructor(
                 )
                 saved = true
             } else {
-                snapshot.serverListening?.deliver(snapshot.timeListened) { delta ->
-                    progressRepository.saveSessionProgressOrEnqueue(
-                        itemId = snapshot.bookId,
-                        sessionId = sessionId,
+                val synced = try {
+                    snapshot.serverListening?.deliver(snapshot.timeListened) { delta ->
+                        progressRepository.saveSessionProgressOrEnqueue(
+                            itemId = snapshot.bookId,
+                            sessionId = sessionId,
+                            currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            isFinished = snapshot.isFinished,
+                            duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
+                            timeListened = delta,
+                            onPersisted = { updateAudioBookProgress(snapshot) },
+                        ).also { saved = true }
+                    } ?: true
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    false
+                }
+                // The pause's sync did not reach the server: its listening
+                // goes to disk as offline listening (#118).
+                if (!synced) {
+                    bankServerListening(
+                        listening = snapshot.serverListening,
+                        cumulativeSeconds = snapshot.timeListened,
+                        bookId = snapshot.bookId,
+                        displayTitle = null,
                         currentTime = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        isFinished = snapshot.isFinished,
                         duration = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS),
-                        timeListened = delta,
-                        onPersisted = { updateAudioBookProgress(snapshot) },
-                    ).also { saved = true }
+                        atMs = snapshot.listenedUntilMs.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                    )
                 }
             }
         } catch (cancellation: CancellationException) {
@@ -4020,7 +4104,7 @@ class PlaybackManager @Inject constructor(
         val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
         val durSec = snapshot.duration.toDouble(kotlin.time.DurationUnit.SECONDS)
         if (snapshot.serverSessionId != null) {
-            try {
+            val synced = try {
                 // The outer call bounds the wait for the delivery lock, which a
                 // heartbeat stuck mid request can hold. The inner one bounds the
                 // request inside deliver, whose own NonCancellable would
@@ -4036,11 +4120,27 @@ class PlaybackManager @Inject constructor(
                                 timeListened = delta,
                             )
                         } ?: false
-                    }
-                }
+                    } ?: true
+                } ?: false
             } catch (cancellation: CancellationException) {
                 throw cancellation
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                false
+            }
+            // The stop's sync did not reach the server (offline, or out of
+            // time): the session's listening goes to disk as offline
+            // listening, which the offline session sync delivers (#118).
+            if (!synced) {
+                bankServerListening(
+                    listening = snapshot.serverListening,
+                    cumulativeSeconds = snapshot.timeListened,
+                    bookId = snapshot.bookId,
+                    displayTitle = null,
+                    currentTime = posSec,
+                    duration = durSec,
+                    atMs = snapshot.listenedUntilMs.takeIf { it > 0L } ?: System.currentTimeMillis(),
+                )
+            }
         }
     }
 
@@ -4119,6 +4219,7 @@ class PlaybackManager @Inject constructor(
             serverSessionId = snapshot.serverSessionId,
             timeListened = snapshot.serverTimeListened,
             serverListening = snapshot.serverListening,
+            listenedUntilMs = snapshot.capturedAtMs,
         )
         val posSec = snapshot.position.toDouble(kotlin.time.DurationUnit.SECONDS)
         val writePlan = playbackProgressWritePlan(

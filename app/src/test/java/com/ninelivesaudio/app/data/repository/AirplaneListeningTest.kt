@@ -6,6 +6,8 @@ import com.ninelivesaudio.app.domain.util.toEpochMillis
 import com.ninelivesaudio.app.domain.util.toIso8601
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import com.ninelivesaudio.app.service.ServerSessionListening
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
 /**
@@ -115,5 +117,58 @@ class AirplaneListeningTest {
         // A pause queued a later spot while the heartbeat's sync of 100 was out.
         store.sessionSync(100.0, serverAnswered = true)
         assertEquals(112.0, store.rows.single().currentTime, 0.0)
+    }
+
+    @Test
+    fun `listening time on a session that loses the network reaches the server once`() = runBlocking {
+        // #118 final review: session opened online, 2 h in airplane mode,
+        // the app stopped or killed, relaunched online. The spot was safe,
+        // the listening time was lost. Now each failed heartbeat banks its
+        // time as offline listening, dated when it happened.
+        val store = Store()
+        val listening = ServerSessionListening()
+        var offline: com.ninelivesaudio.app.data.local.entity.OfflineListeningSessionEntity? = null
+        var cumulative = 0.0
+        var position = 100.0
+        var at = evening
+        // Online: the first heartbeat lands.
+        cumulative += 12.0
+        listening.deliver(cumulative) { true }
+        repeat(600) {
+            at += 12_000
+            position += 12.0
+            cumulative += 12.0
+            store.saveAndQueue(position, at)
+            if (!listening.deliver(cumulative) { false }) {
+                listening.bank(cumulative) { delta ->
+                    offline = offlineSessionAfterListening(
+                        latest = offline,
+                        itemId = "item-1",
+                        displayTitle = "Long Book",
+                        listenedSeconds = delta,
+                        currentTime = position,
+                        duration = 36_000.0,
+                        nowMs = at + 2,
+                        newId = { "banked" },
+                    )
+                }
+            }
+        }
+        // Killed here. The relaunch delivers what is on disk.
+        val latest = store.rows.single()
+        val plan = offlineDelivery(
+            itemId = "item-1",
+            queued = QueuedSpot(latest.id, latest.timestamp, latest.currentTime, false, latest.duration, at),
+            stored = listOfNotNull(offline),
+        )
+        val sent = plan.sessions.single()
+        assertEquals(7_200.0, sent.timeListening, 0.0)
+        assertEquals(position, sent.currentTime, 0.0)
+        // Dated when it happened: from the first failed heartbeat to the last.
+        assertEquals(evening + 2, sent.startedAt)
+        assertEquals(at + 2, sent.updatedAt)
+        // Delivered, the session is synced. Nothing goes a second time.
+        val delivered = sent.copy(syncedTimeListening = sent.timeListening)
+        assertEquals(emptyList<Any>(), offlineDelivery("item-1", queued = null, stored = listOf(delivered)).sessions)
     }
 }

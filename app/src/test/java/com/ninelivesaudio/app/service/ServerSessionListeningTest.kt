@@ -77,4 +77,47 @@ class ServerSessionListeningTest {
         newSession.deliver(7.0) { firstNewDelta = it; true }
         assertEquals(7.0, firstNewDelta, 0.0)
     }
+
+    @Test
+    fun `listening on a session whose syncs fail is banked once and never sent again`() = runBlocking {
+        // #118 final review: session opened online, then airplane mode for
+        // 2 h. Every heartbeat fails, so the time is banked as offline
+        // listening as it goes. A process death loses at most one heartbeat.
+        val listening = ServerSessionListening()
+        val banked = mutableListOf<Double>()
+        val sent = mutableListOf<Double>()
+        assertTrue(listening.deliver(12.0) { sent += it; true })
+        var total = 12.0
+        repeat(600) {
+            total += 12.0
+            assertFalse(listening.deliver(total) { false })
+            listening.bank(total) { banked += it }
+        }
+        // The stop fails too and banks what is left (nothing here).
+        assertFalse(listening.deliver(total) { false })
+        assertEquals(0.0, listening.bank(total) { banked += it }, 0.0)
+        assertEquals(7_200.0, banked.sum(), 0.0)
+        // Back online, the same session's next sync sends only new time.
+        assertTrue(listening.deliver(total + 5.0) { sent += it; true })
+        assertEquals(listOf(12.0, 5.0), sent)
+        assertEquals(12.0 + 7_200.0 + 5.0, sent.sum() + banked.sum(), 0.0)
+    }
+
+    @Test
+    fun `a bank that fails keeps the time for the next sync`() = runBlocking {
+        val listening = ServerSessionListening()
+        runCatching { listening.bank(30.0) { error("disk full") } }
+        val sent = mutableListOf<Double>()
+        listening.deliver(40.0) { sent += it; true }
+        assertEquals(listOf(40.0), sent)
+    }
+
+    @Test
+    fun `banking after a sync that landed banks only what came after`() = runBlocking {
+        val listening = ServerSessionListening()
+        listening.deliver(24.0) { true }
+        assertEquals(6.0, listening.bank(30.0) { }, 0.0)
+        // An older snapshot banks nothing.
+        assertEquals(0.0, listening.bank(28.0) { }, 0.0)
+    }
 }

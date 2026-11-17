@@ -129,9 +129,10 @@ class MigrationsTest {
     }
 
     @Test
-    fun `11 to 12 gives queued spots the server column the v12 schema describes`() {
-        // #118 final review: queued spots carry their server, so a server
-        // switch never sends one server's listening to another.
+    fun `11 to 12 gives queued spots the user column the v12 schema describes`() {
+        // #118 final review: queued spots carry their Audiobookshelf user, so
+        // a server or account switch never sends one user's listening to
+        // another, and one server reached by two addresses keeps one owner.
         val executed = mutableListOf<String>()
         MIGRATION_11_12.migrate(recordingDatabase(executed))
 
@@ -140,13 +141,13 @@ class MigrationsTest {
             .map { it.jsonObject }
             .single { it["tableName"]?.jsonPrimitive?.content == "PendingProgressUpdates" }
         val column = pending.getValue("fields").jsonArray.map { it.jsonObject }
-            .single { it["columnName"]?.jsonPrimitive?.content == "ServerKey" }
+            .single { it["columnName"]?.jsonPrimitive?.content == "UserId" }
         assertEquals("TEXT", column.getValue("affinity").jsonPrimitive.content)
         assertEquals("true", column.getValue("notNull").jsonPrimitive.content)
         assertEquals("''", column.getValue("defaultValue").jsonPrimitive.content)
 
         assertEquals(
-            listOf("ALTER TABLE `PendingProgressUpdates` ADD COLUMN `ServerKey` TEXT NOT NULL DEFAULT ''"),
+            listOf("ALTER TABLE `PendingProgressUpdates` ADD COLUMN `UserId` TEXT NOT NULL DEFAULT ''"),
             executed.filter { it.startsWith("ALTER TABLE") },
         )
     }

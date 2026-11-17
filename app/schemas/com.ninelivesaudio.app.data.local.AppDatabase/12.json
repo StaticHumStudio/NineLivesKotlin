@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 12,
-    "identityHash": "0fcc06b034dbebe3ca1a7b9589b290e2",
+    "identityHash": "9c7a4895aae88428e3e8d42e86b57aee",
     "entities": [
       {
         "tableName": "Libraries",
@@ -357,7 +357,7 @@
       },
       {
         "tableName": "PendingProgressUpdates",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `ItemId` TEXT NOT NULL, `CurrentTime` REAL NOT NULL DEFAULT 0, `IsFinished` INTEGER NOT NULL DEFAULT 0, `Duration` REAL NOT NULL DEFAULT 0, `IsAtomic` INTEGER NOT NULL DEFAULT 0, `Timestamp` TEXT NOT NULL, `ServerKey` TEXT NOT NULL DEFAULT '')",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `ItemId` TEXT NOT NULL, `CurrentTime` REAL NOT NULL DEFAULT 0, `IsFinished` INTEGER NOT NULL DEFAULT 0, `Duration` REAL NOT NULL DEFAULT 0, `IsAtomic` INTEGER NOT NULL DEFAULT 0, `Timestamp` TEXT NOT NULL, `UserId` TEXT NOT NULL DEFAULT '')",
         "fields": [
           {
             "fieldPath": "id",
@@ -406,8 +406,8 @@
             "notNull": true
           },
           {
-            "fieldPath": "serverKey",
-            "columnName": "ServerKey",
+            "fieldPath": "userId",
+            "columnName": "UserId",
             "affinity": "TEXT",
             "notNull": true,
             "defaultValue": "''"
@@ -617,7 +617,7 @@
       },
       {
         "tableName": "OfflineListeningSessions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` TEXT NOT NULL, `ItemId` TEXT NOT NULL, `DisplayTitle` TEXT, `StartedAt` INTEGER NOT NULL, `UpdatedAt` INTEGER NOT NULL, `StartTime` REAL NOT NULL DEFAULT 0, `CurrentTime` REAL NOT NULL DEFAULT 0, `Duration` REAL NOT NULL DEFAULT 0, `TimeListening` REAL NOT NULL DEFAULT 0, `SyncedTimeListening` REAL NOT NULL DEFAULT 0, `ServerKey` TEXT NOT NULL DEFAULT '', PRIMARY KEY(`Id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`Id` TEXT NOT NULL, `ItemId` TEXT NOT NULL, `DisplayTitle` TEXT, `StartedAt` INTEGER NOT NULL, `UpdatedAt` INTEGER NOT NULL, `StartTime` REAL NOT NULL DEFAULT 0, `CurrentTime` REAL NOT NULL DEFAULT 0, `Duration` REAL NOT NULL DEFAULT 0, `TimeListening` REAL NOT NULL DEFAULT 0, `SyncedTimeListening` REAL NOT NULL DEFAULT 0, `UserId` TEXT NOT NULL DEFAULT '', PRIMARY KEY(`Id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -684,8 +684,8 @@
             "defaultValue": "0"
           },
           {
-            "fieldPath": "serverKey",
-            "columnName": "ServerKey",
+            "fieldPath": "userId",
+            "columnName": "UserId",
             "affinity": "TEXT",
             "notNull": true,
             "defaultValue": "''"
@@ -711,11 +711,11 @@
       },
       {
         "tableName": "ServerProgressRecords",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`ServerKey` TEXT NOT NULL, `AudioBookId` TEXT NOT NULL, PRIMARY KEY(`ServerKey`, `AudioBookId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`UserId` TEXT NOT NULL, `AudioBookId` TEXT NOT NULL, PRIMARY KEY(`UserId`, `AudioBookId`))",
         "fields": [
           {
-            "fieldPath": "serverKey",
-            "columnName": "ServerKey",
+            "fieldPath": "userId",
+            "columnName": "UserId",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -729,7 +729,7 @@
         "primaryKey": {
           "autoGenerate": false,
           "columnNames": [
-            "ServerKey",
+            "UserId",
             "AudioBookId"
           ]
         }
@@ -737,7 +737,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0fcc06b034dbebe3ca1a7b9589b290e2')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9c7a4895aae88428e3e8d42e86b57aee')"
     ]
   }
 }

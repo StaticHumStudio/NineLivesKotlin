@@ -434,6 +434,9 @@ class SettingsManager @Inject constructor(
     companion object {
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_AUTH_TOKEN_SERVER_URL = "auth_token_server_url"
+        // The Audiobookshelf user the stored token signs in as. Removed with
+        // every token change, so it never outlives the session it came from.
+        private const val KEY_AUTH_USER_ID = "auth_user_id"
         private const val KEY_SETTINGS = "app_settings"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_CURRENT_PLAYBACK_BOOK_ID = "current_playback_book_id"
@@ -494,6 +497,7 @@ class SettingsManager @Inject constructor(
                     } else {
                         editor.putString(KEY_AUTH_TOKEN, sanitized).putString(KEY_AUTH_TOKEN_SERVER_URL, serverUrl)
                     }
+                    editor.remove(KEY_AUTH_USER_ID)
                     editor.commit()
                 },
                 publish = { _hasAuthToken.value = it },
@@ -505,7 +509,10 @@ class SettingsManager @Inject constructor(
         authTokenMutex.withLock {
             persistAuthTokenChange(
                 token = null,
-                commit = { encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL).commit() },
+                commit = {
+                    encryptedPrefs.edit().remove(KEY_AUTH_TOKEN).remove(KEY_AUTH_TOKEN_SERVER_URL)
+                        .remove(KEY_AUTH_USER_ID).commit()
+                },
                 publish = { _hasAuthToken.value = it },
             )
         }
@@ -526,6 +533,7 @@ class SettingsManager @Inject constructor(
                         } else {
                             editor.putString(KEY_AUTH_TOKEN, sanitized).putString(KEY_AUTH_TOKEN_SERVER_URL, replacementServerUrl)
                         }
+                        editor.remove(KEY_AUTH_USER_ID)
                         editor.commit()
                     },
                     publish = { _hasAuthToken.value = it },
@@ -533,6 +541,23 @@ class SettingsManager @Inject constructor(
                 true
             }
         }
+
+    /** The signed-in Audiobookshelf user's id, or null when not known yet. */
+    fun getAuthUserId(): String? =
+        encryptedPrefs.getString(KEY_AUTH_USER_ID, null)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Record [userId] as the user [token] signs in as, only while [token] is
+     * still the stored one, so a login that raced this answer keeps its own.
+     */
+    suspend fun saveAuthUserIdIfCurrent(token: String, userId: String) = withContext(Dispatchers.IO) {
+        val id = userId.trim()
+        if (id.isEmpty()) return@withContext
+        authTokenMutex.withLock {
+            if (encryptedPrefs.getString(KEY_AUTH_TOKEN, null) != token.trim()) return@withLock
+            encryptedPrefs.edit().putString(KEY_AUTH_USER_ID, id).commit()
+        }
+    }
 
     fun getCurrentPlaybackBookId(): String? =
         encryptedPrefs.getString(KEY_CURRENT_PLAYBACK_BOOK_ID, null)

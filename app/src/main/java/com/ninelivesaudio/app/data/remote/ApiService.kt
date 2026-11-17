@@ -326,6 +326,8 @@ class ApiService @Inject constructor(
                         recordMutation = { recordAuthMutation() },
                         persistSecureStorage = { settingsManager.saveAuthToken(token, normalizedUrl) },
                     )
+                    // Unsent progress is kept per signed-in user (#118).
+                    loginResponse.user?.id?.let { settingsManager.saveAuthUserIdIfCurrent(token, it) }
 
                     lastError = null
                     CredentialLoginResult.SUCCESS
@@ -1075,9 +1077,11 @@ class ApiService @Inject constructor(
      */
     suspend fun fetchAllUserProgressOrNull(): List<UserProgress>? = withContext(Dispatchers.IO) {
         try {
+            val token = settingsManager.getAuthToken()
             val response = api.getMe()
             if (!response.isSuccessful) return@withContext null
             val body = response.body() ?: return@withContext null
+            rememberSignedInUser(token, body.id)
             body.mediaProgress.orEmpty()
                 .filter { it.libraryItemId.isNotEmpty() }
                 .map { p ->
@@ -1094,6 +1098,36 @@ class ApiService @Inject constructor(
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * The signed-in user's id, asked of the server when the phone does not
+     * know it yet (a token login, or an upgrade from 2.1.x). Null when the
+     * server cannot answer.
+     */
+    suspend fun fetchSignedInUserId(): String? = withContext(Dispatchers.IO) {
+        settingsManager.getAuthUserId()?.let { return@withContext it }
+        try {
+            val token = settingsManager.getAuthToken()?.takeIf { it.isNotBlank() } ?: return@withContext null
+            val response = api.getMe()
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                return@withContext null
+            }
+            val id = response.body()?.id?.trim()?.takeIf { it.isNotEmpty() } ?: return@withContext null
+            rememberSignedInUser(token, id)
+            // Only an id recorded for the token still in use counts.
+            settingsManager.getAuthUserId()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun rememberSignedInUser(token: String?, userId: String?) {
+        if (token.isNullOrBlank() || userId.isNullOrBlank()) return
+        settingsManager.saveAuthUserIdIfCurrent(token, userId)
     }
 
     // ─── Listening Sessions ──────────────────────────────────────────────

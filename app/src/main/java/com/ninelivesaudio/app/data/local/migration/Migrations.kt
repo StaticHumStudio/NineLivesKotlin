@@ -138,24 +138,25 @@ val MIGRATION_11_12 = object : Migration(11, 12) {
                 "`DisplayTitle` TEXT, `StartedAt` INTEGER NOT NULL, `UpdatedAt` INTEGER NOT NULL, " +
                 "`StartTime` REAL NOT NULL DEFAULT 0, `CurrentTime` REAL NOT NULL DEFAULT 0, " +
                 "`Duration` REAL NOT NULL DEFAULT 0, `TimeListening` REAL NOT NULL DEFAULT 0, " +
-                "`SyncedTimeListening` REAL NOT NULL DEFAULT 0, `ServerKey` TEXT NOT NULL DEFAULT '', " +
+                "`SyncedTimeListening` REAL NOT NULL DEFAULT 0, `UserId` TEXT NOT NULL DEFAULT '', " +
                 "PRIMARY KEY(`Id`))"
         )
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS `idx_offline_session_item` ON `OfflineListeningSessions` (`ItemId`)"
         )
-        // Books each server has held progress for. Empty after the upgrade on
+        // Books each user's server has held progress for. Empty after the upgrade on
         // purpose: 2.1.x kept no such record, so every saved spot the server
         // lacks is delivered before "absent on the server" can reset it.
         db.execSQL(
-            "CREATE TABLE IF NOT EXISTS `ServerProgressRecords` (`ServerKey` TEXT NOT NULL, " +
-                "`AudioBookId` TEXT NOT NULL, PRIMARY KEY(`ServerKey`, `AudioBookId`))"
+            "CREATE TABLE IF NOT EXISTS `ServerProgressRecords` (`UserId` TEXT NOT NULL, " +
+                "`AudioBookId` TEXT NOT NULL, PRIMARY KEY(`UserId`, `AudioBookId`))"
         )
-        // Queued spots carry their server. A 2.1.x row has none (''), and
-        // the server in use when the app first runs claims it, which is the
-        // server it was queued on (ProgressRepository.currentServer).
+        // Queued spots carry their Audiobookshelf user. The user id is not
+        // known here, so a 2.1.x row gets none (''), and the signed-in user
+        // claims it once known, before any flush, drop or reset
+        // (ProgressRepository.ownerForDelivery).
         db.execSQL(
-            "ALTER TABLE `PendingProgressUpdates` ADD COLUMN `ServerKey` TEXT NOT NULL DEFAULT ''"
+            "ALTER TABLE `PendingProgressUpdates` ADD COLUMN `UserId` TEXT NOT NULL DEFAULT ''"
         )
     }
 }

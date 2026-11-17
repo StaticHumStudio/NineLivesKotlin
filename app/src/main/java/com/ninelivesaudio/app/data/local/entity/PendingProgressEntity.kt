@@ -33,9 +33,10 @@ data class PendingProgressEntity(
     val timestamp: String, // ISO 8601
 
     /**
-     * The server this spot is for (see progressServerKey). Empty only on a
-     * row queued before 2.2, which the server in use claims (#118).
+     * The Audiobookshelf user this spot is for (see ProgressAccountScope).
+     * Empty on a row queued by 2.1.x or before the user was known, which
+     * the signed-in user claims (#118).
      */
-    @ColumnInfo(name = "ServerKey", defaultValue = "''")
-    val serverKey: String = "",
+    @ColumnInfo(name = "UserId", defaultValue = "''")
+    val userId: String = "",
 )

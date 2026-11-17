@@ -40,21 +40,21 @@ interface PendingProgressDao {
     suspend fun getForItem(itemId: String): List<PendingProgressEntity>
 
     @Query(
-        "SELECT * FROM PendingProgressUpdates WHERE ItemId = :itemId AND ServerKey = :serverKey " +
+        "SELECT * FROM PendingProgressUpdates WHERE ItemId = :itemId AND UserId = :userId " +
             "ORDER BY Timestamp ASC"
     )
-    suspend fun getForItemOnServer(itemId: String, serverKey: String): List<PendingProgressEntity>
+    suspend fun getForItemForUser(itemId: String, userId: String): List<PendingProgressEntity>
 
-    /** Books with spots queued for [serverKey]. */
-    @Query("SELECT DISTINCT ItemId FROM PendingProgressUpdates WHERE ServerKey = :serverKey")
-    suspend fun getItemIdsOnServer(serverKey: String): List<String>
+    /** Books with spots queued for [userId]. */
+    @Query("SELECT DISTINCT ItemId FROM PendingProgressUpdates WHERE UserId = :userId")
+    suspend fun getItemIdsForUser(userId: String): List<String>
 
-    @Query("DELETE FROM PendingProgressUpdates WHERE ItemId = :itemId AND ServerKey = :serverKey")
-    suspend fun deleteByItemIdOnServer(itemId: String, serverKey: String)
+    @Query("DELETE FROM PendingProgressUpdates WHERE ItemId = :itemId AND UserId = :userId")
+    suspend fun deleteByItemIdForUser(itemId: String, userId: String)
 
-    /** Rows queued before rows carried a server (2.1.x) go to [serverKey]. */
-    @Query("UPDATE PendingProgressUpdates SET ServerKey = :serverKey WHERE ServerKey = ''")
-    suspend fun claimUnscoped(serverKey: String)
+    /** Rows with no user (queued by 2.1.x, or before the user was known) go to [userId]. */
+    @Query("UPDATE PendingProgressUpdates SET UserId = :userId WHERE UserId = ''")
+    suspend fun claimUnscoped(userId: String)
 
     @Query("DELETE FROM PendingProgressUpdates")
     suspend fun deleteAll()

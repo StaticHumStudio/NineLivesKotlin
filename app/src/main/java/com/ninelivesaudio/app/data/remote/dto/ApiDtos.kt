@@ -255,6 +255,8 @@ data class ApiUserProgress(
 
 @Serializable
 data class ApiMeResponse(
+    /** The signed-in user's id, unique per user on the server. */
+    val id: String? = null,
     val mediaProgress: List<ApiMeMediaProgress>? = null,
     val bookmarks: List<ApiBookmark>? = null,
 )

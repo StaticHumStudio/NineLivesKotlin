@@ -4,7 +4,7 @@ A feature-rich Android audiobook player for audiobooks on your own device and on
 
 There is no "normal mode." The vault is the app. The app is the vault.
 
-**v2.1.0 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
+**v2.2.0 | Android 11+ (API 30) | Kotlin 2.2.10 | Jetpack Compose | Material 3**
 
 Free, with a single one-time in-app unlock. The free tier plays everything, with
 no time limit and no ads: your local folders, your Audiobookshelf server,

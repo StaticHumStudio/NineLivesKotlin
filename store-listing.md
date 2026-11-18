@@ -78,6 +78,10 @@ Android 11+ (API 30).
 
 ## What's New (Release Notes)
 
+v2.2.0
+
+Progress now syncs the way Audiobookshelf's own apps do. An older spot never overwrites a newer one from another device, and offline listening reaches your server. New: Find a cover for local books from audiobookcovers.com, Open Library or your photos. Android Auto reaches every book. A failed Play says why. Also: finished books reopen at the end, Previous Chapter restarts your chapter, switching books is faster, and a quick Back no longer crashes.
+
 v2.1.7
 
 Built for big libraries. The Library opens right away with your saved books, and sync fetches changes instead of your whole library. New: search ignores accents and capitals, series list in reading order, co-written server books show under each author, a letter rail for long lists, and a Download on Wi-Fi only setting. Also: your library catches up when your server returns, offline starts are fast, deleting a download never touches another book's files, and finished books stay finished.

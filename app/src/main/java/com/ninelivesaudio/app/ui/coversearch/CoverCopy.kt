@@ -1,7 +1,7 @@
 package com.ninelivesaudio.app.ui.coversearch
 
 /**
- * Every word Find a cover shows, in one place. Draft copy, pending Jeff's approval
+ * Every word Find a cover shows, in one place
  * (ids C1 to C14 in the 2.2.0 cover search plan, plus C15 for the audiobookcovers.com credit).
  */
 object CoverCopy {

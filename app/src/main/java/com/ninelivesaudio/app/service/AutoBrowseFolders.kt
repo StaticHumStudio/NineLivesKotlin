@@ -268,7 +268,7 @@ internal suspend fun autoChildCount(id: AutoFolderId, source: AutoFolderSource):
     return partCount(n)
 }
 
-// Draft copy, pending Jeff's copy sitting: folder titles and subtitles.
+// Folder titles and subtitles.
 
 /** The title Auto shows for [id]: "T", "#", "Th", "T#", "Th, part 2". */
 internal fun autoFolderTitle(id: AutoFolderId): String {

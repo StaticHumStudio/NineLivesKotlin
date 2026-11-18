@@ -591,6 +591,6 @@ internal fun recordedTracks(files: List<AudioFile>, folderPath: String): List<Au
     return ordered.mapIndexed { i, file -> file.copy(localPath = File(folderPath, names[i]).absolutePath) }
 }
 
-/** Draft copy, pending Jeff. */
+/** The download error for a track name that can't be saved safely. */
 internal const val UNSAFE_TRACK_NAME_MESSAGE =
     "A track name in this book can't be saved safely. Nothing was downloaded."

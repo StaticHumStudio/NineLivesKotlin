@@ -70,7 +70,6 @@ internal fun dossierHistoryPresentation(
 /**
  * The share card's own line for an incomplete history (issue #65). The screen
  * warning carries a technical reason, which does not belong on a shared image.
- * Draft copy, pending Jeff.
  */
 internal const val SHARE_CARD_PARTIAL_HISTORY_NOTE = "Partial history. Some sessions did not load."
 

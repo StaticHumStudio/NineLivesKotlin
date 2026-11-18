@@ -16,8 +16,57 @@ object ChangelogData {
 
     val releases = listOf(
         ChangelogRelease(
-            version = "2.1.7",
+            version = "2.2.0",
             dateLabel = "Current",
+            sections = listOf(
+                ChangelogSection(
+                    header = "New",
+                    entries = listOf(
+                        "Find a cover for local books, from audiobookcovers.com, Open Library or your own photos.",
+                        "Android Auto reaches every book, with letter folders for big libraries.",
+                        "A failed Play now tells you why.",
+                        "Event whispers. The Archive now speaks up when something happens, not only at launch.",
+                        "Local books use their own chapter titles.",
+                    ),
+                ),
+                ChangelogSection(
+                    header = "Improved",
+                    entries = listOf(
+                        "Progress syncs the way Audiobookshelf's own apps do. An older spot never overwrites a newer one from another device.",
+                        "Opening a book picks your most recent spot, so a rewind on another device sticks.",
+                        "Offline listening reaches your server and counts in its stats.",
+                        "A finished book reopens at the end. Press Play to start it over.",
+                        "Previous Chapter restarts the chapter you're in, and goes back one from its start.",
+                        "The Author view groups books by who wrote them, so \"Smith, John\" is one person.",
+                        "Downloads remember their tracks, so offline play keeps the right order and chapters.",
+                        "Books downloaded before 2.1.6 learn their track order the next time they play online.",
+                        "Moving a local book's folder keeps its bookmarks and listening history.",
+                        "The Dossier loads your whole history and shares the whole card.",
+                        "Switching books is quicker, even when the server is slow to answer.",
+                    ),
+                ),
+                ChangelogSection(
+                    header = "Fixed",
+                    entries = listOf(
+                        "Switching books never shows or plays the wrong book.",
+                        "A quick Back no longer crashes the app.",
+                        "A cancelled or paused download stays that way, and a sync never undoes a download.",
+                        "A restarted book resumes where you left it.",
+                        "A sleep timer that ends while you're paused leaves your place alone.",
+                        "A phone clock that is hours off no longer wins over your other devices.",
+                        "The Whispers switch in Settings now does what it says.",
+                        "A different book in an old book's folder starts fresh instead of taking its place.",
+                        "Deleting the book that is playing stops it cleanly.",
+                        "The bottom bar no longer flashes the wrong tab.",
+                        "Purchases that fail to confirm are retried, so they are never refunded by mistake.",
+                        "A cover edited on the server refreshes in the app.",
+                    ),
+                ),
+            ),
+        ),
+        ChangelogRelease(
+            version = "2.1.7",
+            dateLabel = "October 23, 2026",
             sections = listOf(
                 ChangelogSection(
                     header = "New",
